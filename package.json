@@ -67,7 +67,7 @@
     "recast": "^0.23.6",
     "resolve-tspaths": "^0.8.18",
     "rimraf": "^5.0.5",
-    "semantic-release": "^24.0.0",
+    "semantic-release": "^25.0.9",
     "tsup": "^8.5.1",
     "tsx": "^4.7.1",
     "typescript": "^5.4.2",
@@ -101,9 +101,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vantreeseba/drizzle-graphql.git"
+    "url": "git+https://github.com/cubicecho/drizzle-graphql.git"
   },
-  "homepage": "https://github.com/vantreeseba/drizzle-graphql",
+  "homepage": "https://github.com/cubicecho/drizzle-graphql",
   "peerDependencies": {
     "drizzle-orm": "^1.0.0-rc.2",
     "graphql": ">=16.3.0",
