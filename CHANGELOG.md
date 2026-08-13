@@ -1,3 +1,42 @@
+# [2.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v1.0.3...v2.0.0) (2026-08-13)
+
+
+* feat!: replace singularTypes with typeNameMapper; change default mutation prefixes ([b65d44b](https://github.com/cubicecho/drizzle-graphql/commit/b65d44bf0358e66b44cce427f23368e14b6f1455))
+
+
+### Bug Fixes
+
+* batch per-parent paginated relations via window function ([0c74f9c](https://github.com/cubicecho/drizzle-graphql/commit/0c74f9c085120961c597b1ce38c8628da7ebbf79))
+* default paginated relations to primary-key order for deterministic slices ([a0d4476](https://github.com/cubicecho/drizzle-graphql/commit/a0d447605f8140e791a726843ba0cf2c686defb6))
+* deterministic pagination & efficient re-fetch for composite-PK relations ([7943dc6](https://github.com/cubicecho/drizzle-graphql/commit/7943dc6d2a82f3416df654e3139e81c92e2f75dc))
+* don't guess a column named `id` as the primary key ([d8a4a55](https://github.com/cubicecho/drizzle-graphql/commit/d8a4a55ffc4a5cda6b4e666e2600d8ec78b4d64c))
+* harden mutation eager-load against missing/bigint PKs and re-fetch failures ([133727b](https://github.com/cubicecho/drizzle-graphql/commit/133727bf177878e28c29ee2ba89feba2d1040a14))
+* only preserve null for to-one relations in remap ([fe36c7c](https://github.com/cubicecho/drizzle-graphql/commit/fe36c7ce54fb278c559bb40bd39b5c47a7e4b72f))
+* replace WeakMap<Object> with WeakMap<object> (noBannedTypes lint) ([99f614a](https://github.com/cubicecho/drizzle-graphql/commit/99f614ae38dc315c6ca4d6afd6d5340d564b6e1a))
+* rewrite extractFiltersColumn switch as operator lookup maps ([c96ddc7](https://github.com/cubicecho/drizzle-graphql/commit/c96ddc7efae8db0cb101ded6d855f0bf8a39d7d5))
+* tighten mutation eager-load and null-relation handling ([7b7a19c](https://github.com/cubicecho/drizzle-graphql/commit/7b7a19c5cec1a7cf67c4be768c00e26d29ae4c9a))
+* validate equal suffixes regardless of relationsDepthLimit ([0df90be](https://github.com/cubicecho/drizzle-graphql/commit/0df90be6f731f67af00e7ae9e8ef431c19279309))
+
+
+### Features
+
+* add eagerLoadRelations config to opt relations out of `with:` prefetch ([a7e76b3](https://github.com/cubicecho/drizzle-graphql/commit/a7e76b3ca18a6f999c99f24fbcb39a3df1fe0342))
+* eager-load mutation relations to avoid N+1 (incl. composite PKs) ([ca00098](https://github.com/cubicecho/drizzle-graphql/commit/ca0009824c8059b1742feb52a6748149b77627a8))
+* export createRelationResolverFactory, RelationResolverFactory, extractRelationJoinColumns ([bd6df26](https://github.com/cubicecho/drizzle-graphql/commit/bd6df26cba38d954b5fd79acf325a04fd7d7f335))
+* export TableNamedRelations; fix src/index.ts formatting ([e7449d4](https://github.com/cubicecho/drizzle-graphql/commit/e7449d46f8ca8bbae662f46617ed51844b579501))
+* generate relation field resolvers with request-scoped N+1 batching ([daebede](https://github.com/cubicecho/drizzle-graphql/commit/daebede15709100c9cf8e1deb7fc120c95840b3b))
+
+
+### Performance Improvements
+
+* derive mutation primary-key columns once at build time ([7ccefd6](https://github.com/cubicecho/drizzle-graphql/commit/7ccefd68f22157739946de1913fd22c20bd26c9d))
+* mutation eager-load refetches only the primary key + relations ([91e67aa](https://github.com/cubicecho/drizzle-graphql/commit/91e67aa4a9348596ba28bb5078ba646a76be6aee))
+
+
+### BREAKING CHANGES
+
+* default mutation names changed; singularTypes option removed
+
 ## [1.0.3](https://github.com/vantreeseba/drizzle-graphql/compare/v1.0.2...v1.0.3) (2026-05-06)
 
 
