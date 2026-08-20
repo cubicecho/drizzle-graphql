@@ -10,6 +10,7 @@ import {
   type GraphQLSchemaConfig,
 } from 'graphql';
 import type { AnyDrizzleDB, BuildSchemaConfig, GeneratedData } from './types.ts';
+import { applyErrorMapper, defaultErrorMapper } from './util/builders/common.ts';
 import { generateMySQL, generatePG, generateSQLite } from './util/builders/index.ts';
 
 export type {
@@ -37,6 +38,7 @@ export type {
 export type { RelationResolverFactory } from './util/builders/common.ts';
 export {
   createRelationResolverFactory,
+  defaultErrorMapper,
   extractFilters,
   extractOrderBy,
   extractRelationJoinColumns,
@@ -152,6 +154,14 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
   } else {
     throw new Error('Drizzle-GraphQL Error: Unknown database instance type');
   }
+
+  // Wrap resolvers before the schema is assembled, so the generated schema and the returned
+  // entities share the same handling.
+  const onError = config?.onError;
+  applyErrorMapper(
+    generatorOutput as any,
+    onError ? (error) => onError(error) ?? defaultErrorMapper(error) : defaultErrorMapper,
+  );
 
   const { queries, mutations, inputs, types } = generatorOutput;
 

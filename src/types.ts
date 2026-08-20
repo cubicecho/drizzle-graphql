@@ -538,4 +538,28 @@ export type BuildSchemaConfig = {
    * @default true
    */
   eagerLoadRelations?: boolean | ((tableName: string, relationName: string) => boolean);
+  /**
+   * Called for every error thrown by a generated resolver, before it reaches the client.
+   *
+   * Return an error to surface that one instead. Return nothing to fall through to the
+   * default handling, which makes this a pure logging hook:
+   *
+   * ```ts
+   * buildSchema(db, { onError: (error) => { logger.error(error) } })
+   * ```
+   *
+   * The default passes through errors drizzle-graphql raises itself (bad filter, missing
+   * values, invalid date, …) and replaces everything else — driver and database errors —
+   * with a generic `Internal server error`, keeping the original on `originalError` so it
+   * is still available to server-side logging. Database messages routinely name tables,
+   * columns, constraints and the values that violated them, which is not something a
+   * public API should hand back.
+   *
+   * To surface raw database errors instead (useful in development):
+   *
+   * ```ts
+   * buildSchema(db, { onError: (error) => error as Error })
+   * ```
+   */
+  onError?: (error: unknown) => unknown;
 };

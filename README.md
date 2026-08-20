@@ -303,6 +303,49 @@ supplies no `orderBy`:
 An explicit `orderBy` always takes precedence, composite primary keys are ordered by every
 key column, and an unpaginated list query is left unordered so no sort is paid for.
 
+## Error handling
+
+Database drivers put a lot into an error message. Drizzle rethrows them with the full SQL
+statement and its bound parameters attached, and Postgres itself names the table, the column
+and the constraint that was violated. None of that belongs in a GraphQL response, so by
+default every error a generated resolver throws is passed through a sanitizer:
+
+-   errors drizzle-graphql raises itself (`Unable to update with no values specified!`,
+    `Field 'x' is not a valid date!`, filter misuse, …) are written for the client and pass
+    through unchanged
+-   anything else becomes `Internal server error` with `extensions.code:
+    "INTERNAL_SERVER_ERROR"`, and the original is kept on the error's `originalError` so a
+    server-side logger can still see it
+
+`onError` overrides this. Return an error to surface that one, or return nothing to let the
+default apply — which makes it a pure logging hook:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    onError: (error) => {
+        logger.error({ err: error }, 'drizzle-graphql resolver failed')
+        // no return value — the default sanitizing still applies
+    },
+})
+```
+
+```Typescript
+// Surface raw database errors, e.g. in development
+buildSchema(db, { onError: (error) => error as Error })
+
+// Or map them yourself
+buildSchema(db, {
+    onError: (error) =>
+        isUniqueViolation(error)
+            ? new GraphQLError('That record already exists', { extensions: { code: 'CONFLICT' } })
+            : undefined,
+})
+```
+
+The hook covers root queries and mutations, relation and aggregate fields, and the
+standalone `entities.fieldResolvers`. The default is exported as `defaultErrorMapper` if you
+want to fall back to it explicitly.
+
 ## Relations & N+1 handling
 
 Generated schemas resolve nested relations without N+1 query explosions:
