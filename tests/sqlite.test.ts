@@ -1965,6 +1965,31 @@ describe.sequential('Aggregate query tests', () => {
     });
   });
 
+  it(`Per-column counts`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				postsAggregate {
+					countNonNull {
+						content
+					}
+					countDistinct {
+						authorId
+						content
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        postsAggregate: {
+          countNonNull: { content: 6 },
+          countDistinct: { authorId: 2, content: 4 },
+        },
+      },
+    });
+  });
+
   it(`Numeric aggregates`, async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			{

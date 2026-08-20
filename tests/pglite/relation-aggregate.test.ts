@@ -167,6 +167,25 @@ describe.sequential('relation aggregates', () => {
     ]);
   });
 
+  it('exposes the per-column counts on a relation aggregate', async () => {
+    const result = await ctx.gql.queryGql(`{
+      users(orderBy: { id: { direction: asc, priority: 1 } }) {
+        id
+        postsAggregate {
+          countNonNull { content }
+          countDistinct { content }
+        }
+      }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    expect(result.data?.users).toEqual([
+      { id: 1, postsAggregate: { countNonNull: { content: 4 }, countDistinct: { content: 4 } } },
+      { id: 2, postsAggregate: { countNonNull: { content: 0 }, countDistinct: { content: 0 } } },
+      { id: 5, postsAggregate: { countNonNull: { content: 2 }, countDistinct: { content: 2 } } },
+    ]);
+  });
+
   it('aggregates relations on a delete mutation payload', async () => {
     // `Posts.authorId` has no foreign key, so the posts outlive the deleted author.
     const result = await ctx.gql.queryGql(`mutation {

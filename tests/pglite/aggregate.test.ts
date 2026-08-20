@@ -143,6 +143,85 @@ describe.sequential('aggregate queries', () => {
     });
   });
 
+  it('counts non-null values per column', async () => {
+    // Only the first user has `initials`; `isConfirmed` is set on that user alone too.
+    const result = await ctx.gql.queryGql(`{
+      usersAggregate {
+        count
+        countNonNull { id initials isConfirmed }
+      }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    expect(result.data?.usersAggregate).toEqual({
+      count: 3,
+      countNonNull: { id: 3, initials: 1, isConfirmed: 1 },
+    });
+  });
+
+  it('counts distinct values per column', async () => {
+    const result = await ctx.gql.queryGql(`{
+      postsAggregate {
+        count
+        countDistinct { authorId content }
+      }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    expect(result.data?.postsAggregate).toEqual({
+      count: 6,
+      countDistinct: { authorId: 2, content: 4 },
+    });
+  });
+
+  it('applies the where filter to the per-column counts', async () => {
+    const result = await ctx.gql.queryGql(`{
+      postsAggregate(where: { authorId: { eq: 5 } }) {
+        countNonNull { content }
+        countDistinct { authorId }
+      }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    expect(result.data?.postsAggregate).toEqual({
+      countNonNull: { content: 2 },
+      countDistinct: { authorId: 1 },
+    });
+  });
+
+  it('returns zero per-column counts for an empty table', async () => {
+    const result = await ctx.gql.queryGql(`{
+      tagsAggregate {
+        countNonNull { id name }
+        countDistinct { id name }
+      }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    expect(result.data?.tagsAggregate).toEqual({
+      countNonNull: { id: 0, name: 0 },
+      countDistinct: { id: 0, name: 0 },
+    });
+  });
+
+  it('exposes every column on countNonNull but only orderable ones on countDistinct', () => {
+    const countNonNullType = ctx.schema.getType('UserCountNonNullAggregate') as GraphQLObjectType;
+    const countNonNullFields = Object.keys(countNonNullType.getFields());
+    expect(countNonNullFields).toContain('isConfirmed');
+    expect(countNonNullFields).toContain('vector');
+    expect(countNonNullFields).toContain('geoXy');
+
+    const countDistinctType = ctx.schema.getType('UserCountDistinctAggregate') as GraphQLObjectType;
+    const countDistinctFields = Object.keys(countDistinctType.getFields());
+    expect(countDistinctFields).toContain('name');
+    expect(countDistinctFields).not.toContain('isConfirmed');
+    expect(countDistinctFields).not.toContain('vector');
+
+    // Counts are never null, so every field on both types is non-nullable.
+    expect(countNonNullType.getFields()['id']!.type.toString()).toBe('Int!');
+    expect(countDistinctType.getFields()['id']!.type.toString()).toBe('Int!');
+  });
+
   it('only exposes numeric columns on avg/sum and orderable columns on min/max', () => {
     const avgType = ctx.schema.getType('UserAvgAggregate') as GraphQLObjectType;
     expect(Object.keys(avgType.getFields())).toEqual(['id']);

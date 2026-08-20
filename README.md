@@ -156,6 +156,12 @@ following the same naming rules as the other generated queries:
             createdAt
             title
         }
+        countNonNull {
+            publishedAt
+        }
+        countDistinct {
+            authorId
+        }
     }
 }
 ```
@@ -164,6 +170,10 @@ following the same naming rules as the other generated queries:
 -   `avg` / `sum` — one nullable `Float` field per numeric column
 -   `min` / `max` — one field per orderable column (numbers, strings, enums, dates, bigints),
     typed exactly like that column is in the table's own type
+-   `countNonNull` — `Int!` per column: how many matching rows have a non-null value there.
+    Every column qualifies, since `count(col)` is valid whatever the type
+-   `countDistinct` — `Int!` per column: how many distinct non-null values there are. Limited to
+    the same columns as `min` / `max`, because counting distinct values needs an equality operator
 
 Columns that have no meaningful ordering — booleans, arrays, JSON, buffers, and geometry —
 are left out of these types, and the `avg` / `sum` / `min` / `max` fields themselves are

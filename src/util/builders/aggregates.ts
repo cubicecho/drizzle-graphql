@@ -4,6 +4,7 @@ import {
   avg,
   type Column,
   count,
+  countDistinct,
   extractExtendedColumnType,
   getColumns,
   inArray,
@@ -41,10 +42,20 @@ import {
 import type { CreatedResolver, Filters } from './types.ts';
 
 /** Operations that aggregate over a set of column values. `count` is handled separately (whole rows). */
-const AGGREGATE_OPS = ['avg', 'sum', 'min', 'max'] as const;
+const AGGREGATE_OPS = ['avg', 'sum', 'min', 'max', 'countNonNull', 'countDistinct'] as const;
 type AggregateOp = (typeof AGGREGATE_OPS)[number];
 
-const OP_FNS: Record<AggregateOp, (col: Column) => any> = { avg, sum, min, max };
+/** Ops whose result is a row count: never null, and returned as `Int!` rather than the column's type. */
+const COUNT_OPS = new Set<AggregateOp>(['countNonNull', 'countDistinct']);
+
+const OP_FNS: Record<AggregateOp, (col: Column) => any> = {
+  avg,
+  sum,
+  min,
+  max,
+  countNonNull: count,
+  countDistinct,
+};
 
 /** Separator for flat select aliases (`avg__price`) — reassembled into nested output by the resolver. */
 const SEP = '__';
@@ -54,6 +65,8 @@ interface AggregateColumnSets {
   numeric: Record<string, Column>;
   /** Columns min/max apply to: anything with a total ordering the DB supports (numbers, strings, dates, enums). */
   orderable: Record<string, { column: Column; converted: ConvertedColumn }>;
+  /** Every column — `count(col)` is valid whatever the type. */
+  all: Record<string, Column>;
 }
 
 /**
@@ -65,8 +78,10 @@ interface AggregateColumnSets {
 const classifyAggregateColumns = (table: Table, tableName: string): AggregateColumnSets => {
   const numeric: AggregateColumnSets['numeric'] = {};
   const orderable: AggregateColumnSets['orderable'] = {};
+  const all: AggregateColumnSets['all'] = {};
 
   for (const [columnName, column] of Object.entries(getColumns(table))) {
+    all[columnName] = column;
     const converted = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, false);
     const gqlType = converted.type;
 
@@ -93,7 +108,7 @@ const classifyAggregateColumns = (table: Table, tableName: string): AggregateCol
     }
   }
 
-  return { numeric, orderable };
+  return { numeric, orderable, all };
 };
 
 /**
@@ -102,7 +117,9 @@ const classifyAggregateColumns = (table: Table, tableName: string): AggregateCol
  * - `avg` / `sum` — per numeric column, always nullable Float (SQL returns NULL on empty sets,
  *   and avg/sum of integers overflow Int / produce decimals)
  * - `min` / `max` — per orderable column, the column's own (nullable) scalar type
- * The avg/sum (min/max) wrappers are omitted when no column qualifies.
+ * - `countNonNull` — per column, `Int!`: how many matching rows have a non-null value there
+ * - `countDistinct` — per orderable column, `Int!`: how many distinct non-null values there are
+ * Each wrapper is omitted when no column qualifies for it.
  */
 export const generateAggregateTypes = (
   table: Table,
@@ -115,7 +132,7 @@ export const generateAggregateTypes = (
     return cached;
   }
 
-  const { numeric, orderable } = classifyAggregateColumns(table, tableName);
+  const { numeric, orderable, all } = classifyAggregateColumns(table, tableName);
 
   const fields: Record<string, { type: any }> = {
     count: { type: new GraphQLNonNull(GraphQLInt) },
@@ -146,6 +163,24 @@ export const generateAggregateTypes = (
         }),
       };
     }
+  }
+
+  // `count(col)` works on any column type; `count(distinct col)` needs an equality operator,
+  // which is the same requirement min/max have, so it reuses the orderable set.
+  const countSets: Record<string, Record<string, unknown>> = { countNonNull: all, countDistinct: orderable };
+  for (const [op, columns] of Object.entries(countSets)) {
+    const columnNames = Object.keys(columns);
+    if (!columnNames.length) {
+      continue;
+    }
+    fields[op] = {
+      type: new GraphQLObjectType({
+        name: `${typeName}${capitalize(op)}Aggregate`,
+        fields: Object.fromEntries(
+          columnNames.map((columnName) => [columnName, { type: new GraphQLNonNull(GraphQLInt) }]),
+        ),
+      }),
+    };
   }
 
   const aggregateType = new GraphQLObjectType({
@@ -213,7 +248,7 @@ const parseAggregateRequest = (info: any, target: AggregateTarget): AggregateReq
 
   const request: AggregateRequest = {
     count: false,
-    ops: { avg: [], sum: [], min: [], max: [] },
+    ops: { avg: [], sum: [], min: [], max: [], countNonNull: [], countDistinct: [] },
     selection: {},
   };
 
@@ -266,7 +301,10 @@ const assembleAggregateRow = (row: Record<string, any>, request: AggregateReques
     const opResult: Record<string, any> = {};
     for (const columnName of request.ops[op]) {
       const value = row[`${op}${SEP}${columnName}`];
-      if (value == null) {
+      if (COUNT_OPS.has(op)) {
+        // A count is never null: an empty set counts to 0, and a missing group means no rows.
+        opResult[columnName] = value == null ? 0 : Number(value);
+      } else if (value == null) {
         opResult[columnName] = null;
       } else if (op === 'avg' || op === 'sum') {
         // Drivers return numeric/decimal aggregates as strings — coerce to Float.

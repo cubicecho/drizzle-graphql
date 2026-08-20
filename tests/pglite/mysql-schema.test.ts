@@ -113,7 +113,7 @@ describe('MySQL generated aggregate queries', () => {
 
   it('aggregate type exposes count plus the aggregation groups', () => {
     const fields = entities.types['UsersAggregate'].getFields();
-    expect(Object.keys(fields)).toEqual(['count', 'avg', 'sum', 'min', 'max']);
+    expect(Object.keys(fields)).toEqual(['count', 'avg', 'sum', 'min', 'max', 'countNonNull', 'countDistinct']);
     expect(fields['count'].type).toBeInstanceOf(GraphQLNonNull);
   });
 
