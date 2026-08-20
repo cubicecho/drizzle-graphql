@@ -149,6 +149,42 @@ describe.sequential('Arguments tests', async () => {
     });
   });
 
+  it('Defaults an unordered paginated query to primary key order', async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(limit: 3) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({ data: { posts: [{ id: 1 }, { id: 2 }, { id: 3 }] } });
+  });
+
+  it('Defaults an unordered single query to primary key order', async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				post {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({ data: { post: { id: 1 } } });
+  });
+
+  it('Keeps an explicit orderBy over the primary key default', async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(limit: 3, orderBy: { id: { direction: desc, priority: 1 } }) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({ data: { posts: [{ id: 6 }, { id: 5 }, { id: 4 }] } });
+  });
+
   it('Filters - top level AND', async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			{

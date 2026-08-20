@@ -25,6 +25,7 @@ import {
   generateTableTypes,
   getPrimaryKeyPropNamesFromConfig,
   prepareMutationRelationColumns,
+  primaryKeyOrderExprs,
   pruneNonEagerRelations,
   type RelationAggregateFactory,
   type RelationFilterBase,
@@ -68,6 +69,7 @@ const generateSelectArray = (
   const queryArgs = selectArrayArgs(orderArgs, filterArgs);
 
   const table = tables[tableName]!;
+  const pkNames = pgPrimaryKeyPropNames(table as PgTable);
 
   return {
     name: fieldName,
@@ -88,6 +90,7 @@ const generateSelectArray = (
             ...args,
             single: false,
             filterCtx,
+            pkNames,
           });
         }
 
@@ -105,6 +108,9 @@ const generateSelectArray = (
         }
         if (orderBy) {
           q = q.orderBy(...extractOrderBy(table, orderBy)) as any;
+        } else if ((offset != null || limit != null) && pkNames.length) {
+          // See runRelationalSelect: an unordered slice is not stable between requests.
+          q = q.orderBy(...primaryKeyOrderExprs(table, pkNames)) as any;
         }
         if (offset) {
           q = q.offset(offset) as any;
@@ -141,6 +147,7 @@ const generateSelectSingle = (
   const queryArgs = selectSingleArgs(orderArgs, filterArgs);
 
   const table = tables[tableName]!;
+  const pkNames = pgPrimaryKeyPropNames(table as PgTable);
 
   return {
     name: fieldName,
@@ -161,6 +168,7 @@ const generateSelectSingle = (
             ...args,
             single: true,
             filterCtx,
+            pkNames,
           });
         }
 
@@ -177,6 +185,9 @@ const generateSelectSingle = (
         }
         if (orderBy) {
           q = q.orderBy(...extractOrderBy(table, orderBy)) as any;
+        } else if (pkNames.length) {
+          // A single query is an implicit `limit 1` — order it so the row is deterministic.
+          q = q.orderBy(...primaryKeyOrderExprs(table, pkNames)) as any;
         }
         if (offset) {
           q = q.offset(offset) as any;

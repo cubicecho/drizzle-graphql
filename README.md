@@ -211,6 +211,21 @@ All parents in a selection are aggregated with a single
 users is one extra query, not one per user. Differently-aliased selections with different
 `where` arguments are batched separately.
 
+## Pagination ordering
+
+SQL gives no ordering guarantee for a query that has no `ORDER BY`, so paging through an
+unordered result can return the same row twice or skip one entirely. To keep pages stable,
+a query that returns only part of a table is ordered by its primary key when the request
+supplies no `orderBy`:
+
+-   list queries with `limit` and/or `offset`
+-   `<tableName>Single` queries, which are an implicit `limit 1`
+-   to-many relation fields with `limit` and/or `offset` (as a tiebreak appended to any
+    `orderBy` you do supply, so per-parent slices are deterministic)
+
+An explicit `orderBy` always takes precedence, composite primary keys are ordered by every
+key column, and an unpaginated list query is left unordered so no sort is paid for.
+
 ## Relations & N+1 handling
 
 Generated schemas resolve nested relations without N+1 query explosions:

@@ -2202,6 +2202,44 @@ describe.sequential('Relation aggregate tests', () => {
   });
 });
 
+describe.sequential('Default pagination order tests', () => {
+  it(`Unordered paginated query falls back to primary key order`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(limit: 3) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({ data: { posts: [{ id: 1 }, { id: 2 }, { id: 3 }] } });
+  });
+
+  it(`Unordered single query falls back to primary key order`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				postsSingle {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({ data: { postsSingle: { id: 1 } } });
+  });
+
+  it(`Explicit orderBy wins over the primary key default`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(limit: 3, orderBy: { id: { direction: desc, priority: 1 } }) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({ data: { posts: [{ id: 6 }, { id: 5 }, { id: 4 }] } });
+  });
+});
+
 describe.sequential('Relation filter tests', () => {
   it(`Filter by a to-many relation`, async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `

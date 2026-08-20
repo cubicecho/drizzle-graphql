@@ -1931,6 +1931,7 @@ export const runRelationalSelect = async (opts: {
   where?: any;
   single: boolean;
   filterCtx?: RelationFilterBase;
+  pkNames?: readonly string[];
 }): Promise<any> => {
   const {
     queryBase,
@@ -1946,7 +1947,13 @@ export const runRelationalSelect = async (opts: {
     where,
     single,
     filterCtx,
+    pkNames,
   } = opts;
+  // Taking a slice of an unordered result lets the database return any rows it likes, so
+  // `limit`/`offset` pages can overlap or skip rows between requests, and a single query
+  // can return a different row each time. Default to the primary key whenever the query is
+  // narrowed to a subset, mirroring the relation-level default in extractRelationsParamsInner.
+  const needsDefaultOrder = single || offset != null || opts.limit != null;
   const params: any = {
     columns: extractSelectedColumnsFromTree(parsedInfo.fieldsByTypeName[typeName]!, table, {
       tableName,
@@ -1956,7 +1963,11 @@ export const runRelationalSelect = async (opts: {
     offset,
     // drizzle-orm v1 RQB calls orderBy/where with the aliased table proxy — use it
     // directly so column refs match the CTE alias.
-    orderBy: orderBy ? (aliasedTable: Table) => extractOrderBy(aliasedTable, orderBy) : undefined,
+    orderBy: orderBy
+      ? (aliasedTable: Table) => extractOrderBy(aliasedTable, orderBy)
+      : needsDefaultOrder && pkNames?.length
+        ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
+        : undefined,
     where: where
       ? {
           RAW: (aliasedTable: Table) =>

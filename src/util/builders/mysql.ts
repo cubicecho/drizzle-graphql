@@ -64,6 +64,7 @@ const generateSelectArray = (
   const queryArgs = selectArrayArgs(orderArgs, filterArgs);
 
   const table = tables[tableName]!;
+  const pkNames = mysqlPrimaryKeyPropNames(table as MySqlTable);
 
   return {
     name: fieldName,
@@ -82,6 +83,7 @@ const generateSelectArray = (
           ...args,
           single: false,
           filterCtx,
+          pkNames,
         });
       } catch (e) {
         throw toGraphQLError(e);
@@ -115,6 +117,7 @@ const generateSelectSingle = (
   const queryArgs = selectSingleArgs(orderArgs, filterArgs);
 
   const table = tables[tableName]!;
+  const pkNames = mysqlPrimaryKeyPropNames(table as MySqlTable);
 
   return {
     name: fieldName,
@@ -133,6 +136,7 @@ const generateSelectSingle = (
           ...args,
           single: true,
           filterCtx,
+          pkNames,
         });
       } catch (e) {
         throw toGraphQLError(e);
