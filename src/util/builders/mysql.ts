@@ -24,6 +24,7 @@ import {
   generateTableTypes,
   getPrimaryKeyPropNamesFromConfig,
   pruneNonEagerRelations,
+  type RelationAggregateFactory,
   type RelationFilterBase,
   type RelationResolverFactory,
   relationFilterCtx,
@@ -36,7 +37,7 @@ import {
   toGraphQLError,
 } from '../builders/common.ts';
 import { remapFromGraphQLArrayInput, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
-import { generateAggregate, generateAggregateTypes } from './aggregates.ts';
+import { createRelationAggregateFactory, generateAggregate, generateAggregateTypes } from './aggregates.ts';
 import type { CreatedResolver, Filters, TableNamedRelations, TableSelectArgs } from './types.ts';
 
 const generateSelectArray = (
@@ -339,7 +340,16 @@ export const generateSchemaData = <
     orderTypeCache: new WeakMap(),
     filterTypeCache: new WeakMap(),
     listRelationFilterCache: new Map(),
+    aggregateTypeCache: new Map(),
   };
+
+  const relationAggregateFactory: RelationAggregateFactory = createRelationAggregateFactory(
+    db,
+    tables,
+    cacheCtx,
+    typeNameMapper,
+    filterCtx,
+  );
 
   const queries: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
   const mutations: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
@@ -357,6 +367,7 @@ export const generateSchemaData = <
         prefixes.insert,
         prefixes.update,
         resolverFactory,
+        relationAggregateFactory,
       ),
     ]),
   );
@@ -446,7 +457,7 @@ export const generateSchemaData = <
       deleteFieldName,
       filterCtx,
     );
-    const aggregateType = generateAggregateTypes(schema[tableName] as MySqlTable, tableName, typeName);
+    const aggregateType = generateAggregateTypes(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx);
     const aggregateGenerated = generateAggregate(
       db,
       tableName,

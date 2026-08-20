@@ -87,7 +87,7 @@ const rqbCrashTypes = ['SQLiteBigInt', 'SQLiteBlobJson', 'SQLiteBlobBuffer'];
 export type TypeNameMapper = (tableName: string) => { singular: string; plural: string } | undefined;
 
 /** Produce the GraphQL object type name for a table, using the mapper if provided. */
-const resolveTypeName = (name: string, typeNameMapper?: TypeNameMapper): string => {
+export const resolveTypeName = (name: string, typeNameMapper?: TypeNameMapper): string => {
   const mapped = typeNameMapper?.(name);
   return mapped ? capitalize(mapped.singular) : capitalize(name);
 };
@@ -229,6 +229,17 @@ export type RelationResolverFactory = (params: {
   relEntry: TableNamedRelations;
   isOne: boolean;
 }) => GraphQLFieldResolver<any, any> | undefined;
+
+/**
+ * Builds the `${relationName}Aggregate` field for a to-many relation. Implemented in
+ * `aggregates.ts` and injected here so the aggregate code can depend on this module
+ * without the two importing each other.
+ */
+export type RelationAggregateFactory = (params: {
+  tableName: string;
+  relationName: string;
+  relEntry: TableNamedRelations;
+}) => { type: GraphQLObjectType; resolve: GraphQLFieldResolver<any, any> } | undefined;
 
 /**
  * Fetches a to-many relation with per-parent limit/offset for ALL parents in a
@@ -434,11 +445,70 @@ export interface TypeCacheCtx {
    * used by to-many relation filters), keyed by target table name.
    */
   listRelationFilterCache: Map<string, GraphQLInputObjectType>;
+  /**
+   * Per-call cache for `${Table}Aggregate` output types, keyed by table name. Shared between the
+   * root `<table>Aggregate` query and the `<relation>Aggregate` field on every table that points
+   * at it, so the schema never holds two types with the same name.
+   */
+  aggregateTypeCache: Map<string, GraphQLObjectType>;
 }
+
+/**
+ * Everything needed to work out which extra columns a selection implies. Passed to the column
+ * extractors so a requested `<relation>Aggregate` field can pull in the join column it resolves
+ * from, which the client has no reason to have selected itself.
+ */
+export interface SelectionCtx {
+  tableName: string;
+  relationMap: Record<string, Record<string, TableNamedRelations>>;
+  tables: Record<string, Table>;
+}
+
+const AGGREGATE_FIELD_SUFFIX = 'Aggregate';
+
+/**
+ * Property names of the join columns that the `<relation>Aggregate` fields in this selection
+ * correlate on. Without them the parent row reaches the aggregate resolver with no key and
+ * every count would come back 0.
+ */
+const relationAggregateJoinColumns = (
+  tree: Record<string, ResolveTree>,
+  table: Table,
+  selectionCtx: SelectionCtx | undefined,
+): string[] => {
+  const relations = selectionCtx?.relationMap[selectionCtx.tableName];
+  if (!relations || !selectionCtx) {
+    return [];
+  }
+
+  const tableColumns = getColumns(table);
+  const needed: string[] = [];
+
+  for (const fieldData of Object.values(tree)) {
+    // A column that happens to end in "Aggregate" is a column, not a relation aggregate.
+    if (tableColumns[fieldData.name] || !fieldData.name.endsWith(AGGREGATE_FIELD_SUFFIX)) {
+      continue;
+    }
+
+    const relEntry = relations[fieldData.name.slice(0, -AGGREGATE_FIELD_SUFFIX.length)];
+    const targetTable = relEntry ? selectionCtx.tables[relEntry.targetTableName] : undefined;
+    if (!relEntry || !targetTable) {
+      continue;
+    }
+
+    const joinCols = extractRelationJoinColumns(relEntry, table, targetTable);
+    if (joinCols) {
+      needed.push(joinCols.localColPropName);
+    }
+  }
+
+  return needed;
+};
 
 export const extractSelectedColumnsFromTree = (
   tree: Record<string, ResolveTree>,
   table: Table,
+  selectionCtx?: SelectionCtx,
 ): Record<string, true> => {
   const tableColumns = getColumns(table);
 
@@ -451,6 +521,10 @@ export const extractSelectedColumnsFromTree = (
     }
 
     selectedColumns.push([fieldData.name, true]);
+  }
+
+  for (const columnName of relationAggregateJoinColumns(tree, table, selectionCtx)) {
+    selectedColumns.push([columnName, true]);
   }
 
   if (!selectedColumns.length) {
@@ -471,6 +545,7 @@ export const extractSelectedColumnsFromTree = (
 export const extractSelectedColumnsFromTreeSQLFormat = <TColType extends Column = Column>(
   tree: Record<string, ResolveTree>,
   table: Table,
+  selectionCtx?: SelectionCtx,
 ): Record<string, TColType> => {
   const tableColumns = getColumns(table);
 
@@ -483,6 +558,10 @@ export const extractSelectedColumnsFromTreeSQLFormat = <TColType extends Column 
     }
 
     selectedColumns.push([fieldData.name, tableColumns[fieldData.name]!]);
+  }
+
+  for (const columnName of relationAggregateJoinColumns(tree, table, selectionCtx)) {
+    selectedColumns.push([columnName, tableColumns[columnName]!]);
   }
 
   if (!selectedColumns.length) {
@@ -887,6 +966,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
   usedTables: Set<string> = new Set(),
   resolverFactory?: RelationResolverFactory,
   currentDepth: number = 0,
+  relationAggregateFactory?: RelationAggregateFactory,
 ): SelectData<TWithOrder> => {
   const table = tables[tableName]!;
   const order = withOrder ? generateTableOrderTypeCached(table, tableName, typeNameMapper, cacheCtx) : undefined;
@@ -985,6 +1065,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
         nextUsedTables,
         resolverFactory,
         currentDepth + 1,
+        relationAggregateFactory,
       );
 
       // Use the target table's own GraphQL type directly instead of creating an intermediate relation type.
@@ -1043,6 +1124,30 @@ const generateSelectFields = <TWithOrder extends boolean>(
           resolve,
         },
       ]);
+
+      // Aggregate over the related rows without fetching them: `user { postsAggregate { count } }`.
+      // Skipped when the name would shadow a column or another relation.
+      const aggregateFieldName = `${relationName}Aggregate`;
+      if (!tableFields[aggregateFieldName] && !relationsForTable?.[aggregateFieldName]) {
+        const relationAggregate = relationAggregateFactory?.({
+          tableName,
+          relationName,
+          relEntry: relEntry as TableNamedRelations,
+        });
+
+        if (relationAggregate) {
+          rawRelationFields.push([
+            aggregateFieldName,
+            {
+              type: new GraphQLNonNull(relationAggregate.type),
+              args: {
+                where: { type: relSelectData.filters },
+              },
+              resolve: relationAggregate.resolve,
+            } as unknown as ConvertedRelationColumnWithArgs,
+          ]);
+        }
+      }
     }
 
     const builtRelationFields = Object.fromEntries(rawRelationFields);
@@ -1088,6 +1193,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   insertPrefix: string = 'create',
   updatePrefix: string = 'update',
   resolverFactory?: RelationResolverFactory,
+  relationAggregateFactory?: RelationAggregateFactory,
 ): GeneratedTableTypes<WithReturning> => {
   const { tableFields, relationFields, filters, order } = generateSelectFields(
     tables,
@@ -1102,6 +1208,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
     new Set(),
     resolverFactory,
     0,
+    relationAggregateFactory,
   );
 
   const table = tables[tableName]!;
@@ -1521,7 +1628,11 @@ const extractRelationsParamsInner = (
       continue;
     }
 
-    const columns = extractSelectedColumnsFromTree(relFieldSelection, tables[targetTableName]!);
+    const columns = extractSelectedColumnsFromTree(relFieldSelection, tables[targetTableName]!, {
+      tableName: targetTableName,
+      relationMap,
+      tables,
+    });
 
     const thisRecord: Partial<ProcessedTableSelectArgs> = {};
     thisRecord.columns = columns;
@@ -1723,7 +1834,11 @@ export const prepareMutationRelationColumns = (params: {
     ? extractRelationsParams(relationMap, tables, tableName, parsedInfo, typeName, typeNameMapper)
     : undefined;
   const hasRelations = !!(withParams && Object.keys(withParams).length);
-  const baseColumns = extractSelectedColumnsFromTreeSQLFormat(parsedInfo.fieldsByTypeName[typeName]!, table);
+  const baseColumns = extractSelectedColumnsFromTreeSQLFormat(parsedInfo.fieldsByTypeName[typeName]!, table, {
+    tableName,
+    relationMap,
+    tables,
+  });
   const columns = hasRelations ? withPrimaryKeyColumns(baseColumns, table, pkNames) : baseColumns;
   return { columns, hasRelations, withParams };
 };
@@ -1833,7 +1948,11 @@ export const runRelationalSelect = async (opts: {
     filterCtx,
   } = opts;
   const params: any = {
-    columns: extractSelectedColumnsFromTree(parsedInfo.fieldsByTypeName[typeName]!, table),
+    columns: extractSelectedColumnsFromTree(parsedInfo.fieldsByTypeName[typeName]!, table, {
+      tableName,
+      relationMap,
+      tables,
+    }),
     offset,
     // drizzle-orm v1 RQB calls orderBy/where with the aliased table proxy — use it
     // directly so column refs match the CTE alias.

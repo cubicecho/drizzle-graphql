@@ -26,10 +26,12 @@ import {
   getPrimaryKeyPropNamesFromConfig,
   prepareMutationRelationColumns,
   pruneNonEagerRelations,
+  type RelationAggregateFactory,
   type RelationFilterBase,
   type RelationResolverFactory,
   relationFilterCtx,
   runRelationalSelect,
+  type SelectionCtx,
   selectArrayArgs,
   selectSingleArgs,
   type TablesRelationalConfig,
@@ -43,7 +45,7 @@ import {
   remapToGraphQLArrayOutput,
   remapToGraphQLSingleOutput,
 } from '../data-mappers/index.ts';
-import { generateAggregate, generateAggregateTypes } from './aggregates.ts';
+import { createRelationAggregateFactory, generateAggregate, generateAggregateTypes } from './aggregates.ts';
 import type { CreatedResolver, Filters, TableNamedRelations, TableSelectArgs } from './types.ts';
 
 const generateSelectArray = (
@@ -95,6 +97,7 @@ const generateSelectArray = (
         const selectedColumnsSql = extractSelectedColumnsFromTreeSQLFormat<PgColumn>(
           parsedInfo.fieldsByTypeName[typeName]!,
           table,
+          { tableName, relationMap, tables },
         );
         let q = db.select(selectedColumnsSql).from(table);
         if (where) {
@@ -166,6 +169,7 @@ const generateSelectSingle = (
         const selectedColumnsSql = extractSelectedColumnsFromTreeSQLFormat<PgColumn>(
           parsedInfo.fieldsByTypeName[typeName]!,
           table,
+          { tableName, relationMap, tables },
         );
         let q = db.select(selectedColumnsSql).from(table);
         if (where) {
@@ -403,6 +407,7 @@ const generateDelete = (
   fieldName: string,
   typeName: string,
   filterCtx?: RelationFilterBase,
+  selectionCtx?: SelectionCtx,
 ): CreatedResolver => {
   const queryArgs = {
     where: {
@@ -423,6 +428,7 @@ const generateDelete = (
         const columns = extractSelectedColumnsFromTreeSQLFormat<PgColumn>(
           parsedInfo.fieldsByTypeName[typeName]!,
           table,
+          selectionCtx,
         );
 
         let query = db.delete(table);
@@ -498,7 +504,16 @@ export function generateSchemaData<
     orderTypeCache: new WeakMap(),
     filterTypeCache: new WeakMap(),
     listRelationFilterCache: new Map(),
+    aggregateTypeCache: new Map(),
   };
+
+  const relationAggregateFactory: RelationAggregateFactory = createRelationAggregateFactory(
+    db,
+    tables,
+    cacheCtx,
+    typeNameMapper,
+    filterCtx,
+  );
 
   const queries: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
   const mutations: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
@@ -517,6 +532,7 @@ export function generateSchemaData<
         prefixes.insert,
         prefixes.update,
         resolverFactory,
+        relationAggregateFactory,
       ),
     ]),
   );
@@ -609,8 +625,9 @@ export function generateSchemaData<
       deleteFieldName,
       typeName,
       filterCtx,
+      { tableName, relationMap: namedRelations, tables },
     );
-    const aggregateType = generateAggregateTypes(schema[tableName] as PgTable, tableName, typeName);
+    const aggregateType = generateAggregateTypes(schema[tableName] as PgTable, tableName, typeName, cacheCtx);
     const aggregateGenerated = generateAggregate(
       db,
       tableName,

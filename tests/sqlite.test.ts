@@ -2105,6 +2105,103 @@ describe.sequential('Aggregate query tests', () => {
   });
 });
 
+describe.sequential('Relation aggregate tests', () => {
+  it(`Counts related rows per parent`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				users(orderBy: { id: { direction: asc, priority: 1 } }) {
+					id
+					postsAggregate {
+						count
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        users: [
+          { id: 1, postsAggregate: { count: 4 } },
+          { id: 2, postsAggregate: { count: 0 } },
+          { id: 5, postsAggregate: { count: 2 } },
+        ],
+      },
+    });
+  });
+
+  it(`Full aggregate set per parent, filtered and unfiltered`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				usersSingle(where: { id: { eq: 1 } }) {
+					all: postsAggregate {
+						count
+						avg {
+							id
+						}
+						sum {
+							id
+						}
+						min {
+							content
+						}
+						max {
+							content
+						}
+					}
+					filtered: postsAggregate(where: { content: { eq: "1MESSAGE" } }) {
+						count
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        usersSingle: {
+          all: {
+            count: 4,
+            avg: { id: 3 },
+            sum: { id: 12 },
+            min: { content: '1MESSAGE' },
+            max: { content: '4MESSAGE' },
+          },
+          filtered: { count: 1 },
+        },
+      },
+    });
+  });
+
+  it(`Empty relations aggregate to count 0 and nulls`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				usersSingle(where: { id: { eq: 2 } }) {
+					postsAggregate {
+						count
+						avg {
+							id
+						}
+						min {
+							content
+						}
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        usersSingle: {
+          postsAggregate: {
+            count: 0,
+            avg: { id: null },
+            min: { content: null },
+          },
+        },
+      },
+    });
+  });
+});
+
 describe.sequential('Relation filter tests', () => {
   it(`Filter by a to-many relation`, async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `

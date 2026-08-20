@@ -175,6 +175,42 @@ single `SELECT`, and on an empty result set `count` is `0` while the other value
 
 Grouping (`groupBy`) is not supported yet.
 
+## Relation aggregates
+
+Every to-many relation also gets an `<relationName>Aggregate` field on the parent type, so you
+can count or summarise related rows without fetching them:
+
+```graphql
+{
+    users {
+        id
+        postsAggregate {
+            count
+        }
+        publishedPosts: postsAggregate(where: { published: { eq: true } }) {
+            count
+            max {
+                createdAt
+            }
+        }
+    }
+}
+```
+
+-   The field returns the target table's own `<Type>Aggregate` type — the same one the root
+    `<tableName>Aggregate` query returns, so `count` / `avg` / `sum` / `min` / `max` behave
+    identically
+-   `where` takes the target table's filter input, including [relation filters](#relation-filters),
+    and applies only to the related rows
+-   A parent with no related rows gets `count: 0` and `null` for every other aggregate
+-   To-one relations get no aggregate field — there is nothing to aggregate over
+-   The field is skipped if its name would collide with a column or another relation
+
+All parents in a selection are aggregated with a single
+`SELECT <fk>, … WHERE <fk> IN (…) GROUP BY <fk>` per request, so `postsAggregate` on a list of
+users is one extra query, not one per user. Differently-aliased selections with different
+`where` arguments are batched separately.
+
 ## Relations & N+1 handling
 
 Generated schemas resolve nested relations without N+1 query explosions:
