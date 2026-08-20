@@ -85,6 +85,45 @@ Automatically create GraphQL schema or customizable schema config fields from Dr
     })
     ```
 
+## Scalars
+
+Columns whose values don't fit a built-in GraphQL scalar get a named custom scalar, so the
+generated SDL says what a field actually holds instead of falling back to `String`:
+
+| Drizzle column                             | GraphQL type | Transported as                       |
+| ------------------------------------------ | ------------ | ------------------------------------ |
+| `json` / `jsonb` (and `mode: 'json'`)       | `JSON`       | the parsed value                     |
+| `bigint` (and `mode: 'bigint'`)             | `BigInt`     | a decimal string                     |
+| `uuid`                                      | `UUID`       | a validated UUID string              |
+| `timestamp` / `datetime`                    | `DateTime`   | an ISO-8601 string                   |
+| `date`                                      | `Date`       | a `YYYY-MM-DD` string                |
+
+```graphql
+mutation {
+    createDocumentSingle(values: { id: "11111111-1111-4111-8111-111111111111", payload: { tags: ["a"], views: 3 }, counter: "9007199254740993" }) {
+        payload
+        counter
+    }
+}
+```
+
+-   **`JSON`** carries the value itself — objects, arrays, numbers, strings, `true`/`false`.
+    Reads return the parsed value, not a stringified one, and writes take a literal or a
+    variable rather than a string of JSON
+-   **`BigInt`** is always a decimal string in both directions, so values past
+    `Number.MAX_SAFE_INTEGER` survive the round-trip. Integer literals are accepted on input;
+    floats and non-numeric strings are rejected
+-   **`UUID`** validates the format on the way in, including inside `where` filters
+
+The scalars are exported if you need them in a hand-written schema:
+
+```Typescript
+import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQLUUID } from 'drizzle-graphql'
+```
+
+`GraphQLBigIntString` is the `BigInt` scalar — named for what it does rather than what it is
+called in SDL, to avoid clashing with the language's own `BigInt`.
+
 ## Relation filters
 
 A table's `where` input also exposes its relations, so you can filter rows by what they're

@@ -244,7 +244,7 @@ describe.sequential('Query tests', async () => {
           id: 1,
           name: 'FirstUser',
           email: 'userOne@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -296,7 +296,7 @@ describe.sequential('Query tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -421,7 +421,7 @@ describe.sequential('Query tests', async () => {
           id: 1,
           name: 'FirstUser',
           email: 'userOne@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -462,7 +462,7 @@ describe.sequential('Query tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             // RQB can't handle blobs in JSON, for now
             // blobBigInt: '10',
             numeric: '250.2',
@@ -529,7 +529,7 @@ describe.sequential('Query tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -612,7 +612,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -632,7 +632,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -652,7 +652,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -712,7 +712,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -769,7 +769,7 @@ describe.sequential('Query tests', async () => {
           id: 1,
           name: 'FirstUser',
           email: 'userOne@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -829,7 +829,7 @@ describe.sequential('Query tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -962,7 +962,7 @@ describe.sequential('Query tests', async () => {
           id: 1,
           name: 'FirstUser',
           email: 'userOne@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -1003,7 +1003,7 @@ describe.sequential('Query tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             // RQB can't handle blobs in JSON, for now
             // blobBigInt: '10',
             numeric: '250.2',
@@ -1078,7 +1078,7 @@ describe.sequential('Query tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -1161,7 +1161,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -1181,7 +1181,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -1201,7 +1201,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -1261,7 +1261,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -1286,7 +1286,7 @@ describe.sequential('Query tests', async () => {
 						id: 3
 						name: "ThirdUser"
 						email: "userThree@notmail.com"
-						textJson: "{ \\"field\\": \\"value\\" }"
+						textJson: { field: "value" }
 						blobBigInt: "10"
 						numeric: "250.2"
 						createdAt: "2024-04-02T06:44:41.785Z"
@@ -1319,7 +1319,7 @@ describe.sequential('Query tests', async () => {
           id: 3,
           name: 'ThirdUser',
           email: 'userThree@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -1342,7 +1342,7 @@ describe.sequential('Query tests', async () => {
 							id: 3
 							name: "ThirdUser"
 							email: "userThree@notmail.com"
-							textJson: "{ \\"field\\": \\"value\\" }"
+							textJson: { field: "value" }
 							blobBigInt: "10"
 							numeric: "250.2"
 							createdAt: "2024-04-02T06:44:41.785Z"
@@ -1356,7 +1356,7 @@ describe.sequential('Query tests', async () => {
 							id: 4
 							name: "FourthUser"
 							email: "userFour@notmail.com"
-							textJson: "{ \\"field\\": \\"value\\" }"
+							textJson: { field: "value" }
 							blobBigInt: "10"
 							numeric: "250.2"
 							createdAt: "2024-04-02T06:44:41.785Z"
@@ -1391,7 +1391,7 @@ describe.sequential('Query tests', async () => {
             id: 3,
             name: 'ThirdUser',
             email: 'userThree@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -1405,7 +1405,7 @@ describe.sequential('Query tests', async () => {
             id: 4,
             name: 'FourthUser',
             email: 'userFour@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -3447,7 +3447,7 @@ describe.sequential('__typename only tests', () => {
 						id: 3
 						name: "ThirdUser"
 						email: "userThree@notmail.com"
-						textJson: "{ \\"field\\": \\"value\\" }"
+						textJson: { field: "value" }
 						blobBigInt: "10"
 						numeric: "250.2"
 						createdAt: "2024-04-02T06:44:41.785Z"
@@ -3481,7 +3481,7 @@ describe.sequential('__typename only tests', () => {
 							id: 3
 							name: "ThirdUser"
 							email: "userThree@notmail.com"
-							textJson: "{ \\"field\\": \\"value\\" }"
+							textJson: { field: "value" }
 							blobBigInt: "10"
 							numeric: "250.2"
 							createdAt: "2024-04-02T06:44:41.785Z"
@@ -3495,7 +3495,7 @@ describe.sequential('__typename only tests', () => {
 							id: 4
 							name: "FourthUser"
 							email: "userFour@notmail.com"
-							textJson: "{ \\"field\\": \\"value\\" }"
+							textJson: { field: "value" }
 							blobBigInt: "10"
 							numeric: "250.2"
 							createdAt: "2024-04-02T06:44:41.785Z"
@@ -3608,7 +3608,7 @@ describe.sequential('__typename with data tests', async () => {
           id: 1,
           name: 'FirstUser',
           email: 'userOne@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -3664,7 +3664,7 @@ describe.sequential('__typename with data tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -3802,7 +3802,7 @@ describe.sequential('__typename with data tests', async () => {
           id: 1,
           name: 'FirstUser',
           email: 'userOne@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -3849,7 +3849,7 @@ describe.sequential('__typename with data tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             // RQB can't handle blobs in JSON, for now
             // blobBigInt: '10',
             numeric: '250.2',
@@ -3921,7 +3921,7 @@ describe.sequential('__typename with data tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -4014,7 +4014,7 @@ describe.sequential('__typename with data tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -4036,7 +4036,7 @@ describe.sequential('__typename with data tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -4058,7 +4058,7 @@ describe.sequential('__typename with data tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -4124,7 +4124,7 @@ describe.sequential('__typename with data tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -4150,7 +4150,7 @@ describe.sequential('__typename with data tests', async () => {
 						id: 3
 						name: "ThirdUser"
 						email: "userThree@notmail.com"
-						textJson: "{ \\"field\\": \\"value\\" }"
+						textJson: { field: "value" }
 						blobBigInt: "10"
 						numeric: "250.2"
 						createdAt: "2024-04-02T06:44:41.785Z"
@@ -4184,7 +4184,7 @@ describe.sequential('__typename with data tests', async () => {
           id: 3,
           name: 'ThirdUser',
           email: 'userThree@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -4208,7 +4208,7 @@ describe.sequential('__typename with data tests', async () => {
 							id: 3
 							name: "ThirdUser"
 							email: "userThree@notmail.com"
-							textJson: "{ \\"field\\": \\"value\\" }"
+							textJson: { field: "value" }
 							blobBigInt: "10"
 							numeric: "250.2"
 							createdAt: "2024-04-02T06:44:41.785Z"
@@ -4222,7 +4222,7 @@ describe.sequential('__typename with data tests', async () => {
 							id: 4
 							name: "FourthUser"
 							email: "userFour@notmail.com"
-							textJson: "{ \\"field\\": \\"value\\" }"
+							textJson: { field: "value" }
 							blobBigInt: "10"
 							numeric: "250.2"
 							createdAt: "2024-04-02T06:44:41.785Z"
@@ -4258,7 +4258,7 @@ describe.sequential('__typename with data tests', async () => {
             id: 3,
             name: 'ThirdUser',
             email: 'userThree@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -4273,7 +4273,7 @@ describe.sequential('__typename with data tests', async () => {
             id: 4,
             name: 'FourthUser',
             email: 'userFour@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',

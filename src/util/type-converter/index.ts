@@ -1,7 +1,7 @@
 import type { Column } from 'drizzle-orm';
 import { extractExtendedColumnType, is } from 'drizzle-orm';
 import { MySqlInt, MySqlSerial } from 'drizzle-orm/mysql-core';
-import { PgDate, PgDateString, PgInteger, PgSerial, PgTimestamp, PgTimestampString } from 'drizzle-orm/pg-core';
+import { PgDate, PgDateString, PgInteger, PgSerial, PgTimestamp, PgTimestampString, PgUUID } from 'drizzle-orm/pg-core';
 import { SQLiteInteger } from 'drizzle-orm/sqlite-core';
 import {
   GraphQLBoolean,
@@ -15,8 +15,8 @@ import {
   type GraphQLScalarType,
   GraphQLString,
 } from 'graphql';
-import { GraphQLDate, GraphQLDateTime } from 'graphql-scalars';
 import { capitalize } from '../case-ops/index.ts';
+import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQLUUID } from '../scalars/index.ts';
 import type { ConvertedColumn } from './types.ts';
 
 const allowedNameChars = /^[a-zA-Z0-9_]+$/;
@@ -85,7 +85,7 @@ const columnToGraphQLCore = (
               type: new GraphQLList(new GraphQLNonNull(GraphQLInt)),
               description: 'Buffer',
             }
-          : { type: GraphQLString, description: 'JSON' };
+          : { type: GraphQLJSON, description: 'JSON' };
     case 'string':
       if (column.enumValues?.length) {
         return { type: generateEnumCached(column, columnName, tableName) };
@@ -93,6 +93,9 @@ const columnToGraphQLCore = (
 
       if (column instanceof PgTimestamp || column instanceof PgTimestampString) {
         return { type: GraphQLDateTime, description: 'DateTime' };
+      }
+      if (column instanceof PgUUID) {
+        return { type: GraphQLUUID, description: 'UUID' };
       }
       if (column instanceof PgDateString) {
         // For input, accept any string (drivers truncate ISO timestamps to date on write).
@@ -102,7 +105,7 @@ const columnToGraphQLCore = (
 
       return { type: GraphQLString, description: 'String' };
     case 'bigint':
-      return { type: GraphQLString, description: 'BigInt' };
+      return { type: GraphQLBigIntString, description: 'BigInt' };
     case 'number': {
       // integer().array() columns keep columnType=PgInteger but gain a `dimensions` property.
       // drizzle-orm's extractExtendedColumnType still returns 'number' for them, so we

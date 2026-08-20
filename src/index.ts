@@ -42,6 +42,13 @@ export {
   extractRelationJoinColumns,
 } from './util/builders/common.ts';
 export type { TableNamedRelations } from './util/builders/types.ts';
+export {
+  GraphQLBigIntString,
+  GraphQLDate,
+  GraphQLDateTime,
+  GraphQLJSON,
+  GraphQLUUID,
+} from './util/scalars/index.ts';
 
 type ObjMap<T> = Record<string, T>;
 
