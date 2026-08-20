@@ -221,6 +221,34 @@ All parents in a selection are aggregated with a single
 users is one extra query, not one per user. Differently-aliased selections with different
 `where` arguments are batched separately.
 
+## Distinct
+
+List queries take a `distinct` argument — a list of columns from the `<Type>DistinctColumn`
+enum. Rows sharing the same combination of those columns collapse to one:
+
+```graphql
+{
+    # the first post of each author
+    posts(distinct: [authorId], orderBy: { createdAt: { direction: asc, priority: 1 } }) {
+        id
+        authorId
+        createdAt
+    }
+}
+```
+
+-   Which row survives each group is decided by `orderBy` — the first one wins. With no
+    `orderBy`, that's the lowest primary key
+-   `where` is applied **before** rows are collapsed; `limit` and `offset` are applied
+    **after**, so `limit: 10` returns ten distinct rows
+-   Several columns are treated as one combined key, not as independent ones
+-   `distinct` is available on list queries only — a single query returns one row either way
+
+It runs as an extra `row_number() over (partition by …)` query that picks the surviving
+rows' primary keys, after which the main query is narrowed to them — so it needs the same
+window-function support as per-parent paginated relations (**PostgreSQL**, **MySQL 8.0+**,
+or **SQLite 3.25+**), and a table with no primary key cannot use it.
+
 ## Pagination ordering
 
 SQL gives no ordering guarantee for a query that has no `ORDER BY`, so paging through an

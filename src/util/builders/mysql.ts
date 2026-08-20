@@ -21,6 +21,7 @@ import {
   computeResolverFieldNames,
   createRelationResolverFactory,
   extractFilters,
+  generateDistinctEnum,
   generateTableTypes,
   getPrimaryKeyPropNamesFromConfig,
   pruneNonEagerRelations,
@@ -61,10 +62,9 @@ const generateSelectArray = (
     );
   }
 
-  const queryArgs = selectArrayArgs(orderArgs, filterArgs);
-
   const table = tables[tableName]!;
   const pkNames = mysqlPrimaryKeyPropNames(table as MySqlTable);
+  const queryArgs = selectArrayArgs(orderArgs, filterArgs, generateDistinctEnum(table, typeName));
 
   return {
     name: fieldName,
@@ -84,6 +84,7 @@ const generateSelectArray = (
           single: false,
           filterCtx,
           pkNames,
+          db,
         });
       } catch (e) {
         throw toGraphQLError(e);
@@ -137,6 +138,7 @@ const generateSelectSingle = (
           single: true,
           filterCtx,
           pkNames,
+          db,
         });
       } catch (e) {
         throw toGraphQLError(e);

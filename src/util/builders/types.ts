@@ -31,6 +31,7 @@ export type TableSelectArgs = {
   limit: number;
   where: Filters<Table>;
   orderBy: OrderByArgs<Table>;
+  distinct: string[];
 };
 
 export type ProcessedTableSelectArgs = {

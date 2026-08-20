@@ -1,4 +1,11 @@
-import { GraphQLInputObjectType, GraphQLNonNull, GraphQLObjectType, GraphQLScalarType, GraphQLSchema } from 'graphql';
+import {
+  GraphQLInputObjectType,
+  GraphQLList,
+  GraphQLNonNull,
+  GraphQLObjectType,
+  GraphQLScalarType,
+  GraphQLSchema,
+} from 'graphql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import z from 'zod';
 import { createMinimalCtx, type MinimalContext, setupMinimal, teardownMinimal } from './common';
@@ -48,6 +55,11 @@ describe.sequential('Returned data tests', () => {
                     where: z
                       .object({
                         type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
                       })
                       .strict(),
                   })
@@ -105,6 +117,11 @@ describe.sequential('Returned data tests', () => {
                         type: z.instanceof(GraphQLInputObjectType),
                       })
                       .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
+                      })
+                      .strict(),
                   })
                   .strict(),
                 resolve: z.function(),
@@ -160,6 +177,11 @@ describe.sequential('Returned data tests', () => {
                         type: z.instanceof(GraphQLInputObjectType),
                       })
                       .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
+                      })
+                      .strict(),
                   })
                   .strict(),
                 resolve: z.function(),
@@ -213,6 +235,11 @@ describe.sequential('Returned data tests', () => {
                     where: z
                       .object({
                         type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
                       })
                       .strict(),
                   })

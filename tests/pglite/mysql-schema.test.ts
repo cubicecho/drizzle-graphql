@@ -53,6 +53,18 @@ describe('MySQL generated queries', () => {
     const usersQuery = entities.queries['users'];
     expect(usersQuery.type).toBeInstanceOf(GraphQLNonNull);
   });
+
+  it('list queries take a distinct arg listing the table columns', () => {
+    const distinctArg = entities.queries['posts'].args['distinct'];
+    expect(distinctArg).toBeDefined();
+    expect(distinctArg.type.ofType.ofType.name).toBe('PostsDistinctColumn');
+    expect(distinctArg.type.ofType.ofType.getValues().map((value: { name: string }) => value.name)).toEqual([
+      'id',
+      'content',
+      'authorId',
+    ]);
+    expect(entities.queries['postsSingle'].args['distinct']).toBeUndefined();
+  });
 });
 
 // ── mutation structure — returnless (MySQL-specific) ─────────────────────────

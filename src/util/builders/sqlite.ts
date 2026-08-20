@@ -22,6 +22,7 @@ import {
   eagerLoadMutationRelations,
   extractFilters,
   extractSelectedColumnsFromTreeSQLFormat,
+  generateDistinctEnum,
   generateTableTypes,
   getPrimaryKeyPropNamesFromConfig,
   prepareMutationRelationColumns,
@@ -69,10 +70,9 @@ const generateSelectArray = (
     );
   }
 
-  const queryArgs = selectArrayArgs(orderArgs, filterArgs);
-
   const table = tables[tableName]!;
   const pkNames = sqlitePrimaryKeyPropNames(table as SQLiteTable);
+  const queryArgs = selectArrayArgs(orderArgs, filterArgs, generateDistinctEnum(table, typeName));
 
   return {
     name: fieldName,
@@ -92,6 +92,7 @@ const generateSelectArray = (
           single: false,
           filterCtx,
           pkNames,
+          db,
         });
       } catch (e) {
         throw toGraphQLError(e);
@@ -145,6 +146,7 @@ const generateSelectSingle = (
           single: true,
           filterCtx,
           pkNames,
+          db,
         });
       } catch (e) {
         throw toGraphQLError(e);

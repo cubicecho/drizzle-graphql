@@ -22,10 +22,12 @@ import {
   extractFilters,
   extractOrderBy,
   extractSelectedColumnsFromTreeSQLFormat,
+  generateDistinctEnum,
   generateTableTypes,
   getPrimaryKeyPropNamesFromConfig,
   prepareMutationRelationColumns,
   primaryKeyOrderExprs,
+  primaryKeyRestriction,
   pruneNonEagerRelations,
   type RelationAggregateFactory,
   type RelationFilterBase,
@@ -34,6 +36,7 @@ import {
   runRelationalSelect,
   type SelectionCtx,
   selectArrayArgs,
+  selectDistinctKeys,
   selectSingleArgs,
   type TablesRelationalConfig,
   type TypeCacheCtx,
@@ -66,10 +69,9 @@ const generateSelectArray = (
     | undefined;
   // Tables without relations won't have db.query support — fall back to basic select.
 
-  const queryArgs = selectArrayArgs(orderArgs, filterArgs);
-
   const table = tables[tableName]!;
   const pkNames = pgPrimaryKeyPropNames(table as PgTable);
+  const queryArgs = selectArrayArgs(orderArgs, filterArgs, generateDistinctEnum(table, typeName));
 
   return {
     name: fieldName,
@@ -91,32 +93,64 @@ const generateSelectArray = (
             single: false,
             filterCtx,
             pkNames,
+            db,
           });
         }
 
         // Fallback for tables without relational query builder support.
         // Use SQL column objects (not Record<string,true>) so db.select() receives valid expressions.
-        const { offset, limit, orderBy, where } = args;
+        const { offset, limit, orderBy, where, distinct } = args;
         const selectedColumnsSql = extractSelectedColumnsFromTreeSQLFormat<PgColumn>(
           parsedInfo.fieldsByTypeName[typeName]!,
           table,
           { tableName, relationMap, tables },
         );
+        const whereSql = where
+          ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))
+          : undefined;
+
+        // `distinct` picks the surviving rows in its own pass; the main query is then narrowed
+        // to those primary keys and re-orders them the same way. See runRelationalSelect.
+        let distinctKeys: Record<string, any>[] | undefined;
+        if (distinct?.length) {
+          distinctKeys = await selectDistinctKeys({
+            db,
+            table,
+            tableName,
+            distinct,
+            pkNames,
+            where: whereSql,
+            orderBy,
+            limit,
+            offset,
+          });
+          if (!distinctKeys.length) {
+            return [];
+          }
+        }
+
         let q = db.select(selectedColumnsSql).from(table);
-        if (where) {
-          q = q.where(extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))) as any;
+        if (distinctKeys) {
+          q = q.where(primaryKeyRestriction(table, pkNames, distinctKeys)) as any;
+        } else if (whereSql) {
+          q = q.where(whereSql) as any;
         }
         if (orderBy) {
-          q = q.orderBy(...extractOrderBy(table, orderBy)) as any;
-        } else if ((offset != null || limit != null) && pkNames.length) {
+          q = q.orderBy(
+            ...extractOrderBy(table, orderBy),
+            ...(distinctKeys ? primaryKeyOrderExprs(table, pkNames) : []),
+          ) as any;
+        } else if ((distinctKeys || offset != null || limit != null) && pkNames.length) {
           // See runRelationalSelect: an unordered slice is not stable between requests.
           q = q.orderBy(...primaryKeyOrderExprs(table, pkNames)) as any;
         }
-        if (offset) {
-          q = q.offset(offset) as any;
-        }
-        if (limit) {
-          q = q.limit(limit) as any;
+        if (!distinctKeys) {
+          if (offset) {
+            q = q.offset(offset) as any;
+          }
+          if (limit) {
+            q = q.limit(limit) as any;
+          }
         }
         return remapToGraphQLArrayOutput(await q, tableName, table, relationMap);
       } catch (e) {
@@ -169,6 +203,7 @@ const generateSelectSingle = (
             single: true,
             filterCtx,
             pkNames,
+            db,
           });
         }
 

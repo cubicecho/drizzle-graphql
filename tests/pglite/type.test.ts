@@ -1,5 +1,6 @@
 import type { Relations } from 'drizzle-orm';
 import type {
+  GraphQLEnumType,
   GraphQLInputObjectType,
   GraphQLList,
   GraphQLNonNull,
@@ -50,6 +51,7 @@ describe.sequential('Type tests', () => {
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
             where: { type: GraphQLInputObjectType };
+            distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
           resolve: SelectResolver<
             typeof schema.Customers,
@@ -64,6 +66,7 @@ describe.sequential('Type tests', () => {
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
             where: { type: GraphQLInputObjectType };
+            distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
           resolve: SelectResolver<
             typeof schema.Posts,
@@ -78,6 +81,7 @@ describe.sequential('Type tests', () => {
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
             where: { type: GraphQLInputObjectType };
+            distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
           resolve: SelectResolver<typeof schema.Tags, ExtractTables<typeof schema>, never>;
         };
@@ -88,6 +92,7 @@ describe.sequential('Type tests', () => {
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
             where: { type: GraphQLInputObjectType };
+            distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
           resolve: SelectResolver<
             typeof schema.Users,

@@ -5,8 +5,9 @@ import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/libsql';
 import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
 import {
+  type GraphQLEnumType,
   GraphQLInputObjectType,
-  type GraphQLList,
+  GraphQLList,
   GraphQLNonNull,
   GraphQLObjectType,
   GraphQLScalarType,
@@ -2265,6 +2266,66 @@ describe.sequential('Default pagination order tests', () => {
   });
 });
 
+describe.sequential('Distinct tests', () => {
+  it(`Keeps the first row of each distinct value`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(distinct: [content]) {
+					id
+					content
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        posts: [
+          { id: 1, content: '1MESSAGE' },
+          { id: 2, content: '2MESSAGE' },
+          { id: 3, content: '3MESSAGE' },
+          { id: 6, content: '4MESSAGE' },
+        ],
+      },
+    });
+  });
+
+  it(`Picks the first row according to the requested order`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(distinct: [content], orderBy: { id: { direction: desc, priority: 1 } }) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({ data: { posts: [{ id: 6 }, { id: 5 }, { id: 4 }, { id: 3 }] } });
+  });
+
+  it(`Applies limit and offset after the rows are made distinct`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(distinct: [content], limit: 2, offset: 1) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({ data: { posts: [{ id: 2 }, { id: 3 }] } });
+  });
+
+  it(`Filters before making rows distinct`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(where: { authorId: { eq: 5 } }, distinct: [content]) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({ data: { posts: [{ id: 4 }, { id: 5 }] } });
+  });
+});
+
 describe.sequential('Relation filter tests', () => {
   it(`Filter by a to-many relation`, async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
@@ -2440,6 +2501,11 @@ describe.sequential('Returned data tests', () => {
                         type: z.instanceof(GraphQLInputObjectType),
                       })
                       .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
+                      })
+                      .strict(),
                   })
                   .strict(),
                 resolve: z.function(),
@@ -2495,6 +2561,11 @@ describe.sequential('Returned data tests', () => {
                         type: z.instanceof(GraphQLInputObjectType),
                       })
                       .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
+                      })
+                      .strict(),
                   })
                   .strict(),
                 resolve: z.function(),
@@ -2548,6 +2619,11 @@ describe.sequential('Returned data tests', () => {
                     where: z
                       .object({
                         type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
                       })
                       .strict(),
                   })
@@ -2882,6 +2958,7 @@ describe.sequential('Type tests', () => {
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
             where: { type: GraphQLInputObjectType };
+            distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
           resolve: SelectResolver<
             typeof schema.Customers,
@@ -2896,6 +2973,7 @@ describe.sequential('Type tests', () => {
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
             where: { type: GraphQLInputObjectType };
+            distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
           resolve: SelectResolver<
             typeof schema.Posts,
@@ -2910,6 +2988,7 @@ describe.sequential('Type tests', () => {
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
             where: { type: GraphQLInputObjectType };
+            distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
           resolve: SelectResolver<
             typeof schema.Users,

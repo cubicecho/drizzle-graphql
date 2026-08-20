@@ -14,6 +14,7 @@ import type { RelationalQueryBuilder as PgQuery } from 'drizzle-orm/pg-core/quer
 import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
 import type { RelationalQueryBuilder as SQLiteQuery } from 'drizzle-orm/sqlite-core/query-builders/query';
 import type {
+  GraphQLEnumType,
   GraphQLInputObjectType,
   GraphQLList,
   GraphQLNonNull,
@@ -232,6 +233,9 @@ export type QueriesCore<
             type: TInputs[`${Capitalize<TName>}Filters`] extends GraphQLInputObjectType
               ? TInputs[`${Capitalize<TName>}Filters`]
               : never;
+          };
+          distinct: {
+            type: GraphQLList<GraphQLNonNull<GraphQLEnumType>>;
           };
         };
         resolve: SelectResolver<

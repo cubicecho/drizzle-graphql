@@ -1293,25 +1293,24 @@ export const generateTableTypes = <WithReturning extends boolean>(
   };
 };
 
+/**
+ * Column name / direction pairs from an `orderBy` argument, highest priority first. Split out
+ * of `extractOrderBy` so the same ordering can be rebuilt against a subquery's fields, where
+ * there is no `Table` to read columns from.
+ */
+export const orderByEntries = (orderArgs: Record<string, any>): [string, 'asc' | 'desc'][] =>
+  Object.entries(orderArgs)
+    .sort((a, b) => (b[1]?.priority ?? 0) - (a[1]?.priority ?? 0))
+    .filter(([, config]) => config)
+    .map(([column, config]) => [column, config.direction]);
+
 export const extractOrderBy = <TTable extends Table, TArgs extends OrderByArgs<any> = OrderByArgs<TTable>>(
   table: TTable,
   orderArgs: TArgs,
-): SQL[] => {
-  const res = [] as SQL[];
-
-  for (const [column, config] of Object.entries(orderArgs).sort(
-    (a, b) => (b[1]?.priority ?? 0) - (a[1]?.priority ?? 0),
-  )) {
-    if (!config) {
-      continue;
-    }
-    const { direction } = config;
-
-    res.push(direction === 'asc' ? asc(getColumns(table)[column]!) : desc(getColumns(table)[column]!));
-  }
-
-  return res;
-};
+): SQL[] =>
+  orderByEntries(orderArgs).map(([column, direction]) =>
+    direction === 'asc' ? asc(getColumns(table)[column]!) : desc(getColumns(table)[column]!),
+  );
 
 export const extractFiltersColumn = <TColumn extends Column>(
   column: TColumn,
@@ -1809,6 +1808,128 @@ export const primaryKeyOrderExprs = (table: Table, pkNames: readonly string[]): 
     .map((col) => asc(col!));
 };
 
+/** Alias of the row-number helper column in the `distinct` pass. Namespaced against real columns. */
+const DISTINCT_RN = '__drizzle_graphql_distinct_rn';
+
+const distinctEnumCache = new WeakMap<object, GraphQLEnumType>();
+
+/**
+ * `${typeName}DistinctColumn` — the enum of columns a list query may be made distinct on.
+ * Cached per table object, like the order/filter inputs, so repeated builds reuse one instance.
+ */
+export const generateDistinctEnum = (table: Table, typeName: string): GraphQLEnumType | undefined => {
+  const cached = distinctEnumCache.get(table);
+  if (cached) {
+    return cached;
+  }
+
+  const columnNames = Object.keys(getColumns(table));
+  if (!columnNames.length) {
+    return undefined;
+  }
+
+  const enumType = new GraphQLEnumType({
+    name: `${typeName}DistinctColumn`,
+    description: `Columns of ${typeName} that a query can be made distinct on`,
+    values: Object.fromEntries(columnNames.map((columnName) => [columnName, { value: columnName }])),
+  });
+
+  distinctEnumCache.set(table, enumType);
+  return enumType;
+};
+
+/**
+ * Keeps the first row of each distinct combination of the requested columns, following the
+ * query's own ordering, then applies `limit`/`offset` to what survives — and returns the
+ * surviving rows' primary key values in that order.
+ *
+ * The relational query builder has no `distinct` support, so this runs as its own
+ * `row_number() over (partition by … order by …)` pass and the main query is narrowed to the
+ * keys it returns. `orderExprs` is the full ordering (the request's `orderBy` plus the primary
+ * key tiebreak); the caller applies the same ordering to the main query, so the two agree.
+ */
+export const selectDistinctKeys = async (params: {
+  db: any;
+  table: Table;
+  tableName: string;
+  distinct: string[];
+  pkNames: readonly string[];
+  where: SQL | undefined;
+  orderBy: Record<string, any> | undefined;
+  limit?: number;
+  offset?: number;
+}): Promise<Record<string, any>[]> => {
+  const { db, table, tableName, distinct, pkNames, where, orderBy, limit, offset } = params;
+  const cols = getColumns(table);
+
+  if (!pkNames.length) {
+    throw new GraphQLError(`Table ${tableName} has no primary key, so 'distinct' cannot be applied to it.`);
+  }
+
+  const partitionCols = distinct.map((name) => cols[name]).filter(Boolean);
+  if (!partitionCols.length) {
+    throw new GraphQLError(`No known columns were given to 'distinct' on ${tableName}.`);
+  }
+
+  const orderEntries = orderBy ? orderByEntries(orderBy) : [];
+  // Both orderings must agree, so build each from the same entries — once against the table
+  // (inside the window) and once against the subquery's fields (for the outer row order).
+  const windowOrder = [
+    ...orderEntries.map(([column, direction]) => (direction === 'asc' ? asc(cols[column]!) : desc(cols[column]!))),
+    ...primaryKeyOrderExprs(table, pkNames),
+  ];
+
+  const rowNumber = sql`row_number() over (partition by ${sql.join(partitionCols, sql`, `)} order by ${sql.join(
+    windowOrder,
+    sql`, `,
+  )})`.as(DISTINCT_RN);
+
+  const sub = db
+    .select({ ...cols, [DISTINCT_RN]: rowNumber })
+    .from(table)
+    .where(where)
+    .as('__dgql_distinct');
+
+  const outerOrder = [
+    ...orderEntries.map(([column, direction]) => (direction === 'asc' ? asc(sub[column]) : desc(sub[column]))),
+    ...pkNames.filter((name) => sub[name]).map((name) => asc(sub[name])),
+  ];
+
+  let query = db
+    .select(Object.fromEntries(pkNames.map((name) => [name, sub[name]])))
+    .from(sub)
+    .where(eq(sub[DISTINCT_RN], 1))
+    .orderBy(...outerOrder);
+
+  if (offset) {
+    query = query.offset(offset);
+  }
+  if (limit != null) {
+    query = query.limit(limit);
+  }
+
+  return await query;
+};
+
+/**
+ * Condition matching exactly the rows identified by `keys` — an `IN (…)` for a single-column
+ * primary key, an `OR` of per-row equality for a composite one. `table` may be the aliased
+ * RQB proxy.
+ */
+export const primaryKeyRestriction = (table: Table, pkNames: readonly string[], keys: Record<string, any>[]): SQL => {
+  const cols = getColumns(table);
+
+  if (pkNames.length === 1) {
+    const name = pkNames[0]!;
+    return inArray(
+      cols[name]!,
+      keys.map((key) => key[name]),
+    );
+  }
+
+  return or(...keys.map((key) => and(...pkNames.map((name) => eq(cols[name]!, key[name])))))!;
+};
+
 /**
  * Computes the RETURNING columns and relation selection for a mutation resolver: extracts
  * the selected scalar columns, determines whether any relations were selected, and only
@@ -1892,11 +2013,13 @@ export const computeResolverFieldNames = (
 export const selectArrayArgs = (
   orderArgs: GraphQLInputObjectType,
   filterArgs: GraphQLInputObjectType,
+  distinctEnum?: GraphQLEnumType,
 ): Record<string, { type: any }> => ({
   offset: { type: GraphQLInt },
   limit: { type: GraphQLInt },
   orderBy: { type: orderArgs },
   where: { type: filterArgs },
+  ...(distinctEnum ? { distinct: { type: new GraphQLList(new GraphQLNonNull(distinctEnum)) } } : {}),
 });
 
 /** GraphQL argument map for a single-row select field (no `limit`). */
@@ -1932,6 +2055,8 @@ export const runRelationalSelect = async (opts: {
   single: boolean;
   filterCtx?: RelationFilterBase;
   pkNames?: readonly string[];
+  db?: any;
+  distinct?: string[];
 }): Promise<any> => {
   const {
     queryBase,
@@ -1949,31 +2074,62 @@ export const runRelationalSelect = async (opts: {
     filterCtx,
     pkNames,
   } = opts;
+  const distinct = opts.distinct?.length ? opts.distinct : undefined;
   // Taking a slice of an unordered result lets the database return any rows it likes, so
   // `limit`/`offset` pages can overlap or skip rows between requests, and a single query
   // can return a different row each time. Default to the primary key whenever the query is
   // narrowed to a subset, mirroring the relation-level default in extractRelationsParamsInner.
   const needsDefaultOrder = single || offset != null || opts.limit != null;
+
+  // `distinct` runs as its own pass — the relational query builder cannot express it — and
+  // the main query is then narrowed to the primary keys it picked, with the same ordering
+  // and without re-applying limit/offset.
+  let distinctKeys: Record<string, any>[] | undefined;
+  if (distinct) {
+    distinctKeys = await selectDistinctKeys({
+      db: opts.db,
+      table,
+      tableName,
+      distinct,
+      pkNames: pkNames ?? [],
+      where: where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
+      orderBy,
+      limit: single ? 1 : opts.limit,
+      offset,
+    });
+
+    if (!distinctKeys.length) {
+      return single ? undefined : [];
+    }
+  }
+
   const params: any = {
     columns: extractSelectedColumnsFromTree(parsedInfo.fieldsByTypeName[typeName]!, table, {
       tableName,
       relationMap,
       tables,
     }),
-    offset,
+    offset: distinctKeys ? undefined : offset,
     // drizzle-orm v1 RQB calls orderBy/where with the aliased table proxy — use it
     // directly so column refs match the CTE alias.
-    orderBy: orderBy
-      ? (aliasedTable: Table) => extractOrderBy(aliasedTable, orderBy)
-      : needsDefaultOrder && pkNames?.length
-        ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
+    orderBy: distinctKeys
+      ? (aliasedTable: Table) => [
+          ...(orderBy ? extractOrderBy(aliasedTable, orderBy) : []),
+          ...primaryKeyOrderExprs(aliasedTable, pkNames!),
+        ]
+      : orderBy
+        ? (aliasedTable: Table) => extractOrderBy(aliasedTable, orderBy)
+        : needsDefaultOrder && pkNames?.length
+          ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
+          : undefined,
+    where: distinctKeys
+      ? { RAW: (aliasedTable: Table) => primaryKeyRestriction(aliasedTable, pkNames!, distinctKeys!) }
+      : where
+        ? {
+            RAW: (aliasedTable: Table) =>
+              extractFilters(aliasedTable, tableName, where, relationFilterCtx(filterCtx, tableName)),
+          }
         : undefined,
-    where: where
-      ? {
-          RAW: (aliasedTable: Table) =>
-            extractFilters(aliasedTable, tableName, where, relationFilterCtx(filterCtx, tableName)),
-        }
-      : undefined,
     with: relationMap[tableName]
       ? extractRelationsParams(relationMap, tables, tableName, parsedInfo, typeName, typeNameMapper, filterCtx)
       : undefined,
@@ -1984,7 +2140,7 @@ export const runRelationalSelect = async (opts: {
     return result ? remapToGraphQLSingleOutput(result, tableName, table, relationMap) : undefined;
   }
 
-  params.limit = opts.limit;
+  params.limit = distinctKeys ? undefined : opts.limit;
   const result = await queryBase.findMany(params);
   return remapToGraphQLArrayOutput(result, tableName, table, relationMap);
 };
