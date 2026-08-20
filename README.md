@@ -85,6 +85,55 @@ Automatically create GraphQL schema or customizable schema config fields from Dr
     })
     ```
 
+## Relation filters
+
+A table's `where` input also exposes its relations, so you can filter rows by what they're
+related to instead of pulling everything and filtering client-side.
+
+A **to-one** relation takes the target table's filter input directly:
+
+```graphql
+{
+    posts(where: { author: { name: { eq: "FifthUser" } } }) {
+        id
+    }
+}
+```
+
+A **to-many** relation takes a `some` / `none` / `every` wrapper
+(`<Target>ListRelationFilter`):
+
+```graphql
+{
+    # users who wrote at least one post containing "drizzle"
+    users(where: { posts: { some: { content: { like: "%drizzle%" } } } }) {
+        id
+    }
+
+    # users with no posts at all
+    users(where: { posts: { none: {} } }) {
+        id
+    }
+
+    # users all of whose posts are published (users with no posts match vacuously)
+    users(where: { posts: { every: { isPublished: { eq: true } } } }) {
+        id
+    }
+}
+```
+
+-   Relation filters compile to correlated `EXISTS` subqueries — the related rows are never
+    fetched, and no join duplicates the parent rows
+-   They nest arbitrarily (`users(where: { posts: { some: { author: { … } } } })`) and combine
+    freely with column filters (implicit `AND`) and with `OR`
+-   They're accepted anywhere a filter is — list and single queries, aggregate queries,
+    `update`/`delete` mutations, and the `where` argument on a relation field
+-   `some: {}` means "at least one related row exists"; `none: {}` means "none exist"
+-   Several modes may be given at once and are `AND`ed together
+-   A relation whose name collides with a column name is skipped — the column keeps the field
+-   Many-to-many relations declared with `.through()` are not filterable yet and are left out
+    of the filter input
+
 ## Aggregate queries
 
 Every table also gets an aggregate query field — `<tableName>Aggregate` (e.g. `usersAggregate`),

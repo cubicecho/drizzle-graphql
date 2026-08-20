@@ -14,7 +14,7 @@ import { capitalize } from '../case-ops/index.ts';
 import { remapToGraphQLCore } from '../data-mappers/index.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type { ConvertedColumn } from '../type-converter/types.ts';
-import { extractFilters, toGraphQLError } from './common.ts';
+import { extractFilters, type RelationFilterBase, relationFilterCtx, toGraphQLError } from './common.ts';
 import type { CreatedResolver, Filters } from './types.ts';
 
 /** Operations that aggregate over a set of column values. `count` is handled separately (whole rows). */
@@ -149,6 +149,7 @@ export const generateAggregate = (
   typeName: string,
   fieldName: string,
   filterArgs: GraphQLInputObjectType,
+  filterCtx?: RelationFilterBase,
 ): CreatedResolver => {
   const aggregateTypeName = `${typeName}Aggregate`;
   const columns = getColumns(table);
@@ -215,7 +216,7 @@ export const generateAggregate = (
 
         let query = db.select(selection).from(table);
         if (args.where) {
-          query = query.where(extractFilters(table, tableName, args.where));
+          query = query.where(extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName)));
         }
         const rows = await query;
         const row = rows[0] ?? {};

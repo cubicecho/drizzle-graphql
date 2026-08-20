@@ -26,7 +26,9 @@ import {
   getPrimaryKeyPropNamesFromConfig,
   prepareMutationRelationColumns,
   pruneNonEagerRelations,
+  type RelationFilterBase,
   type RelationResolverFactory,
+  relationFilterCtx,
   runRelationalSelect,
   selectArrayArgs,
   selectSingleArgs,
@@ -54,6 +56,7 @@ const generateSelectArray = (
   fieldName: string,
   typeName: string,
   typeNameMapper?: TypeNameMapper,
+  filterCtx?: RelationFilterBase,
 ): CreatedResolver => {
   const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
     | RelationalQueryBuilder<any, any, any>
@@ -82,6 +85,7 @@ const generateSelectArray = (
             parsedInfo,
             ...args,
             single: false,
+            filterCtx,
           });
         }
 
@@ -94,7 +98,7 @@ const generateSelectArray = (
         );
         let q = db.select(selectedColumnsSql).from(table);
         if (where) {
-          q = q.where(extractFilters(table, tableName, where)) as any;
+          q = q.where(extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))) as any;
         }
         if (orderBy) {
           q = q.orderBy(...extractOrderBy(table, orderBy)) as any;
@@ -124,6 +128,7 @@ const generateSelectSingle = (
   fieldName: string,
   typeName: string,
   typeNameMapper?: TypeNameMapper,
+  filterCtx?: RelationFilterBase,
 ): CreatedResolver => {
   const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
     | RelationalQueryBuilder<any, any, any>
@@ -152,6 +157,7 @@ const generateSelectSingle = (
             parsedInfo,
             ...args,
             single: true,
+            filterCtx,
           });
         }
 
@@ -163,7 +169,7 @@ const generateSelectSingle = (
         );
         let q = db.select(selectedColumnsSql).from(table);
         if (where) {
-          q = q.where(extractFilters(table, tableName, where)) as any;
+          q = q.where(extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))) as any;
         }
         if (orderBy) {
           q = q.orderBy(...extractOrderBy(table, orderBy)) as any;
@@ -326,6 +332,7 @@ const generateUpdate = (
   fieldName: string,
   typeName: string,
   typeNameMapper?: TypeNameMapper,
+  filterCtx?: RelationFilterBase,
 ): CreatedResolver => {
   const queryArgs = {
     set: {
@@ -367,7 +374,7 @@ const generateUpdate = (
 
         let query = db.update(table).set(input);
         if (where) {
-          const filters = extractFilters(table, tableName, where);
+          const filters = extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName));
           query = query.where(filters) as any;
         }
 
@@ -395,6 +402,7 @@ const generateDelete = (
   filterArgs: GraphQLInputObjectType,
   fieldName: string,
   typeName: string,
+  filterCtx?: RelationFilterBase,
 ): CreatedResolver => {
   const queryArgs = {
     where: {
@@ -419,7 +427,7 @@ const generateDelete = (
 
         let query = db.delete(table);
         if (where) {
-          const filters = extractFilters(table, tableName, where);
+          const filters = extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName));
           query = query.where(filters) as any;
         }
 
@@ -475,7 +483,9 @@ export function generateSchemaData<
   // fields still exist and resolve lazily.
   const eagerRelations = pruneNonEagerRelations(namedRelations, shouldEagerLoad);
 
-  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(db, tables);
+  const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations };
+
+  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(db, tables, filterCtx);
 
   // Fresh cache per generateSchemaData call — prevents type name collisions
   // when buildSchema() is called multiple times.
@@ -487,6 +497,7 @@ export function generateSchemaData<
     relationTypeCache: new Map(),
     orderTypeCache: new WeakMap(),
     filterTypeCache: new WeakMap(),
+    listRelationFilterCache: new Map(),
   };
 
   const queries: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
@@ -539,6 +550,7 @@ export function generateSchemaData<
       listFieldName,
       typeName,
       typeNameMapper,
+      filterCtx,
     );
     const selectSingleGenerated = generateSelectSingle(
       db,
@@ -550,6 +562,7 @@ export function generateSchemaData<
       singleFieldName,
       typeName,
       typeNameMapper,
+      filterCtx,
     );
     const insertArrGenerated = generateInsertArray(
       db,
@@ -586,6 +599,7 @@ export function generateSchemaData<
       updateFieldName,
       typeName,
       typeNameMapper,
+      filterCtx,
     );
     const deleteGenerated = generateDelete(
       db,
@@ -594,6 +608,7 @@ export function generateSchemaData<
       tableFilters,
       deleteFieldName,
       typeName,
+      filterCtx,
     );
     const aggregateType = generateAggregateTypes(schema[tableName] as PgTable, tableName, typeName);
     const aggregateGenerated = generateAggregate(
@@ -603,6 +618,7 @@ export function generateSchemaData<
       typeName,
       aggregateFieldName,
       tableFilters,
+      filterCtx,
     );
 
     queries[selectArrGenerated.name] = {

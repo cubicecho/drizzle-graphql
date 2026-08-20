@@ -26,7 +26,9 @@ import {
   getPrimaryKeyPropNamesFromConfig,
   prepareMutationRelationColumns,
   pruneNonEagerRelations,
+  type RelationFilterBase,
   type RelationResolverFactory,
+  relationFilterCtx,
   runRelationalSelect,
   selectArrayArgs,
   selectSingleArgs,
@@ -54,6 +56,7 @@ const generateSelectArray = (
   fieldName: string,
   typeName: string,
   typeNameMapper?: TypeNameMapper,
+  filterCtx?: RelationFilterBase,
 ): CreatedResolver => {
   const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
     | RelationalQueryBuilder<any, any, any>
@@ -84,6 +87,7 @@ const generateSelectArray = (
           parsedInfo,
           ...args,
           single: false,
+          filterCtx,
         });
       } catch (e) {
         throw toGraphQLError(e);
@@ -103,6 +107,7 @@ const generateSelectSingle = (
   fieldName: string,
   typeName: string,
   typeNameMapper?: TypeNameMapper,
+  filterCtx?: RelationFilterBase,
 ): CreatedResolver => {
   const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
     | RelationalQueryBuilder<any, any, any>
@@ -133,6 +138,7 @@ const generateSelectSingle = (
           parsedInfo,
           ...args,
           single: true,
+          filterCtx,
         });
       } catch (e) {
         throw toGraphQLError(e);
@@ -276,6 +282,7 @@ const generateUpdate = (
   fieldName: string,
   typeName: string,
   typeNameMapper?: TypeNameMapper,
+  filterCtx?: RelationFilterBase,
 ): CreatedResolver => {
   const queryArgs = {
     set: {
@@ -317,7 +324,7 @@ const generateUpdate = (
 
         let query = db.update(table).set(input);
         if (where) {
-          const filters = extractFilters(table, tableName, where);
+          const filters = extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName));
           query = query.where(filters) as any;
         }
 
@@ -345,6 +352,7 @@ const generateDelete = (
   filterArgs: GraphQLInputObjectType,
   fieldName: string,
   typeName: string,
+  filterCtx?: RelationFilterBase,
 ): CreatedResolver => {
   const queryArgs = {
     where: {
@@ -369,7 +377,7 @@ const generateDelete = (
 
         let query = db.delete(table);
         if (where) {
-          const filters = extractFilters(table, tableName, where);
+          const filters = extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName));
           query = query.where(filters) as any;
         }
 
@@ -419,7 +427,9 @@ export const generateSchemaData = <
   // Pruned map for query/mutation resolvers' `with:`; type generation keeps the full map.
   const eagerRelations = pruneNonEagerRelations(namedRelations, shouldEagerLoad);
 
-  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(db, tables);
+  const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations };
+
+  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(db, tables, filterCtx);
 
   // Fresh cache per generateSchemaData call — prevents type name collisions
   // when buildSchema() is called multiple times.
@@ -431,6 +441,7 @@ export const generateSchemaData = <
     relationTypeCache: new Map(),
     orderTypeCache: new WeakMap(),
     filterTypeCache: new WeakMap(),
+    listRelationFilterCache: new Map(),
   };
 
   const queries: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
@@ -482,6 +493,7 @@ export const generateSchemaData = <
       listFieldName,
       typeName,
       typeNameMapper,
+      filterCtx,
     );
     const selectSingleGenerated = generateSelectSingle(
       db,
@@ -493,6 +505,7 @@ export const generateSchemaData = <
       singleFieldName,
       typeName,
       typeNameMapper,
+      filterCtx,
     );
     const insertArrGenerated = generateInsertArray(
       db,
@@ -527,6 +540,7 @@ export const generateSchemaData = <
       updateFieldName,
       typeName,
       typeNameMapper,
+      filterCtx,
     );
     const deleteGenerated = generateDelete(
       db,
@@ -535,6 +549,7 @@ export const generateSchemaData = <
       tableFilters,
       deleteFieldName,
       typeName,
+      filterCtx,
     );
     const aggregateType = generateAggregateTypes(schema[tableName] as SQLiteTable, tableName, typeName);
     const aggregateGenerated = generateAggregate(
@@ -544,6 +559,7 @@ export const generateSchemaData = <
       typeName,
       aggregateFieldName,
       tableFilters,
+      filterCtx,
     );
 
     queries[selectArrGenerated.name] = {

@@ -2105,6 +2105,146 @@ describe.sequential('Aggregate query tests', () => {
   });
 });
 
+describe.sequential('Relation filter tests', () => {
+  it(`Filter by a to-many relation`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				some: users(where: { posts: { some: { content: { eq: "3MESSAGE" } } } }) {
+					id
+				}
+
+				none: users(where: { posts: { none: {} } }) {
+					id
+				}
+
+				every: users(where: { posts: { every: { content: { eq: "1MESSAGE" } } } }) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        some: [{ id: 1 }],
+        none: [{ id: 2 }],
+        // Users 1 and 5 both own a non-matching post; user 2 owns none, so it matches vacuously.
+        every: [{ id: 2 }],
+      },
+    });
+  });
+
+  it(`Filter by a to-one relation`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(where: { author: { name: { eq: "FifthUser" } } }, orderBy: { id: { direction: asc, priority: 1 } }) {
+					id
+				}
+
+				usersSingle(where: { customer: { address: { eq: "AdTwo" } } }) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        posts: [{ id: 4 }, { id: 5 }],
+        usersSingle: { id: 2 },
+      },
+    });
+  });
+
+  it(`Nested relation filters, combined with column filters`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				nested: users(where: { posts: { some: { author: { name: { eq: "FirstUser" } } } } }) {
+					id
+				}
+
+				withColumns: users(
+					where: { name: { like: "F%" }, posts: { some: { content: { eq: "2MESSAGE" } } } }
+					orderBy: { id: { direction: asc, priority: 1 } }
+				) {
+					id
+				}
+
+				withOr: users(
+					where: { OR: [{ name: { eq: "SecondUser" } }, { posts: { some: { content: { eq: "3MESSAGE" } } } }] }
+					orderBy: { id: { direction: asc, priority: 1 } }
+				) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        nested: [{ id: 1 }],
+        withColumns: [{ id: 1 }, { id: 5 }],
+        withOr: [{ id: 1 }, { id: 2 }],
+      },
+    });
+  });
+
+  it(`Relation filters on aggregates and relation fields`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				usersAggregate(where: { posts: { some: {} } }) {
+					count
+				}
+
+				usersSingle(where: { id: { eq: 1 } }) {
+					id
+					posts(where: { author: { name: { eq: "SecondUser" } } }) {
+						id
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        usersAggregate: { count: 2 },
+        usersSingle: { id: 1, posts: [] },
+      },
+    });
+  });
+
+  it(`Relation filters on mutations`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			mutation {
+				updatePosts(set: { content: "UPDATED" }, where: { author: { name: { eq: "FifthUser" } } }) {
+					id
+					content
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        updatePosts: [
+          { id: 4, content: 'UPDATED' },
+          { id: 5, content: 'UPDATED' },
+        ],
+      },
+    });
+
+    const deleted = await ctx.gql.queryGql(/* GraphQL */ `
+			mutation {
+				deletePosts(where: { author: { name: { eq: "FifthUser" } } }) {
+					id
+				}
+			}
+		`);
+
+    expect(deleted).toStrictEqual({
+      data: {
+        deletePosts: [{ id: 4 }, { id: 5 }],
+      },
+    });
+  });
+});
+
 describe.sequential('Returned data tests', () => {
   it('Schema', () => {
     expect(ctx.schema instanceof GraphQLSchema).toBe(true);
