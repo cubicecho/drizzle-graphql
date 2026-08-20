@@ -16,6 +16,7 @@ import { createYoga } from 'graphql-yoga';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it } from 'vitest';
 import z from 'zod';
 import {
+  type AggregateResolver,
   buildSchema,
   type DeleteResolver,
   type ExtractTables,
@@ -1942,6 +1943,168 @@ describe.sequential('Arguments tests', async () => {
   });
 });
 
+describe.sequential('Aggregate query tests', () => {
+  it(`Count`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				usersAggregate {
+					count
+				}
+
+				postsAggregate {
+					count
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        usersAggregate: { count: 3 },
+        postsAggregate: { count: 6 },
+      },
+    });
+  });
+
+  it(`Numeric aggregates`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				postsAggregate {
+					count
+					avg {
+						id
+					}
+					sum {
+						id
+					}
+					min {
+						id
+					}
+					max {
+						id
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        postsAggregate: {
+          count: 6,
+          avg: { id: 3.5 },
+          sum: { id: 21 },
+          min: { id: 1 },
+          max: { id: 6 },
+        },
+      },
+    });
+  });
+
+  it(`Aggregates with where filter`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				postsAggregate(where: { authorId: { eq: 5 } }) {
+					count
+					sum {
+						id
+					}
+					min {
+						id
+					}
+					max {
+						id
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        postsAggregate: {
+          count: 2,
+          sum: { id: 9 },
+          min: { id: 4 },
+          max: { id: 5 },
+        },
+      },
+    });
+  });
+
+  it(`Min and max on text and timestamp columns`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				usersAggregate {
+					min {
+						name
+						createdAt
+						createdAtMs
+					}
+					max {
+						name
+					}
+				}
+
+				customersAggregate {
+					min {
+						registrationDate
+					}
+					max {
+						registrationDate
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        usersAggregate: {
+          min: {
+            name: 'FifthUser',
+            createdAt: '2024-04-02T06:44:41.000Z',
+            createdAtMs: '2024-04-02T06:44:41.785Z',
+          },
+          max: {
+            name: 'SecondUser',
+          },
+        },
+        customersAggregate: {
+          min: { registrationDate: '2024-03-27T03:54:45.235Z' },
+          max: { registrationDate: '2024-03-27T03:55:42.358Z' },
+        },
+      },
+    });
+  });
+
+  it(`Aggregates over an empty result set`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				usersAggregate(where: { name: { eq: "Nobody" } }) {
+					count
+					avg {
+						id
+					}
+					min {
+						name
+					}
+					max {
+						createdAt
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        usersAggregate: {
+          count: 0,
+          avg: { id: null },
+          min: { name: null },
+          max: { createdAt: null },
+        },
+      },
+    });
+  });
+});
+
 describe.sequential('Returned data tests', () => {
   it('Schema', () => {
     expect(ctx.schema instanceof GraphQLSchema).toBe(true);
@@ -2116,6 +2279,51 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
+            usersAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            postsAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            customersAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
           })
@@ -2324,6 +2532,9 @@ describe.sequential('Returned data tests', () => {
             Users: z.instanceof(GraphQLObjectType),
             Posts: z.instanceof(GraphQLObjectType),
             Customers: z.instanceof(GraphQLObjectType),
+            UsersAggregate: z.instanceof(GraphQLObjectType),
+            PostsAggregate: z.instanceof(GraphQLObjectType),
+            CustomersAggregate: z.instanceof(GraphQLObjectType),
           })
           .strict(),
         inputs: z
@@ -2445,6 +2656,28 @@ describe.sequential('Type tests', () => {
             ExtractTables<typeof schema>,
             typeof schema.usersRelations extends Relations<any, infer RelConf> ? RelConf : never
           >;
+        };
+      } & {
+        readonly customersAggregate: {
+          type: GraphQLNonNull<GraphQLObjectType>;
+          args: {
+            where: { type: GraphQLInputObjectType };
+          };
+          resolve: AggregateResolver<typeof schema.Customers>;
+        };
+        readonly postsAggregate: {
+          type: GraphQLNonNull<GraphQLObjectType>;
+          args: {
+            where: { type: GraphQLInputObjectType };
+          };
+          resolve: AggregateResolver<typeof schema.Posts>;
+        };
+        readonly usersAggregate: {
+          type: GraphQLNonNull<GraphQLObjectType>;
+          args: {
+            where: { type: GraphQLInputObjectType };
+          };
+          resolve: AggregateResolver<typeof schema.Users>;
         };
       }
     >();
@@ -2575,6 +2808,10 @@ describe.sequential('Type tests', () => {
         readonly Customers: GraphQLObjectType;
         readonly Posts: GraphQLObjectType;
         readonly Users: GraphQLObjectType;
+      } & {
+        readonly CustomersAggregate: GraphQLObjectType;
+        readonly PostsAggregate: GraphQLObjectType;
+        readonly UsersAggregate: GraphQLObjectType;
       }
     >();
   });

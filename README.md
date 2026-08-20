@@ -85,6 +85,47 @@ Automatically create GraphQL schema or customizable schema config fields from Dr
     })
     ```
 
+## Aggregate queries
+
+Every table also gets an aggregate query field — `<tableName>Aggregate` (e.g. `usersAggregate`),
+following the same naming rules as the other generated queries:
+
+```graphql
+{
+    postsAggregate(where: { authorId: { eq: 1 } }) {
+        count
+        avg {
+            views
+        }
+        sum {
+            views
+        }
+        min {
+            createdAt
+        }
+        max {
+            createdAt
+            title
+        }
+    }
+}
+```
+
+-   `count` — number of matching rows (`Int!`)
+-   `avg` / `sum` — one nullable `Float` field per numeric column
+-   `min` / `max` — one field per orderable column (numbers, strings, enums, dates, bigints),
+    typed exactly like that column is in the table's own type
+
+Columns that have no meaningful ordering — booleans, arrays, JSON, buffers, and geometry —
+are left out of these types, and the `avg` / `sum` / `min` / `max` fields themselves are
+omitted when no column qualifies.
+
+The optional `where` argument takes the same filter input as the table's list query, and is
+applied to every aggregate in the selection. All requested aggregates are computed in a
+single `SELECT`, and on an empty result set `count` is `0` while the other values are `null`.
+
+Grouping (`groupBy`) is not supported yet.
+
 ## Relations & N+1 handling
 
 Generated schemas resolve nested relations without N+1 query explosions:

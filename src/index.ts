@@ -13,6 +13,7 @@ import type { AnyDrizzleDB, BuildSchemaConfig, GeneratedData } from './types.ts'
 import { generateMySQL, generatePG, generateSQLite } from './util/builders/index.ts';
 
 export type {
+  AggregateResolver,
   AnyDrizzleDB,
   BuildSchemaConfig,
   DeleteResolver,

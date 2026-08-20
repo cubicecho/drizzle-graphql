@@ -35,13 +35,13 @@ import {
   type TypeNameMapper,
   toGraphQLError,
 } from '../builders/common.ts';
-
 import {
   remapFromGraphQLArrayInput,
   remapFromGraphQLSingleInput,
   remapToGraphQLArrayOutput,
   remapToGraphQLSingleOutput,
 } from '../data-mappers/index.ts';
+import { generateAggregate, generateAggregateTypes } from './aggregates.ts';
 import type { CreatedResolver, Filters, TableNamedRelations, TableSelectArgs } from './types.ts';
 
 const generateSelectArray = (
@@ -522,6 +522,7 @@ export function generateSchemaData<
       typeName,
       listFieldName,
       singleFieldName,
+      aggregateFieldName,
       createArrayFieldName,
       createSingleFieldName,
       updateFieldName,
@@ -594,6 +595,15 @@ export function generateSchemaData<
       deleteFieldName,
       typeName,
     );
+    const aggregateType = generateAggregateTypes(schema[tableName] as PgTable, tableName, typeName);
+    const aggregateGenerated = generateAggregate(
+      db,
+      tableName,
+      schema[tableName] as PgTable,
+      typeName,
+      aggregateFieldName,
+      tableFilters,
+    );
 
     queries[selectArrGenerated.name] = {
       type: selectArrOutput,
@@ -604,6 +614,11 @@ export function generateSchemaData<
       type: selectSingleOutput,
       args: selectSingleGenerated.args,
       resolve: selectSingleGenerated.resolver,
+    };
+    queries[aggregateGenerated.name] = {
+      type: new GraphQLNonNull(aggregateType),
+      args: aggregateGenerated.args,
+      resolve: aggregateGenerated.resolver,
     };
     mutations[insertArrGenerated.name] = {
       type: arrTableItemOutput,
@@ -630,6 +645,7 @@ export function generateSchemaData<
     });
     outputs[selectSingleOutput.name] = selectSingleOutput;
     outputs[singleTableItemOutput.name] = singleTableItemOutput;
+    outputs[aggregateType.name] = aggregateType;
   }
 
   const fieldResolvers: Record<string, Record<string, any>> = {};

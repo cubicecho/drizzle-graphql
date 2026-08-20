@@ -93,6 +93,53 @@ describe('MySQL mutations are returnless', () => {
   });
 });
 
+// ── aggregates ────────────────────────────────────────────────────────────────
+
+describe('MySQL generated aggregate queries', () => {
+  it('generates an aggregate query per table', () => {
+    const queryKeys = Object.keys(entities.queries);
+    expect(queryKeys).toContain('usersAggregate');
+    expect(queryKeys).toContain('customersAggregate');
+    expect(queryKeys).toContain('postsAggregate');
+  });
+
+  it('aggregate query returns a non-null aggregate type and takes only a where arg', () => {
+    const query = entities.queries['usersAggregate'];
+    expect(query.type).toBeInstanceOf(GraphQLNonNull);
+    expect(query.type.ofType).toBe(entities.types['UsersAggregate']);
+    expect(Object.keys(query.args)).toEqual(['where']);
+    expect(query.args['where'].type).toBe(entities.inputs['UsersFilters']);
+  });
+
+  it('aggregate type exposes count plus the aggregation groups', () => {
+    const fields = entities.types['UsersAggregate'].getFields();
+    expect(Object.keys(fields)).toEqual(['count', 'avg', 'sum', 'min', 'max']);
+    expect(fields['count'].type).toBeInstanceOf(GraphQLNonNull);
+  });
+
+  it('avg/sum only cover numeric columns', () => {
+    const fields = entities.types['UsersAggregate'].getFields();
+    expect(Object.keys(fields['avg'].type.getFields())).toEqual(['id']);
+    expect(Object.keys(fields['sum'].type.getFields())).toEqual(['id']);
+  });
+
+  it('min/max cover orderable columns, including dates, enums, and bigints', () => {
+    const fields = entities.types['UsersAggregate'].getFields();
+    const minFields = Object.keys(fields['min'].type.getFields());
+
+    expect(minFields).toContain('id');
+    expect(minFields).toContain('name');
+    expect(minFields).toContain('bigint');
+    expect(minFields).toContain('birthdayString');
+    expect(minFields).toContain('birthdayDate');
+    expect(minFields).toContain('createdAt');
+    expect(minFields).toContain('role');
+    // Booleans have no useful ordering.
+    expect(minFields).not.toContain('isConfirmed');
+    expect(Object.keys(fields['max'].type.getFields())).toEqual(minFields);
+  });
+});
+
 // ── types and inputs ──────────────────────────────────────────────────────────
 
 describe('MySQL generated types and inputs', () => {

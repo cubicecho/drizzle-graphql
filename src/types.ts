@@ -188,6 +188,18 @@ export type UpdateResolver<TTable extends Table, IsReturnless extends boolean> =
   info: GraphQLResolveInfo,
 ) => Promise<IsReturnless extends false ? GetRemappedTableDataType<TTable> | undefined : MutationReturnlessResult>;
 
+/**
+ * Resolver for a table's generated aggregate query (`<plural>Aggregate`).
+ * Returns only the requested aggregations: `count` plus per-column `avg` / `sum`
+ * (numeric columns, as Float) and `min` / `max` (orderable columns, as the column's type).
+ */
+export type AggregateResolver<TTable extends Table> = (
+  source: any,
+  args: { where?: Filters<TTable> },
+  context: any,
+  info: GraphQLResolveInfo,
+) => Promise<Record<string, any>>;
+
 export type DeleteResolver<TTable extends Table, IsReturnless extends boolean> = (
   source: any,
   args: DeleteArgs<TTable>,
@@ -253,6 +265,26 @@ export type QueriesCore<
           TSchemaTables,
           ExtractTableRelations<TSchemaTables[TName], TSchemaRelations> extends infer R ? R[keyof R] : never
         >;
+      }
+    : never;
+} & {
+  [TName in keyof TSchemaTables as TName extends string
+    ? `${Uncapitalize<TName>}Aggregate`
+    : never]: TName extends string
+    ? {
+        type: GraphQLNonNull<
+          TOutputs[`${Capitalize<TName>}Aggregate`] extends GraphQLObjectType
+            ? TOutputs[`${Capitalize<TName>}Aggregate`]
+            : GraphQLObjectType
+        >;
+        args: {
+          where: {
+            type: TInputs[`${Capitalize<TName>}Filters`] extends GraphQLInputObjectType
+              ? TInputs[`${Capitalize<TName>}Filters`]
+              : never;
+          };
+        };
+        resolve: AggregateResolver<TSchemaTables[TName]>;
       }
     : never;
 };
@@ -350,13 +382,15 @@ export type GeneratedInputs<TSchema extends Record<string, Table>> = {
 
 export type GeneratedOutputs<TSchema extends Record<string, Table>, IsReturnless extends boolean> = {
   [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}SelectItem` : never]: GraphQLObjectType;
+} & {
+  [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}Aggregate` : never]: GraphQLObjectType;
 } & (IsReturnless extends true
-  ? {
-      MutationReturn: GraphQLObjectType;
-    }
-  : {
-      [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}Item` : never]: GraphQLObjectType;
-    });
+    ? {
+        MutationReturn: GraphQLObjectType;
+      }
+    : {
+        [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}Item` : never]: GraphQLObjectType;
+      });
 
 export type GeneratedEntities<
   TDatabase extends AnyDrizzleDB<TSchema>,
