@@ -5,7 +5,7 @@ import { drizzle, type MySql2Database } from 'drizzle-orm/mysql2';
 import getPort from 'get-port';
 import {
   GraphQLInputObjectType,
-  type GraphQLList,
+  GraphQLList,
   GraphQLNonNull,
   GraphQLObjectType,
   GraphQLScalarType,
@@ -2766,6 +2766,11 @@ describe.sequential('Returned data tests', () => {
                         type: z.instanceof(GraphQLInputObjectType),
                       })
                       .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
+                      })
+                      .strict(),
                   })
                   .strict(),
                 resolve: z.function(),
@@ -2819,6 +2824,11 @@ describe.sequential('Returned data tests', () => {
                     where: z
                       .object({
                         type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
                       })
                       .strict(),
                   })
@@ -2876,6 +2886,11 @@ describe.sequential('Returned data tests', () => {
                         type: z.instanceof(GraphQLInputObjectType),
                       })
                       .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
+                      })
+                      .strict(),
                   })
                   .strict(),
                 resolve: z.function(),
@@ -2905,6 +2920,51 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
+            usersAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            customersAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            postsAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
           })
@@ -3114,6 +3174,9 @@ describe.sequential('Returned data tests', () => {
             Posts: z.instanceof(GraphQLObjectType),
             Customers: z.instanceof(GraphQLObjectType),
             MutationReturn: z.instanceof(GraphQLObjectType),
+            UsersAggregate: z.instanceof(GraphQLObjectType),
+            CustomersAggregate: z.instanceof(GraphQLObjectType),
+            PostsAggregate: z.instanceof(GraphQLObjectType),
           })
           .strict(),
         inputs: z
