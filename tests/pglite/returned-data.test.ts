@@ -515,6 +515,23 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
+            updateUsersMany: z
+              .object({
+                args: z
+                  .object({
+                    updates: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
             updateUser: z
               .object({
                 args: z
@@ -586,6 +603,23 @@ describe.sequential('Returned data tests', () => {
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
                 type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
+            updatePostsMany: z
+              .object({
+                args: z
+                  .object({
+                    updates: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
             updatePost: z
@@ -661,6 +695,23 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
+            updateCustomersMany: z
+              .object({
+                args: z
+                  .object({
+                    updates: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
             updateCustomer: z
               .object({
                 args: z
@@ -734,6 +785,23 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
+            updateTagsMany: z
+              .object({
+                args: z
+                  .object({
+                    updates: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
             updateTag: z
               .object({
                 args: z
@@ -802,21 +870,25 @@ describe.sequential('Returned data tests', () => {
             UserOrderBy: z.instanceof(GraphQLInputObjectType),
             CreateUserInput: z.instanceof(GraphQLInputObjectType),
             UpdateUserInput: z.instanceof(GraphQLInputObjectType),
+            UpdateUserManyInput: z.instanceof(GraphQLInputObjectType),
             PostFilters: z.instanceof(GraphQLInputObjectType),
             PostHaving: z.instanceof(GraphQLInputObjectType),
             PostOrderBy: z.instanceof(GraphQLInputObjectType),
             CreatePostInput: z.instanceof(GraphQLInputObjectType),
             UpdatePostInput: z.instanceof(GraphQLInputObjectType),
+            UpdatePostManyInput: z.instanceof(GraphQLInputObjectType),
             CustomerFilters: z.instanceof(GraphQLInputObjectType),
             CustomerHaving: z.instanceof(GraphQLInputObjectType),
             CustomerOrderBy: z.instanceof(GraphQLInputObjectType),
             CreateCustomerInput: z.instanceof(GraphQLInputObjectType),
             UpdateCustomerInput: z.instanceof(GraphQLInputObjectType),
+            UpdateCustomerManyInput: z.instanceof(GraphQLInputObjectType),
             TagFilters: z.instanceof(GraphQLInputObjectType),
             TagHaving: z.instanceof(GraphQLInputObjectType),
             TagOrderBy: z.instanceof(GraphQLInputObjectType),
             CreateTagInput: z.instanceof(GraphQLInputObjectType),
             UpdateTagInput: z.instanceof(GraphQLInputObjectType),
+            UpdateTagManyInput: z.instanceof(GraphQLInputObjectType),
           })
           .strict(),
         fieldResolvers: z.record(z.string(), z.record(z.string(), z.function())).optional(),

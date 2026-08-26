@@ -36,6 +36,9 @@ export type {
   SchemaFeatures,
   SelectResolver,
   SelectSingleResolver,
+  UpdateManyArgs,
+  UpdateManyEntry,
+  UpdateManyResolver,
   UpdateResolver,
   UpsertArgs,
   UpsertArrResolver,
@@ -108,6 +111,7 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     distinct: config?.features?.distinct ?? true,
     insert: config?.features?.insert ?? true,
     update: config?.features?.update ?? true,
+    updateMany: config?.features?.updateMany ?? true,
     delete: config?.features?.delete ?? true,
     upsert: config?.features?.upsert ?? false,
   };

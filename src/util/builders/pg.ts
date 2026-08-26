@@ -27,6 +27,7 @@ import {
   generateDistinctEnum,
   generateOnConflictInput,
   generateTableTypes,
+  generateUpdateManyInput,
   getPrimaryKeyPropNamesFromConfig,
   getUniqueColumnSets,
   listFieldComplexity,
@@ -579,6 +580,124 @@ const generateUpdate = (
   };
 };
 
+/**
+ * `update<Table>Many` — batch update with a per-entry `set` and `where`.
+ *
+ * The entries run as one UPDATE statement each, in input order, inside a single
+ * transaction (a savepoint when the request context already carries one), so a failing
+ * entry rolls the whole batch back and a row matched by several entries sees them applied
+ * in order. The result lists each entry's updated rows in entry order, with `null`
+ * standing in for an entry whose `where` matched no rows, so the common one-row-per-entry
+ * case stays aligned with the input.
+ */
+const generateUpdateMany = (
+  db: PgAsyncDatabase<any, any, any>,
+  tableName: string,
+  table: PgTable,
+  tables: Record<string, Table>,
+  relationMap: Record<string, Record<string, TableNamedRelations>>,
+  updateManyInput: GraphQLInputObjectType,
+  fieldName: string,
+  typeName: string,
+  typeNameMapper?: TypeNameMapper,
+  filterCtx?: RelationFilterBase,
+): CreatedResolver => {
+  const queryArgs = {
+    updates: {
+      type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(updateManyInput))),
+    },
+  } as const satisfies GraphQLFieldConfigArgumentMap;
+
+  // Derived once at build time — PK prop names don't change per request.
+  const pkNames = pgPrimaryKeyPropNames(table);
+
+  return {
+    name: fieldName,
+    resolver: async (
+      _source,
+      args: { updates: { where?: Filters<Table>; set: Record<string, any> }[] },
+      context,
+      info,
+    ) => {
+      try {
+        const { updates } = args;
+        if (!updates.length) {
+          throw new GraphQLError('No updates were provided!');
+        }
+
+        const parsedInfo = parseResolveInfo(info, {
+          deep: true,
+        }) as ResolveTree;
+
+        const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+          relationMap,
+          tables,
+          tableName,
+          typeName,
+          typeNameMapper,
+          table,
+          pkNames,
+          parsedInfo,
+        });
+
+        // Remap and validate every entry before the transaction opens, so a malformed
+        // entry rejects the request instead of rolling back mid-batch.
+        const entries = updates.map(({ where, set }) => {
+          const input = remapFromGraphQLSingleInput(set, table);
+          if (!Object.keys(input).length) {
+            throw new GraphQLError('Unable to update with no values specified!');
+          }
+          return {
+            set: input,
+            filters: where
+              ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))
+              : undefined,
+          };
+        });
+
+        const executor = resolveExecutor(db, context);
+        // On a caller-supplied transaction this opens a savepoint, so the batch stays
+        // atomic without breaking the outer transaction.
+        const perEntry: Record<string, any>[][] = await executor.transaction(async (tx) => {
+          const results: Record<string, any>[][] = [];
+          for (const entry of entries) {
+            let query = tx.update(table).set(entry.set);
+            if (entry.filters) {
+              query = query.where(entry.filters) as any;
+            }
+            results.push(await (query.returning(columns) as any));
+          }
+          return results;
+        });
+
+        const flatRows = perEntry.flat();
+        const enriched = hasRelations
+          ? await eagerLoadMutationRelations(executor, tableName, flatRows, pkNames, withParams)
+          : flatRows;
+
+        // Rebuild the per-entry slots: a no-match entry contributes `null`, a multi-match
+        // entry contributes each of its rows.
+        const output: (Record<string, any> | null)[] = [];
+        let offset = 0;
+        for (const rows of perEntry) {
+          if (!rows.length) {
+            output.push(null);
+            continue;
+          }
+          for (let i = 0; i < rows.length; i++) {
+            output.push(remapToGraphQLSingleOutput(enriched[offset + i], tableName, table, relationMap));
+          }
+          offset += rows.length;
+        }
+        return output;
+      } catch (e) {
+        throw toGraphQLError(e);
+      }
+    },
+    args: queryArgs,
+  };
+};
+
 const generateDelete = (
   db: PgAsyncDatabase<any, any, any>,
   tableName: string,
@@ -741,6 +860,7 @@ export function generateSchemaData<
       upsertArrayFieldName,
       upsertSingleFieldName,
       updateFieldName,
+      updateManyFieldName,
       deleteFieldName,
     } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
 
@@ -853,6 +973,25 @@ export function generateSchemaData<
           updateInput,
           tableFilters,
           updateFieldName,
+          typeName,
+          typeNameMapper,
+          filterCtx,
+        )
+      : undefined;
+    // The batch update reuses the update `set` input, so it needs `update` on too.
+    const updateManyInput =
+      features.update && features.updateMany
+        ? generateUpdateManyInput({ typeName, updatePrefix: prefixes.update, updateInput, tableFilters })
+        : undefined;
+    const updateManyGenerated = updateManyInput
+      ? generateUpdateMany(
+          db,
+          tableName,
+          schema[tableName] as PgTable,
+          tables,
+          eagerRelations,
+          updateManyInput,
+          updateManyFieldName,
           typeName,
           typeNameMapper,
           filterCtx,
@@ -973,6 +1112,14 @@ export function generateSchemaData<
         resolve: updateGenerated.resolver,
       };
     }
+    if (updateManyGenerated) {
+      mutations[updateManyGenerated.name] = {
+        // Nullable items: a no-match entry yields `null` in its slot.
+        type: new GraphQLNonNull(new GraphQLList(singleTableItemOutput)),
+        args: updateManyGenerated.args,
+        resolve: updateManyGenerated.resolver,
+      };
+    }
     if (deleteGenerated) {
       mutations[deleteGenerated.name] = {
         type: arrTableItemOutput,
@@ -987,6 +1134,7 @@ export function generateSchemaData<
       ...(features.insert || onConflictInput ? [insertInput] : []),
       ...(onConflictInput ? [onConflictInput] : []),
       ...(features.update ? [updateInput] : []),
+      ...(updateManyInput ? [updateManyInput] : []),
       tableFilters,
       tableOrder,
     ];

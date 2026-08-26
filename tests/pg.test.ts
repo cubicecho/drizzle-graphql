@@ -25,6 +25,7 @@ import {
   type InsertResolver,
   type SelectResolver,
   type SelectSingleResolver,
+  type UpdateManyResolver,
   type UpdateResolver,
 } from '@/index';
 import * as schema from './schema/pg';
@@ -2797,6 +2798,23 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
+            updateUsersMany: z
+              .object({
+                args: z
+                  .object({
+                    updates: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
             updateUsers: z
               .object({
                 args: z
@@ -2870,6 +2888,23 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
+            updatePostsMany: z
+              .object({
+                args: z
+                  .object({
+                    updates: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
             updatePosts: z
               .object({
                 args: z
@@ -2941,6 +2976,23 @@ describe.sequential('Returned data tests', () => {
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
                 type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
+            updateCustomersMany: z
+              .object({
+                args: z
+                  .object({
+                    updates: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
             updateCustomers: z
@@ -3080,16 +3132,19 @@ describe.sequential('Returned data tests', () => {
             UsersOrderBy: z.instanceof(GraphQLInputObjectType),
             CreateUsersInput: z.instanceof(GraphQLInputObjectType),
             UpdateUsersInput: z.instanceof(GraphQLInputObjectType),
+            UpdateUsersManyInput: z.instanceof(GraphQLInputObjectType),
             PostsFilters: z.instanceof(GraphQLInputObjectType),
             PostsHaving: z.instanceof(GraphQLInputObjectType),
             PostsOrderBy: z.instanceof(GraphQLInputObjectType),
             CreatePostsInput: z.instanceof(GraphQLInputObjectType),
             UpdatePostsInput: z.instanceof(GraphQLInputObjectType),
+            UpdatePostsManyInput: z.instanceof(GraphQLInputObjectType),
             CustomersFilters: z.instanceof(GraphQLInputObjectType),
             CustomersHaving: z.instanceof(GraphQLInputObjectType),
             CustomersOrderBy: z.instanceof(GraphQLInputObjectType),
             CreateCustomersInput: z.instanceof(GraphQLInputObjectType),
             UpdateCustomersInput: z.instanceof(GraphQLInputObjectType),
+            UpdateCustomersManyInput: z.instanceof(GraphQLInputObjectType),
             TagsFilters: z.instanceof(GraphQLInputObjectType),
             TagsHaving: z.instanceof(GraphQLInputObjectType),
             TagsOrderBy: z.instanceof(GraphQLInputObjectType),
@@ -3295,6 +3350,34 @@ describe.sequential('Type tests', () => {
           resolve: UpdateResolver<typeof schema.Users, false>;
         };
       } & {
+        readonly updateCustomersMany: {
+          type: GraphQLNonNull<GraphQLList<GraphQLObjectType>>;
+          args: {
+            updates: {
+              type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLInputObjectType>>>;
+            };
+          };
+          resolve: UpdateManyResolver<typeof schema.Customers, false>;
+        };
+        readonly updatePostsMany: {
+          type: GraphQLNonNull<GraphQLList<GraphQLObjectType>>;
+          args: {
+            updates: {
+              type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLInputObjectType>>>;
+            };
+          };
+          resolve: UpdateManyResolver<typeof schema.Posts, false>;
+        };
+        readonly updateUsersMany: {
+          type: GraphQLNonNull<GraphQLList<GraphQLObjectType>>;
+          args: {
+            updates: {
+              type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLInputObjectType>>>;
+            };
+          };
+          resolve: UpdateManyResolver<typeof schema.Users, false>;
+        };
+      } & {
         readonly deleteCustomers: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
@@ -3352,6 +3435,10 @@ describe.sequential('Type tests', () => {
         readonly UpdateUsersInput: GraphQLInputObjectType;
         readonly UpdateCustomersInput: GraphQLInputObjectType;
         readonly UpdatePostsInput: GraphQLInputObjectType;
+      } & {
+        readonly UpdateUsersManyInput: GraphQLInputObjectType;
+        readonly UpdateCustomersManyInput: GraphQLInputObjectType;
+        readonly UpdatePostsManyInput: GraphQLInputObjectType;
       }
     >();
   });

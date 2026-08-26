@@ -25,6 +25,7 @@ import {
   generateDistinctEnum,
   generateOnConflictInput,
   generateTableTypes,
+  generateUpdateManyInput,
   getPrimaryKeyPropNamesFromConfig,
   listFieldComplexity,
   mysqlValuesColumnRef,
@@ -352,6 +353,80 @@ const generateUpdate = (
   };
 };
 
+/**
+ * `update<Table>Many` — batch update with a per-entry `set` and `where`.
+ *
+ * The entries run as one UPDATE statement each, in input order, inside a single
+ * transaction (a savepoint when the request context already carries one), so a failing
+ * entry rolls the whole batch back and a row matched by several entries sees them applied
+ * in order. MySQL has no RETURNING, so — like every other MySQL mutation — the result is
+ * `{ isSuccess: true }` rather than the updated rows.
+ */
+const generateUpdateMany = (
+  db: MySqlDatabase<any, any, any>,
+  tableName: string,
+  table: MySqlTable,
+  updateManyInput: GraphQLInputObjectType,
+  fieldName: string,
+  filterCtx?: RelationFilterBase,
+): CreatedResolver => {
+  const queryArgs = {
+    updates: {
+      type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(updateManyInput))),
+    },
+  } as const satisfies GraphQLFieldConfigArgumentMap;
+
+  return {
+    name: fieldName,
+    resolver: async (
+      _source,
+      args: { updates: { where?: Filters<Table>; set: Record<string, any> }[] },
+      context,
+      _info,
+    ) => {
+      try {
+        const { updates } = args;
+        if (!updates.length) {
+          throw new GraphQLError('No updates were provided!');
+        }
+
+        // Remap and validate every entry before the transaction opens, so a malformed
+        // entry rejects the request instead of rolling back mid-batch.
+        const entries = updates.map(({ where, set }) => {
+          const input = remapFromGraphQLSingleInput(set, table);
+          if (!Object.keys(input).length) {
+            throw new GraphQLError('Unable to update with no values specified!');
+          }
+          return {
+            set: input,
+            filters: where
+              ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))
+              : undefined,
+          };
+        });
+
+        const executor = resolveExecutor(db, context);
+        // On a caller-supplied transaction this opens a savepoint, so the batch stays
+        // atomic without breaking the outer transaction.
+        await executor.transaction(async (tx) => {
+          for (const entry of entries) {
+            let query = tx.update(table).set(entry.set);
+            if (entry.filters) {
+              query = query.where(entry.filters) as any;
+            }
+            await query;
+          }
+        });
+
+        return { isSuccess: true };
+      } catch (e) {
+        throw toGraphQLError(e);
+      }
+    },
+    args: queryArgs,
+  };
+};
+
 const generateDelete = (
   db: MySqlDatabase<any, any, any>,
   tableName: string,
@@ -503,6 +578,7 @@ export const generateSchemaData = <
       upsertArrayFieldName,
       upsertSingleFieldName,
       updateFieldName,
+      updateManyFieldName,
       deleteFieldName,
     } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
 
@@ -562,6 +638,21 @@ export const generateSchemaData = <
           updateInput,
           tableFilters,
           updateFieldName,
+          filterCtx,
+        )
+      : undefined;
+    // The batch update reuses the update `set` input, so it needs `update` on too.
+    const updateManyInput =
+      features.update && features.updateMany
+        ? generateUpdateManyInput({ typeName, updatePrefix: prefixes.update, updateInput, tableFilters })
+        : undefined;
+    const updateManyGenerated = updateManyInput
+      ? generateUpdateMany(
+          db,
+          tableName,
+          schema[tableName] as MySqlTable,
+          updateManyInput,
+          updateManyFieldName,
           filterCtx,
         )
       : undefined;
@@ -642,6 +733,7 @@ export const generateSchemaData = <
       upsertArrGenerated,
       upsertSingleGenerated,
       updateGenerated,
+      updateManyGenerated,
       deleteGenerated,
     ]) {
       if (generated) {
@@ -659,6 +751,7 @@ export const generateSchemaData = <
       ...(features.insert || onConflictInput ? [insertInput] : []),
       ...(onConflictInput ? [onConflictInput] : []),
       ...(features.update ? [updateInput] : []),
+      ...(updateManyInput ? [updateManyInput] : []),
       tableFilters,
       tableOrder,
     ];

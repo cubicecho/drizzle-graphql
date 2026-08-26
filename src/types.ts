@@ -100,6 +100,19 @@ export type UpdateArgs<TTable extends Table> = Partial<{
 }>;
 
 /**
+ * One entry of an `update<Table>Many` mutation: the rows `where` matches get this
+ * entry's `set` applied. An omitted `where` matches every row, same as `update<Table>`.
+ */
+export type UpdateManyEntry<TTable extends Table> = {
+  where?: Filters<TTable>;
+  set: GetRemappedTableUpdateDataType<TTable>;
+};
+
+export type UpdateManyArgs<TTable extends Table> = {
+  updates: Array<UpdateManyEntry<TTable>>;
+};
+
+/**
  * The `onConflict` argument of the generated upsert mutations.
  *
  * `target` and `where` exist on PostgreSQL and SQLite only: MySQL's
@@ -208,6 +221,19 @@ export type UpdateResolver<TTable extends Table, IsReturnless extends boolean> =
   context: any,
   info: GraphQLResolveInfo,
 ) => Promise<IsReturnless extends false ? GetRemappedTableDataType<TTable> | undefined : MutationReturnlessResult>;
+
+/**
+ * Resolver for `update<Table>Many`: per-entry `set`/`where` pairs applied in input order
+ * inside one transaction. Where the dialect returns rows, the result holds each entry's
+ * updated rows in entry order, with `null` standing in for an entry whose `where`
+ * matched no rows.
+ */
+export type UpdateManyResolver<TTable extends Table, IsReturnless extends boolean> = (
+  source: any,
+  args: UpdateManyArgs<TTable>,
+  context: any,
+  info: GraphQLResolveInfo,
+) => Promise<IsReturnless extends false ? Array<GetRemappedTableDataType<TTable> | null> : MutationReturnlessResult>;
 
 /** Resolver for `upsert<Table>Single`. */
 export type UpsertResolver<TTable extends Table, IsReturnless extends boolean> = (
@@ -433,6 +459,26 @@ export type MutationsCore<
       }
     : never;
 } & {
+  [TName in keyof TSchemaTables as TName extends string
+    ? `update${Capitalize<TName>}Many`
+    : never]: TName extends string
+    ? {
+        type: IsReturnless extends true
+          ? TOutputs['MutationReturn'] extends GraphQLObjectType
+            ? TOutputs['MutationReturn']
+            : never
+          : // The list items are nullable: an entry whose `where` matched no rows
+            // yields `null` in its slot, keeping the result aligned with the input.
+            GraphQLNonNull<GraphQLList<TOutputs[`${Capitalize<TName>}Item`]>>;
+        args: {
+          updates: {
+            type: GraphQLNonNull<GraphQLList<GraphQLNonNull<TInputs[`${Capitalize<TName>}UpdateManyInput`]>>>;
+          };
+        };
+        resolve: UpdateManyResolver<TSchemaTables[TName], IsReturnless>;
+      }
+    : never;
+} & {
   [TName in keyof TSchemaTables as TName extends string ? `delete${Capitalize<TName>}` : never]: TName extends string
     ? {
         type: IsReturnless extends true
@@ -456,6 +502,10 @@ export type GeneratedInputs<TSchema extends Record<string, Table>> = {
   [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}InsertInput` : never]: GraphQLInputObjectType;
 } & {
   [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}UpdateInput` : never]: GraphQLInputObjectType;
+} & {
+  [TName in keyof TSchema as TName extends string
+    ? `${Capitalize<TName>}UpdateManyInput`
+    : never]: GraphQLInputObjectType;
 } & {
   [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}OrderBy` : never]: GraphQLInputObjectType;
 } & {
@@ -535,6 +585,14 @@ export type SchemaFeatures = {
   insert?: boolean;
   /** `update<Table>` mutations. @default true */
   update?: boolean;
+  /**
+   * `update<Table>Many` mutations — batch update with a per-entry `set` and `where`,
+   * executed inside one transaction. Only generated when `update` is also enabled,
+   * since the entries reuse the update `set` input.
+   *
+   * @default true
+   */
+  updateMany?: boolean;
   /** `delete<Table>` mutations. @default true */
   delete?: boolean;
   /**

@@ -27,6 +27,7 @@ export type GeneratorFeatures = {
   distinct: boolean;
   insert: boolean;
   update: boolean;
+  updateMany: boolean;
   delete: boolean;
   upsert: boolean;
 };
