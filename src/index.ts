@@ -66,10 +66,18 @@ export {
   GraphQLUUID,
 } from './util/scalars/index.ts';
 export type {
+  ColumnDeprecator,
+  ColumnDescriber,
+  ColumnDocInfo,
   ColumnTypeMapper,
   ColumnTypeMapperInfo,
+  EnumNameInfo,
+  EnumNameMapper,
+  RelationDescriber,
   ScalarOverride,
   ScalarOverridesConfig,
+  SchemaDocs,
+  TableDescriber,
 } from './util/type-converter/types.ts';
 
 type ObjMap<T> = Record<string, T>;
@@ -123,6 +131,7 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     updateMany: config?.features?.updateMany ?? true,
     delete: config?.features?.delete ?? true,
     upsert: config?.features?.upsert ?? false,
+    nestedWrites: config?.features?.nestedWrites ?? false,
     requireWhere: config?.features?.requireWhere ?? false,
   };
 
@@ -183,7 +192,14 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     complexity,
     scalars: config?.scalars,
     mapColumnType: config?.mapColumnType,
+    enumNameMapper: config?.enumNameMapper,
     transactions,
+    docs: {
+      describeColumn: config?.describeColumn,
+      describeTable: config?.describeTable,
+      describeRelation: config?.describeRelation,
+      deprecateColumn: config?.deprecateColumn,
+    },
   };
 
   let generatorOutput;

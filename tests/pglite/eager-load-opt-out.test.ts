@@ -105,4 +105,21 @@ describe.sequential('eagerLoadRelations opt-out', () => {
     expect(sqls.filter(isEagerPostsJoin)).toHaveLength(0);
     expect(sqls.filter(isPostsBatch)).toHaveLength(1);
   });
+
+  // The batch loader correlates on the parent's join column, so that column has to be
+  // fetched even when the client never selected it — otherwise every parent reaches the
+  // resolver with no key and the relation comes back empty.
+  it('opted out: resolves the relation when the parent join column is not selected', async () => {
+    const gqlSchema = buildWith(false);
+    const { result, sqls } = await runCapturing(gqlSchema, `{ users { name posts { id } } }`);
+
+    expect(result.errors).toBeUndefined();
+    const users = (result.data as any)?.users ?? [];
+    expect(users.find((u: any) => u.name === 'FirstUser')?.posts).toHaveLength(4);
+    expect(users.find((u: any) => u.name === 'FifthUser')?.posts).toHaveLength(2);
+    expect(sqls.filter(isPostsBatch)).toHaveLength(1);
+
+    // The forced join column must not leak into the response.
+    expect(users[0]).not.toHaveProperty('id');
+  });
 });

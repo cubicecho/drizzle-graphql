@@ -103,6 +103,7 @@ const { schema } = buildSchema(db, {
         update: false,            // update<Table> / update<Table>Single mutations
         delete: false,            // delete<Table> / delete<Table>Single mutations
         upsert: true,             // upsert<Table> / upsert<Table>Single mutations (off by default)
+        nestedWrites: true,       // relation fields on the create/update inputs (off by default)
         requireWhere: true,       // make `where` non-null on plural update/delete (off by default)
     },
 })
@@ -110,8 +111,8 @@ const { schema } = buildSchema(db, {
 
 -   Any flag left out keeps its default of `true`, so `{ features: { delete: false } }`
     changes nothing else
--   `upsert` is the exception: it defaults to `false`, so the upsert mutations and their
-    conflict input only exist if you ask for them
+-   `upsert` and `nestedWrites` are the exceptions: both default to `false`, so the upsert
+    mutations and the relation fields on the write inputs only exist if you ask for them
 -   `groupBy` needs `aggregates`: it reuses those output types, so turning `aggregates` off
     turns the group-by queries off with it
 -   Turning off `insert` or `update` also drops the input type that only that mutation
@@ -158,6 +159,89 @@ import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQL
 
 `GraphQLBigIntString` is the `BigInt` scalar — named for what it does rather than what it is
 called in SDL, to avoid clashing with the language's own `BigInt`.
+
+## Enum types
+
+A column declared with a database enum becomes a GraphQL enum named after **the enum**, not
+after the column that happens to use it:
+
+```Typescript
+export const status = pgEnum('status', ['active', 'archived'])
+
+export const Users = pgTable('users', { status: status('status') })
+export const Posts = pgTable('posts', { status: status('status') })
+```
+
+```graphql
+enum StatusEnum {
+    active
+    archived
+}
+
+type Users {
+    status: StatusEnum!
+}
+type Posts {
+    status: StatusEnum!
+}
+```
+
+-   One type, one filter input (`StatusEnumFilter`), so a client variable typed `StatusEnum!`
+    is passable to either table
+-   The declared name is PascalCased and suffixed: `user_status` → `UserStatusEnum`
+-   A column that lists its values inline (`text('tier', { enum: ['free', 'paid'] })`) has no
+    declared name to share, so it keeps a per-column type — `UsersTierEnum`
+-   Two different enums that would land on the same GraphQL name (`status` in two Postgres
+    schemas) fail the build rather than silently sharing a type
+
+`enumNameMapper` overrides the name. Returning `undefined` keeps the default, so a mapper
+only has to handle the cases it cares about:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    // `schema` is the Postgres schema the enum was declared in, if any; `values` is its
+    // value list. Everything but `enumName` is always present.
+    enumNameMapper: ({ enumName, schema }) =>
+        schema === 'reporting' ? `Reporting${enumName}Enum` : undefined,
+})
+```
+
+Two columns the mapper sends to the same name share one type, as long as their values match —
+which is also how inline enums can be unified. Sending the same name to two different value
+lists is the build-time error above.
+
+> **Upgrading:** before this, every enum column got its own `<Table><Column>Enum`. A column
+> backed by a declared enum now reports the shared name instead (`UsersStatusEnum` →
+> `StatusEnum`). To keep the old names, return them from the mapper:
+>
+> ```Typescript
+> enumNameMapper: ({ tableName, columnName }) =>
+>     `${tableName}${columnName[0]!.toUpperCase()}${columnName.slice(1)}Enum`
+> ```
+
+## Documenting the schema
+
+Four hooks put descriptions and deprecations on the generated types. Each is called per
+column (or per table / per relation) and returns `undefined` to say nothing:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    describeColumn: (column, { tableName, columnName }) => docs[tableName]?.[columnName],
+    describeTable: (tableName) => docs[tableName]?._table,
+    describeRelation: (tableName, relationName) => `The ${relationName} of this ${tableName}`,
+    deprecateColumn: (column, { columnName }) => (columnName === 'legacyId' ? 'Use `id`' : undefined),
+})
+```
+
+-   `describeColumn` reaches every place the column appears: the object type, the create and
+    update inputs, the filter input's field, `Min`/`Max` aggregates and `GroupKeys`
+-   The hook receives the drizzle column itself, so a project that keeps its documentation in
+    the schema (a `.$type()` brand, a custom column property, a comment table) can read it
+    straight off
+-   `deprecateColumn` marks output fields and *optional* input fields. A required input field
+    is skipped: GraphQL forbids deprecating one, and emitting it would make the schema invalid
+-   Filter and `orderBy` fields are never deprecated — filtering on a deprecated column is how
+    a caller finds the rows still using it
 
 ## Relation filters
 
@@ -514,6 +598,67 @@ Dialect differences:
 The build-wide `conflictDoNothing` option is deprecated in favour of this: it applies to every
 `create*` mutation with no way for a request to opt out. `onConflict: { action: NOTHING }` is
 the per-request replacement.
+
+## Nested writes
+
+`features.nestedWrites` adds a field per writable relation to every create and update input,
+so a row and the rows it is related to can be written in one mutation:
+
+```graphql
+mutation {
+    createPostsSingle(
+        values: {
+            title: "Hello"
+            author: { connect: { email: { eq: "dan@example.com" } } }
+            comments: { create: [{ body: "First" }, { body: "Second" }] }
+        }
+    ) {
+        id
+        author {
+            name
+        }
+    }
+}
+```
+
+Every relation field offers `create` and `connect`; on the update input, a relation whose
+foreign key is nullable also offers `disconnect` and — for a to-many relation — `set`:
+
+```graphql
+mutation {
+    updateUsersSingle(
+        where: { id: { eq: 1 } }
+        set: { posts: { set: [{ isPublished: { eq: true } }], create: [{ title: "New" }] } }
+    ) {
+        id
+    }
+}
+```
+
+-   `connect`, `disconnect` and `set` take the target's own `Filters` input, so they select
+    rows the same way a query does. A filter that matches everything is rejected rather than
+    attaching the whole table
+-   `set` replaces the relation wholesale — everything attached is detached first, then the
+    filters attach. It runs before `create`, so a row created in the same write survives it
+-   A to-one relation takes one operation at a time (`connect` **or** `disconnect` **or**
+    `create`), and attaching to it detaches whatever was there
+-   `disconnect` and `set` only exist where the foreign key is nullable; there is no way to
+    detach a row whose key is `NOT NULL`
+-   A column the relation fills in becomes nullable on the create input — with
+    `author: { create: … }` available, `authorId` is one of two ways to supply it
+-   Nesting is one level deep: the row a nested `create` inserts takes columns only, and the
+    join column is left off, since the write it is part of sets it
+-   Many-to-many (`.through()`) relations are not written through
+-   The whole tree runs in one transaction — a savepoint when the request already carries one
+    — so a failure anywhere leaves nothing behind
+-   A `set` that carries only relation fields is a valid update: it changes what the row is
+    attached to without rewriting the row
+
+Dialect support: **PostgreSQL**, and **SQLite** on an asynchronous driver (libsql, D1). A
+nested write reads back the key of the row it just wrote, which MySQL has no `RETURNING` for,
+and interleaves awaited statements inside a transaction, which a synchronous SQLite driver
+cannot do — `buildSchema` rejects both combinations rather than generating something that
+half-works.
 
 ## Single-row update & delete
 

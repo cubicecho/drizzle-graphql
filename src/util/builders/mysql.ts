@@ -51,7 +51,7 @@ import {
   toGraphQLError,
 } from '../builders/common.ts';
 import { remapFromGraphQLArrayInput, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
-import { registerScalarOverrides } from '../type-converter/index.ts';
+import { registerEnumConfig, registerScalarOverrides } from '../type-converter/index.ts';
 import {
   createRelationAggregateFactory,
   generateAggregate,
@@ -539,9 +539,20 @@ export const generateSchemaData = <
     );
   }
 
+  // A nested write reads the key of the row it just wrote back out of the statement that
+  // wrote it, which MySQL has no RETURNING clause for.
+  if (features.nestedWrites) {
+    throw new Error(
+      'Drizzle-GraphQL Error: features.nestedWrites is not supported on MySQL — a nested write needs the parent row it just inserted returned to it, and MySQL has no RETURNING clause.',
+    );
+  }
+
   // Resolve scalar overrides into the type-converter's registry before any type generation —
   // every subsequent column→GraphQL type decision and runtime value remap consults it.
   registerScalarOverrides(tables, options);
+  // Same lifecycle: the enum registry is per-build, so a second build never reuses the first
+  // build's enum types (and with them its naming decisions).
+  registerEnumConfig(options);
 
   // Build namedRelations from the drizzle-orm v1 relations config.
   const namedRelations = buildNamedRelations(relations ?? {}, tableEntries);
@@ -570,6 +581,7 @@ export const generateSchemaData = <
     listRelationFilterCache: new Map(),
     aggregateTypeCache: new Map(),
     complexity,
+    docs: options.docs ?? {},
   };
 
   // Left undefined when the feature is off — generateTableTypes then emits no

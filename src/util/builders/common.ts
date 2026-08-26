@@ -79,7 +79,11 @@ import type {
   ConvertedColumn,
   ConvertedInputColumn,
   ConvertedRelationColumnWithArgs,
+  SchemaDocs,
 } from '../type-converter/types.ts';
+// Type-only: the nested-write module imports this one at runtime, so the dependency has to
+// stay one-directional. The implementation is injected by the dialect builder.
+import type { NestedWriteTypes } from './nested-writes.ts';
 import type {
   FilterColumnOperators,
   FilterColumnOperatorsCore,
@@ -864,7 +868,53 @@ export interface TypeCacheCtx {
    * threaded through all of them.
    */
   complexity: ResolvedComplexityOptions | undefined;
+  /**
+   * The build's documentation hooks (`describeColumn`, `describeTable`, `describeRelation`,
+   * `deprecateColumn`). Empty when the caller configured none, which is the default — the
+   * generator emits no descriptions of its own for column and relation fields.
+   */
+  docs: SchemaDocs;
 }
+
+/**
+ * The `description` / `deprecationReason` a column field should carry, from the build's
+ * documentation hooks. Both are omitted rather than set to `undefined` so a field config
+ * built by spreading this stays identical to one built without it.
+ */
+export const columnDocs = (
+  docs: SchemaDocs,
+  column: Column,
+  tableName: string,
+  columnName: string,
+): { description?: string; deprecationReason?: string } => {
+  const description = docs.describeColumn?.(column, { tableName, columnName });
+  const deprecationReason = docs.deprecateColumn?.(column, { tableName, columnName });
+  return {
+    ...(description !== undefined ? { description } : {}),
+    ...(deprecationReason !== undefined ? { deprecationReason } : {}),
+  };
+};
+
+/**
+ * A required input field cannot be deprecated — graphql-js rejects the schema outright, since
+ * a client has no way to stop sending it. `deprecateColumn` is written against the column, not
+ * against each generated input, so drop the reason where it cannot apply rather than making
+ * the caller predict which inputs made the column non-null.
+ */
+const inputFieldDocs = (
+  docs: SchemaDocs,
+  column: Column,
+  tableName: string,
+  columnName: string,
+  fieldType: unknown,
+): { description?: string; deprecationReason?: string } => {
+  const resolved = columnDocs(docs, column, tableName, columnName);
+  if (resolved.deprecationReason !== undefined && fieldType instanceof GraphQLNonNull) {
+    const { deprecationReason: _dropped, ...rest } = resolved;
+    return rest;
+  }
+  return resolved;
+};
 
 /** The shape `graphql-query-complexity`'s `fieldExtensionsEstimator` hands to a field's hint. */
 export type ComplexityEstimatorArgs = { args: Record<string, any>; childComplexity: number };
@@ -911,22 +961,41 @@ export interface SelectionCtx {
   tableName: string;
   relationMap: Record<string, Record<string, TableNamedRelations>>;
   tables: Record<string, Table>;
+  /**
+   * Every relation on the table, including those `relationMap` omits because they are not
+   * eager-loaded. A lazily-resolved relation still correlates on a join column, so the
+   * column extractors need to see it even when the eager map doesn't.
+   */
+  allRelations?: Record<string, Record<string, TableNamedRelations>>;
 }
 
 const AGGREGATE_FIELD_SUFFIX = 'Aggregate';
 
 /**
- * Property names of the join columns that the `<relation>Aggregate` fields in this selection
- * correlate on. Without them the parent row reaches the aggregate resolver with no key and
- * every count would come back 0.
+ * Property names of the join columns that this selection's relation fields correlate on.
+ * Without them the parent row reaches the relation resolver with no key: an aggregate counts
+ * 0 and a relation list comes back empty.
+ *
+ * Needed by every relation field that resolves through its own resolver rather than the
+ * parent's `with:` clause — `<relation>Aggregate` fields, which are always lazy; relations
+ * excluded by `eagerLoadRelations`; and relations dropped from `with:` because they were
+ * selected more than once under different aliases. Forcing the column for *any* selected
+ * relation covers all three without the extractor having to predict which path will run: the
+ * cost is one extra column (usually the primary key) in the parent SELECT, and GraphQL only
+ * returns the fields the query asked for, so it never reaches the response.
  */
-const relationAggregateJoinColumns = (
+const relationJoinColumns = (
   tree: Record<string, ResolveTree>,
   table: Table,
   selectionCtx: SelectionCtx | undefined,
 ): string[] => {
-  const relations = selectionCtx?.relationMap[selectionCtx.tableName];
-  if (!relations || !selectionCtx) {
+  if (!selectionCtx) {
+    return [];
+  }
+  const relations =
+    (selectionCtx.allRelations ?? selectionCtx.relationMap)[selectionCtx.tableName] ??
+    selectionCtx.relationMap[selectionCtx.tableName];
+  if (!relations) {
     return [];
   }
 
@@ -934,12 +1003,14 @@ const relationAggregateJoinColumns = (
   const needed: string[] = [];
 
   for (const fieldData of Object.values(tree)) {
-    // A column that happens to end in "Aggregate" is a column, not a relation aggregate.
-    if (tableColumns[fieldData.name] || !fieldData.name.endsWith(AGGREGATE_FIELD_SUFFIX)) {
+    // A column that happens to be named like a relation is a column.
+    if (tableColumns[fieldData.name]) {
       continue;
     }
 
-    const relEntry = relations[fieldData.name.slice(0, -AGGREGATE_FIELD_SUFFIX.length)];
+    const relEntry = fieldData.name.endsWith(AGGREGATE_FIELD_SUFFIX)
+      ? relations[fieldData.name.slice(0, -AGGREGATE_FIELD_SUFFIX.length)]
+      : relations[fieldData.name];
     const targetTable = relEntry ? selectionCtx.tables[relEntry.targetTableName] : undefined;
     if (!relEntry || !targetTable) {
       continue;
@@ -972,7 +1043,7 @@ export const extractSelectedColumnsFromTree = (
     selectedColumns.push([fieldData.name, true]);
   }
 
-  for (const columnName of relationAggregateJoinColumns(tree, table, selectionCtx)) {
+  for (const columnName of relationJoinColumns(tree, table, selectionCtx)) {
     selectedColumns.push([columnName, true]);
   }
 
@@ -1009,7 +1080,7 @@ export const extractSelectedColumnsFromTreeSQLFormat = <TColType extends Column 
     selectedColumns.push([fieldData.name, tableColumns[fieldData.name]!]);
   }
 
-  for (const columnName of relationAggregateJoinColumns(tree, table, selectionCtx)) {
+  for (const columnName of relationJoinColumns(tree, table, selectionCtx)) {
     selectedColumns.push([columnName, tableColumns[columnName]!]);
   }
 
@@ -1199,6 +1270,14 @@ const jsonFilterFields = (column: Column, colType: ReturnType<typeof drizzleColu
 };
 
 /**
+ * `inArray` / `notInArray` take a list of candidate values and compile to SQL `IN` /
+ * `NOT IN`. Their descriptions are fixed rather than derived from the column: what the
+ * operator does is the same everywhere, and the operand type already says what goes in it.
+ */
+const IN_ARRAY_DESCRIPTION = 'Matches any one of these values (SQL `IN`)';
+const NOT_IN_ARRAY_DESCRIPTION = 'Matches none of these values (SQL `NOT IN`)';
+
+/**
  * Filter fields for an array column (Postgres-only in drizzle). Membership operators replace
  * the scalar comparison and string pattern sets: `has` checks a single element (`@>` with a
  * one-element array), `hasSome` is overlap (`&&`), `hasEvery` is containment (`@>`), `isEmpty`
@@ -1206,7 +1285,7 @@ const jsonFilterFields = (column: Column, colType: ReturnType<typeof drizzleColu
  * `inArray`/`notInArray` still match the whole array against a list of candidate arrays
  * (SQL `IN`, typed `[[Element!]!]`).
  */
-const arrayFilterFields = (colType: GraphQLList<any>, colArr: GraphQLList<any>, colDesc: string | undefined) => {
+const arrayFilterFields = (colType: GraphQLList<any>, colArr: GraphQLList<any>) => {
   let element = colType.ofType;
   if (element instanceof GraphQLNonNull) {
     element = element.ofType;
@@ -1214,14 +1293,14 @@ const arrayFilterFields = (colType: GraphQLList<any>, colArr: GraphQLList<any>, 
   const elementList = new GraphQLList(new GraphQLNonNull(element));
 
   return {
-    eq: { type: colType, description: colDesc },
-    ne: { type: colType, description: colDesc },
+    eq: { type: colType, description: 'The whole array equals this array' },
+    ne: { type: colType, description: 'The whole array differs from this array' },
     has: { type: element, description: 'Array contains this element' },
     hasSome: { type: elementList, description: 'Array contains at least one of these elements (overlap, `&&`)' },
     hasEvery: { type: elementList, description: 'Array contains every one of these elements (containment, `@>`)' },
     isEmpty: { type: GraphQLBoolean, description: 'When true, matches arrays with no elements' },
-    inArray: { type: colArr, description: `Array<${colDesc}>` },
-    notInArray: { type: colArr, description: `Array<${colDesc}>` },
+    inArray: { type: colArr, description: IN_ARRAY_DESCRIPTION },
+    notInArray: { type: colArr, description: NOT_IN_ARRAY_DESCRIPTION },
     isNull: { type: GraphQLBoolean },
     isNotNull: { type: GraphQLBoolean },
   };
@@ -1297,7 +1376,6 @@ const generateColumnFilterValues = (
   }
 
   const colType = columnGraphQLType.type;
-  const colDesc = columnGraphQLType.description;
   const colArr = new GraphQLList(new GraphQLNonNull(colType));
 
   // Uuid and numeric filters omit the string pattern operators
@@ -1317,14 +1395,14 @@ const generateColumnFilterValues = (
     kind === 'json'
       ? jsonFilterFields(column, colType)
       : kind === 'array'
-        ? arrayFilterFields(colType as GraphQLList<any>, colArr, colDesc)
+        ? arrayFilterFields(colType as GraphQLList<any>, colArr)
         : {
-            eq: { type: colType, description: colDesc },
-            ne: { type: colType, description: colDesc },
-            lt: { type: colType, description: colDesc },
-            lte: { type: colType, description: colDesc },
-            gt: { type: colType, description: colDesc },
-            gte: { type: colType, description: colDesc },
+            eq: { type: colType, description: 'Equal to' },
+            ne: { type: colType, description: 'Not equal to' },
+            lt: { type: colType, description: 'Less than' },
+            lte: { type: colType, description: 'Less than or equal to' },
+            gt: { type: colType, description: 'Greater than' },
+            gte: { type: colType, description: 'Greater than or equal to' },
             ...(omitStringOps
               ? {}
               : {
@@ -1359,10 +1437,10 @@ const generateColumnFilterValues = (
                     description: 'Case-insensitive `contains`.',
                   },
                 }),
-            inArray: { type: colArr, description: `Array<${colDesc}>` },
-            notInArray: { type: colArr, description: `Array<${colDesc}>` },
-            isNull: { type: GraphQLBoolean },
-            isNotNull: { type: GraphQLBoolean },
+            inArray: { type: colArr, description: IN_ARRAY_DESCRIPTION },
+            notInArray: { type: colArr, description: NOT_IN_ARRAY_DESCRIPTION },
+            isNull: { type: GraphQLBoolean, description: 'When true, matches rows where the column is NULL' },
+            isNotNull: { type: GraphQLBoolean, description: 'When true, matches rows where the column is not NULL' },
           };
 
   // The boolean branches are recursive — each branch is this filter type itself — so the
@@ -1419,10 +1497,16 @@ const generateTableFilterValuesCached = (table: Table, tableName: string, cacheC
   const columnEntries = Object.entries(columns);
 
   const remapped = Object.fromEntries(
-    columnEntries.map(([columnName, columnDescription]) => [
+    columnEntries.map(([columnName, column]) => [
       columnName,
       {
-        type: generateColumnFilterValues(columnDescription, tableName, columnName, cacheCtx),
+        type: generateColumnFilterValues(column, tableName, columnName, cacheCtx),
+        // A filter field is the same column, so it carries the same documentation. Deprecation
+        // is not propagated: filtering on a deprecated column is how a caller finds the rows
+        // that still use it.
+        ...(cacheCtx.docs.describeColumn
+          ? { description: cacheCtx.docs.describeColumn(column, { tableName, columnName }) }
+          : {}),
       },
     ]),
   );
@@ -1445,9 +1529,12 @@ const generateTableSelectTypeFieldsCached = (
   const columnEntries = Object.entries(columns);
 
   const remapped = Object.fromEntries(
-    columnEntries.map(([columnName, columnDescription]) => [
+    columnEntries.map(([columnName, column]) => [
       columnName,
-      drizzleColumnToGraphQLType(columnDescription, columnName, tableName),
+      {
+        ...drizzleColumnToGraphQLType(column, columnName, tableName),
+        ...columnDocs(cacheCtx.docs, column, tableName, columnName),
+      },
     ]),
   );
 
@@ -1794,6 +1881,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
     // The thunk reads container.fields, which will be populated after recursion completes.
     const shell = new GraphQLObjectType({
       name: typeName,
+      description: cacheCtx.docs.describeTable?.(tableName),
       fields: () => ({ ...tableFields, ...container!.fields }),
     });
     cacheCtx.objectTypeCache.set(tableName, shell);
@@ -1853,12 +1941,15 @@ const generateSelectFields = <TWithOrder extends boolean>(
         // call populates the container, the shell automatically includes those relation fields.
         relType = new GraphQLObjectType({
           name: resolveTypeName(targetTableName, typeNameMapper),
+          description: cacheCtx.docs.describeTable?.(targetTableName),
           fields: () => ({ ...targetTableFields, ...capturedTargetContainer.fields }),
         });
         cacheCtx.objectTypeCache.set(targetTableName, relType);
       }
 
       const resolve = resolverFactory?.({ tableName, relationName, relEntry: relEntry as TableNamedRelations, isOne });
+      const relationDescription = cacheCtx.docs.describeRelation?.(tableName, relationName);
+      const relationDocs = relationDescription !== undefined ? { description: relationDescription } : {};
 
       if (isOne) {
         // Honor the relation's declared optionality: `r.one.Target({ ..., optional: false })`
@@ -1876,6 +1967,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
               where: { type: relSelectData.filters },
             },
             resolve,
+            ...relationDocs,
           },
         ]);
         continue;
@@ -1892,6 +1984,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
             limit: { type: GraphQLInt },
           },
           resolve,
+          ...relationDocs,
           ...(cacheCtx.complexity ? { extensions: { complexity: listFieldComplexity(cacheCtx.complexity) } } : {}),
         },
       ]);
@@ -1968,6 +2061,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   updatePrefix: string = 'update',
   resolverFactory?: RelationResolverFactory,
   relationAggregateFactory?: RelationAggregateFactory,
+  nestedWrites?: NestedWriteTypes,
 ): GeneratedTableTypes<WithReturning> => {
   const { tableFields, relationFields, filters, order } = generateSelectFields(
     tables,
@@ -1989,29 +2083,55 @@ export const generateTableTypes = <WithReturning extends boolean>(
   const columns = getColumns(table);
   const columnEntries = Object.entries(columns);
 
+  // A column a nested write can supply (`author: { create: … }` fills in `authorId`) cannot
+  // stay required on the create input, or the two ways of setting it would be mutually
+  // exclusive at the type level.
+  const relaxedColumns = nestedWrites?.relaxedColumns(tableName);
+
   const insertFields = Object.fromEntries(
-    columnEntries.map(([columnName, columnDescription]) => [
-      columnName,
-      drizzleColumnToGraphQLType(columnDescription, columnName, tableName, false, true, true),
-    ]),
+    columnEntries.map(([columnName, column]) => {
+      const converted = drizzleColumnToGraphQLType(
+        column,
+        columnName,
+        tableName,
+        !!relaxedColumns?.has(columnName),
+        true,
+        true,
+      );
+      return [
+        columnName,
+        { ...converted, ...inputFieldDocs(cacheCtx.docs, column, tableName, columnName, converted.type) },
+      ];
+    }),
   );
 
   const updateFields = Object.fromEntries(
-    columnEntries.map(([columnName, columnDescription]) => [
-      columnName,
-      drizzleColumnToGraphQLType(columnDescription, columnName, tableName, true, false, true),
-    ]),
+    columnEntries.map(([columnName, column]) => {
+      const converted = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, true);
+      return [
+        columnName,
+        { ...converted, ...inputFieldDocs(cacheCtx.docs, column, tableName, columnName, converted.type) },
+      ];
+    }),
   );
 
+  const typeName = resolveTypeName(tableName, typeNameMapper);
+
   // Insert/update input types: ${capitalize(insertPrefix)}${resolveTypeName(tableName)}Input / ${capitalize(updatePrefix)}${resolveTypeName(tableName)}Input
+  // With nested writes on, the fields are thunked: a relation field's operand is the target
+  // table's filter input, which does not exist yet while this table is being generated.
   const insertInput = new GraphQLInputObjectType({
-    name: `${capitalize(insertPrefix)}${resolveTypeName(tableName, typeNameMapper)}Input`,
-    fields: insertFields,
+    name: `${capitalize(insertPrefix)}${typeName}Input`,
+    fields: nestedWrites
+      ? () => ({ ...insertFields, ...nestedWrites.createFields(tableName, typeName) })
+      : insertFields,
   });
 
   const updateInput = new GraphQLInputObjectType({
-    name: `${capitalize(updatePrefix)}${resolveTypeName(tableName, typeNameMapper)}Input`,
-    fields: updateFields,
+    name: `${capitalize(updatePrefix)}${typeName}Input`,
+    fields: nestedWrites
+      ? () => ({ ...updateFields, ...nestedWrites.updateFields(tableName, typeName) })
+      : updateFields,
   });
 
   // Select type: ${resolveTypeName(tableName)} (with relation fields)
@@ -2020,6 +2140,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
     cacheCtx.objectTypeCache.get(tableName) ??
     new GraphQLObjectType({
       name: resolveTypeName(tableName, typeNameMapper),
+      description: cacheCtx.docs.describeTable?.(tableName),
       fields: { ...tableFields, ...relationFields },
     });
 
@@ -2809,6 +2930,22 @@ const extractRelationsParamsInner = (
     if (!field) {
       continue;
     }
+
+    // The `with:` clause is keyed by relation name, so one relation selected twice under
+    // different aliases has no eager representation: the first selection's args and column
+    // set would win, and both aliases would then read the same pre-fetched array off the
+    // parent — wrong rows for the loser, and missing columns it selected. Drizzle's RQB
+    // cannot fetch one relation twice under two keys, so there is no eager fix. Leave the
+    // relation out of `with:` and let every alias resolve through the field resolver's
+    // batch loader, which keys its loader by the serialized args and so is per-alias
+    // correct (and still batched across parents).
+    const selectionCount = Object.values(baseField).reduce(
+      (n, f) => n + ((f as ResolveTree).name === relName ? 1 : 0),
+      0,
+    );
+    if (selectionCount > 1) {
+      continue;
+    }
     const relField = (field as ResolveTree)?.fieldsByTypeName;
     const relFieldSelection = relField?.[relTypeName];
 
@@ -2823,6 +2960,7 @@ const extractRelationsParamsInner = (
       tableName: targetTableName,
       relationMap,
       tables,
+      allRelations: filterCtx?.relationMap,
     });
 
     const thisRecord: Partial<ProcessedTableSelectArgs> = {};
@@ -4032,6 +4170,7 @@ export const runRelationalSelect = async (opts: {
       tableName,
       relationMap,
       tables,
+      allRelations: filterCtx?.relationMap,
     }),
     offset: distinctKeys ? undefined : offset,
     // drizzle-orm v1 RQB calls orderBy/where with the aliased table proxy — use it

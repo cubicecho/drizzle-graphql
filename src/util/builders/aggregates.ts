@@ -37,6 +37,7 @@ import { remapToGraphQLCore } from '../data-mappers/index.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type { ConvertedColumn } from '../type-converter/types.ts';
 import {
+  columnDocs,
   extractFilters,
   extractRelationJoinColumns,
   generateColumnEnum,
@@ -165,9 +166,9 @@ export const generateAggregateTypes = (
         type: new GraphQLObjectType({
           name: `${typeName}${capitalize(op)}Aggregate`,
           fields: Object.fromEntries(
-            Object.entries(orderable).map(([columnName, { converted }]) => [
+            Object.entries(orderable).map(([columnName, { column, converted }]) => [
               columnName,
-              { type: converted.type, description: converted.description },
+              { type: converted.type, ...columnDocs(cacheCtx?.docs ?? {}, column, tableName, columnName) },
             ]),
           ),
         }),
@@ -241,7 +242,7 @@ const aggregateTarget = (table: Table, tableName: string, typeName: string): Agg
     columns: getColumns(table),
     dateTimeColumns: new Set(
       Object.entries(orderable)
-        .filter(([, { converted }]) => converted.description === 'DateTime')
+        .filter(([, { converted }]) => converted.typeLabel === 'DateTime')
         .map(([columnName]) => columnName),
     ),
   };
@@ -604,9 +605,9 @@ export const generateGroupByType = (
     name: `${typeName}GroupKeys`,
     description: `The grouped column values of one ${typeName} group. A column the query did not group by is null.`,
     fields: Object.fromEntries(
-      Object.entries(groupable).map(([columnName, { converted }]) => [
+      Object.entries(groupable).map(([columnName, { column, converted }]) => [
         columnName,
-        { type: converted.type, description: converted.description },
+        { type: converted.type, ...columnDocs(cacheCtx?.docs ?? {}, column, tableName, columnName) },
       ]),
     ),
   });
