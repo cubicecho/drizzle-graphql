@@ -101,6 +101,7 @@ const { schema } = buildSchema(db, {
         distinct: false,          // the `distinct` argument on list queries
         insert: false,            // create<Table> / create<Table>Single mutations
         update: false,            // update<Table> / update<Table>Single mutations
+        updateMany: false,        // update<Table>Many batch mutation (needs `update`)
         delete: false,            // delete<Table> / delete<Table>Single mutations
         upsert: true,             // upsert<Table> / upsert<Table>Single mutations (off by default)
         nestedWrites: true,       // relation fields on the create/update inputs (off by default)
@@ -120,6 +121,38 @@ const { schema } = buildSchema(db, {
 -   Turning off all three mutation features omits the `Mutation` type entirely, the same as
     `mutations: false`
 -   List and single queries are always generated, so `Query` is never empty
+
+## Naming
+
+Type and field names are derived from the Drizzle schema keys. Three options change them.
+
+`prefixes` and `suffixes` rename operations without touching type names:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    prefixes: { insert: 'add', update: 'edit', delete: 'remove' }, // default: create / update / delete
+    suffixes: { list: 'All', single: '' },                         // default: '' / 'Single'
+})
+```
+
+The list and single suffixes cannot be identical unless a `typeNameMapper` is also given —
+`users` and `usersSingle` would otherwise collapse onto one field name, and `buildSchema`
+throws rather than generating a schema that silently drops one of them.
+
+`typeNameMapper` renames the table itself, which is what a plural-keyed schema usually wants:
+`export const users = pgTable('users', …)` otherwise produces `type Users` and a
+`usersSingle` query.
+
+```Typescript
+import pluralize from 'pluralize'
+
+const { schema } = buildSchema(db, {
+    typeNameMapper: (table) => ({ singular: pluralize.singular(table), plural: table }),
+})
+// type User; queries `users` / `user`; mutations `createUsers` / `createUser`
+```
+
+Return `undefined` for any table that should keep its default naming.
 
 ## Scalars
 
@@ -159,6 +192,25 @@ import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQL
 
 `GraphQLBigIntString` is the `BigInt` scalar — named for what it does rather than what it is
 called in SDL, to avoid clashing with the language's own `BigInt`.
+
+### Overriding a column's scalar
+
+Built-in detection is a default, not a ceiling. `scalars` overrides named columns, and
+`mapColumnType` applies a rule across every column at build time — the tool for a convention
+("every `numeric` column is `Money`") or for a custom column type detection does not know:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    scalars: {
+        users: { email: EmailAddressScalar },              // by table key, then column key
+    },
+    mapColumnType: (column) => (column.columnType === 'PgNumeric' ? MoneyScalar : undefined),
+})
+```
+
+Either may return a single scalar, or an `{ output, input }` pair when the read and write
+types differ. `mapColumnType` returning `undefined` keeps the default, and a column matched
+by both is decided by `scalars` alone.
 
 ## Enum types
 
@@ -733,9 +785,105 @@ buildSchema(db, { complexity: false });
 
 Cost is not a depth bound. A cyclic relation graph (`user -> posts -> author -> posts -> …`)
 lets a client nest as deep as it likes, and a deep query over cheap fields can stay under any
-complexity ceiling. Put a depth limit in front of a publicly exposed schema as well — e.g.
-[`graphql-depth-limit`](https://github.com/stems/graphql-depth-limit) — or set
-`relationsDepthLimit: 0` to generate no relation fields at all.
+complexity ceiling. Set `relationsDepthLimit: 0` to generate no relation fields at all, or —
+more usefully — bound depth at the edge, along with the rest of the document-shape defences
+below.
+
+### Hardening a public endpoint
+
+A generated schema is wide by construction: every table is reachable, every relation is
+traversable, and the relation graph is usually cyclic. The `complexity` hints price that
+surface, but only for the shapes the generator knows about, and nothing in this library
+inspects the incoming document. For a schema exposed to untrusted clients, put
+[GraphQL Armor](https://github.com/Escape-Technologies/graphql-armor) in front of it — it
+bundles the document-level defences this library deliberately does not generate:
+
+| Protection | What it bounds |
+| --- | --- |
+| `maxDepth` | nesting through a cyclic relation graph |
+| `maxAliases` | the same expensive list requested many times under many aliases |
+| `maxDirectives` | directive-count amplification |
+| `maxTokens` | parser blow-up, rejected before validation runs |
+| `costLimit` | a static per-document cost ceiling |
+| `blockFieldSuggestion` | `Did you mean "keyHash"?` leaking field names on a typo |
+
+```ts
+import { EnvelopArmor } from '@escape.tech/graphql-armor';
+import { createYoga } from 'graphql-yoga';
+
+const { schema } = buildSchema(db);
+const armor = new EnvelopArmor({
+  maxDepth: { n: 8 }, // roughly three relation hops into the generated graph
+  maxAliases: { n: 15 },
+  costLimit: { maxCost: 5000 },
+});
+
+const yoga = createYoga({ schema, plugins: armor.protect().plugins });
+```
+
+`ApolloArmor` is the Apollo Server equivalent — its `protect()` returns `plugins` plus
+`validationRules`.
+
+Armor's `costLimit` is its own document-shape estimate and does not read the `complexity`
+extensions above; the two compose, if you want a cheap static ceiling alongside row-count
+aware pricing. Neither one bounds an individual `limit` argument, so a single unbounded list
+query is still a full table scan — cap `limit` yourself if that matters.
+
+## Authorization
+
+`buildSchema` is handed a Drizzle instance, not a request. It has no notion of who is asking,
+so it generates no authorization: every table it knows about is queryable and writable by
+anyone who can reach the endpoint. Auth belongs to a layer above the schema, where the
+request context actually lives.
+
+-   **[graphql-shield](https://github.com/maticzav/graphql-shield)** — permission rules
+    mapped onto fields and applied with
+    [`graphql-middleware`](https://github.com/maticzav/graphql-middleware). Rules attach to
+    root fields *and* to fields of a generated object type, which is what makes it an answer
+    to "this column must never leave the server" and not just "this query is blocked":
+
+    ```ts
+    import { applyMiddleware } from 'graphql-middleware';
+    import { allow, deny, rule, shield } from 'graphql-shield';
+
+    const isAuthenticated = rule()((parent, args, ctx) => Boolean(ctx.userId));
+
+    const { schema } = buildSchema(db);
+    const guarded = applyMiddleware(
+      schema,
+      shield(
+        {
+          Query: { users: isAuthenticated, usersSingle: isAuthenticated },
+          Mutation: { '*': isAuthenticated },
+          ApiKeys: { keyHash: deny }, // field stays in the schema, never resolves
+        },
+        { fallbackRule: allow },
+      ),
+    );
+    ```
+
+-   **[CASL](https://casl.js.org)** (`@casl/ability`) — one ability definition, conditions and
+    field lists included (`can('read', 'Posts', ['title', 'body'])`), shared between the
+    GraphQL layer and the rest of the app instead of a permission model that exists only in
+    the API. CASL is not GraphQL middleware itself: wire it in through the shield rules above
+    or through your own resolver wrapper, and let the ability answer the questions.
+
+What neither can do is **narrow** a query. They permit or deny a field; they do not append
+`WHERE user_id = …` to the SQL a generated resolver runs, and a permitted `users` query still
+returns every tenant's rows. Until row scoping is a first-class option here, the ways to get
+it are, in increasing order of effort:
+
+-   supply the tenant predicate as an ordinary `where` argument from a trusted gateway, and
+    deny the raw generated fields to everyone else;
+-   build the schema by hand from `entities`, exposing only the generated resolvers you have
+    wrapped;
+-   put the scoped tables behind database row-level security and give the driver the
+    request's identity, so the narrowing happens below Drizzle entirely.
+
+None of this removes anything from introspection either — `deny` hides the data, not the
+shape. If the schema must not so much as mention a table, keep that table out of the Drizzle
+instance you pass to `buildSchema` (a second instance over a narrowed schema object is
+cheap).
 
 ## Error handling
 
@@ -782,10 +930,44 @@ want to fall back to it explicitly.
 
 ## Transactions
 
-Each resolver runs its statements on the database the schema was built from. A request that
-fires several mutations therefore commits each one separately, and a failure halfway leaves
-the earlier ones in place. To run a whole request as one unit, open a transaction yourself
-and put it on the GraphQL context under the exported `drizzleExecutorKey`:
+Each resolver runs its statements on the database the schema was built from, so by default a
+request that fires several mutations commits each one separately and a failure halfway leaves
+the earlier ones in place. There are two ways to make a request atomic.
+
+### Letting the library open one
+
+`transactions: 'auto'` opens `db.transaction()` once per request whose document selects more
+than one root mutation field, and runs every mutation field — plus the reads nested under
+them — inside it:
+
+```Typescript
+const { schema } = buildSchema(db, { transactions: 'auto' })
+
+// or, to change the safety timeout:
+const { schema } = buildSchema(db, { transactions: { mode: 'auto', timeoutMs: 10_000 } })
+```
+
+The transaction commits when the last mutation field completes and rolls back if any of them
+fails; mutation fields after a failure fail fast instead of running against a rolled-back
+transaction. A document with one mutation field or none opens nothing, so ordinary requests
+are untouched.
+
+-   The driver must support `db.transaction()` — `neon-http` does not. For SQLite only an
+    asynchronous driver can hold a transaction open across resolvers, and `buildSchema`
+    throws for a synchronous one rather than failing at request time
+-   The GraphQL context value must be a fresh object per request (every mainstream server
+    does this) — it keys the per-request transaction state
+-   `timeoutMs` (default `30000`) rolls back an abandoned transaction, e.g. when the host
+    server stopped calling resolvers because of a non-null completion error, instead of
+    leaking the connection
+-   A document that mixes in mutation fields this build did not generate is left alone: their
+    completion cannot be tracked, so no transaction is opened
+-   It never nests — an executor supplied on the context wins, as below
+
+### Supplying your own executor
+
+To control the boundary yourself, open a transaction and put it on the GraphQL context under
+the exported `drizzleExecutorKey`:
 
 ```Typescript
 import { buildSchema, drizzleExecutorKey } from 'drizzle-graphql'
@@ -911,3 +1093,24 @@ Opting a relation out does **not** remove its field — it keeps resolving lazil
 request-scoped batch loader, so the field still works even before you override it. Table
 and relation names are the Drizzle schema keys (e.g. `Users`, `posts`), matching the keys
 of `entities.fieldResolvers`.
+
+## Configuration reference
+
+Every key of the second argument to `buildSchema(db, config?)`. Each links to the section
+that explains it, where there is one.
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `mutations` | `true` | `false` omits the `Mutation` type entirely |
+| `features` | see [Choosing what gets generated](#choosing-what-gets-generated) | which operations are generated, per operation |
+| `relationsDepthLimit` | unlimited | how deep relation fields are generated; `0` gives a flat, columns-only schema |
+| `prefixes` / `suffixes` / `typeNameMapper` | see [Naming](#naming) | operation and type names |
+| `scalars` / `mapColumnType` | built-in detection | [override a column's GraphQL type](#overriding-a-columns-scalar), by name or by rule |
+| `enumNameMapper` | shared `<EnumName>Enum` per database enum | [names the enum a column maps to](#enum-types) |
+| `describeColumn` / `describeTable` / `describeRelation` | none | [GraphQL descriptions](#documenting-the-schema) |
+| `deprecateColumn` | none | `@deprecated` on a column's output and optional input fields |
+| `conflictDoNothing` | `false` | PostgreSQL only — `ON CONFLICT DO NOTHING` on inserts, which makes `create<Table>Single` nullable |
+| `complexity` | on | [cost hints](#query-cost) in field extensions; `false` turns them off |
+| `transactions` | `'none'` | `'auto'` wraps a multi-mutation request in one [transaction](#transactions) |
+| `onError` | replaces driver errors | [error handling](#error-handling) hook — log, or surface a different error |
+| `eagerLoadRelations` | `true` | [which relations are pre-fetched](#overriding-a-relations-resolver-without-overfetching) with the parent query |

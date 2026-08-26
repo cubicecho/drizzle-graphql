@@ -15,19 +15,11 @@ Supabase's `pg_graphql`. Roughly ordered within each group; nothing here is comm
 
 ## Medium priority
 
-- **Multi-mutation transactions** — a caller can now run a whole request on one transaction
-  by putting it on the GraphQL context under `drizzleExecutorKey`; every resolver reads it at
-  resolve time. What is left is doing it automatically: wrapping a request that fires several
-  mutations in a transaction the library opens itself, without the caller wiring up the
-  context.
 - **Full-text search** — Postgres `tsvector` / `websearch_to_tsquery`, MySQL `MATCH … AGAINST`,
   SQLite FTS5. Would slot in as an operator on the filter input for qualifying columns.
 
 ## Lower priority
 
-- **Nulls ordering** — `orderBy` cannot say `NULLS FIRST` / `NULLS LAST`. The default differs
-  between Postgres (nulls last on ASC) and MySQL/SQLite (nulls first), so ordering a nullable
-  column is not portable today.
 - **Views and computed fields** — Drizzle views are not picked up, and there is no way to add
   a derived field backed by SQL. Reachable now by composing a custom schema.
 - **Relay connections** — `Node` interface, global IDs, `PageInfo`, cursor pagination. A large
@@ -40,13 +32,18 @@ Supabase's `pg_graphql`. Roughly ordered within each group; nothing here is comm
   `describeColumn` / `describeTable` / `describeRelation` / `deprecateColumn` hooks; reading
   them out of database comments automatically is still open, and needs a catalogue query
   drizzle does not expose.)
-- **Many-to-many relation filters** — relations declared with `.through()` are currently left
-  out of the filter input entirely. Same gap exists for relation aggregates.
+- **Many-to-many in `orderBy` and nested writes** — relation *filters* handle `.through()`
+  (including inside aggregate queries), but a junction relation cannot back an `orderBy` hop,
+  and nested writes do not write through one.
 
 ## Deliberately not doing
 
 - **Column and table exposure control** — allow/deny lists for what appears in the schema.
-  Better handled by `graphql-shield` or an equivalent layer, which already has the
-  per-request context this library does not.
+  Better handled by `graphql-shield` (optionally driven by CASL abilities), which already has
+  the per-request context this library does not. Caveat worth stating plainly: that hides the
+  data, not the shape — a denied field is still in introspection.
 - **Per-request authorization hooks** — same reasoning: auth middleware sits above the schema
   and has the request context it needs.
+- **Document-level limits** — depth, alias, directive and token caps, and a static cost
+  ceiling. `@escape.tech/graphql-armor` does all of it at the edge; this library's job stops
+  at the `complexity` hints, which price rows rather than document shape.
