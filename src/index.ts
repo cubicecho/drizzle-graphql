@@ -20,6 +20,7 @@ export type {
   BuildSchemaConfig,
   ComplexityConfig,
   DeleteResolver,
+  DeleteSingleResolver,
   ExtractRelations,
   ExtractTableByName,
   ExtractTableRelations,
@@ -37,6 +38,7 @@ export type {
   SelectResolver,
   SelectSingleResolver,
   UpdateResolver,
+  UpdateSingleResolver,
   UpsertArgs,
   UpsertArrResolver,
   UpsertConflictArgs,
@@ -110,6 +112,7 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     update: config?.features?.update ?? true,
     delete: config?.features?.delete ?? true,
     upsert: config?.features?.upsert ?? false,
+    requireWhere: config?.features?.requireWhere ?? false,
   };
 
   // Cost hints are inert without a complexity rule installed, so they are generated unless the

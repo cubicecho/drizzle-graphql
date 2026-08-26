@@ -100,9 +100,10 @@ const { schema } = buildSchema(db, {
         relationAggregates: false, // <relation>Aggregate fields on object types
         distinct: false,          // the `distinct` argument on list queries
         insert: false,            // create<Table> / create<Table>Single mutations
-        update: false,            // update<Table> mutations
-        delete: false,            // delete<Table> mutations
+        update: false,            // update<Table> / update<Table>Single mutations
+        delete: false,            // delete<Table> / delete<Table>Single mutations
         upsert: true,             // upsert<Table> / upsert<Table>Single mutations (off by default)
+        requireWhere: true,       // make `where` non-null on plural update/delete (off by default)
     },
 })
 ```
@@ -464,6 +465,37 @@ Dialect differences:
 The build-wide `conflictDoNothing` option is deprecated in favour of this: it applies to every
 `create*` mutation with no way for a request to opt out. `onConflict: { action: NOTHING }` is
 the per-request replacement.
+
+## Single-row update & delete
+
+Alongside the plural `update<Table>` / `delete<Table>` mutations, every table gets an
+`update<Table>Single` / `delete<Table>Single` variant that targets exactly one row:
+
+```graphql
+mutation {
+    updateUsersSingle(where: { id: { eq: 1 } }, set: { name: "Dan" }) {
+        id
+        name
+    }
+}
+```
+
+-   `where` is **non-null** and must contain at least one filter — `where: {}` is rejected at
+    resolve time, so a Single write can never become an unbounded one
+-   The return type is the single (nullable) row type, not a list: the affected row comes back
+    directly, and **no match returns `null`** instead of an empty list
+-   If `where` matches **more than one row**, the mutation throws a `GraphQLError` and writes
+    nothing — the match is checked (`LIMIT 2`) before the write runs
+-   **MySQL** cannot return the affected row (no `RETURNING`), so its Single variants keep the
+    single-match and non-empty-`where` guarantees but return `MutationReturn` like every other
+    MySQL mutation
+-   The variants are generated under `features.update` / `features.delete`, share the plural
+    mutations' input types, and appear in `entities.mutations` for custom schemas
+
+The plural mutations still accept a missing `where` (a full-table write) by default. To rule
+that out at the type level, `features: { requireWhere: true }` makes `where` non-null on
+`update<Table>` / `delete<Table>` and rejects a `where` with no filters, exactly like the
+Single variants. It defaults to `false` for backwards compatibility.
 
 ## Query cost
 

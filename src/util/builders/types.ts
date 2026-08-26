@@ -29,6 +29,7 @@ export type GeneratorFeatures = {
   update: boolean;
   delete: boolean;
   upsert: boolean;
+  requireWhere: boolean;
 };
 
 /**
