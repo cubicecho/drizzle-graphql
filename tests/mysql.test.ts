@@ -2770,6 +2770,12 @@ describe.sequential('Returned data tests', () => {
                         type: z.instanceof(GraphQLInputObjectType),
                       })
                       .strict(),
+                    after: z
+                      .object({
+                        type: z.instanceof(GraphQLScalarType),
+                        description: z.string(),
+                      })
+                      .strict(),
                     distinct: z
                       .object({
                         type: z.instanceof(GraphQLList),
@@ -2834,6 +2840,12 @@ describe.sequential('Returned data tests', () => {
                         type: z.instanceof(GraphQLInputObjectType),
                       })
                       .strict(),
+                    after: z
+                      .object({
+                        type: z.instanceof(GraphQLScalarType),
+                        description: z.string(),
+                      })
+                      .strict(),
                     distinct: z
                       .object({
                         type: z.instanceof(GraphQLList),
@@ -2896,6 +2908,12 @@ describe.sequential('Returned data tests', () => {
                     where: z
                       .object({
                         type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                    after: z
+                      .object({
+                        type: z.instanceof(GraphQLScalarType),
+                        description: z.string(),
                       })
                       .strict(),
                     distinct: z

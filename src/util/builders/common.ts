@@ -1050,6 +1050,17 @@ const generateTableSelectTypeFieldsCached = (table: Table, tableName: string): R
     ]),
   );
 
+  // Opaque keyset-pagination cursor. Only populated on rows returned by a list query; a real
+  // column named `cursor` keeps the field for itself instead.
+  if (!remapped[CURSOR_FIELD_NAME]) {
+    remapped[CURSOR_FIELD_NAME] = {
+      type: GraphQLString,
+      description:
+        "Opaque cursor of this row's position in the query's ordering. Pass it as `after` to resume from here. Only set on rows returned by a list query.",
+      resolve: rowCursorResolver,
+    } as ConvertedColumn;
+  }
+
   fieldMap.set(table, remapped);
 
   return remapped;
@@ -2589,6 +2600,245 @@ export const primaryKeyOrderExprs = (table: Table, pkNames: readonly string[]): 
     .map((col) => asc(col!));
 };
 
+// ── cursor (keyset) pagination ───────────────────────────────────────────────
+
+/** Name of the field on generated select types that exposes a row's opaque pagination cursor. */
+export const CURSOR_FIELD_NAME = 'cursor';
+
+/**
+ * Property the list resolvers stash each row's computed cursor under. Namespaced so it can't
+ * collide with a real column; the `cursor` field's resolver reads it back off the row.
+ */
+const ROW_CURSOR_PROP = '__drizzle_graphql_cursor';
+
+/**
+ * Where a dialect's default sort places NULLs relative to non-NULL values:
+ * - `nulls-largest` — PostgreSQL: NULLs sort as the largest values (last in ASC, first in DESC).
+ * - `nulls-smallest` — MySQL and SQLite: NULLs sort as the smallest values (first in ASC, last
+ *   in DESC).
+ * The keyset predicate has to agree with the dialect's ORDER BY, so each builder passes its own.
+ */
+export type NullOrdering = 'nulls-largest' | 'nulls-smallest';
+
+/**
+ * One key of the total order a cursor is defined over: column property name + direction,
+ * plus the request's `nulls: first | last` override when it carries one (absent/null means
+ * the dialect's native NULL placement).
+ */
+export type CursorOrderEntry = [string, 'asc' | 'desc', (OrderNullsOption | null)?];
+
+/**
+ * Whether an `orderBy` argument orders through a to-one relation (a nested object entry
+ * rather than a direction). A cursor encodes the row's own ordering-tuple values, and a
+ * related row's value is not part of the row, so cursor pagination refuses these orderings —
+ * `after` raises an error and the `cursor` field resolves to null, while the ordering itself
+ * still applies.
+ */
+export const orderByHasRelationEntry = (orderBy: Record<string, any> | undefined): boolean =>
+  !!orderBy &&
+  Object.values(orderBy).some((config) => config && typeof config === 'object' && config.direction === undefined);
+
+/**
+ * The total order a list query's rows follow when cursor pagination is in play: the request's
+ * `orderBy` entries (highest priority first), then the primary key ascending as a tiebreak —
+ * skipping PK columns the `orderBy` already names, so no key appears twice.
+ */
+export const cursorOrderingEntries = (
+  orderBy: Record<string, any> | undefined,
+  pkNames: readonly string[],
+): CursorOrderEntry[] => {
+  const entries: CursorOrderEntry[] = orderBy ? orderByEntries(orderBy) : [];
+  const seen = new Set(entries.map(([column]) => column));
+  for (const pk of pkNames) {
+    if (!seen.has(pk)) {
+      entries.push([pk, 'asc']);
+    }
+  }
+  return entries;
+};
+
+/**
+ * ORDER BY expressions realizing a cursor's total order on `table` (which may be the aliased
+ * RQB proxy) — each key's direction plus its `nulls` override, exactly the order the keyset
+ * predicate in {@link buildCursorCondition} compares against.
+ */
+export const cursorOrderExprs = (table: Table, entries: CursorOrderEntry[]): SQL[] => {
+  const cols = getColumns(table);
+  return entries.flatMap(([column, direction, nulls]) =>
+    orderExpressions(cols[column]!, direction, nulls ?? undefined, cols[column]!),
+  );
+};
+
+/**
+ * Serializes one ordering-tuple value into a JSON-safe shape. Dates and bigints don't survive
+ * JSON.stringify losslessly (bigint throws, Date turns into an untagged string), so they are
+ * tagged; decimals already arrive from the driver as strings, which are lossless as-is.
+ */
+const encodeCursorValue = (value: any): any => {
+  if (value instanceof Date) {
+    return { $type: 'date', value: value.toISOString() };
+  }
+  if (typeof value === 'bigint') {
+    return { $type: 'bigint', value: value.toString() };
+  }
+  return value;
+};
+
+const decodeCursorValue = (value: any): any => {
+  if (value && typeof value === 'object' && typeof value.$type === 'string') {
+    if (value.$type === 'date') {
+      return new Date(value.value);
+    }
+    if (value.$type === 'bigint') {
+      return BigInt(value.value);
+    }
+  }
+  return value;
+};
+
+/**
+ * Encodes a row's position in the given total order as an opaque cursor: base64url of a JSON
+ * payload holding the ordering spec (`o`) and the row's values for it (`v`). The spec rides
+ * along so a later request can verify the cursor was issued for the same ordering it is using.
+ */
+export const encodeCursor = (entries: CursorOrderEntry[], row: Record<string, any>): string => {
+  const payload = {
+    o: entries,
+    v: entries.map(([column]) => encodeCursorValue(row[column] ?? null)),
+  };
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+};
+
+/**
+ * Decodes an `after` cursor and validates it against the ordering the current request pages
+ * over. A cursor issued under a different `orderBy` would combine one ordering's predicate
+ * with another's sort — silently wrong pages — so a mismatch is an error, as is anything that
+ * doesn't decode to the expected payload shape.
+ */
+export const decodeCursor = (after: string, entries: CursorOrderEntry[]): any[] => {
+  let payload: any;
+  try {
+    payload = JSON.parse(Buffer.from(after, 'base64url').toString('utf8'));
+  } catch (_e) {
+    throw new GraphQLError('Invalid cursor: unable to decode it. Pass a cursor returned by a previous page.');
+  }
+
+  if (
+    !payload ||
+    typeof payload !== 'object' ||
+    !Array.isArray(payload.o) ||
+    !Array.isArray(payload.v) ||
+    payload.o.length !== payload.v.length
+  ) {
+    throw new GraphQLError('Invalid cursor: malformed payload. Pass a cursor returned by a previous page.');
+  }
+
+  const matchesOrdering =
+    payload.o.length === entries.length &&
+    payload.o.every(
+      (entry: any, i: number) =>
+        Array.isArray(entry) &&
+        entry[0] === entries[i]![0] &&
+        entry[1] === entries[i]![1] &&
+        // The nulls override changes where NULLs sort, so it is part of the ordering identity.
+        // JSON round-trips undefined as null — compare the normalized forms.
+        (entry[2] ?? null) === (entries[i]![2] ?? null),
+    );
+  if (!matchesOrdering) {
+    throw new GraphQLError(
+      "Invalid cursor: it was issued for a different ordering. Pass the same orderBy the cursor's page used.",
+    );
+  }
+
+  return payload.v.map(decodeCursorValue);
+};
+
+/**
+ * The keyset predicate selecting rows strictly after the cursor position in the given total
+ * order — the expanded lexicographic form
+ * `after(k0) OR (k0 = v0 AND after(k1)) OR (k0 = v0 AND k1 = v1 AND after(k2)) …`,
+ * built with and/or/gt/lt/eq rather than SQL row-value syntax, which cannot express mixed
+ * asc/desc directions and mishandles NULLs.
+ *
+ * NULL handling follows each key's `nulls: first | last` override when present, and otherwise
+ * the dialect's default sort position (see {@link NullOrdering}): where NULLs sort last for a
+ * key, "after a non-NULL value" includes the NULL rows and nothing sorts after a NULL one;
+ * where NULLs sort first, "after NULL" is every non-NULL row.
+ * `table` may be the aliased RQB proxy.
+ */
+export const buildCursorCondition = (
+  table: Table,
+  entries: CursorOrderEntry[],
+  values: any[],
+  nullOrdering: NullOrdering,
+): SQL => {
+  const cols = getColumns(table);
+  const disjuncts: SQL[] = [];
+  const equalities: SQL[] = [];
+
+  entries.forEach(([column, direction, nulls], i) => {
+    const col = cols[column];
+    if (!col) {
+      throw new GraphQLError(`Invalid cursor: unknown column '${column}'.`);
+    }
+
+    const value = values[i];
+    const nullsSortLast =
+      nulls != null ? nulls === 'last' : (direction === 'asc') === (nullOrdering === 'nulls-largest');
+
+    let strictlyAfter: SQL | undefined;
+    if (value === null || value === undefined) {
+      // Nothing sorts after NULL when NULLs are last; every non-NULL row does when first.
+      strictlyAfter = nullsSortLast ? undefined : isNotNull(col);
+    } else {
+      const comparison = direction === 'asc' ? gt(col, value) : lt(col, value);
+      strictlyAfter = nullsSortLast ? or(comparison, isNull(col)) : comparison;
+    }
+
+    if (strictlyAfter) {
+      disjuncts.push(equalities.length ? and(...equalities, strictlyAfter)! : strictlyAfter);
+    }
+    equalities.push(value === null || value === undefined ? isNull(col) : eq(col, value));
+  });
+
+  if (!disjuncts.length) {
+    // Every key's strict term was impossible (e.g. a NULLs-last cursor position of all NULLs) —
+    // nothing sorts after this cursor.
+    return sql`1 = 0`;
+  }
+
+  return disjuncts.length > 1 ? or(...disjuncts)! : disjuncts[0]!;
+};
+
+/**
+ * Whether the selection asks for the `cursor` meta field. A real column named `cursor` keeps
+ * the field for itself, so the meta field only exists (and is only computed) when the table
+ * has no such column.
+ */
+export const isCursorFieldSelected = (tree: Record<string, ResolveTree> | undefined, table: Table): boolean => {
+  if (!tree) {
+    return false;
+  }
+  if (getColumns(table)[CURSOR_FIELD_NAME]) {
+    return false;
+  }
+  return Object.values(tree).some((field) => field.name === CURSOR_FIELD_NAME);
+};
+
+/**
+ * Computes and attaches each row's opaque cursor (under a namespaced property the `cursor`
+ * field's resolver reads). Must run on the raw driver rows, before output remapping rewrites
+ * dates and bigints into their transport forms.
+ */
+export const attachRowCursors = (rows: Record<string, any>[], entries: CursorOrderEntry[]): void => {
+  for (const row of rows) {
+    row[ROW_CURSOR_PROP] = encodeCursor(entries, row);
+  }
+};
+
+/** Resolver for the `cursor` meta field: reads the value a list resolver attached, if any. */
+export const rowCursorResolver = (source: any): string | null => source?.[ROW_CURSOR_PROP] ?? null;
+
 /**
  * Every set of columns that uniquely identifies a row of `table`: the primary key first,
  * then each unique constraint and unique index, then each column declared `.unique()`
@@ -3219,11 +3469,16 @@ export const selectArrayArgs = (
   orderArgs: GraphQLInputObjectType,
   filterArgs: GraphQLInputObjectType,
   distinctEnum?: GraphQLEnumType,
-): Record<string, { type: any }> => ({
+): Record<string, { type: any; description?: string }> => ({
   offset: { type: GraphQLInt },
   limit: { type: GraphQLInt },
   orderBy: { type: orderArgs },
   where: { type: filterArgs },
+  after: {
+    type: GraphQLString,
+    description:
+      "Keyset pagination: only return rows strictly after this cursor (a row's `cursor` field from a previous page, under the same orderBy).",
+  },
   ...(distinctEnum ? { distinct: { type: new GraphQLList(new GraphQLNonNull(distinctEnum)) } } : {}),
 });
 
@@ -3262,6 +3517,8 @@ export const runRelationalSelect = async (opts: {
   pkNames?: readonly string[];
   db?: any;
   distinct?: string[];
+  after?: string;
+  nullOrdering?: NullOrdering;
 }): Promise<any> => {
   const {
     queryBase,
@@ -3278,8 +3535,38 @@ export const runRelationalSelect = async (opts: {
     single,
     filterCtx,
     pkNames,
+    after,
   } = opts;
   const distinct = opts.distinct?.length ? opts.distinct : undefined;
+
+  // ── keyset (cursor) pagination ──
+  // Active when the request passes `after` or selects the `cursor` meta field. The cursor is
+  // defined over a total order — the request's orderBy plus the primary-key tiebreak — so both
+  // need the PK; a table without one gets an error for `after` and null cursors otherwise.
+  const cursorSelected = !single && isCursorFieldSelected(parsedInfo.fieldsByTypeName[typeName], table);
+  let cursorEntries: CursorOrderEntry[] | undefined;
+  if (!single && (after != null || cursorSelected)) {
+    if (after != null && distinct) {
+      throw new GraphQLError("'after' cannot be combined with 'distinct'.");
+    }
+    if (orderByHasRelationEntry(orderBy)) {
+      if (after != null) {
+        throw new GraphQLError(
+          "'after' cannot be combined with an orderBy that orders through a relation — a related row's value cannot be encoded into a cursor.",
+        );
+      }
+      // `cursor` was selected under a relation ordering — the field resolves to null and the
+      // relation ordering itself still applies.
+    } else if (!pkNames?.length) {
+      if (after != null) {
+        throw new GraphQLError(`Table ${tableName} has no primary key, so cursor pagination cannot be used on it.`);
+      }
+      // `cursor` was selected but no total order exists — the field resolves to null.
+    } else {
+      cursorEntries = cursorOrderingEntries(orderBy, pkNames);
+    }
+  }
+  const cursorValues = after != null && cursorEntries ? decodeCursor(after, cursorEntries) : undefined;
   // Taking a slice of an unordered result lets the database return any rows it likes, so
   // `limit`/`offset` pages can overlap or skip rows between requests, and a single query
   // can return a different row each time. Default to the primary key whenever the query is
@@ -3322,17 +3609,33 @@ export const runRelationalSelect = async (opts: {
           ...(orderBy ? extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName)) : []),
           ...primaryKeyOrderExprs(aliasedTable, pkNames!),
         ]
-      : orderBy
-        ? (aliasedTable: Table) => extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName))
-        : needsDefaultOrder && pkNames?.length
-          ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
-          : undefined,
+      : cursorEntries
+        ? // Cursor pagination needs a total order: the request's orderBy plus the PK tiebreak,
+          // exactly the ordering the cursor encodes and the keyset predicate compares against.
+          (aliasedTable: Table) => cursorOrderExprs(aliasedTable, cursorEntries!)
+        : orderBy
+          ? (aliasedTable: Table) => extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName))
+          : needsDefaultOrder && pkNames?.length
+            ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
+            : undefined,
     where: distinctKeys
       ? { RAW: (aliasedTable: Table) => primaryKeyRestriction(aliasedTable, pkNames!, distinctKeys!) }
-      : where
+      : where || cursorValues
         ? {
             RAW: (aliasedTable: Table) =>
-              extractFilters(aliasedTable, tableName, where, relationFilterCtx(filterCtx, tableName)),
+              and(
+                where
+                  ? extractFilters(aliasedTable, tableName, where, relationFilterCtx(filterCtx, tableName))
+                  : undefined,
+                cursorValues
+                  ? buildCursorCondition(
+                      aliasedTable,
+                      cursorEntries!,
+                      cursorValues,
+                      opts.nullOrdering ?? 'nulls-smallest',
+                    )
+                  : undefined,
+              ),
           }
         : undefined,
     with: relationMap[tableName]
@@ -3345,8 +3648,21 @@ export const runRelationalSelect = async (opts: {
     return result ? remapToGraphQLSingleOutput(result, tableName, table, relationMap) : undefined;
   }
 
+  // Computing each row's cursor needs the whole ordering tuple, which the client has no
+  // reason to have selected — force those columns into the fetch (GraphQL only returns
+  // the fields the query asked for, so extra properties never leak into the response).
+  if (cursorEntries && cursorSelected) {
+    for (const [column] of cursorEntries) {
+      params.columns[column] = true;
+    }
+  }
+
   params.limit = distinctKeys ? undefined : opts.limit;
   const result = await queryBase.findMany(params);
+  if (cursorEntries && cursorSelected) {
+    // On the raw rows, before remapping rewrites dates/bigints into transport forms.
+    attachRowCursors(result, cursorEntries);
+  }
   return remapToGraphQLArrayOutput(result, tableName, table, relationMap);
 };
 

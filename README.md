@@ -405,6 +405,53 @@ supplies no `orderBy`:
 An explicit `orderBy` always takes precedence, composite primary keys are ordered by every
 key column, and an unpaginated list query is left unordered so no sort is paid for.
 
+## Cursor pagination
+
+`OFFSET` pagination degrades linearly and shifts under concurrent writes. List queries also
+support keyset pagination: every row returned by a list query exposes an opaque `cursor`
+field, and passing it back as `after` resumes strictly after that row.
+
+```graphql
+{
+    posts(orderBy: { createdAt: { direction: desc, priority: 1 } }, limit: 10) {
+        id
+        createdAt
+        cursor
+    }
+}
+
+# next page — same orderBy, plus the last row's cursor
+{
+    posts(
+        orderBy: { createdAt: { direction: desc, priority: 1 } }
+        limit: 10
+        after: "eyJvIjogW1siY3JlYXRlZEF0IiwgImRlc2MiXSwgWyJpZCIsICJhc2MiXV0sIC4uLn0"
+    ) {
+        id
+        createdAt
+        cursor
+    }
+}
+```
+
+-   The cursor encodes the row's position in the query's **total order** — your `orderBy`
+    columns plus the primary key as an ascending tiebreak — so pages are stable even when
+    the ordered columns aren't unique, and inserts or deletes mid-scroll don't shift the
+    window
+-   `after` compiles to a keyset predicate built from drizzle's `and`/`or`/`gt`/`lt`
+    comparisons (not SQL row-value syntax), so mixed-direction `orderBy` works
+-   `NULL`s in ordered columns follow each dialect's native `ORDER BY` placement —
+    PostgreSQL sorts them largest (last in `asc`), MySQL and SQLite smallest (first in
+    `asc`) — and the predicate matches, so rows with `NULL` in an ordered column are paged
+    through, not skipped
+-   Dates and bigints round-trip losslessly through the cursor
+-   A cursor is only valid under the ordering it was issued for — reusing it with a
+    different `orderBy` (or a malformed/corrupted cursor) returns a `GraphQLError`
+-   `after` cannot be combined with `distinct`, and a table with no primary key cannot use
+    cursor pagination (its `cursor` field resolves to `null`)
+-   If a table has a real column named `cursor`, the column wins and the meta field is
+    skipped
+
 ## Upsert
 
 `features.upsert` adds a pair of mutations per table that insert rows, or update the ones
