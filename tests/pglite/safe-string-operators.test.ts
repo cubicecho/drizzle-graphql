@@ -303,7 +303,7 @@ describe.sequential('Safe string operator tests', () => {
     });
   });
 
-  it('exposes the safe operators on string filters but not id filters', () => {
+  it('exposes the safe operators on string filters but not integer id filters', () => {
     const safeOps = ['startsWith', 'endsWith', 'contains', 'iStartsWith', 'iEndsWith', 'iContains'];
 
     const stringFilter = ctx.schema.getType('StringFilter');
@@ -318,11 +318,13 @@ describe.sequential('Safe string operator tests', () => {
     const orBranch = (stringFilter as GraphQLInputObjectType).getFields()['OR']!.type as any;
     expect(orBranch.ofType.ofType).toBe(stringFilter);
 
-    const idFilter = ctx.schema.getType('IdFilter');
-    expect(idFilter).toBeInstanceOf(GraphQLInputObjectType);
-    const idFields = Object.keys((idFilter as GraphQLInputObjectType).getFields());
+    // Filters are picked by column data type: the serial `id` columns in this schema get
+    // the IntFilter, which omits the string pattern operators entirely.
+    const intFilter = ctx.schema.getType('IntFilter');
+    expect(intFilter).toBeInstanceOf(GraphQLInputObjectType);
+    const intFields = Object.keys((intFilter as GraphQLInputObjectType).getFields());
     for (const op of safeOps) {
-      expect(idFields).not.toContain(op);
+      expect(intFields).not.toContain(op);
     }
   });
 });

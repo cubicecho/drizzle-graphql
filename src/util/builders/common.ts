@@ -2,8 +2,10 @@
 // LOCAL MODIFICATION — diverges from upstream drizzle-graphql
 //
 // 1. generateColumnFilterValues() rewritten to produce generic shared filter
-//    types (IdFilter, StringFilter, DateTimeFilter, BooleanFilter, per-enum)
-//    instead of one type per (table, column) pair.
+//    types (IdFilter, StringFilter, IntFilter, FloatFilter, BigIntFilter,
+//    DecimalFilter, DateTimeFilter, BooleanFilter, per-enum, per-array) instead
+//    of one type per (table, column) pair. The filter is picked by column data
+//    type, not name.
 //
 // 2. Type naming:
 //    - Select types: ${capitalize(tableName)} (e.g. Users)
@@ -60,7 +62,7 @@ import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { getOrCreateLoader } from '../batch-loader/index.ts';
 import { capitalize, uncapitalize } from '../case-ops/index.ts';
 import { remapFromGraphQLCore, remapToGraphQLArrayOutput, remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
-import { GraphQLBigIntString, GraphQLDecimalString } from '../scalars/index.ts';
+import { GraphQLBigIntString, GraphQLDecimalString, GraphQLUUID } from '../scalars/index.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type {
   ConvertedColumn,
@@ -733,24 +735,29 @@ export const innerOrder = new GraphQLInputObjectType({
 
 /**
  * Maps a Drizzle column to the generic filter type name to use.
- * - "Id"          → uuid PK/FK columns (no like/ilike operators)
- * - "DateTime"    → timestamp and date columns
+ *
+ * Selection is keyed on the column's data type, never its name: a text column named
+ * `userId` gets the full String filter (string operators included), while a uuid column
+ * gets the lean Id filter whatever it is called.
+ * - "Id"          → uuid-typed columns (no string pattern operators)
  * - "Boolean"     → boolean columns
- * - "BigInt"      → bigint columns (BigInt-scalar-typed operators)
- * - "Decimal"     → numeric/decimal columns (Decimal-scalar-typed operators)
+ * - "BigInt"      → bigint columns (BigInt-scalar-typed operators, no string pattern operators)
+ * - "Decimal"     → numeric/decimal columns (Decimal-scalar-typed operators, no string pattern operators)
  * - the enum GraphQL type name → enum columns (still unique per enum)
  * - "IntArray"    → integer[]/serial[] array columns
  * - "FloatArray"  → float[]/numeric[] array columns
  * - "StringArray" → text[]/varchar[] array columns
+ * - "DateTime"    → timestamp and date columns
+ * - "Int"         → integer/serial columns (no string pattern operators)
+ * - "Float"       → real/double columns (no string pattern operators)
  * - "String"      → all other text/varchar columns
  */
 const resolveGenericFilterName = (
   column: Column,
-  columnName: string,
   columnGraphQLType: ReturnType<typeof drizzleColumnToGraphQLType>,
 ): string => {
-  // ID / foreign-key columns
-  if (columnName === 'id' || columnName.endsWith('Id')) {
+  // Opaque uuid keys — keyed on the column type, not on an `id`/`*Id` naming convention.
+  if (columnGraphQLType.type === GraphQLUUID) {
     return 'Id';
   }
   // Boolean scalar
@@ -792,9 +799,26 @@ const resolveGenericFilterName = (
   if (ct === 'PgTimestamp' || ct === 'PgTimestampString' || ct === 'PgDate') {
     return 'DateTime';
   }
+  // Numeric scalars — distinct names so an int/float column never shares (and never
+  // mistypes) the StringFilter, and integer ids keep a filter without string operators.
+  // (BigInt/Decimal columns are handled above via their named scalars.)
+  if (columnGraphQLType.type === GraphQLInt) {
+    return 'Int';
+  }
+  if (columnGraphQLType.type === GraphQLFloat) {
+    return 'Float';
+  }
   // Default: plain text/varchar
   return 'String';
 };
+
+/**
+ * Filters whose fields omit the string pattern operators (like/notLike/ilike/notIlike/
+ * startsWith/contains/…): they are nonsensical on opaque uuids and invalid SQL on numeric
+ * columns. Keyed on the generic filter name (i.e. on column type) — a string-typed column
+ * keeps the string operators whatever it is called.
+ */
+const FILTERS_WITHOUT_STRING_OPS = new Set(['Id', 'Int', 'Float', 'BigInt', 'Decimal']);
 
 const generateColumnFilterValues = (
   column: Column,
@@ -804,7 +828,7 @@ const generateColumnFilterValues = (
 ): GraphQLInputObjectType => {
   const columnGraphQLType = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, true);
 
-  const genericName = resolveGenericFilterName(column, columnName, columnGraphQLType);
+  const genericName = resolveGenericFilterName(column, columnGraphQLType);
   const cached = cacheCtx.genericFilterCache.get(genericName);
   if (cached) {
     return cached;
@@ -814,9 +838,9 @@ const generateColumnFilterValues = (
   const colDesc = columnGraphQLType.description;
   const colArr = new GraphQLList(new GraphQLNonNull(colType));
 
-  // Id, BigInt and Decimal filters omit the string pattern operators
-  // (like/ilike/startsWith/contains/…) — they are nonsensical on UUIDs and numbers.
-  const omitStringOps = genericName === 'Id' || genericName === 'BigInt' || genericName === 'Decimal';
+  // Uuid and numeric filters omit the string pattern operators
+  // (like/ilike/startsWith/contains/…) — decided by column type, never by column name.
+  const omitStringOps = FILTERS_WITHOUT_STRING_OPS.has(genericName);
 
   const baseFields = {
     eq: { type: colType, description: colDesc },
