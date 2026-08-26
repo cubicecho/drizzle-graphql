@@ -36,6 +36,10 @@ export type {
   SelectResolver,
   SelectSingleResolver,
   UpdateResolver,
+  UpsertArgs,
+  UpsertArrResolver,
+  UpsertConflictArgs,
+  UpsertResolver,
 } from './types.ts';
 export type { RelationResolverFactory } from './util/builders/common.ts';
 export {
@@ -83,6 +87,7 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     insert: config?.prefixes?.insert ?? 'create',
     delete: config?.prefixes?.delete ?? 'delete',
     update: config?.prefixes?.update ?? 'update',
+    upsert: config?.prefixes?.upsert ?? 'upsert',
   };
 
   const suffixes = {
@@ -93,7 +98,8 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
   const typeNameMapper = config?.typeNameMapper;
 
   // Every feature is on unless the caller says otherwise, so a build without a `features`
-  // block generates what it always did.
+  // block generates what it always did — except upsert, which is new surface and so has to
+  // be asked for.
   const features = {
     aggregates: config?.features?.aggregates ?? true,
     relationAggregates: config?.features?.relationAggregates ?? true,
@@ -101,6 +107,7 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     insert: config?.features?.insert ?? true,
     update: config?.features?.update ?? true,
     delete: config?.features?.delete ?? true,
+    upsert: config?.features?.upsert ?? false,
   };
 
   // Normalize eagerLoadRelations (boolean | predicate | undefined) into a predicate.

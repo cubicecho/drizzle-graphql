@@ -26,6 +26,7 @@ export type GeneratorFeatures = {
   insert: boolean;
   update: boolean;
   delete: boolean;
+  upsert: boolean;
 };
 
 /**
@@ -34,7 +35,7 @@ export type GeneratorFeatures = {
  */
 export type SchemaGeneratorOptions = {
   relationsDepthLimit: number | undefined;
-  prefixes: { insert: string; update: string; delete: string };
+  prefixes: { insert: string; update: string; delete: string; upsert: string };
   suffixes: { list: string; single: string };
   conflictDoNothing: boolean;
   typeNameMapper?: (tableName: string) => { singular: string; plural: string } | undefined;

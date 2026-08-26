@@ -36,6 +36,8 @@ describe('features: defaults', () => {
     expect(mutations['createUsers']).toBeDefined();
     expect(mutations['updateUsers']).toBeDefined();
     expect(mutations['deleteUsers']).toBeDefined();
+    // Upsert is the one flag that is off unless asked for.
+    expect(mutations['upsertUsers']).toBeUndefined();
   });
 
   it('treats an empty features block the same as no features block', () => {
@@ -125,6 +127,25 @@ describe('features: mutations', () => {
     expect(Object.keys(entities.mutations)).toHaveLength(0);
     // Queries are unaffected.
     expect(queryFields(gqlSchema)['users']).toBeDefined();
+  });
+});
+
+describe('features: upsert', () => {
+  it('adds the upsert mutations and their conflict input when on', () => {
+    const { schema: gqlSchema, entities } = build({ upsert: true });
+    const mutations = gqlSchema.getMutationType()!.getFields();
+
+    expect(mutations['upsertUsers']).toBeDefined();
+    expect(mutations['upsertUsersSingle']).toBeDefined();
+    expect(gqlSchema.getType('UsersOnConflict')).toBeDefined();
+    expect(entities.inputs['UsersOnConflict']).toBeDefined();
+  });
+
+  it('keeps the insert input, which types the upsert values, even with insert off', () => {
+    const gqlSchema = build({ upsert: true, insert: false }).schema;
+
+    expect(gqlSchema.getMutationType()!.getFields()['createUsers']).toBeUndefined();
+    expect(gqlSchema.getType('CreateUsersInput')).toBeDefined();
   });
 });
 

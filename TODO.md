@@ -5,9 +5,10 @@ Supabase's `pg_graphql`. Roughly ordered within each group; nothing here is comm
 
 ## Planned
 
-- **Upsert + nested writes** — designed in
-  [docs/plans/upsert-and-nested-writes.md](docs/plans/upsert-and-nested-writes.md). The shared
-  groundwork (steps 1, 2 and 4) has landed; upsert and nested writes themselves have not.
+- **Nested writes** — designed in
+  [docs/plans/upsert-and-nested-writes.md](docs/plans/upsert-and-nested-writes.md). Upsert
+  (step 3) and the shared groundwork (steps 1, 2 and 4) have landed; nested `create` /
+  `connect` on the insert inputs has not.
 
 ## Medium priority
 

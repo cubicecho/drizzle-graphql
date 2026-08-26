@@ -20,17 +20,22 @@ import {
   computeResolverFieldNames,
   createRelationResolverFactory,
   eagerLoadMutationRelations,
+  excludedColumnRef,
   extractFilters,
   extractSelectedColumnsFromTreeSQLFormat,
   generateDistinctEnum,
+  generateOnConflictInput,
   generateTableTypes,
   getPrimaryKeyPropNamesFromConfig,
+  getUniqueColumnSets,
+  type OnConflictArg,
   prepareMutationRelationColumns,
   pruneNonEagerRelations,
   type RelationAggregateFactory,
   type RelationFilterBase,
   type RelationResolverFactory,
   relationFilterCtx,
+  resolveConflictPlan,
   resolveExecutor,
   resolveQueryExecutor,
   runRelationalSelect,
@@ -306,6 +311,107 @@ const generateInsertSingle = (
   };
 };
 
+/**
+ * `upsert<Table>` / `upsert<Table>Single` — an insert that resolves a unique-key conflict
+ * the way the request's `onConflict` argument asks, rather than failing.
+ *
+ * Shares the insert input: an upsert supplies a whole row, same as a create.
+ */
+const generateUpsert = (
+  db: BaseSQLiteDatabase<any, any, any, any>,
+  tableName: string,
+  table: SQLiteTable,
+  tables: Record<string, Table>,
+  relationMap: Record<string, Record<string, TableNamedRelations>>,
+  baseType: GraphQLInputObjectType,
+  onConflictType: GraphQLInputObjectType,
+  uniqueSets: string[][],
+  fieldName: string,
+  typeName: string,
+  single: boolean,
+  typeNameMapper?: TypeNameMapper,
+  filterCtx?: RelationFilterBase,
+): CreatedResolver => {
+  const queryArgs: GraphQLFieldConfigArgumentMap = {
+    values: {
+      type: single ? new GraphQLNonNull(baseType) : new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(baseType))),
+    },
+    onConflict: {
+      type: onConflictType,
+      description: 'How a conflicting row is resolved. Defaults to overwriting it on the primary key.',
+    },
+  };
+
+  const pkNames = sqlitePrimaryKeyPropNames(table);
+
+  return {
+    name: fieldName,
+    resolver: async (
+      _source,
+      args: { values: Record<string, any> | Record<string, any>[]; onConflict?: OnConflictArg },
+      context,
+      info,
+    ) => {
+      try {
+        const input = single
+          ? [remapFromGraphQLSingleInput(args.values as Record<string, any>, table)]
+          : remapFromGraphQLArrayInput(args.values as Record<string, any>[], table);
+        if (!input.length) {
+          throw new GraphQLError('No values were provided!');
+        }
+
+        const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
+
+        const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+          relationMap,
+          tables,
+          tableName,
+          typeName,
+          typeNameMapper,
+          table,
+          pkNames,
+          parsedInfo,
+        });
+
+        const plan = resolveConflictPlan({
+          table,
+          values: input,
+          onConflict: args.onConflict,
+          pkNames,
+          uniqueSets,
+          excludedRef: excludedColumnRef,
+          withTarget: true,
+          buildWhere: (where) => extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)),
+        });
+
+        const executor = resolveExecutor(db, context);
+        let query = executor.insert(table).values(input).returning(columns);
+        query =
+          plan.action === 'NOTHING'
+            ? (query.onConflictDoNothing(plan.target ? { target: plan.target } : undefined) as any)
+            : (query.onConflictDoUpdate({ target: plan.target!, set: plan.set, setWhere: plan.setWhere }) as any);
+
+        const result = await query;
+
+        if (single && !result[0]) {
+          return undefined;
+        }
+
+        const enriched = hasRelations
+          ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
+          : result;
+
+        return single
+          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
+          : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
+      } catch (e) {
+        throw toGraphQLError(e);
+      }
+    },
+    args: queryArgs,
+  };
+};
+
 const generateUpdate = (
   db: BaseSQLiteDatabase<any, any, any, any>,
   tableName: string,
@@ -524,6 +630,8 @@ export const generateSchemaData = <
       aggregateFieldName,
       createArrayFieldName,
       createSingleFieldName,
+      upsertArrayFieldName,
+      upsertSingleFieldName,
       updateFieldName,
       deleteFieldName,
     } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
@@ -579,6 +687,52 @@ export const generateSchemaData = <
           typeName,
           typeNameMapper,
           conflictDoNothing,
+        )
+      : undefined;
+    // An upsert needs something to conflict on, so a table with no primary key and no
+    // unique constraint gets no upsert mutations rather than ones that always fail.
+    const uniqueSets = features.upsert ? getUniqueColumnSets(schema[tableName] as SQLiteTable, getTableConfig) : [];
+    const onConflictInput = features.upsert
+      ? generateOnConflictInput({
+          table: schema[tableName] as SQLiteTable,
+          typeName,
+          uniqueSets,
+          tableFilters,
+          withTarget: true,
+        })
+      : undefined;
+    const upsertArrGenerated = onConflictInput
+      ? generateUpsert(
+          db,
+          tableName,
+          schema[tableName] as SQLiteTable,
+          tables,
+          eagerRelations,
+          insertInput,
+          onConflictInput,
+          uniqueSets,
+          upsertArrayFieldName,
+          typeName,
+          false,
+          typeNameMapper,
+          filterCtx,
+        )
+      : undefined;
+    const upsertSingleGenerated = onConflictInput
+      ? generateUpsert(
+          db,
+          tableName,
+          schema[tableName] as SQLiteTable,
+          tables,
+          eagerRelations,
+          insertInput,
+          onConflictInput,
+          uniqueSets,
+          upsertSingleFieldName,
+          typeName,
+          true,
+          typeNameMapper,
+          filterCtx,
         )
       : undefined;
     const updateGenerated = features.update
@@ -654,6 +808,20 @@ export const generateSchemaData = <
         resolve: insertSingleGenerated.resolver,
       };
     }
+    if (upsertArrGenerated) {
+      mutations[upsertArrGenerated.name] = {
+        type: arrTableItemOutput,
+        args: upsertArrGenerated.args,
+        resolve: upsertArrGenerated.resolver,
+      };
+    }
+    if (upsertSingleGenerated) {
+      mutations[upsertSingleGenerated.name] = {
+        type: singleTableItemOutput,
+        args: upsertSingleGenerated.args,
+        resolve: upsertSingleGenerated.resolver,
+      };
+    }
     if (updateGenerated) {
       mutations[updateGenerated.name] = {
         type: arrTableItemOutput,
@@ -671,7 +839,9 @@ export const generateSchemaData = <
     // The insert/update inputs are still built (they type the mutations that survive) but
     // only reach the schema's type map when a mutation actually references them.
     const activeInputs = [
-      ...(features.insert ? [insertInput] : []),
+      // The insert input types the upsert mutations too, so either feature keeps it.
+      ...(features.insert || onConflictInput ? [insertInput] : []),
+      ...(onConflictInput ? [onConflictInput] : []),
       ...(features.update ? [updateInput] : []),
       tableFilters,
       tableOrder,

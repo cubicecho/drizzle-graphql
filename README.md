@@ -101,12 +101,15 @@ const { schema } = buildSchema(db, {
         insert: false,            // create<Table> / create<Table>Single mutations
         update: false,            // update<Table> mutations
         delete: false,            // delete<Table> mutations
+        upsert: true,             // upsert<Table> / upsert<Table>Single mutations (off by default)
     },
 })
 ```
 
 -   Any flag left out keeps its default of `true`, so `{ features: { delete: false } }`
     changes nothing else
+-   `upsert` is the exception: it defaults to `false`, so the upsert mutations and their
+    conflict input only exist if you ask for them
 -   Turning off `insert` or `update` also drops the input type that only that mutation
     used (`Create<Type>Input` / `Update<Type>Input`)
 -   Turning off all three mutation features omits the `Mutation` type entirely, the same as
@@ -330,6 +333,69 @@ supplies no `orderBy`:
 
 An explicit `orderBy` always takes precedence, composite primary keys are ordered by every
 key column, and an unpaginated list query is left unordered so no sort is paid for.
+
+## Upsert
+
+`features.upsert` adds a pair of mutations per table that insert rows, or update the ones
+that already exist:
+
+```graphql
+mutation {
+    upsertUsersSingle(values: { id: 1, name: "Dan", email: "dan@example.com" }) {
+        id
+        name
+    }
+}
+```
+
+With no `onConflict`, a conflict on the **primary key** overwrites every column the request
+supplied. `onConflict` changes that:
+
+```graphql
+mutation {
+    upsertUsers(
+        values: [
+            { email: "dan@example.com", name: "Dan", visits: 1 }
+            { email: "sam@example.com", name: "Sam", visits: 1 }
+        ]
+        onConflict: {
+            target: [email] # must be a unique constraint; defaults to the primary key
+            action: UPDATE # or NOTHING, to keep the existing row
+            update: [name] # columns to overwrite; defaults to every supplied column
+            where: { isConfirmed: { eq: true } } # only overwrite rows that match
+        }
+    ) {
+        id
+        name
+    }
+}
+```
+
+-   A batch upsert updates each row with **its own** values (`excluded.<column>`), not with
+    the last row's
+-   Columns the request did not supply are never overwritten — a partial upsert does not null
+    out the rest of the row. Listing an unsupplied column in `update` is an error rather than
+    a silent no-op
+-   `target` must match one of the table's unique constraints exactly; anything else is
+    rejected with the list of valid targets, instead of the database's opaque "no unique or
+    exclusion constraint matching" error
+-   `action: NOTHING` inserts nothing and returns nothing for the conflicting row. An `UPDATE`
+    with no columns left to write degrades to the same thing
+-   `values` is the same `Create<Type>Input` the insert mutations take, so turning `insert`
+    off does not remove it
+
+Dialect differences:
+
+-   **PostgreSQL** and **SQLite** — the full surface above. A table with no primary key and no
+    unique constraint has nothing to conflict on, so it gets no upsert mutations at all
+-   **MySQL** — `ON DUPLICATE KEY UPDATE` fires on whichever unique key was violated and takes
+    no predicate, so `<Type>OnConflict` there has only `action` and `update`. `action: NOTHING`
+    becomes `INSERT IGNORE`, and the mutations return `MutationReturn` like every other MySQL
+    mutation
+
+The build-wide `conflictDoNothing` option is deprecated in favour of this: it applies to every
+`create*` mutation with no way for a request to opt out. `onConflict: { action: NOTHING }` is
+the per-request replacement.
 
 ## Error handling
 

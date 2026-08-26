@@ -42,6 +42,25 @@ const entities = generateMySQL(mockDb, tableSchema, schema.relations, {
     insert: true,
     update: true,
     delete: true,
+    upsert: false,
+  },
+}) as any;
+
+// Upsert is opt-in, so a second generation is needed to inspect its shape.
+const upsertEntities = generateMySQL(mockDb, tableSchema, schema.relations, {
+  relationsDepthLimit: undefined,
+  prefixes: { ...prefixes, upsert: 'upsert' },
+  suffixes,
+  conflictDoNothing: false,
+  shouldEagerLoad: () => true,
+  features: {
+    aggregates: true,
+    relationAggregates: true,
+    distinct: true,
+    insert: true,
+    update: true,
+    delete: true,
+    upsert: true,
   },
 }) as any;
 
@@ -104,6 +123,23 @@ describe('MySQL mutations are returnless', () => {
   it('delete mutations return MutationReturn', () => {
     expect(entities.mutations['deleteUsers'].type).toBe(entities.types['MutationReturn']);
     expect(entities.mutations['deletePosts'].type).toBe(entities.types['MutationReturn']);
+  });
+
+  it('generates no upsert mutations unless the feature is on', () => {
+    expect(entities.mutations['upsertUsers']).toBeUndefined();
+    expect(entities.types['UsersOnConflict']).toBeUndefined();
+  });
+
+  it('upsert mutations return MutationReturn like every other MySQL mutation', () => {
+    expect(upsertEntities.mutations['upsertUsers'].type).toBe(upsertEntities.types['MutationReturn']);
+    expect(upsertEntities.mutations['upsertUsersSingle'].type).toBe(upsertEntities.types['MutationReturn']);
+  });
+
+  it('omits target and where from the conflict input, which MySQL cannot express', () => {
+    const onConflict = upsertEntities.inputs['UsersOnConflict'];
+    expect(Object.keys(onConflict.getFields()).sort()).toEqual(['action', 'update']);
+    // Every table is upsertable on MySQL — a conflict needs no declared target.
+    expect(upsertEntities.mutations['upsertPosts']).toBeDefined();
   });
 
   it('all 6 mutations exist per table (array+single insert, update, delete)', () => {

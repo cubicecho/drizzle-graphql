@@ -22,13 +22,17 @@ import {
   createRelationResolverFactory,
   extractFilters,
   generateDistinctEnum,
+  generateOnConflictInput,
   generateTableTypes,
   getPrimaryKeyPropNamesFromConfig,
+  mysqlValuesColumnRef,
+  type OnConflictArg,
   pruneNonEagerRelations,
   type RelationAggregateFactory,
   type RelationFilterBase,
   type RelationResolverFactory,
   relationFilterCtx,
+  resolveConflictPlan,
   resolveExecutor,
   resolveQueryExecutor,
   runRelationalSelect,
@@ -226,6 +230,71 @@ const generateInsertSingle = (
   };
 };
 
+const generateUpsert = (
+  db: MySqlDatabase<any, any, any, any>,
+  table: MySqlTable,
+  baseType: GraphQLInputObjectType,
+  onConflictType: GraphQLInputObjectType,
+  fieldName: string,
+  single: boolean,
+): CreatedResolver => {
+  const queryArgs: GraphQLFieldConfigArgumentMap = {
+    values: {
+      type: single ? new GraphQLNonNull(baseType) : new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(baseType))),
+    },
+    onConflict: {
+      type: onConflictType,
+      description: 'How a conflicting row is resolved. Defaults to overwriting it.',
+    },
+  };
+
+  const pkNames = mysqlPrimaryKeyPropNames(table);
+
+  return {
+    name: fieldName,
+    resolver: async (
+      _source,
+      args: { values: Record<string, any> | Record<string, any>[]; onConflict?: OnConflictArg },
+      context,
+      _info,
+    ) => {
+      try {
+        const input = single
+          ? [remapFromGraphQLSingleInput(args.values as Record<string, any>, table)]
+          : remapFromGraphQLArrayInput(args.values as Record<string, any>[], table);
+        if (!input.length) {
+          throw new GraphQLError('No values were provided!');
+        }
+
+        // MySQL's ON DUPLICATE KEY UPDATE fires on whichever unique key was violated, so
+        // there is no target to resolve and no predicate to attach.
+        const plan = resolveConflictPlan({
+          table,
+          values: input,
+          onConflict: args.onConflict,
+          pkNames,
+          uniqueSets: [],
+          excludedRef: mysqlValuesColumnRef,
+          withTarget: false,
+        });
+
+        const executor = resolveExecutor(db, context);
+        if (plan.action === 'NOTHING') {
+          // INSERT IGNORE is the closest MySQL gets to DO NOTHING.
+          await executor.insert(table).ignore().values(input);
+        } else {
+          await executor.insert(table).values(input).onDuplicateKeyUpdate({ set: plan.set });
+        }
+
+        return { isSuccess: true };
+      } catch (e) {
+        throw toGraphQLError(e);
+      }
+    },
+    args: queryArgs,
+  };
+};
+
 const generateUpdate = (
   db: MySqlDatabase<any, any, any>,
   tableName: string,
@@ -403,7 +472,7 @@ export const generateSchemaData = <
   const outputs: Record<string, GraphQLObjectType> = {};
   // Every MySQL mutation returns it, so it only belongs in the type map when at least one
   // mutation is generated.
-  if (features.insert || features.update || features.delete) {
+  if (features.insert || features.upsert || features.update || features.delete) {
     outputs.MutationReturn = mutationReturnType;
   }
 
@@ -419,6 +488,8 @@ export const generateSchemaData = <
       aggregateFieldName,
       createArrayFieldName,
       createSingleFieldName,
+      upsertArrayFieldName,
+      upsertSingleFieldName,
       updateFieldName,
       deleteFieldName,
     } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
@@ -453,6 +524,23 @@ export const generateSchemaData = <
       : undefined;
     const insertSingleGenerated = features.insert
       ? generateInsertSingle(db, tableName, schema[tableName] as MySqlTable, insertInput, createSingleFieldName)
+      : undefined;
+    // MySQL detects a conflict on any unique key, so unlike PostgreSQL and SQLite every
+    // table can be upserted — there is no target to validate.
+    const onConflictInput = features.upsert
+      ? generateOnConflictInput({
+          table: schema[tableName] as MySqlTable,
+          typeName,
+          uniqueSets: [],
+          tableFilters,
+          withTarget: false,
+        })
+      : undefined;
+    const upsertArrGenerated = onConflictInput
+      ? generateUpsert(db, schema[tableName] as MySqlTable, insertInput, onConflictInput, upsertArrayFieldName, false)
+      : undefined;
+    const upsertSingleGenerated = onConflictInput
+      ? generateUpsert(db, schema[tableName] as MySqlTable, insertInput, onConflictInput, upsertSingleFieldName, true)
       : undefined;
     const updateGenerated = features.update
       ? generateUpdate(
@@ -500,7 +588,14 @@ export const generateSchemaData = <
         resolve: aggregateGenerated.resolver,
       };
     }
-    for (const generated of [insertArrGenerated, insertSingleGenerated, updateGenerated, deleteGenerated]) {
+    for (const generated of [
+      insertArrGenerated,
+      insertSingleGenerated,
+      upsertArrGenerated,
+      upsertSingleGenerated,
+      updateGenerated,
+      deleteGenerated,
+    ]) {
       if (generated) {
         mutations[generated.name] = {
           type: mutationReturnType,
@@ -512,7 +607,9 @@ export const generateSchemaData = <
     // The insert/update inputs are still built (they type the mutations that survive) but
     // only reach the schema's type map when a mutation actually references them.
     const activeInputs = [
-      ...(features.insert ? [insertInput] : []),
+      // The insert input types the upsert mutations too, so either feature keeps it.
+      ...(features.insert || onConflictInput ? [insertInput] : []),
+      ...(onConflictInput ? [onConflictInput] : []),
       ...(features.update ? [updateInput] : []),
       tableFilters,
       tableOrder,

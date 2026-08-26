@@ -1,6 +1,6 @@
 # Plan: upsert and nested writes
 
-Status: **partially built** — the shared groundwork is in place, the two features are not.
+Status: **upsert shipped, nested writes not started.**
 
 - Step 1 (shared column enum + unique-key derivation) — **done**: `generateColumnEnum` and
   `getUniqueColumnSets` in `src/util/builders/common.ts`; `generateDistinctEnum` is now a
@@ -8,11 +8,16 @@ Status: **partially built** — the shared groundwork is in place, the two featu
 - Step 2 (executor parameter) — **done**: every generated resolver resolves its executor from
   the GraphQL context at resolve time via `resolveExecutor` / `drizzleExecutorKey`, so a
   caller can run a whole request on one transaction.
-- Step 4 (SQLite conflict handling) — **half done**: SQLite honours `config.conflictDoNothing`
-  instead of appending `onConflictDoNothing()` unconditionally. `config.conflictDoNothing`
-  is not deprecated yet, because the `onConflict` argument that replaces it does not exist.
-- Steps 3 and 5 (upsert, nested writes) — **not started**. Everything below still describes
-  the intended design for those.
+- Step 3 (upsert) — **done** on all three dialects, behind `features.upsert` (opt-in, unlike
+  every other feature flag). It deviates from the design below in three places:
+  - `values` reuses `Create<Table>Input` rather than an identical `Upsert<Table>Input`.
+  - The updatable-column enum is `<Type>UpdateColumn`, not `<Type>Column`.
+  - On PostgreSQL and SQLite a table with no primary key and no unique constraint gets **no**
+    upsert mutations, rather than ones whose every call is a database error.
+- Step 4 (SQLite conflict handling + deprecation) — **done**: SQLite honours
+  `config.conflictDoNothing` instead of appending `onConflictDoNothing()` unconditionally,
+  and `config.conflictDoNothing` is now deprecated in favour of `onConflict`.
+- Step 5 (nested writes) — **not started**. Part 2 below still describes the intended design.
 
 Two features that Prisma, Hasura and pg_graphql all expose and this library does not:
 
@@ -106,10 +111,10 @@ partial row nulls out everything it omitted.
 
 ### Interaction with `conflictDoNothing`
 
-Once `onConflict` exists as a per-request argument, the build-wide `config.conflictDoNothing`
-is redundant and confusing (a request cannot opt out of it). Deprecate it: keep it working
-as the default for `create*` mutations, document the replacement, and remove it in a later
-major. SQLite already honours the flag rather than applying `onConflictDoNothing()`
+Now that `onConflict` exists as a per-request argument, the build-wide
+`config.conflictDoNothing` is redundant and confusing (a request cannot opt out of it). It is
+deprecated: it still works and still defaults the `create*` mutations, the replacement is
+documented, and it goes in a later major. SQLite already honours the flag rather than applying `onConflictDoNothing()`
 unconditionally — that part shipped ahead of the rest as a breaking change.
 
 ## Part 2 — nested writes
@@ -190,10 +195,13 @@ auto-increment primary key, or left unsupported in the first pass.
    *input type* built from those sets is still to do.
 2. ~~Thread an executor parameter through the mutation resolvers.~~ Done, and it covers the
    query, relation and aggregate resolvers too.
-3. Upsert, PostgreSQL and SQLite first, then MySQL with the reduced input.
-4. ~~Fix SQLite's unconditional `onConflictDoNothing()`~~ (done) and deprecate
-   `config.conflictDoNothing` — the deprecation waits on step 3, which supplies the
-   replacement.
+3. ~~Upsert, PostgreSQL and SQLite first, then MySQL with the reduced input.~~ Done, behind
+   `features.upsert`. The `WhereUnique` *input type* is still to do — upsert needed only the
+   column sets, not an input built from them.
+4. ~~Fix SQLite's unconditional `onConflictDoNothing()` and deprecate
+   `config.conflictDoNothing`.~~ Done — `conflictDoNothing` still works and still defaults
+   the `create*` mutations, but is documented as replaced by
+   `onConflict: { action: NOTHING }` and will go in a later major.
 5. Nested `create` for to-many relations, then to-one, then `connect`.
 
 Steps 1–4 are each independently shippable. Step 5 is the only one that needs all of the
