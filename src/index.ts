@@ -20,6 +20,7 @@ export type {
   BuildSchemaConfig,
   ComplexityConfig,
   DeleteResolver,
+  DeleteSingleResolver,
   ExtractRelations,
   ExtractTableByName,
   ExtractTableRelations,
@@ -36,7 +37,11 @@ export type {
   SchemaFeatures,
   SelectResolver,
   SelectSingleResolver,
+  UpdateManyArgs,
+  UpdateManyEntry,
+  UpdateManyResolver,
   UpdateResolver,
+  UpdateSingleResolver,
   UpsertArgs,
   UpsertArrResolver,
   UpsertConflictArgs,
@@ -56,6 +61,7 @@ export {
   GraphQLBigIntString,
   GraphQLDate,
   GraphQLDateTime,
+  GraphQLDecimalString,
   GraphQLJSON,
   GraphQLUUID,
 } from './util/scalars/index.ts';
@@ -108,8 +114,10 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     distinct: config?.features?.distinct ?? true,
     insert: config?.features?.insert ?? true,
     update: config?.features?.update ?? true,
+    updateMany: config?.features?.updateMany ?? true,
     delete: config?.features?.delete ?? true,
     upsert: config?.features?.upsert ?? false,
+    requireWhere: config?.features?.requireWhere ?? false,
   };
 
   // Cost hints are inert without a complexity rule installed, so they are generated unless the

@@ -17,15 +17,18 @@ import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import type { GeneratedEntities } from '../../types.ts';
 import {
   aggregateFieldComplexity,
+  assertSingleMatch,
   attachTargetPrimaryKeys,
   buildNamedRelations,
   computeResolverFieldNames,
   createMutationTxCtx,
   createRelationResolverFactory,
   extractFilters,
+  extractRequiredFilters,
   generateDistinctEnum,
   generateOnConflictInput,
   generateTableTypes,
+  generateUpdateManyInput,
   getPrimaryKeyPropNamesFromConfig,
   listFieldComplexity,
   type MutationTxCtx,
@@ -115,6 +118,8 @@ const generateSelectArray = (
           filterCtx,
           pkNames,
           db: executor,
+          // MySQL sorts NULLs as the smallest values (first in ASC).
+          nullOrdering: 'nulls-smallest',
         });
       } catch (e) {
         throw toGraphQLError(e);
@@ -322,6 +327,8 @@ const generateUpdate = (
   setArgs: GraphQLInputObjectType,
   filterArgs: GraphQLInputObjectType,
   fieldName: string,
+  single: boolean,
+  requireWhere: boolean,
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
 ): CreatedResolver => {
@@ -330,7 +337,7 @@ const generateUpdate = (
       type: new GraphQLNonNull(setArgs),
     },
     where: {
-      type: filterArgs,
+      type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
     },
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
@@ -346,13 +353,101 @@ const generateUpdate = (
             throw new GraphQLError('Unable to update with no values specified!');
           }
 
+          const relationCtx = relationFilterCtx(filterCtx, tableName);
+          const filters =
+            single || requireWhere
+              ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+              : where
+                ? extractFilters(table, tableName, where, relationCtx)
+                : undefined;
+
+          if (single) {
+            await assertSingleMatch(executor, table, filters!, fieldName);
+          }
+
           let query = executor.update(table).set(input);
-          if (where) {
-            const filters = extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName));
+          if (filters) {
             query = query.where(filters) as any;
           }
 
           await query;
+
+          return { isSuccess: true };
+        });
+      } catch (e) {
+        throw toGraphQLError(e);
+      }
+    },
+    args: queryArgs,
+  };
+};
+
+/**
+ * `update<Table>Many` — batch update with a per-entry `set` and `where`.
+ *
+ * The entries run as one UPDATE statement each, in input order, inside a single
+ * transaction (a savepoint when the request context already carries one), so a failing
+ * entry rolls the whole batch back and a row matched by several entries sees them applied
+ * in order. MySQL has no RETURNING, so — like every other MySQL mutation — the result is
+ * `{ isSuccess: true }` rather than the updated rows.
+ */
+const generateUpdateMany = (
+  db: MySqlDatabase<any, any, any>,
+  tableName: string,
+  table: MySqlTable,
+  updateManyInput: GraphQLInputObjectType,
+  fieldName: string,
+  filterCtx?: RelationFilterBase,
+  txCtx?: MutationTxCtx,
+): CreatedResolver => {
+  const queryArgs = {
+    updates: {
+      type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(updateManyInput))),
+    },
+  } as const satisfies GraphQLFieldConfigArgumentMap;
+
+  return {
+    name: fieldName,
+    resolver: async (
+      _source,
+      args: { updates: { where?: Filters<Table>; set: Record<string, any> }[] },
+      context,
+      info,
+    ) => {
+      try {
+        return await runMutation(db, context, info, txCtx, async (executor) => {
+          const { updates } = args;
+          if (!updates.length) {
+            throw new GraphQLError('No updates were provided!');
+          }
+
+          // Remap and validate every entry before the transaction opens, so a malformed
+          // entry rejects the request instead of rolling back mid-batch.
+          const entries = updates.map(({ where, set }) => {
+            const input = remapFromGraphQLSingleInput(set, table);
+            if (!Object.keys(input).length) {
+              throw new GraphQLError('Unable to update with no values specified!');
+            }
+            return {
+              set: input,
+              filters: where
+                ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))
+                : undefined,
+            };
+          });
+
+          // On a caller-supplied transaction — or the shared multi-mutation transaction
+          // opened by `runMutation` — this opens a savepoint, so the batch stays atomic
+          // without breaking the outer transaction.
+          await executor.transaction(async (tx: any) => {
+            for (const entry of entries) {
+              let query = tx.update(table).set(entry.set);
+              if (entry.filters) {
+                query = query.where(entry.filters) as any;
+              }
+              await query;
+            }
+          });
 
           return { isSuccess: true };
         });
@@ -370,12 +465,14 @@ const generateDelete = (
   table: MySqlTable,
   filterArgs: GraphQLInputObjectType,
   fieldName: string,
+  single: boolean,
+  requireWhere: boolean,
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
 ): CreatedResolver => {
   const queryArgs = {
     where: {
-      type: filterArgs,
+      type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
     },
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
@@ -386,9 +483,20 @@ const generateDelete = (
         return await runMutation(db, context, info, txCtx, async (executor) => {
           const { where } = args;
 
+          const relationCtx = relationFilterCtx(filterCtx, tableName);
+          const filters =
+            single || requireWhere
+              ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+              : where
+                ? extractFilters(table, tableName, where, relationCtx)
+                : undefined;
+
+          if (single) {
+            await assertSingleMatch(executor, table, filters!, fieldName);
+          }
+
           let query = executor.delete(table);
-          if (where) {
-            const filters = extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName));
+          if (filters) {
             query = query.where(filters) as any;
           }
 
@@ -520,7 +628,10 @@ export const generateSchemaData = <
       upsertArrayFieldName,
       upsertSingleFieldName,
       updateFieldName,
+      updateManyFieldName,
+      updateSingleFieldName,
       deleteFieldName,
+      deleteSingleFieldName,
     } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
 
     const selectArrGenerated = generateSelectArray(
@@ -609,6 +720,38 @@ export const generateSchemaData = <
           updateInput,
           tableFilters,
           updateFieldName,
+          false,
+          features.requireWhere,
+          filterCtx,
+          mutationTxCtx,
+        )
+      : undefined;
+    const updateSingleGenerated = features.update
+      ? generateUpdate(
+          db,
+          tableName,
+          schema[tableName] as MySqlTable,
+          updateInput,
+          tableFilters,
+          updateSingleFieldName,
+          true,
+          features.requireWhere,
+          filterCtx,
+          mutationTxCtx,
+        )
+      : undefined;
+    // The batch update reuses the update `set` input, so it needs `update` on too.
+    const updateManyInput =
+      features.update && features.updateMany
+        ? generateUpdateManyInput({ typeName, updatePrefix: prefixes.update, updateInput, tableFilters })
+        : undefined;
+    const updateManyGenerated = updateManyInput
+      ? generateUpdateMany(
+          db,
+          tableName,
+          schema[tableName] as MySqlTable,
+          updateManyInput,
+          updateManyFieldName,
           filterCtx,
           mutationTxCtx,
         )
@@ -620,6 +763,21 @@ export const generateSchemaData = <
           schema[tableName] as MySqlTable,
           tableFilters,
           deleteFieldName,
+          false,
+          features.requireWhere,
+          filterCtx,
+          mutationTxCtx,
+        )
+      : undefined;
+    const deleteSingleGenerated = features.delete
+      ? generateDelete(
+          db,
+          tableName,
+          schema[tableName] as MySqlTable,
+          tableFilters,
+          deleteSingleFieldName,
+          true,
+          features.requireWhere,
           filterCtx,
           mutationTxCtx,
         )
@@ -698,7 +856,10 @@ export const generateSchemaData = <
       upsertArrGenerated,
       upsertSingleGenerated,
       updateGenerated,
+      updateManyGenerated,
+      updateSingleGenerated,
       deleteGenerated,
+      deleteSingleGenerated,
     ]) {
       if (generated) {
         mutations[generated.name] = {
@@ -715,6 +876,7 @@ export const generateSchemaData = <
       ...(features.insert || onConflictInput ? [insertInput] : []),
       ...(onConflictInput ? [onConflictInput] : []),
       ...(features.update ? [updateInput] : []),
+      ...(updateManyInput ? [updateManyInput] : []),
       tableFilters,
       tableOrder,
     ];

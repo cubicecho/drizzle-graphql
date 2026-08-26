@@ -100,6 +100,19 @@ export type UpdateArgs<TTable extends Table> = Partial<{
 }>;
 
 /**
+ * One entry of an `update<Table>Many` mutation: the rows `where` matches get this
+ * entry's `set` applied. An omitted `where` matches every row, same as `update<Table>`.
+ */
+export type UpdateManyEntry<TTable extends Table> = {
+  where?: Filters<TTable>;
+  set: GetRemappedTableUpdateDataType<TTable>;
+};
+
+export type UpdateManyArgs<TTable extends Table> = {
+  updates: Array<UpdateManyEntry<TTable>>;
+};
+
+/**
  * The `onConflict` argument of the generated upsert mutations.
  *
  * `target` and `where` exist on PostgreSQL and SQLite only: MySQL's
@@ -119,6 +132,17 @@ export type UpsertArgs<TTable extends Table, isSingle extends boolean> = InsertA
 
 export type DeleteArgs<TTable extends Table> = {
   where?: Filters<TTable>;
+};
+
+/** Arguments of `update<Table>Single` — unlike the plural variant, `where` is required. */
+export type UpdateSingleArgs<TTable extends Table> = {
+  set: GetRemappedTableUpdateDataType<TTable>;
+  where: Filters<TTable>;
+};
+
+/** Arguments of `delete<Table>Single` — unlike the plural variant, `where` is required. */
+export type DeleteSingleArgs<TTable extends Table> = {
+  where: Filters<TTable>;
 };
 
 export type SelectResolver<
@@ -209,6 +233,30 @@ export type UpdateResolver<TTable extends Table, IsReturnless extends boolean> =
   info: GraphQLResolveInfo,
 ) => Promise<IsReturnless extends false ? GetRemappedTableDataType<TTable> | undefined : MutationReturnlessResult>;
 
+/**
+ * Resolver for `update<Table>Many`: per-entry `set`/`where` pairs applied in input order
+ * inside one transaction. Where the dialect returns rows, the result holds each entry's
+ * updated rows in entry order, with `null` standing in for an entry whose `where`
+ * matched no rows.
+ */
+export type UpdateManyResolver<TTable extends Table, IsReturnless extends boolean> = (
+  source: any,
+  args: UpdateManyArgs<TTable>,
+  context: any,
+  info: GraphQLResolveInfo,
+) => Promise<IsReturnless extends false ? Array<GetRemappedTableDataType<TTable> | null> : MutationReturnlessResult>;
+
+/**
+ * Resolver for `update<Table>Single`: `where` required, the single (nullable) affected row
+ * out. Throws before writing anything when `where` matches more than one row.
+ */
+export type UpdateSingleResolver<TTable extends Table, IsReturnless extends boolean> = (
+  source: any,
+  args: UpdateSingleArgs<TTable>,
+  context: any,
+  info: GraphQLResolveInfo,
+) => Promise<IsReturnless extends false ? GetRemappedTableDataType<TTable> | undefined : MutationReturnlessResult>;
+
 /** Resolver for `upsert<Table>Single`. */
 export type UpsertResolver<TTable extends Table, IsReturnless extends boolean> = (
   source: any,
@@ -240,6 +288,17 @@ export type AggregateResolver<TTable extends Table> = (
 export type DeleteResolver<TTable extends Table, IsReturnless extends boolean> = (
   source: any,
   args: DeleteArgs<TTable>,
+  context: any,
+  info: GraphQLResolveInfo,
+) => Promise<IsReturnless extends false ? GetRemappedTableDataType<TTable> | undefined : MutationReturnlessResult>;
+
+/**
+ * Resolver for `delete<Table>Single`: `where` required, the single (nullable) deleted row
+ * out. Throws before writing anything when `where` matches more than one row.
+ */
+export type DeleteSingleResolver<TTable extends Table, IsReturnless extends boolean> = (
+  source: any,
+  args: DeleteSingleArgs<TTable>,
   context: any,
   info: GraphQLResolveInfo,
 ) => Promise<IsReturnless extends false ? GetRemappedTableDataType<TTable> | undefined : MutationReturnlessResult>;
@@ -433,6 +492,51 @@ export type MutationsCore<
       }
     : never;
 } & {
+  [TName in keyof TSchemaTables as TName extends string
+    ? `update${Capitalize<TName>}Many`
+    : never]: TName extends string
+    ? {
+        type: IsReturnless extends true
+          ? TOutputs['MutationReturn'] extends GraphQLObjectType
+            ? TOutputs['MutationReturn']
+            : never
+          : // The list items are nullable: an entry whose `where` matched no rows
+            // yields `null` in its slot, keeping the result aligned with the input.
+            GraphQLNonNull<GraphQLList<TOutputs[`${Capitalize<TName>}Item`]>>;
+        args: {
+          updates: {
+            type: GraphQLNonNull<GraphQLList<GraphQLNonNull<TInputs[`${Capitalize<TName>}UpdateManyInput`]>>>;
+          };
+        };
+        resolve: UpdateManyResolver<TSchemaTables[TName], IsReturnless>;
+      }
+    : never;
+} & {
+  [TName in keyof TSchemaTables as TName extends string
+    ? `update${Capitalize<TName>}Single`
+    : never]: TName extends string
+    ? {
+        type: IsReturnless extends true
+          ? TOutputs['MutationReturn'] extends GraphQLObjectType
+            ? TOutputs['MutationReturn']
+            : never
+          : TOutputs[`${Capitalize<TName>}Item`];
+        args: {
+          set: {
+            type: GraphQLNonNull<TInputs[`${Capitalize<TName>}UpdateInput`]>;
+          };
+          where: {
+            type: GraphQLNonNull<
+              TInputs[`${Capitalize<TName>}Filters`] extends GraphQLInputObjectType
+                ? TInputs[`${Capitalize<TName>}Filters`]
+                : never
+            >;
+          };
+        };
+        resolve: UpdateSingleResolver<TSchemaTables[TName], IsReturnless>;
+      }
+    : never;
+} & {
   [TName in keyof TSchemaTables as TName extends string ? `delete${Capitalize<TName>}` : never]: TName extends string
     ? {
         type: IsReturnless extends true
@@ -450,12 +554,38 @@ export type MutationsCore<
         resolve: DeleteResolver<TSchemaTables[TName], IsReturnless>;
       }
     : never;
+} & {
+  [TName in keyof TSchemaTables as TName extends string
+    ? `delete${Capitalize<TName>}Single`
+    : never]: TName extends string
+    ? {
+        type: IsReturnless extends true
+          ? TOutputs['MutationReturn'] extends GraphQLObjectType
+            ? TOutputs['MutationReturn']
+            : never
+          : TOutputs[`${Capitalize<TName>}Item`];
+        args: {
+          where: {
+            type: GraphQLNonNull<
+              TInputs[`${Capitalize<TName>}Filters`] extends GraphQLInputObjectType
+                ? TInputs[`${Capitalize<TName>}Filters`]
+                : never
+            >;
+          };
+        };
+        resolve: DeleteSingleResolver<TSchemaTables[TName], IsReturnless>;
+      }
+    : never;
 };
 
 export type GeneratedInputs<TSchema extends Record<string, Table>> = {
   [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}InsertInput` : never]: GraphQLInputObjectType;
 } & {
   [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}UpdateInput` : never]: GraphQLInputObjectType;
+} & {
+  [TName in keyof TSchema as TName extends string
+    ? `${Capitalize<TName>}UpdateManyInput`
+    : never]: GraphQLInputObjectType;
 } & {
   [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}OrderBy` : never]: GraphQLInputObjectType;
 } & {
@@ -533,9 +663,17 @@ export type SchemaFeatures = {
   distinct?: boolean;
   /** `create<Table>` / `create<Table>Single` mutations. @default true */
   insert?: boolean;
-  /** `update<Table>` mutations. @default true */
+  /** `update<Table>` / `update<Table>Single` mutations. @default true */
   update?: boolean;
-  /** `delete<Table>` mutations. @default true */
+  /**
+   * `update<Table>Many` mutations — batch update with a per-entry `set` and `where`,
+   * executed inside one transaction. Only generated when `update` is also enabled,
+   * since the entries reuse the update `set` input.
+   *
+   * @default true
+   */
+  updateMany?: boolean;
+  /** `delete<Table>` / `delete<Table>Single` mutations. @default true */
   delete?: boolean;
   /**
    * `upsert<Table>` / `upsert<Table>Single` mutations — insert, or update the row that
@@ -545,6 +683,17 @@ export type SchemaFeatures = {
    * @default false
    */
   upsert?: boolean;
+  /**
+   * Makes `where` non-null on the plural `update<Table>` / `delete<Table>` mutations, and
+   * rejects a `where` that collapses to no filters (e.g. `where: {}`), so a schema can rule
+   * out unbounded writes at the type level. Off by default for backwards compatibility.
+   *
+   * The `Single` variants (`update<Table>Single` / `delete<Table>Single`) require a
+   * non-empty `where` regardless of this flag.
+   *
+   * @default false
+   */
+  requireWhere?: boolean;
 };
 
 /**

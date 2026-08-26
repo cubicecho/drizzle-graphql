@@ -176,6 +176,7 @@ describe('features: mutations', () => {
     const mutations = gqlSchema.getMutationType()!.getFields();
 
     expect(mutations['updateUsers']).toBeUndefined();
+    expect(mutations['updateUsersSingle']).toBeUndefined();
     expect(gqlSchema.getType('UpdateUsersInput')).toBeUndefined();
     expect(entities.inputs['UpdateUsersInput']).toBeUndefined();
     expect(mutations['createUsers']).toBeDefined();
@@ -185,6 +186,7 @@ describe('features: mutations', () => {
     const mutations = build({ delete: false }).schema.getMutationType()!.getFields();
 
     expect(mutations['deleteUsers']).toBeUndefined();
+    expect(mutations['deleteUsersSingle']).toBeUndefined();
     expect(mutations['createUsers']).toBeDefined();
   });
 

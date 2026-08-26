@@ -1,5 +1,5 @@
 // @ts-nocheck — vendored file, drizzle-orm 1.0 type compat not guaranteed
-import { is, One, type Table, type View } from 'drizzle-orm';
+import { and, getColumns, is, One, type Table, type View } from 'drizzle-orm';
 import type { RelationalQueryBuilder } from 'drizzle-orm/mysql-core/query-builders/query';
 import { getTableConfig, type PgAsyncDatabase, type PgColumn, PgTable } from 'drizzle-orm/pg-core';
 import type { GraphQLFieldConfig, GraphQLFieldConfigArgumentMap, ThunkObjMap } from 'graphql';
@@ -15,24 +15,35 @@ import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import type { GeneratedEntities } from '../../types.ts';
 import {
   aggregateFieldComplexity,
+  assertSingleMatch,
+  attachRowCursors,
   attachTargetPrimaryKeys,
+  buildCursorCondition,
   buildNamedRelations,
+  type CursorOrderEntry,
   computeResolverFieldNames,
   createMutationTxCtx,
   createRelationResolverFactory,
+  cursorOrderExprs,
+  cursorOrderingEntries,
+  decodeCursor,
   eagerLoadMutationRelations,
   excludedColumnRef,
   extractFilters,
   extractOrderBy,
+  extractRequiredFilters,
   extractSelectedColumnsFromTreeSQLFormat,
   generateDistinctEnum,
   generateOnConflictInput,
   generateTableTypes,
+  generateUpdateManyInput,
   getPrimaryKeyPropNamesFromConfig,
   getUniqueColumnSets,
+  isCursorFieldSelected,
   listFieldComplexity,
   type MutationTxCtx,
   type OnConflictArg,
+  orderByHasRelationEntry,
   prepareMutationRelationColumns,
   primaryKeyOrderExprs,
   primaryKeyRestriction,
@@ -125,20 +136,60 @@ const generateSelectArray = (
             filterCtx,
             pkNames,
             db: executor,
+            // PostgreSQL sorts NULLs as the largest values (last in ASC).
+            nullOrdering: 'nulls-largest',
           });
         }
 
         // Fallback for tables without relational query builder support.
         // Use SQL column objects (not Record<string,true>) so db.select() receives valid expressions.
-        const { offset, limit, orderBy, where, distinct } = args;
+        const { offset, limit, orderBy, where, distinct, after } = args;
         const selectedColumnsSql = extractSelectedColumnsFromTreeSQLFormat<PgColumn>(
           parsedInfo.fieldsByTypeName[typeName]!,
           table,
           { tableName, relationMap, tables },
         );
-        const whereSql = where
+
+        // Keyset pagination (see runRelationalSelect, which handles the RQB path).
+        const cursorSelected = isCursorFieldSelected(parsedInfo.fieldsByTypeName[typeName], table);
+        let cursorEntries: CursorOrderEntry[] | undefined;
+        if (after != null || cursorSelected) {
+          if (after != null && distinct?.length) {
+            throw new GraphQLError("'after' cannot be combined with 'distinct'.");
+          }
+          if (orderByHasRelationEntry(orderBy)) {
+            if (after != null) {
+              throw new GraphQLError(
+                "'after' cannot be combined with an orderBy that orders through a relation — a related row's value cannot be encoded into a cursor.",
+              );
+            }
+            // `cursor` selected under a relation ordering — resolves to null; ordering still applies.
+          } else if (!pkNames.length) {
+            if (after != null) {
+              throw new GraphQLError(
+                `Table ${tableName} has no primary key, so cursor pagination cannot be used on it.`,
+              );
+            }
+          } else {
+            cursorEntries = cursorOrderingEntries(orderBy, pkNames);
+            if (cursorSelected) {
+              // The whole ordering tuple is needed to compute each row's cursor.
+              const allColumns = getColumns(table);
+              for (const [column] of cursorEntries) {
+                selectedColumnsSql[column] ??= allColumns[column] as PgColumn;
+              }
+            }
+          }
+        }
+        const cursorCondition =
+          after != null && cursorEntries
+            ? buildCursorCondition(table, cursorEntries, decodeCursor(after, cursorEntries), 'nulls-largest')
+            : undefined;
+
+        const baseWhereSql = where
           ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))
           : undefined;
+        const whereSql = cursorCondition ? and(baseWhereSql, cursorCondition) : baseWhereSql;
 
         // `distinct` picks the surviving rows in its own pass; the main query is then narrowed
         // to those primary keys and re-orders them the same way. See runRelationalSelect.
@@ -166,9 +217,12 @@ const generateSelectArray = (
         } else if (whereSql) {
           q = q.where(whereSql) as any;
         }
-        if (orderBy) {
+        if (cursorEntries && !distinctKeys) {
+          // Cursor pagination pages over a total order: orderBy plus the PK tiebreak.
+          q = q.orderBy(...cursorOrderExprs(table, cursorEntries)) as any;
+        } else if (orderBy) {
           q = q.orderBy(
-            ...extractOrderBy(table, orderBy),
+            ...extractOrderBy(table, orderBy, relationFilterCtx(filterCtx, tableName)),
             ...(distinctKeys ? primaryKeyOrderExprs(table, pkNames) : []),
           ) as any;
         } else if ((distinctKeys || offset != null || limit != null) && pkNames.length) {
@@ -183,7 +237,11 @@ const generateSelectArray = (
             q = q.limit(limit) as any;
           }
         }
-        return remapToGraphQLArrayOutput(await q, tableName, table, relationMap);
+        const rows = await q;
+        if (cursorEntries && cursorSelected) {
+          attachRowCursors(rows, cursorEntries);
+        }
+        return remapToGraphQLArrayOutput(rows, tableName, table, relationMap);
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -251,7 +309,7 @@ const generateSelectSingle = (
           q = q.where(extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))) as any;
         }
         if (orderBy) {
-          q = q.orderBy(...extractOrderBy(table, orderBy)) as any;
+          q = q.orderBy(...extractOrderBy(table, orderBy, relationFilterCtx(filterCtx, tableName))) as any;
         } else if (pkNames.length) {
           // A single query is an implicit `limit 1` — order it so the row is deterministic.
           q = q.orderBy(...primaryKeyOrderExprs(table, pkNames)) as any;
@@ -522,6 +580,8 @@ const generateUpdate = (
   filterArgs: GraphQLInputObjectType,
   fieldName: string,
   typeName: string,
+  single: boolean,
+  requireWhere: boolean,
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
@@ -531,7 +591,7 @@ const generateUpdate = (
       type: new GraphQLNonNull(setArgs),
     },
     where: {
-      type: filterArgs,
+      type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
     },
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
@@ -565,9 +625,20 @@ const generateUpdate = (
             throw new GraphQLError('Unable to update with no values specified!');
           }
 
+          const relationCtx = relationFilterCtx(filterCtx, tableName);
+          const filters =
+            single || requireWhere
+              ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+              : where
+                ? extractFilters(table, tableName, where, relationCtx)
+                : undefined;
+
+          if (single) {
+            await assertSingleMatch(executor, table, filters!, fieldName);
+          }
+
           let query = executor.update(table).set(input);
-          if (where) {
-            const filters = extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName));
+          if (filters) {
             query = query.where(filters) as any;
           }
 
@@ -575,11 +646,143 @@ const generateUpdate = (
 
           const result = await query;
 
+          if (single && result.length > 1) {
+            // A row started matching between the pre-check and the write.
+            throw new GraphQLError(`${fieldName}: 'where' matched more than one row!`);
+          }
+
+          if (single && !result[0]) {
+            return undefined;
+          }
+
           const enriched = hasRelations
             ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
             : result;
 
-          return remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
+          return single
+            ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
+            : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
+        });
+      } catch (e) {
+        throw toGraphQLError(e);
+      }
+    },
+    args: queryArgs,
+  };
+};
+
+/**
+ * `update<Table>Many` — batch update with a per-entry `set` and `where`.
+ *
+ * The entries run as one UPDATE statement each, in input order, inside a single
+ * transaction (a savepoint when the request context already carries one), so a failing
+ * entry rolls the whole batch back and a row matched by several entries sees them applied
+ * in order. The result lists each entry's updated rows in entry order, with `null`
+ * standing in for an entry whose `where` matched no rows, so the common one-row-per-entry
+ * case stays aligned with the input.
+ */
+const generateUpdateMany = (
+  db: PgAsyncDatabase<any, any, any>,
+  tableName: string,
+  table: PgTable,
+  tables: Record<string, Table>,
+  relationMap: Record<string, Record<string, TableNamedRelations>>,
+  updateManyInput: GraphQLInputObjectType,
+  fieldName: string,
+  typeName: string,
+  typeNameMapper?: TypeNameMapper,
+  filterCtx?: RelationFilterBase,
+  txCtx?: MutationTxCtx,
+): CreatedResolver => {
+  const queryArgs = {
+    updates: {
+      type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(updateManyInput))),
+    },
+  } as const satisfies GraphQLFieldConfigArgumentMap;
+
+  // Derived once at build time — PK prop names don't change per request.
+  const pkNames = pgPrimaryKeyPropNames(table);
+
+  return {
+    name: fieldName,
+    resolver: async (
+      _source,
+      args: { updates: { where?: Filters<Table>; set: Record<string, any> }[] },
+      context,
+      info,
+    ) => {
+      try {
+        return await runMutation(db, context, info, txCtx, async (executor) => {
+          const { updates } = args;
+          if (!updates.length) {
+            throw new GraphQLError('No updates were provided!');
+          }
+
+          const parsedInfo = parseResolveInfo(info, {
+            deep: true,
+          }) as ResolveTree;
+
+          const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+            relationMap,
+            tables,
+            tableName,
+            typeName,
+            typeNameMapper,
+            table,
+            pkNames,
+            parsedInfo,
+          });
+
+          // Remap and validate every entry before the transaction opens, so a malformed
+          // entry rejects the request instead of rolling back mid-batch.
+          const entries = updates.map(({ where, set }) => {
+            const input = remapFromGraphQLSingleInput(set, table);
+            if (!Object.keys(input).length) {
+              throw new GraphQLError('Unable to update with no values specified!');
+            }
+            return {
+              set: input,
+              filters: where
+                ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))
+                : undefined,
+            };
+          });
+
+          // On a caller-supplied transaction — or the shared multi-mutation transaction
+          // opened by `runMutation` — this opens a savepoint, so the batch stays atomic
+          // without breaking the outer transaction.
+          const perEntry: Record<string, any>[][] = await executor.transaction(async (tx: any) => {
+            const results: Record<string, any>[][] = [];
+            for (const entry of entries) {
+              let query = tx.update(table).set(entry.set);
+              if (entry.filters) {
+                query = query.where(entry.filters) as any;
+              }
+              results.push(await (query.returning(columns) as any));
+            }
+            return results;
+          });
+
+          const flatRows = perEntry.flat();
+          const enriched = hasRelations
+            ? await eagerLoadMutationRelations(executor, tableName, flatRows, pkNames, withParams)
+            : flatRows;
+
+          // Rebuild the per-entry slots: a no-match entry contributes `null`, a multi-match
+          // entry contributes each of its rows.
+          const output: (Record<string, any> | null)[] = [];
+          let offset = 0;
+          for (const rows of perEntry) {
+            if (!rows.length) {
+              output.push(null);
+              continue;
+            }
+            for (let i = 0; i < rows.length; i++) {
+              output.push(remapToGraphQLSingleOutput(enriched[offset + i], tableName, table, relationMap));
+            }
+            offset += rows.length;
+          }
+          return output;
         });
       } catch (e) {
         throw toGraphQLError(e);
@@ -596,13 +799,15 @@ const generateDelete = (
   filterArgs: GraphQLInputObjectType,
   fieldName: string,
   typeName: string,
+  single: boolean,
+  requireWhere: boolean,
   filterCtx?: RelationFilterBase,
   selectionCtx?: SelectionCtx,
   txCtx?: MutationTxCtx,
 ): CreatedResolver => {
   const queryArgs = {
     where: {
-      type: filterArgs,
+      type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
     },
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
@@ -623,15 +828,35 @@ const generateDelete = (
             selectionCtx,
           );
 
+          const relationCtx = relationFilterCtx(filterCtx, tableName);
+          const filters =
+            single || requireWhere
+              ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+              : where
+                ? extractFilters(table, tableName, where, relationCtx)
+                : undefined;
+
+          if (single) {
+            await assertSingleMatch(executor, table, filters!, fieldName);
+          }
+
           let query = executor.delete(table);
-          if (where) {
-            const filters = extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName));
+          if (filters) {
             query = query.where(filters) as any;
           }
 
           query = query.returning(columns) as any;
 
           const result = await query;
+
+          if (single && result.length > 1) {
+            // A row started matching between the pre-check and the write.
+            throw new GraphQLError(`${fieldName}: 'where' matched more than one row!`);
+          }
+
+          if (single) {
+            return result[0] ? remapToGraphQLSingleOutput(result[0], tableName, table) : undefined;
+          }
 
           return remapToGraphQLArrayOutput(result, tableName, table);
         });
@@ -757,7 +982,10 @@ export function generateSchemaData<
       upsertArrayFieldName,
       upsertSingleFieldName,
       updateFieldName,
+      updateManyFieldName,
+      updateSingleFieldName,
       deleteFieldName,
+      deleteSingleFieldName,
     } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
 
     const selectArrGenerated = generateSelectArray(
@@ -874,6 +1102,46 @@ export function generateSchemaData<
           tableFilters,
           updateFieldName,
           typeName,
+          false,
+          features.requireWhere,
+          typeNameMapper,
+          filterCtx,
+          mutationTxCtx,
+        )
+      : undefined;
+    const updateSingleGenerated = features.update
+      ? generateUpdate(
+          db,
+          tableName,
+          schema[tableName] as PgTable,
+          tables,
+          eagerRelations,
+          updateInput,
+          tableFilters,
+          updateSingleFieldName,
+          typeName,
+          true,
+          features.requireWhere,
+          typeNameMapper,
+          filterCtx,
+          mutationTxCtx,
+        )
+      : undefined;
+    // The batch update reuses the update `set` input, so it needs `update` on too.
+    const updateManyInput =
+      features.update && features.updateMany
+        ? generateUpdateManyInput({ typeName, updatePrefix: prefixes.update, updateInput, tableFilters })
+        : undefined;
+    const updateManyGenerated = updateManyInput
+      ? generateUpdateMany(
+          db,
+          tableName,
+          schema[tableName] as PgTable,
+          tables,
+          eagerRelations,
+          updateManyInput,
+          updateManyFieldName,
+          typeName,
           typeNameMapper,
           filterCtx,
           mutationTxCtx,
@@ -887,6 +1155,23 @@ export function generateSchemaData<
           tableFilters,
           deleteFieldName,
           typeName,
+          false,
+          features.requireWhere,
+          filterCtx,
+          { tableName, relationMap: namedRelations, tables },
+          mutationTxCtx,
+        )
+      : undefined;
+    const deleteSingleGenerated = features.delete
+      ? generateDelete(
+          db,
+          tableName,
+          schema[tableName] as PgTable,
+          tableFilters,
+          deleteSingleFieldName,
+          typeName,
+          true,
+          features.requireWhere,
           filterCtx,
           { tableName, relationMap: namedRelations, tables },
           mutationTxCtx,
@@ -995,11 +1280,33 @@ export function generateSchemaData<
         resolve: updateGenerated.resolver,
       };
     }
+    if (updateManyGenerated) {
+      mutations[updateManyGenerated.name] = {
+        // Nullable items: a no-match entry yields `null` in its slot.
+        type: new GraphQLNonNull(new GraphQLList(singleTableItemOutput)),
+        args: updateManyGenerated.args,
+        resolve: updateManyGenerated.resolver,
+      };
+    }
+    if (updateSingleGenerated) {
+      mutations[updateSingleGenerated.name] = {
+        type: singleTableItemOutput,
+        args: updateSingleGenerated.args,
+        resolve: updateSingleGenerated.resolver,
+      };
+    }
     if (deleteGenerated) {
       mutations[deleteGenerated.name] = {
         type: arrTableItemOutput,
         args: deleteGenerated.args,
         resolve: deleteGenerated.resolver,
+      };
+    }
+    if (deleteSingleGenerated) {
+      mutations[deleteSingleGenerated.name] = {
+        type: singleTableItemOutput,
+        args: deleteSingleGenerated.args,
+        resolve: deleteSingleGenerated.resolver,
       };
     }
     // The insert/update inputs are still built (they type the mutations that survive) but
@@ -1009,6 +1316,7 @@ export function generateSchemaData<
       ...(features.insert || onConflictInput ? [insertInput] : []),
       ...(onConflictInput ? [onConflictInput] : []),
       ...(features.update ? [updateInput] : []),
+      ...(updateManyInput ? [updateManyInput] : []),
       tableFilters,
       tableOrder,
     ];
