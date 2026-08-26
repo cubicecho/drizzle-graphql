@@ -520,6 +520,13 @@ export type GeneratedData<TDatabase extends AnyDrizzleDB<any>> = {
 export type SchemaFeatures = {
   /** `<plural>Aggregate` root queries and the aggregate output types. @default true */
   aggregates?: boolean;
+  /**
+   * `<plural>GroupBy` root queries — the same aggregates, one row per group. Requires
+   * `aggregates`, whose output types the grouped result reuses.
+   *
+   * @default true
+   */
+  groupBy?: boolean;
   /** `<relation>Aggregate` fields on object types, for to-many relations. @default true */
   relationAggregates?: boolean;
   /** The `distinct` argument on list queries. @default true */

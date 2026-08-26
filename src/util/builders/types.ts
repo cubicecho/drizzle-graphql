@@ -22,6 +22,7 @@ import type { ResolvedComplexityOptions } from './common.ts';
  */
 export type GeneratorFeatures = {
   aggregates: boolean;
+  groupBy: boolean;
   relationAggregates: boolean;
   distinct: boolean;
   insert: boolean;

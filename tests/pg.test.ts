@@ -2588,6 +2588,36 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
+            usersGroupBy: z
+              .object({
+                args: z
+                  .object({
+                    groupBy: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                        description: z.string(),
+                      })
+                      .strict(),
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                        description: z.string(),
+                      })
+                      .strict(),
+                    having: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                        description: z.string(),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
             customersAggregate: z
               .object({
                 args: z
@@ -2595,6 +2625,36 @@ describe.sequential('Returned data tests', () => {
                     where: z
                       .object({
                         type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            customersGroupBy: z
+              .object({
+                args: z
+                  .object({
+                    groupBy: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                        description: z.string(),
+                      })
+                      .strict(),
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                        description: z.string(),
+                      })
+                      .strict(),
+                    having: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                        description: z.string(),
                       })
                       .strict(),
                   })
@@ -2622,6 +2682,36 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
+            postsGroupBy: z
+              .object({
+                args: z
+                  .object({
+                    groupBy: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                        description: z.string(),
+                      })
+                      .strict(),
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                        description: z.string(),
+                      })
+                      .strict(),
+                    having: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                        description: z.string(),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
             tagsAggregate: z
               .object({
                 args: z
@@ -2629,6 +2719,36 @@ describe.sequential('Returned data tests', () => {
                     where: z
                       .object({
                         type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            tagsGroupBy: z
+              .object({
+                args: z
+                  .object({
+                    groupBy: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                        description: z.string(),
+                      })
+                      .strict(),
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                        description: z.string(),
+                      })
+                      .strict(),
+                    having: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                        description: z.string(),
                       })
                       .strict(),
                   })
@@ -2944,26 +3064,34 @@ describe.sequential('Returned data tests', () => {
             Customers: z.instanceof(GraphQLObjectType),
             Tags: z.instanceof(GraphQLObjectType),
             UsersAggregate: z.instanceof(GraphQLObjectType),
+            UsersGroupBy: z.instanceof(GraphQLObjectType),
             CustomersAggregate: z.instanceof(GraphQLObjectType),
+            CustomersGroupBy: z.instanceof(GraphQLObjectType),
             PostsAggregate: z.instanceof(GraphQLObjectType),
+            PostsGroupBy: z.instanceof(GraphQLObjectType),
             TagsAggregate: z.instanceof(GraphQLObjectType),
+            TagsGroupBy: z.instanceof(GraphQLObjectType),
           })
           .strict(),
         inputs: z
           .object({
             UsersFilters: z.instanceof(GraphQLInputObjectType),
+            UsersHaving: z.instanceof(GraphQLInputObjectType),
             UsersOrderBy: z.instanceof(GraphQLInputObjectType),
             CreateUsersInput: z.instanceof(GraphQLInputObjectType),
             UpdateUsersInput: z.instanceof(GraphQLInputObjectType),
             PostsFilters: z.instanceof(GraphQLInputObjectType),
+            PostsHaving: z.instanceof(GraphQLInputObjectType),
             PostsOrderBy: z.instanceof(GraphQLInputObjectType),
             CreatePostsInput: z.instanceof(GraphQLInputObjectType),
             UpdatePostsInput: z.instanceof(GraphQLInputObjectType),
             CustomersFilters: z.instanceof(GraphQLInputObjectType),
+            CustomersHaving: z.instanceof(GraphQLInputObjectType),
             CustomersOrderBy: z.instanceof(GraphQLInputObjectType),
             CreateCustomersInput: z.instanceof(GraphQLInputObjectType),
             UpdateCustomersInput: z.instanceof(GraphQLInputObjectType),
             TagsFilters: z.instanceof(GraphQLInputObjectType),
+            TagsHaving: z.instanceof(GraphQLInputObjectType),
             TagsOrderBy: z.instanceof(GraphQLInputObjectType),
             CreateTagsInput: z.instanceof(GraphQLInputObjectType),
             UpdateTagsInput: z.instanceof(GraphQLInputObjectType),

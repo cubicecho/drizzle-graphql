@@ -46,7 +46,15 @@ import {
   toGraphQLError,
 } from '../builders/common.ts';
 import { remapFromGraphQLArrayInput, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
-import { createRelationAggregateFactory, generateAggregate, generateAggregateTypes } from './aggregates.ts';
+import {
+  createRelationAggregateFactory,
+  generateAggregate,
+  generateAggregateTypes,
+  generateGroupBy,
+  generateGroupByEnum,
+  generateGroupByType,
+  generateHavingInput,
+} from './aggregates.ts';
 import type {
   CreatedResolver,
   Filters,
@@ -489,6 +497,7 @@ export const generateSchemaData = <
       listFieldName,
       singleFieldName,
       aggregateFieldName,
+      groupByFieldName,
       createArrayFieldName,
       createSingleFieldName,
       upsertArrayFieldName,
@@ -574,6 +583,32 @@ export const generateSchemaData = <
         )
       : undefined;
 
+    // The grouped result reuses the aggregate output types, so it only exists alongside them.
+    const groupByType =
+      features.aggregates && features.groupBy
+        ? generateGroupByType(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
+        : undefined;
+    const groupByEnum = groupByType
+      ? generateGroupByEnum(schema[tableName] as MySqlTable, tableName, typeName)
+      : undefined;
+    const havingInput = groupByEnum
+      ? generateHavingInput(schema[tableName] as MySqlTable, tableName, typeName)
+      : undefined;
+    const groupByGenerated =
+      groupByType && groupByEnum && havingInput
+        ? generateGroupBy(
+            db,
+            tableName,
+            schema[tableName] as MySqlTable,
+            typeName,
+            groupByFieldName,
+            tableFilters,
+            groupByEnum,
+            havingInput,
+            filterCtx,
+          )
+        : undefined;
+
     queries[selectArrGenerated.name] = {
       type: selectArrOutput,
       args: selectArrGenerated.args,
@@ -590,6 +625,14 @@ export const generateSchemaData = <
         type: new GraphQLNonNull(aggregateType),
         args: aggregateGenerated.args,
         resolve: aggregateGenerated.resolver,
+        ...(complexity ? { extensions: { complexity: aggregateFieldComplexity(complexity) } } : {}),
+      };
+    }
+    if (groupByGenerated && groupByType) {
+      queries[groupByGenerated.name] = {
+        type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(groupByType))),
+        args: groupByGenerated.args,
+        resolve: groupByGenerated.resolver,
         ...(complexity ? { extensions: { complexity: aggregateFieldComplexity(complexity) } } : {}),
       };
     }
@@ -625,6 +668,10 @@ export const generateSchemaData = <
     outputs[selectSingleOutput.name] = selectSingleOutput;
     if (aggregateType) {
       outputs[aggregateType.name] = aggregateType;
+    }
+    if (groupByType && havingInput) {
+      outputs[groupByType.name] = groupByType;
+      inputs[havingInput.name] = havingInput;
     }
   }
 

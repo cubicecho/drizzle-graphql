@@ -1,6 +1,6 @@
 import { PGlite } from '@electric-sql/pglite';
 import { drizzle, type PgliteDatabase } from 'drizzle-orm/pglite';
-import type { GraphQLObjectType, GraphQLSchema } from 'graphql';
+import type { GraphQLEnumType, GraphQLInputObjectType, GraphQLObjectType, GraphQLSchema } from 'graphql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildSchema, type SchemaFeatures } from '@/index';
 import * as schema from '../schema/pg';
@@ -38,6 +38,7 @@ describe('features: defaults', () => {
     expect(mutations['deleteUsers']).toBeDefined();
     // Upsert is the one flag that is off unless asked for.
     expect(mutations['upsertUsers']).toBeUndefined();
+    expect(queryFields(gqlSchema)['usersGroupBy']).toBeDefined();
   });
 
   it('treats an empty features block the same as no features block', () => {
@@ -63,6 +64,73 @@ describe('features: aggregates', () => {
 
   it('keeps relation aggregates, which are a separate switch', () => {
     expect(userFields(build({ aggregates: false }).schema)['postsAggregate']).toBeDefined();
+  });
+});
+
+describe('features: groupBy', () => {
+  it('generates the group-by query and its types by default', () => {
+    const gqlSchema = build().schema;
+    const groupBy = queryFields(gqlSchema)['postsGroupBy'];
+
+    expect(groupBy).toBeDefined();
+    expect(groupBy!.args.map((a) => a.name).sort()).toEqual(['groupBy', 'having', 'where']);
+    expect(gqlSchema.getType('PostsGroupBy')).toBeDefined();
+    expect(gqlSchema.getType('PostsGroupKeys')).toBeDefined();
+    expect(gqlSchema.getType('PostsGroupByColumn')).toBeDefined();
+    expect(gqlSchema.getType('PostsHaving')).toBeDefined();
+    expect(gqlSchema.getType('AggregateNumberFilter')).toBeDefined();
+  });
+
+  it('reuses the aggregate output types for the grouped result', () => {
+    const gqlSchema = build().schema;
+    const groupByFields = (gqlSchema.getType('PostsGroupBy') as GraphQLObjectType).getFields();
+    const aggregateFields = (gqlSchema.getType('PostsAggregate') as GraphQLObjectType).getFields();
+
+    expect(Object.keys(groupByFields)).toEqual(['group', ...Object.keys(aggregateFields)]);
+    // The very same wrapper instances, so the schema holds one PostsAvgAggregate.
+    expect(groupByFields['avg']!.type).toBe(aggregateFields['avg']!.type);
+  });
+
+  it('offers only groupable columns as keys', () => {
+    const gqlSchema = build().schema;
+    const columns = (gqlSchema.getType('UsersGroupByColumn') as GraphQLEnumType).getValues().map((v) => v.name);
+
+    expect(columns).toContain('name');
+    expect(columns).toContain('isConfirmed');
+    expect(columns).toContain('birthdayDate');
+    // Arrays and geometry have no equality to group on.
+    expect(columns).not.toContain('a');
+    expect(columns).not.toContain('geoXy');
+    expect(columns).not.toContain('vector');
+  });
+
+  it('offers having filters on the aggregates that compare numerically', () => {
+    const gqlSchema = build().schema;
+    const having = (gqlSchema.getType('PostsHaving') as GraphQLInputObjectType).getFields();
+
+    expect(Object.keys(having).sort()).toEqual(['avg', 'count', 'countDistinct', 'countNonNull', 'max', 'min', 'sum']);
+    // min/max are limited to numeric columns, unlike the output type which covers text too.
+    const min = (having['min']!.type as GraphQLInputObjectType).getFields();
+    expect(Object.keys(min)).toEqual(['id', 'authorId']);
+    expect(Object.keys((having['countNonNull']!.type as GraphQLInputObjectType).getFields())).toContain('content');
+  });
+
+  it('omits the group-by query and its types when off', () => {
+    const { schema: gqlSchema, entities } = build({ groupBy: false });
+
+    expect(queryFields(gqlSchema)['postsGroupBy']).toBeUndefined();
+    expect(gqlSchema.getType('PostsGroupBy')).toBeUndefined();
+    expect(gqlSchema.getType('PostsHaving')).toBeUndefined();
+    expect(Object.keys(entities.queries).some((name) => name.endsWith('GroupBy'))).toBe(false);
+    // The aggregate query is a separate switch.
+    expect(queryFields(gqlSchema)['postsAggregate']).toBeDefined();
+  });
+
+  it('goes away with aggregates, whose types it reuses', () => {
+    const gqlSchema = build({ aggregates: false }).schema;
+
+    expect(queryFields(gqlSchema)['postsGroupBy']).toBeUndefined();
+    expect(gqlSchema.getType('PostsGroupBy')).toBeUndefined();
   });
 });
 

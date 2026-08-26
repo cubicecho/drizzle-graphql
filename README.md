@@ -96,6 +96,7 @@ reach:
 const { schema } = buildSchema(db, {
     features: {
         aggregates: false,        // <plural>Aggregate root queries
+        groupBy: false,           // <plural>GroupBy root queries
         relationAggregates: false, // <relation>Aggregate fields on object types
         distinct: false,          // the `distinct` argument on list queries
         insert: false,            // create<Table> / create<Table>Single mutations
@@ -110,6 +111,8 @@ const { schema } = buildSchema(db, {
     changes nothing else
 -   `upsert` is the exception: it defaults to `false`, so the upsert mutations and their
     conflict input only exist if you ask for them
+-   `groupBy` needs `aggregates`: it reuses those output types, so turning `aggregates` off
+    turns the group-by queries off with it
 -   Turning off `insert` or `update` also drops the input type that only that mutation
     used (`Create<Type>Input` / `Update<Type>Input`)
 -   Turning off all three mutation features omits the `Mutation` type entirely, the same as
@@ -253,7 +256,72 @@ The optional `where` argument takes the same filter input as the table's list qu
 applied to every aggregate in the selection. All requested aggregates are computed in a
 single `SELECT`, and on an empty result set `count` is `0` while the other values are `null`.
 
-Grouping (`groupBy`) is not supported yet.
+Add `groupBy` to get the same numbers one row per group — see [Group by](#group-by).
+
+## Group by
+
+Every table with aggregates also gets a `<tableName>GroupBy` query (e.g. `postsGroupBy`): the
+same aggregates as `<tableName>Aggregate`, computed once per distinct combination of the
+columns you group by.
+
+```graphql
+{
+    postsGroupBy(
+        groupBy: [authorId, published]
+        where: { createdAt: { gte: "2024-01-01T00:00:00Z" } }
+        having: { count: { gte: 5 } }
+    ) {
+        group {
+            authorId
+            published
+        }
+        count
+        avg {
+            views
+        }
+        max {
+            createdAt
+        }
+    }
+}
+```
+
+-   `groupBy` is required and takes one or more values of the table's `<Type>GroupByColumn`
+    enum. It holds the orderable columns plus booleans — anything the database can group on.
+    An empty list is an error, and repeated columns are ignored
+-   `group` is a `<Type>GroupKeys!` object with one nullable field per groupable column, typed
+    like the table's own column. Columns the query did not group by come back as `null`, which
+    a column whose grouped value really is `NULL` is indistinguishable from
+-   Every other field is the same one `<tableName>Aggregate` returns — `count`, `avg`, `sum`,
+    `min`, `max`, `countNonNull`, `countDistinct` — with the identical types and rules
+-   `where` filters rows before grouping; `having` filters groups after aggregating
+-   The result is `[<Type>GroupBy!]!`, one row per group, in whatever order the database
+    returns them. Add your own ordering client-side if you need it
+
+`having` mirrors the aggregate selection, with an `AggregateNumberFilter` (`eq`, `ne`, `gt`,
+`gte`, `lt`, `lte`, all `Float`) in place of each value:
+
+```graphql
+{
+    postsGroupBy(groupBy: [authorId], having: { count: { gt: 3 }, avg: { views: { gte: 100 } } }) {
+        group {
+            authorId
+        }
+        count
+    }
+}
+```
+
+-   `having: { count: … }` filters on the row count; `avg` / `sum` / `min` / `max` /
+    `countNonNull` / `countDistinct` take one filter per column, over the same columns the
+    matching aggregate type exposes
+-   Every entry in a `having` is ANDed together
+-   A group filter does not need to be in the selection — `having: { count: { gt: 3 } }` works
+    whether or not you asked for `count`
+
+The whole thing is one `SELECT … GROUP BY … HAVING …`. Set `features: { groupBy: false }` to
+leave these queries (and their `<Type>GroupBy`, `<Type>GroupKeys`, `<Type>GroupByColumn` and
+`<Type>Having` types) out of the schema; turning off `aggregates` removes them too.
 
 ## Relation aggregates
 
@@ -408,7 +476,7 @@ fields it mentions:
 | Field | Cost |
 | --- | --- |
 | List query, to-many relation | `(limit ?? defaultListSize) * childComplexity` |
-| Aggregate query, `<relation>Aggregate` | `aggregateCost + childComplexity` |
+| Aggregate query, group-by query, `<relation>Aggregate` | `aggregateCost + childComplexity` |
 | Everything else | no hint — your estimator's default applies |
 
 So `users(limit: 20) { id posts(limit: 5) { id } }` costs `20 * (1 + 5 * 1)` = 120, while the
