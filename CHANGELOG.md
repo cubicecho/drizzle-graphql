@@ -1,3 +1,15 @@
+# [4.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v3.0.0...v4.0.0) (2026-08-26)
+
+
+* fix(types)!: swap InsertResolver and InsertArrResolver shapes ([#13](https://github.com/cubicecho/drizzle-graphql/issues/13)) ([e0a776f](https://github.com/cubicecho/drizzle-graphql/commit/e0a776fd2d08b2e0aa8cf2fd42e29f6af09b3ea5)), closes [#12](https://github.com/cubicecho/drizzle-graphql/issues/12)
+
+
+### BREAKING CHANGES
+
+* `InsertResolver` and `InsertArrResolver` have swapped
+meanings. Code annotating a single-row resolver with `InsertArrResolver`
+(or an array resolver with `InsertResolver`) must swap the two.
+
 # [3.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v2.0.0...v3.0.0) (2026-08-26)
 
 
