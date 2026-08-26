@@ -1,3 +1,35 @@
+# [3.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v2.0.0...v3.0.0) (2026-08-26)
+
+
+* feat!: add a features toggle map and a context executor, fix SQLite conflicts ([79062b8](https://github.com/cubicecho/drizzle-graphql/commit/79062b8e010efefca02f2d1a481e691f8453fddd))
+* feat(scalars)!: map json, bigint and uuid columns to real GraphQL scalars ([9411cc6](https://github.com/cubicecho/drizzle-graphql/commit/9411cc63de27b8572b50243f889cb409473db1c0))
+
+
+### Features
+
+* add aggregate queries (count/avg/sum/min/max) ([58474c7](https://github.com/cubicecho/drizzle-graphql/commit/58474c78f0a5e600b4e4beef76228a78ed18e776))
+* **aggregates:** add per-column countNonNull and countDistinct ([ce049ac](https://github.com/cubicecho/drizzle-graphql/commit/ce049ace0e4356778458db9cf9bee90936dda98a))
+* **aggregates:** aggregate a relation without fetching its rows ([2dcc4e6](https://github.com/cubicecho/drizzle-graphql/commit/2dcc4e6724af5e5be8cbd253e9d8a48548c5518a))
+* **errors:** sanitize resolver errors by default and add an onError hook ([409ce84](https://github.com/cubicecho/drizzle-graphql/commit/409ce84919c40e5643adc850132a493d6baabf0c))
+* **filters:** filter rows by their relations ([4e9425b](https://github.com/cubicecho/drizzle-graphql/commit/4e9425b306aeb79347896fb181c660b667870a37))
+* **mutations:** add opt-in upsert with per-request conflict handling ([f993145](https://github.com/cubicecho/drizzle-graphql/commit/f9931456d07c4ee03f8eb94e26b76f76947ff38a))
+* **queries:** default unordered paginated queries to primary key order ([e31b098](https://github.com/cubicecho/drizzle-graphql/commit/e31b09894fe7b0d17e72335b1d36bbe6dd476801))
+* **query:** add distinct to list queries ([0b81595](https://github.com/cubicecho/drizzle-graphql/commit/0b81595283f4e7a620431a63894e6963a129f936))
+
+
+### BREAKING CHANGES
+
+* SQLite inserts no longer append `onConflictDoNothing()`
+unconditionally. They honour `config.conflictDoNothing` like PostgreSQL does, so a
+conflicting insert now raises an error by default instead of silently inserting
+nothing. Set `conflictDoNothing: true` to keep the old behaviour.
+* **errors:** database error messages are no longer surfaced to clients by
+default. Pass `onError: (error) => error as Error` to restore the old behavior.
+* json/jsonb columns (and `mode: 'json'` on SQLite/MySQL) now
+read and write the parsed value instead of a JSON string. `{"a":1}` becomes
+`{ a: 1 }` in responses, and mutations take a literal or variable rather than
+a string of JSON.
+
 # [2.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v1.0.3...v2.0.0) (2026-08-13)
 
 
