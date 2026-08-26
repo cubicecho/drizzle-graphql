@@ -59,6 +59,7 @@ import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { getOrCreateLoader } from '../batch-loader/index.ts';
 import { capitalize, uncapitalize } from '../case-ops/index.ts';
 import { remapFromGraphQLCore, remapToGraphQLArrayOutput, remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
+import { GraphQLBigIntString, GraphQLDecimalString } from '../scalars/index.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type {
   ConvertedColumn,
@@ -706,6 +707,8 @@ export const innerOrder = new GraphQLInputObjectType({
  * - "Id"          → uuid PK/FK columns (no like/ilike operators)
  * - "DateTime"    → timestamp and date columns
  * - "Boolean"     → boolean columns
+ * - "BigInt"      → bigint columns (BigInt-scalar-typed operators)
+ * - "Decimal"     → numeric/decimal columns (Decimal-scalar-typed operators)
  * - the enum GraphQL type name → enum columns (still unique per enum)
  * - "IntArray"    → integer[]/serial[] array columns
  * - "FloatArray"  → float[]/numeric[] array columns
@@ -727,6 +730,14 @@ const resolveGenericFilterName = (
   // Enum type — keep unique per enum since values differ
   if (columnGraphQLType.type instanceof GraphQLEnumType) {
     return columnGraphQLType.type.name;
+  }
+  // Named numeric-string scalars — give them their own filters so the operators
+  // are typed with the scalar (and validated by it) instead of a shared StringFilter.
+  if (columnGraphQLType.type === GraphQLBigIntString) {
+    return 'BigInt';
+  }
+  if (columnGraphQLType.type === GraphQLDecimalString) {
+    return 'Decimal';
   }
   // Array columns — give them a distinct name so they never collide with StringFilter.
   // integer().array() columns have a `dimensions` property set on them.
