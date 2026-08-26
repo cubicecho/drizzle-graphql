@@ -67,6 +67,34 @@ const columnToGraphQLCore = (
   tableName: string,
   isInput: boolean,
 ): ConvertedColumn<boolean> => {
+  // drizzle-orm v1 models `.array()` columns as their base column plus a `dimensions` count
+  // (e.g. text().array() keeps columnType=PgText with dimensions=1), so the element type is
+  // whatever the base column maps to. PgVector/PgGeometry report dimensions of 0 and keep
+  // their dedicated handling below.
+  const dimensions = (column as any).dimensions as number | undefined;
+  if (dimensions !== undefined && dimensions > 0) {
+    const inner = columnBaseToGraphQLCore(column, columnName, tableName, isInput);
+    const innerDesc = inner.description ?? (inner.type as GraphQLScalarType).name;
+
+    let type: ConvertedColumn<boolean>['type'] = inner.type;
+    let description = innerDesc;
+    for (let i = 0; i < dimensions; i++) {
+      type = new GraphQLList(new GraphQLNonNull(type as GraphQLScalarType));
+      description = `Array<${description}>`;
+    }
+
+    return { type, description };
+  }
+
+  return columnBaseToGraphQLCore(column, columnName, tableName, isInput);
+};
+
+const columnBaseToGraphQLCore = (
+  column: Column,
+  columnName: string,
+  tableName: string,
+  isInput: boolean,
+): ConvertedColumn<boolean> => {
   const { type: baseType } = extractExtendedColumnType(column);
   switch (baseType) {
     case 'boolean':
@@ -107,18 +135,6 @@ const columnToGraphQLCore = (
     case 'bigint':
       return { type: GraphQLBigIntString, description: 'BigInt' };
     case 'number': {
-      // integer().array() columns keep columnType=PgInteger but gain a `dimensions` property.
-      // drizzle-orm's extractExtendedColumnType still returns 'number' for them, so we
-      // detect the array wrapper here and recurse with a synthetic base-int scalar.
-      const dims = (column as any).dimensions as number | undefined;
-      if (dims !== undefined && dims > 0) {
-        const baseDesc = is(column, PgInteger) || is(column, PgSerial) ? 'Integer' : 'Float';
-        const baseType = baseDesc === 'Integer' ? GraphQLInt : GraphQLFloat;
-        return {
-          type: new GraphQLList(new GraphQLNonNull(baseType)),
-          description: `Array<${baseDesc}>`,
-        };
-      }
       return is(column, PgInteger) ||
         is(column, PgSerial) ||
         is(column, MySqlInt) ||
