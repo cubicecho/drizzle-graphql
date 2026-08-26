@@ -240,7 +240,8 @@ describe.sequential('through-relation filters', () => {
       const orField = input('UsersFilters').getFields()['OR']!;
       const orType = (orField.type as any).ofType.ofType as GraphQLInputObjectType;
 
-      expect(orType.name).toBe('UsersFiltersOr');
+      // The recursive filter tree reuses the filters type itself for OR branches.
+      expect(orType.name).toBe('UsersFilters');
       expect(orType.getFields()['roles']).toBeDefined();
     });
   });
