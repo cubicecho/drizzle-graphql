@@ -15,6 +15,7 @@ import { parseResolveInfo } from 'graphql-parse-resolve-info';
 
 import type { GeneratedEntities } from '../../types.ts';
 import {
+  aggregateFieldComplexity,
   attachTargetPrimaryKeys,
   buildNamedRelations,
   computeResolverFieldNames,
@@ -28,6 +29,7 @@ import {
   generateTableTypes,
   getPrimaryKeyPropNamesFromConfig,
   getUniqueColumnSets,
+  listFieldComplexity,
   type OnConflictArg,
   prepareMutationRelationColumns,
   pruneNonEagerRelations,
@@ -548,8 +550,16 @@ export const generateSchemaData = <
   relations: TablesRelationalConfig,
   options: SchemaGeneratorOptions,
 ): GeneratedEntities<TDrizzleInstance, TSchema> => {
-  const { relationsDepthLimit, prefixes, suffixes, conflictDoNothing, typeNameMapper, shouldEagerLoad, features } =
-    options;
+  const {
+    relationsDepthLimit,
+    prefixes,
+    suffixes,
+    conflictDoNothing,
+    typeNameMapper,
+    shouldEagerLoad,
+    features,
+    complexity,
+  } = options;
   const rawSchema = schema;
   const schemaEntries = Object.entries(rawSchema);
 
@@ -586,6 +596,7 @@ export const generateSchemaData = <
     filterTypeCache: new WeakMap(),
     listRelationFilterCache: new Map(),
     aggregateTypeCache: new Map(),
+    complexity,
   };
 
   // Left undefined when the feature is off — generateTableTypes then emits no
@@ -781,6 +792,7 @@ export const generateSchemaData = <
       type: selectArrOutput,
       args: selectArrGenerated.args,
       resolve: selectArrGenerated.resolver,
+      ...(complexity ? { extensions: { complexity: listFieldComplexity(complexity) } } : {}),
     };
     queries[selectSingleGenerated.name] = {
       type: selectSingleOutput,
@@ -792,6 +804,7 @@ export const generateSchemaData = <
         type: new GraphQLNonNull(aggregateType),
         args: aggregateGenerated.args,
         resolve: aggregateGenerated.resolver,
+        ...(complexity ? { extensions: { complexity: aggregateFieldComplexity(complexity) } } : {}),
       };
     }
     if (insertArrGenerated) {

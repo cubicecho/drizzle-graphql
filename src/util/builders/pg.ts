@@ -14,6 +14,7 @@ import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import type { GeneratedEntities } from '../../types.ts';
 import {
+  aggregateFieldComplexity,
   attachTargetPrimaryKeys,
   buildNamedRelations,
   computeResolverFieldNames,
@@ -28,6 +29,7 @@ import {
   generateTableTypes,
   getPrimaryKeyPropNamesFromConfig,
   getUniqueColumnSets,
+  listFieldComplexity,
   type OnConflictArg,
   prepareMutationRelationColumns,
   primaryKeyOrderExprs,
@@ -633,8 +635,16 @@ export function generateSchemaData<
   relations: TRelations,
   options: SchemaGeneratorOptions,
 ): GeneratedEntities<TDrizzleInstance, TSchema> {
-  const { relationsDepthLimit, prefixes, suffixes, conflictDoNothing, typeNameMapper, shouldEagerLoad, features } =
-    options;
+  const {
+    relationsDepthLimit,
+    prefixes,
+    suffixes,
+    conflictDoNothing,
+    typeNameMapper,
+    shouldEagerLoad,
+    features,
+    complexity,
+  } = options;
   const schemaEntries = Object.entries(schema);
   const tableEntries = schemaEntries.filter(([_key, value]) => is(value, PgTable)) as [string, PgTable][];
   const tables = Object.fromEntries(tableEntries) as Record<string, PgTable>;
@@ -673,6 +683,7 @@ export function generateSchemaData<
     filterTypeCache: new WeakMap(),
     listRelationFilterCache: new Map(),
     aggregateTypeCache: new Map(),
+    complexity,
   };
 
   // Left undefined when the feature is off — generateTableTypes then emits no
@@ -869,6 +880,7 @@ export function generateSchemaData<
       type: selectArrOutput,
       args: selectArrGenerated.args,
       resolve: selectArrGenerated.resolver,
+      ...(complexity ? { extensions: { complexity: listFieldComplexity(complexity) } } : {}),
     };
     queries[selectSingleGenerated.name] = {
       type: selectSingleOutput,
@@ -880,6 +892,7 @@ export function generateSchemaData<
         type: new GraphQLNonNull(aggregateType),
         args: aggregateGenerated.args,
         resolve: aggregateGenerated.resolver,
+        ...(complexity ? { extensions: { complexity: aggregateFieldComplexity(complexity) } } : {}),
       };
     }
     if (insertArrGenerated) {

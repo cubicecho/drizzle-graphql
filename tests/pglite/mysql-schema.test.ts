@@ -35,6 +35,7 @@ const entities = generateMySQL(mockDb, tableSchema, schema.relations, {
   suffixes,
   conflictDoNothing: false,
   shouldEagerLoad: () => true,
+  complexity: { defaultListSize: 10, aggregateCost: 10 },
   features: {
     aggregates: true,
     relationAggregates: true,
@@ -244,5 +245,31 @@ describe('MySQL fieldResolvers', () => {
 
   it('Tags has no fieldResolvers entry (not in MySQL schema)', () => {
     expect(entities.fieldResolvers['Tags']).toBeUndefined();
+  });
+});
+
+// ── complexity hints ──────────────────────────────────────────────────────────
+
+describe('MySQL complexity hints', () => {
+  const estimate = (field: any, args: any, childComplexity: number) =>
+    field.extensions.complexity({ args, childComplexity });
+
+  // The Users object type is reachable through the list query it is returned from.
+  const userFields = () => (entities.queries['users'].type.ofType.ofType.ofType as GraphQLObjectType).getFields();
+
+  it('prices list queries and to-many relations by page size', () => {
+    expect(estimate(entities.queries['users'], { limit: 3 }, 2)).toBe(6);
+    expect(estimate(entities.queries['users'], {}, 2)).toBe(20);
+
+    expect(estimate(userFields()['posts'], { limit: 4 }, 1)).toBe(4);
+  });
+
+  it('charges aggregates a flat scan cost', () => {
+    expect(estimate(entities.queries['usersAggregate'], {}, 1)).toBe(11);
+    expect(estimate(userFields()['postsAggregate'], {}, 0)).toBe(10);
+  });
+
+  it('leaves single queries flat', () => {
+    expect(entities.queries['usersSingle'].extensions).toBeUndefined();
   });
 });

@@ -540,6 +540,27 @@ export type SchemaFeatures = {
   upsert?: boolean;
 };
 
+/**
+ * Per-field cost hints for `graphql-query-complexity` (or any estimator that reads
+ * `extensions.complexity`). See {@link BuildSchemaConfig.complexity}.
+ */
+export type ComplexityConfig = {
+  /**
+   * Rows a list field is assumed to return when the query passes no `limit`. Raise it if your
+   * tables are large and clients routinely omit `limit`.
+   *
+   * @default 10
+   */
+  defaultListSize?: number;
+  /**
+   * Flat cost charged for an aggregate field, on top of whatever is selected inside it. An
+   * aggregate returns one row but reads however many match, so it is priced as a scan.
+   *
+   * @default 10
+   */
+  aggregateCost?: number;
+};
+
 export type BuildSchemaConfig = {
   /**
    * Determines whether generated mutations will be passed to returned schema.
@@ -609,6 +630,31 @@ export type BuildSchemaConfig = {
    * until the next major.
    */
   conflictDoNothing?: boolean;
+  /**
+   * Cost hints published as `extensions.complexity` on the generated fields, for
+   * `graphql-query-complexity`'s `fieldExtensionsEstimator`.
+   *
+   * The generator knows which fields are paginated and which are aggregates, so a list field is
+   * priced at `(limit ?? defaultListSize) * childComplexity` and an aggregate at
+   * `aggregateCost + childComplexity`. Everything else is left alone and falls through to your
+   * estimator's default. The hints are inert until you install a complexity rule, so they are on
+   * by default; pass `false` to omit them.
+   *
+   * Cost is not a depth bound — a cyclic relation graph still lets a client nest arbitrarily
+   * deep. Put a depth limit in front of a publicly exposed schema as well.
+   *
+   * ```ts
+   * import { createComplexityRule, fieldExtensionsEstimator, simpleEstimator } from 'graphql-query-complexity';
+   *
+   * const rule = createComplexityRule({
+   *   maximumComplexity: 1000,
+   *   estimators: [fieldExtensionsEstimator(), simpleEstimator({ defaultComplexity: 1 })],
+   * });
+   * ```
+   *
+   * @default true
+   */
+  complexity?: boolean | ComplexityConfig;
   /**
    * Turns individual generated features off.
    *

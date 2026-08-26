@@ -507,7 +507,49 @@ export interface TypeCacheCtx {
    * at it, so the schema never holds two types with the same name.
    */
   aggregateTypeCache: Map<string, GraphQLObjectType>;
+  /**
+   * Resolved complexity settings for this call, or `undefined` when the caller turned the hints
+   * off. Not a cache, but the type builders are several calls deep and this context is already
+   * threaded through all of them.
+   */
+  complexity: ResolvedComplexityOptions | undefined;
 }
+
+/** The shape `graphql-query-complexity`'s `fieldExtensionsEstimator` hands to a field's hint. */
+export type ComplexityEstimatorArgs = { args: Record<string, any>; childComplexity: number };
+
+/** A field's cost hint, published as `extensions.complexity` on the generated field config. */
+export type ComplexityEstimator = (options: ComplexityEstimatorArgs) => number;
+
+/** {@link BuildSchemaConfig.complexity} with its defaults filled in. */
+export type ResolvedComplexityOptions = {
+  /** Rows a list field is assumed to return when the query passes no `limit`. */
+  defaultListSize: number;
+  /** Flat cost charged for an aggregate field, on top of the fields selected inside it. */
+  aggregateCost: number;
+};
+
+/**
+ * A paginated field costs its page size times whatever one row of it costs, so `users(limit: 100)
+ * { posts(limit: 10) { id } }` is charged for the thousand rows it can return rather than the two
+ * fields it mentions. `childComplexity` floors at 1 so a row is never free.
+ */
+export const listFieldComplexity =
+  (options: ResolvedComplexityOptions): ComplexityEstimator =>
+  ({ args, childComplexity }) => {
+    const limit = args['limit'];
+    const rows = typeof limit === 'number' && limit > 0 ? limit : options.defaultListSize;
+    return rows * Math.max(childComplexity, 1);
+  };
+
+/**
+ * An aggregate returns a single row but reads however many match, so its cost tracks the scan
+ * rather than the response.
+ */
+export const aggregateFieldComplexity =
+  (options: ResolvedComplexityOptions): ComplexityEstimator =>
+  ({ childComplexity }) =>
+    options.aggregateCost + childComplexity;
 
 /**
  * Everything needed to work out which extra columns a selection implies. Passed to the column
@@ -1178,6 +1220,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
             limit: { type: GraphQLInt },
           },
           resolve,
+          ...(cacheCtx.complexity ? { extensions: { complexity: listFieldComplexity(cacheCtx.complexity) } } : {}),
         },
       ]);
 
@@ -1200,6 +1243,9 @@ const generateSelectFields = <TWithOrder extends boolean>(
                 where: { type: relSelectData.filters },
               },
               resolve: relationAggregate.resolve,
+              ...(cacheCtx.complexity
+                ? { extensions: { complexity: aggregateFieldComplexity(cacheCtx.complexity) } }
+                : {}),
             } as unknown as ConvertedRelationColumnWithArgs,
           ]);
         }

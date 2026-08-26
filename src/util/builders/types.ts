@@ -10,6 +10,7 @@ import type {
   GraphQLScalarType,
 } from 'graphql';
 import type { ConvertedColumn, ConvertedRelationColumnWithArgs } from '../type-converter/types.ts';
+import type { ResolvedComplexityOptions } from './common.ts';
 // import type {
 //   ConvertedColumn,
 //   ConvertedRelationColumnWithArgs,
@@ -41,6 +42,8 @@ export type SchemaGeneratorOptions = {
   typeNameMapper?: (tableName: string) => { singular: string; plural: string } | undefined;
   shouldEagerLoad: (tableName: string, relationName: string) => boolean;
   features: GeneratorFeatures;
+  /** Resolved cost-hint settings, or `undefined` when the caller passed `complexity: false`. */
+  complexity: ResolvedComplexityOptions | undefined;
 };
 
 export type TableNamedRelations = {
