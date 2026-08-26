@@ -186,19 +186,21 @@ export type SelectSingleResolver<
   | null
 >;
 
+/** Resolver for `create<Table>Single`: one row in, one row (or `undefined`) out. */
 export type InsertResolver<TTable extends Table, IsReturnless extends boolean> = (
-  source: any,
-  args: Partial<InsertArgs<TTable, false>>,
-  context: any,
-  info: GraphQLResolveInfo,
-) => Promise<IsReturnless extends false ? Array<GetRemappedTableDataType<TTable>> : MutationReturnlessResult>;
-
-export type InsertArrResolver<TTable extends Table, IsReturnless extends boolean> = (
   source: any,
   args: Partial<InsertArgs<TTable, true>>,
   context: any,
   info: GraphQLResolveInfo,
 ) => Promise<IsReturnless extends false ? GetRemappedTableDataType<TTable> | undefined : MutationReturnlessResult>;
+
+/** Resolver for `create<Table>`: an array of rows in, an array of rows out. */
+export type InsertArrResolver<TTable extends Table, IsReturnless extends boolean> = (
+  source: any,
+  args: Partial<InsertArgs<TTable, false>>,
+  context: any,
+  info: GraphQLResolveInfo,
+) => Promise<IsReturnless extends false ? Array<GetRemappedTableDataType<TTable>> : MutationReturnlessResult>;
 
 export type UpdateResolver<TTable extends Table, IsReturnless extends boolean> = (
   source: any,
