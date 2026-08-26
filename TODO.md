@@ -45,8 +45,9 @@ Supabase's `pg_graphql`. Roughly ordered within each group; nothing here is comm
 
 ## Deliberately not doing
 
-- **Column and table exposure control** — allow/deny lists for what appears in the schema.
-  Better handled by `graphql-shield` or an equivalent layer, which already has the
-  per-request context this library does not.
+- **Per-request exposure control** — deciding per request who may see a table or column.
+  `exclude` covers the static case (a column that is never in the schema for anyone); making
+  the decision per caller belongs to `graphql-shield` or an equivalent layer, which has the
+  request context this library does not.
 - **Per-request authorization hooks** — same reasoning: auth middleware sits above the schema
   and has the request context it needs.

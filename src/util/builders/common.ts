@@ -1009,6 +1009,52 @@ export const resolveLimitPolicy = (
 };
 
 /**
+ * Columns this build keeps out of the generated schema, keyed by the table object.
+ *
+ * A registry rather than a threaded parameter because the sites that decide schema shape —
+ * the object type, every input, the filter, `orderBy`, the aggregates, the column enums —
+ * are spread across four files and reach a table with no config in hand. Runtime code keeps
+ * calling `getColumns` directly: a primary key that a client cannot name is still the key a
+ * cursor is built from, and hiding it there would break pagination rather than secure it.
+ *
+ * {@link registerColumnExclusions} runs on every build, including with no config, so a
+ * second build against the same table objects never inherits the first build's exclusions.
+ */
+const excludedColumnRegistry = new WeakMap<object, Set<string>>();
+
+/** Installs this build's column exclusions and clears any left by a previous build. */
+export const registerColumnExclusions = (
+  tables: Record<string, Table>,
+  exclude?: { columns?: Record<string, string[]> },
+): void => {
+  for (const [tableName, table] of Object.entries(tables)) {
+    const hidden = exclude?.columns?.[tableName];
+    if (hidden?.length) {
+      excludedColumnRegistry.set(table, new Set(hidden));
+    } else {
+      excludedColumnRegistry.delete(table);
+    }
+  }
+};
+
+/** Whether any column of this table was excluded from the schema. */
+export const hasExcludedColumns = (table: Table): boolean => excludedColumnRegistry.has(table);
+
+/**
+ * The columns of `table` that this build exposes — every column unless some were excluded.
+ * Use this anywhere the result decides what the *schema* contains; use `getColumns` where it
+ * decides what SQL to write.
+ */
+export const visibleColumns = (table: Table): Record<string, Column> => {
+  const columns = getColumns(table);
+  const hidden = excludedColumnRegistry.get(table);
+  if (!hidden) {
+    return columns;
+  }
+  return Object.fromEntries(Object.entries(columns).filter(([columnName]) => !hidden.has(columnName)));
+};
+
+/**
  * A paginated field costs its page size times whatever one row of it costs, so `users(limit: 100)
  * { posts(limit: 10) { id } }` is charged for the thousand rows it can return rather than the two
  * fields it mentions. `childComplexity` floors at 1 so a row is never free.
@@ -1556,20 +1602,26 @@ const generateColumnFilterValues = (
 
 const orderMap = new WeakMap<object, Record<string, ConvertedInputColumn>>();
 const generateTableOrderCached = (table: Table) => {
-  if (orderMap.has(table)) {
+  // The cache outlives a build, so a table whose columns this build hides must not read from
+  // it (a previous build may have cached the full set) or write to it (a later unfiltered
+  // build would inherit the holes).
+  const cacheable = !hasExcludedColumns(table);
+  if (cacheable && orderMap.has(table)) {
     return orderMap.get(table)!;
   }
 
   let remapped = {};
   try {
-    const columns = getColumns(table);
+    const columns = visibleColumns(table);
     const columnEntries = Object.entries(columns);
 
     remapped = Object.fromEntries(
       columnEntries.map(([columnName, _columnDescription]) => [columnName, { type: innerOrder }]),
     );
 
-    orderMap.set(table, remapped);
+    if (cacheable) {
+      orderMap.set(table, remapped);
+    }
   } catch (_err) {}
   return remapped;
 };
@@ -1579,7 +1631,7 @@ const generateTableFilterValuesCached = (table: Table, tableName: string, cacheC
     return cacheCtx.filterFieldCache.get(table)!;
   }
 
-  const columns = getColumns(table);
+  const columns = visibleColumns(table);
   const columnEntries = Object.entries(columns);
 
   const remapped = Object.fromEntries(
@@ -1611,7 +1663,7 @@ const generateTableSelectTypeFieldsCached = (
     return cacheCtx.selectFieldCache.get(table)!;
   }
 
-  const columns = getColumns(table);
+  const columns = visibleColumns(table);
   const columnEntries = Object.entries(columns);
 
   const remapped = Object.fromEntries(
@@ -2172,7 +2224,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   );
 
   const table = tables[tableName]!;
-  const columns = getColumns(table);
+  const columns = visibleColumns(table);
   const columnEntries = Object.entries(columns);
 
   // A column a nested write can supply (`author: { create: … }` fills in `authorId`) cannot
@@ -3511,7 +3563,7 @@ export const getUniqueColumnSets = (
     indexes?: { config: { unique?: boolean; columns: any[] } }[];
   },
 ): string[][] => {
-  const cols = getColumns(table);
+  const cols = visibleColumns(table);
   const propNameByColumnName = new Map(Object.entries(cols).map(([propName, col]) => [(col as any).name, propName]));
   // A set is usable only if every one of its columns maps back to a property on the table.
   const toPropNames = (columnNames: (string | undefined)[]): string[] | undefined => {
@@ -3578,13 +3630,16 @@ export const generateColumnEnum = (
   description: string,
   predicate: (column: Column, columnName: string) => boolean = () => true,
 ): GraphQLEnumType | undefined => {
-  let tableCache = columnEnumCache.get(table);
+  // Same reasoning as `generateTableOrderCached`: the cache is keyed only by the table object,
+  // so a build that hides columns neither reads it nor writes to it.
+  const cacheable = !hasExcludedColumns(table);
+  let tableCache = cacheable ? columnEnumCache.get(table) : undefined;
   const cached = tableCache?.get(enumName);
   if (cached) {
     return cached;
   }
 
-  const columnNames = Object.entries(getColumns(table))
+  const columnNames = Object.entries(visibleColumns(table))
     .filter(([columnName, column]) => predicate(column as Column, columnName))
     .map(([columnName]) => columnName);
   if (!columnNames.length) {
@@ -3597,11 +3652,13 @@ export const generateColumnEnum = (
     values: Object.fromEntries(columnNames.map((columnName) => [columnName, { value: columnName }])),
   });
 
-  if (!tableCache) {
-    tableCache = new Map();
-    columnEnumCache.set(table, tableCache);
+  if (cacheable) {
+    if (!tableCache) {
+      tableCache = new Map();
+      columnEnumCache.set(table, tableCache);
+    }
+    tableCache.set(enumName, enumType);
   }
-  tableCache.set(enumName, enumType);
   return enumType;
 };
 

@@ -783,6 +783,22 @@ export type LimitsConfig = TableLimitPolicy & {
   tables?: Record<string, TableLimitPolicy>;
 };
 
+/**
+ * {@link BuildSchemaConfig.exclude} — tables and columns to keep out of the generated schema.
+ *
+ * Both lists are keyed by the Drizzle schema key, not the database name and not the generated
+ * GraphQL name.
+ */
+export type SchemaExclusions = {
+  /**
+   * Tables that generate nothing at all: no object type, no queries, no mutations, and no
+   * relation fields on other tables that point at them.
+   */
+  tables?: string[];
+  /** Per-table column exclusions, keyed by the table's key in the Drizzle schema. */
+  columns?: Record<string, string[]>;
+};
+
 export type BuildSchemaConfig = {
   /**
    * Determines whether generated mutations will be passed to returned schema.
@@ -969,6 +985,36 @@ export type BuildSchemaConfig = {
    *   agree.
    */
   limits?: LimitsConfig;
+  /**
+   * Tables and columns to leave out of the generated schema entirely.
+   *
+   * ```ts
+   * buildSchema(db, {
+   *   exclude: {
+   *     tables: ['magicLinks', 'sessions'],
+   *     columns: { apiKeys: ['keyHash'] },
+   *   },
+   * });
+   * ```
+   *
+   * An excluded **table** generates nothing: no object type, no root queries or mutations, no
+   * aggregates, and no relation field on any other table that points at it. Filtering another
+   * table by a relation to it is gone too, so it is unreachable rather than merely unnamed.
+   *
+   * An excluded **column** disappears from every surface at once — the object type, the
+   * create/update/upsert inputs, the filter type, `orderBy`, the aggregate fields, the
+   * `distinct` and `groupBy` enums, and the upsert conflict targets. The exclusion is
+   * deliberately all-or-nothing: a column you can filter on but not select is an oracle, since
+   * `where: { keyHash: { eq: '…' } }` confirms a value without ever returning it.
+   *
+   * Excluding a `NOT NULL` column that has no default makes that table's inserts impossible to
+   * satisfy — `buildSchema` warns on the console when it sees this, and still builds, since a
+   * read-only table is a reasonable thing to want.
+   *
+   * Names that match nothing throw, so a renamed column fails the build instead of quietly
+   * un-hiding itself.
+   */
+  exclude?: SchemaExclusions;
   /**
    * Optional mapper from table key to singular/plural name pair.
    * When provided for a table, overrides the default (table key) naming for GraphQL type names,

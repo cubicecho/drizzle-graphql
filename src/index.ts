@@ -1,4 +1,4 @@
-import { is } from 'drizzle-orm';
+import { getColumns, is, Table } from 'drizzle-orm';
 import { MySqlDatabase } from 'drizzle-orm/mysql-core';
 import { PgAsyncDatabase } from 'drizzle-orm/pg-core';
 import { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
@@ -41,6 +41,7 @@ export type {
   MutationReturnlessResult,
   MutationsCore,
   QueriesCore,
+  SchemaExclusions,
   SchemaFeatures,
   SelectResolver,
   SelectSingleResolver,
@@ -196,6 +197,58 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
       }
     : undefined;
 
+  // Exclusions are resolved against the real schema so a renamed table or column fails the
+  // build instead of quietly un-hiding itself — the failure mode that matters when this config
+  // is what keeps a secret out of the API.
+  const exclude = config?.exclude;
+  if (exclude) {
+    const tableNames = new Set(
+      Object.entries(schema as Record<string, unknown>)
+        .filter(([, value]) => is(value, Table))
+        .map(([key]) => key),
+    );
+    const excludedTables = new Set(exclude.tables ?? []);
+    for (const tableName of excludedTables) {
+      if (!tableNames.has(tableName)) {
+        throw new Error(
+          `Drizzle-GraphQL Error: config.exclude.tables names '${tableName}', which is not a table in the Drizzle schema.`,
+        );
+      }
+    }
+    if (excludedTables.size >= tableNames.size) {
+      throw new Error(
+        'Drizzle-GraphQL Error: config.exclude.tables excludes every table in the schema, leaving nothing to generate.',
+      );
+    }
+    for (const [tableName, columnNames] of Object.entries(exclude.columns ?? {})) {
+      if (!tableNames.has(tableName)) {
+        throw new Error(
+          `Drizzle-GraphQL Error: config.exclude.columns names table '${tableName}', which is not a table in the Drizzle schema.`,
+        );
+      }
+      // An excluded table has no columns left to hide; listing them too is redundant, not wrong.
+      if (excludedTables.has(tableName)) {
+        continue;
+      }
+      const columns = getColumns(schema[tableName] as Table);
+      for (const columnName of columnNames) {
+        const column = columns[columnName];
+        if (!column) {
+          throw new Error(
+            `Drizzle-GraphQL Error: config.exclude.columns names '${tableName}.${columnName}', which is not a column of that table.`,
+          );
+        }
+        // Hiding a column every insert must supply leaves the table readable but unwritable.
+        // That is a reasonable thing to configure deliberately, so it warns rather than throws.
+        if (column.notNull && !column.hasDefault && !column.defaultFn) {
+          console.warn(
+            `Drizzle-GraphQL Warning: excluded column '${tableName}.${columnName}' is NOT NULL with no default, so generated inserts for '${tableName}' can never succeed.`,
+          );
+        }
+      }
+    }
+  }
+
   // Normalize eagerLoadRelations (boolean | predicate | undefined) into a predicate.
   const eagerOpt = config?.eagerLoadRelations;
   const shouldEagerLoad: (tableName: string, relationName: string) => boolean =
@@ -237,6 +290,7 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     enumNameMapper: config?.enumNameMapper,
     transactions,
     limits,
+    exclude,
     docs: {
       describeColumn: config?.describeColumn,
       describeTable: config?.describeTable,

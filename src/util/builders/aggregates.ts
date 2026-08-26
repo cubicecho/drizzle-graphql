@@ -49,6 +49,7 @@ import {
   type TypeCacheCtx,
   type TypeNameMapper,
   toGraphQLError,
+  visibleColumns,
 } from './common.ts';
 import type { CreatedResolver, Filters } from './types.ts';
 
@@ -91,7 +92,7 @@ const classifyAggregateColumns = (table: Table, tableName: string): AggregateCol
   const orderable: AggregateColumnSets['orderable'] = {};
   const all: AggregateColumnSets['all'] = {};
 
-  for (const [columnName, column] of Object.entries(getColumns(table))) {
+  for (const [columnName, column] of Object.entries(visibleColumns(table))) {
     all[columnName] = column;
     const converted = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, false);
     const gqlType = converted.type;
@@ -502,7 +503,7 @@ const groupableColumns = (
   const { orderable } = classifyAggregateColumns(table, tableName);
   const groupable: Record<string, { column: Column; converted: ConvertedColumn }> = { ...orderable };
 
-  for (const [columnName, column] of Object.entries(getColumns(table))) {
+  for (const [columnName, column] of Object.entries(visibleColumns(table))) {
     if (groupable[columnName]) {
       continue;
     }

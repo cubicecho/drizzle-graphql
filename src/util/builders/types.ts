@@ -9,6 +9,7 @@ import type {
   GraphQLObjectType,
   GraphQLScalarType,
 } from 'graphql';
+import type { SchemaExclusions } from '../../types.ts';
 import type {
   ColumnTypeMapper,
   ConvertedColumn,
@@ -76,6 +77,12 @@ export type SchemaGeneratorOptions = {
    * that table. `undefined` when no policy was configured at all.
    */
   limits: LimitPolicyFor | undefined;
+  /**
+   * Validated `BuildSchemaConfig.exclude`. Table names are filtered out of the schema before
+   * anything is generated; column names are installed into the exclusion registry by
+   * `registerColumnExclusions` and read from there by every schema-shape site.
+   */
+  exclude?: SchemaExclusions;
 };
 
 export type TableNamedRelations = {
