@@ -6,7 +6,7 @@ import { drizzle } from 'drizzle-orm/pglite';
 import type { GraphQLObjectType } from 'graphql';
 import { createYoga } from 'graphql-yoga';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildSchema } from '@/index';
+import { buildSchema, singularizeMapper } from '@/index';
 import * as schema from '../schema/pg';
 import { GraphQLClient } from '../util/query';
 import { setupTables } from './common';
@@ -293,5 +293,68 @@ describe('typeNameMapper — generated query and mutation names', () => {
     // Default mutation names
     expect(Object.keys(entities.mutations)).toContain('createUsers');
     expect(Object.keys(entities.mutations)).toContain('deleteUsers');
+  });
+});
+
+// ── typeNameMapper: 'singularize' ───────────────────────────────────────────────
+
+describe("typeNameMapper: 'singularize'", () => {
+  const dataDir = `./tests/.temp/pgdata-cfg-singularize-${Date.now()}`;
+  let pglite: PGlite;
+
+  beforeAll(async () => {
+    ({ pglite } = await makeDb(dataDir));
+  });
+
+  afterAll(async () => {
+    await teardownDb(pglite, dataDir);
+  });
+
+  const built = () => {
+    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    return buildSchema(db, { typeNameMapper: 'singularize' }).entities;
+  };
+
+  it('names queries and types the way a hand-written pluralize mapper would', () => {
+    const entities = built();
+
+    expect(Object.keys(entities.queries)).toEqual(
+      expect.arrayContaining(['users', 'user', 'posts', 'post', 'customers', 'customer']),
+    );
+    expect(Object.keys(entities.queries)).not.toContain('usersSingle');
+    expect(Object.keys(entities.types)).toContain('User');
+    expect(Object.keys(entities.types)).not.toContain('Users');
+  });
+
+  it('names mutations singular or plural to match the operation', () => {
+    const mutationKeys = Object.keys(built().mutations);
+
+    expect(mutationKeys).toEqual(expect.arrayContaining(['createUsers', 'createUser', 'updateUser', 'deleteUser']));
+    expect(mutationKeys).not.toContain('createUsersSingle');
+  });
+
+  it('is the same function as the exported singularizeMapper', () => {
+    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const byPreset = Object.keys(buildSchema(db, { typeNameMapper: 'singularize' }).entities.queries).sort();
+    const byExport = Object.keys(buildSchema(db, { typeNameMapper: singularizeMapper }).entities.queries).sort();
+
+    expect(byPreset).toEqual(byExport);
+  });
+
+  it('can be wrapped to leave one table with its default names', () => {
+    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const { entities } = buildSchema(db, {
+      typeNameMapper: (table) => (table === 'Tags' ? undefined : singularizeMapper(table)),
+    });
+
+    expect(Object.keys(entities.queries)).toContain('user');
+    expect(Object.keys(entities.queries)).toContain('tagsSingle');
+    expect(Object.keys(entities.types)).toContain('Tags');
+  });
+
+  it('resolves an irregular plural, and pluralizes a singular table key', () => {
+    expect(singularizeMapper('People')).toEqual({ singular: 'person', plural: 'people' });
+    expect(singularizeMapper('task')).toEqual({ singular: 'task', plural: 'tasks' });
+    expect(singularizeMapper('addresses')).toEqual({ singular: 'address', plural: 'addresses' });
   });
 });

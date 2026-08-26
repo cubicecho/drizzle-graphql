@@ -9,7 +9,7 @@ import type {
   GraphQLObjectType,
   GraphQLScalarType,
 } from 'graphql';
-import type { SchemaExclusions } from '../../types.ts';
+import type { SchemaExclusions, SchemaFeatures } from '../../types.ts';
 import type {
   ColumnTypeMapper,
   ConvertedColumn,
@@ -25,10 +25,11 @@ import type { LimitPolicyFor, ResolvedComplexityOptions } from './common.ts';
 // } from "../type-converter/index.ts";
 
 /**
- * Which generated features a build includes, after `BuildSchemaConfig.features` has been
- * merged with the defaults. Every flag is resolved — the builders never see `undefined`.
+ * What one table generates, after `BuildSchemaConfig.features` has been merged with the
+ * defaults and any per-table predicate has been run. Every flag is resolved — the builders
+ * never see `undefined`.
  */
-export type GeneratorFeatures = {
+export type TableFeatures = {
   aggregates: boolean;
   groupBy: boolean;
   relationAggregates: boolean;
@@ -38,9 +39,17 @@ export type GeneratorFeatures = {
   updateMany: boolean;
   delete: boolean;
   upsert: boolean;
-  nestedWrites: boolean;
   requireWhere: boolean;
 };
+
+/**
+ * The `features` a dialect generator works from: the config's own shape, unresolved, since a
+ * flag may be a per-table predicate. Generators run it through `resolveTableFeatures`, which
+ * fills in the defaults and memoizes per table. `nestedWrites` is read straight off it —
+ * that one flag is build-wide, because the nested-write plans are computed once over the
+ * whole relation graph and a nested write reaches a second table by definition.
+ */
+export type GeneratorFeatures = SchemaFeatures;
 
 /**
  * Everything a dialect generator needs beyond the database, schema and relations, which

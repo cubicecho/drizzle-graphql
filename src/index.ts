@@ -19,6 +19,8 @@ import {
 } from './util/builders/common.ts';
 import { generateMySQL, generatePG, generateSQLite } from './util/builders/index.ts';
 import type { SchemaGeneratorOptions } from './util/builders/types.ts';
+import { singularizeMapper } from './util/case-ops/index.ts';
+import { resolveTableFeatures } from './util/features.ts';
 
 export type {
   AggregateResolver,
@@ -31,6 +33,7 @@ export type {
   ExtractTableByName,
   ExtractTableRelations,
   ExtractTables,
+  FeatureSwitch,
   GeneratedData,
   GeneratedEntities,
   GeneratedInputs,
@@ -66,6 +69,7 @@ export {
   extractRelationJoinColumns,
 } from './util/builders/common.ts';
 export type { TableNamedRelations } from './util/builders/types.ts';
+export { singularizeMapper } from './util/case-ops/index.ts';
 export {
   GraphQLBigIntString,
   GraphQLDate,
@@ -125,24 +129,21 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     single: config?.suffixes?.single ?? 'Single',
   };
 
-  const typeNameMapper = config?.typeNameMapper;
+  // `'singularize'` is the one shipped preset; anything else is the caller's own function.
+  const typeNameMapper = config?.typeNameMapper === 'singularize' ? singularizeMapper : config?.typeNameMapper;
 
-  // Every feature is on unless the caller says otherwise, so a build without a `features`
-  // block generates what it always did — except upsert, which is new surface and so has to
-  // be asked for.
-  const features = {
-    aggregates: config?.features?.aggregates ?? true,
-    groupBy: config?.features?.groupBy ?? true,
-    relationAggregates: config?.features?.relationAggregates ?? true,
-    distinct: config?.features?.distinct ?? true,
-    insert: config?.features?.insert ?? true,
-    update: config?.features?.update ?? true,
-    updateMany: config?.features?.updateMany ?? true,
-    delete: config?.features?.delete ?? true,
-    upsert: config?.features?.upsert ?? false,
-    nestedWrites: config?.features?.nestedWrites ?? false,
-    requireWhere: config?.features?.requireWhere ?? false,
-  };
+  // Table keys this build generates for — what a per-table feature predicate is asked about.
+  // Excluded tables are dropped up front so no predicate is ever consulted for a table that
+  // generates nothing.
+  const tableKeys = Object.entries(schema as Record<string, unknown>)
+    .filter(([, value]) => is(value, Table))
+    .map(([key]) => key);
+  const excludedTableNames = new Set(config?.exclude?.tables ?? []);
+  const featureTables = tableKeys.filter((key) => !excludedTableNames.has(key));
+
+  // Resolved the same way the generators resolve it, so the implication warnings below
+  // describe exactly what gets generated.
+  const forTable = resolveTableFeatures(config?.features);
 
   // Cost hints are inert without a complexity rule installed, so they are generated unless the
   // caller opts out.
@@ -202,12 +203,8 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
   // is what keeps a secret out of the API.
   const exclude = config?.exclude;
   if (exclude) {
-    const tableNames = new Set(
-      Object.entries(schema as Record<string, unknown>)
-        .filter(([, value]) => is(value, Table))
-        .map(([key]) => key),
-    );
-    const excludedTables = new Set(exclude.tables ?? []);
+    const tableNames = new Set(tableKeys);
+    const excludedTables = excludedTableNames;
     for (const tableName of excludedTables) {
       if (!tableNames.has(tableName)) {
         throw new Error(
@@ -249,6 +246,57 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     }
   }
 
+  // Some operations are built out of others: an upsert writes through the insert and update
+  // paths, a batch update reuses the update input, a grouped result reuses the aggregate
+  // output types. The generator knows those implications; a table whose flags contradict them
+  // is told at build time rather than leaving the consumer to notice a second write path (or a
+  // missing operation) later. These warn rather than throw — the resulting schema is coherent,
+  // it just isn't what the config appears to ask for.
+  const featureConflicts = new Map<string, string[]>();
+  const noteConflict = (message: string, tableName: string) => {
+    const tables = featureConflicts.get(message);
+    if (tables) {
+      tables.push(tableName);
+    } else {
+      featureConflicts.set(message, [tableName]);
+    }
+  };
+  for (const tableName of featureTables) {
+    const tableFeatures = forTable(tableName);
+    if (tableFeatures.upsert) {
+      const missing = [!tableFeatures.insert ? 'insert' : undefined, !tableFeatures.update ? 'update' : undefined]
+        .filter(Boolean)
+        .join(' and ');
+      if (missing) {
+        noteConflict(
+          `upsert is on while ${missing} is off, so the upsert mutations are a second write path past the operation you turned off`,
+          tableName,
+        );
+      }
+    }
+    // Nested writes are build-wide, so a relation pointing at this table can still write it
+    // from another table's mutation even with its own write operations turned off.
+    if (config?.features?.nestedWrites && (!tableFeatures.insert || !tableFeatures.update)) {
+      noteConflict(
+        "nestedWrites is on while this table's own insert or update is off, so a nested `create` or `connect` under another table's mutation can still write it",
+        tableName,
+      );
+    }
+    // Only flagged when the caller actually asked for the dependent feature: both default to
+    // on, so turning off the operation they build on is the normal way to remove them.
+    if (config?.features?.updateMany !== undefined && tableFeatures.updateMany && !tableFeatures.update) {
+      noteConflict('updateMany is on while update is off, so no batch update is generated', tableName);
+    }
+    if (config?.features?.groupBy !== undefined && tableFeatures.groupBy && !tableFeatures.aggregates) {
+      noteConflict('groupBy is on while aggregates is off, so no grouped query is generated', tableName);
+    }
+  }
+  for (const [message, tables] of featureConflicts) {
+    const listed =
+      tables.length > 5 ? `${tables.slice(0, 5).join(', ')} and ${tables.length - 5} more` : tables.join(', ');
+    console.warn(`Drizzle-GraphQL Warning: config.features — ${message} (${listed}).`);
+  }
+
   // Normalize eagerLoadRelations (boolean | predicate | undefined) into a predicate.
   const eagerOpt = config?.eagerLoadRelations;
   const shouldEagerLoad: (tableName: string, relationName: string) => boolean =
@@ -283,7 +331,7 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     conflictDoNothing: config?.conflictDoNothing ?? false,
     typeNameMapper,
     shouldEagerLoad,
-    features,
+    features: config?.features ?? {},
     complexity,
     scalars: config?.scalars,
     mapColumnType: config?.mapColumnType,

@@ -85,6 +85,39 @@ Automatically create GraphQL schema or customizable schema config fields from Dr
     })
     ```
 
+## Naming the generated types and fields
+
+By default every name comes from the table's key in the Drizzle schema: `tasks` gives type
+`Tasks`, queries `tasks` / `tasksSingle`, mutations `createTasks` / `createTasksSingle`.
+Most schemas use plural table keys and want singular type names, so that pairing is shipped
+as a preset:
+
+```Typescript
+const { schema } = buildSchema(db, { typeNameMapper: 'singularize' })
+```
+
+`tasks` then gives type `Task`, queries `tasks` (list) and `task` (single), mutations
+`createTasks` (array) and `createTask` (single), `updateTask`, `deleteTask`. Irregular
+plurals go through `pluralize`, so `people` gives `Person` / `people` / `person` and
+`addresses` gives `Address` rather than the `addresss` a naive suffix would produce. A table
+key that is already singular is pluralized for the list side, and a capitalized key is
+uncapitalized for the field side, so `tasks`, `task` and `Tasks` all land on the same names.
+
+For anything else, pass your own function — it is asked per table and may return `undefined`
+to leave that table with the default naming. The preset is exported as `singularizeMapper`
+so it can be wrapped:
+
+```Typescript
+import { buildSchema, singularizeMapper } from 'drizzle-graphql'
+
+const { schema } = buildSchema(db, {
+    typeNameMapper: (table) => (table === 'auditLog' ? undefined : singularizeMapper(table)),
+})
+```
+
+With a mapper in play the singular/plural forms are what keep the list and single fields
+apart, so `suffixes` may be empty on both sides. Without one, they must still differ.
+
 ## Choosing what gets generated
 
 Every generated operation is on by default. `features` turns individual ones off, which
@@ -120,6 +153,35 @@ const { schema } = buildSchema(db, {
 -   Turning off all three mutation features omits the `Mutation` type entirely, the same as
     `mutations: false`
 -   List and single queries are always generated, so `Query` is never empty
+
+### Per-table operations
+
+The choice is rarely build-wide: a schema usually has a handful of tables that must not be
+deleted through the API, a handful whose writes belong to a hand-written resolver that
+enforces something, and a majority that want everything. Any flag can be a predicate
+instead of a boolean, asked once per table with the table's key in the Drizzle schema:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    features: {
+        delete: (table) => table !== 'auditLog',
+        update: (table) => !ownedByCustomResolver.has(table),
+        upsert: (table) => table === 'settings',
+    },
+})
+```
+
+-   The table is still fully readable — this decides which operations it offers, not whether
+    it is in the schema at all. For that, use `exclude` below
+-   `nestedWrites` is the one flag that stays build-wide: its plans are computed once over
+    the whole relation graph, and a nested write reaches a second table by definition
+-   `Mutation` is omitted when *no* table generates a mutation, and kept when one still does
+-   Some operations are built out of others, and the generator knows which. A table that
+    asks for `upsert` while its `insert` or `update` is off — an upsert is a second write
+    path past the operation you turned off — warns on the console at build time, naming the
+    tables, rather than leaving that to be discovered later. So does asking for `updateMany`
+    without `update`, `groupBy` without `aggregates`, or `nestedWrites` alongside a table
+    whose own writes are off
 
 ## Excluding tables and columns
 

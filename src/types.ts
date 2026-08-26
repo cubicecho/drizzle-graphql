@@ -653,27 +653,38 @@ export type GeneratedData<TDatabase extends AnyDrizzleDB<any>> = {
 };
 
 /**
- * Per-feature switches for what `buildSchema` generates. Every flag defaults to `true`.
+ * A feature switch. `true` / `false` decides for the whole build; a predicate decides per
+ * table, receiving the table's key in the Drizzle schema.
+ *
+ * ```ts
+ * features: { delete: (table) => table !== 'auditLog' }
+ * ```
+ */
+export type FeatureSwitch = boolean | ((tableName: string) => boolean);
+
+/**
+ * Per-feature switches for what `buildSchema` generates. Every flag defaults to `true` except
+ * `upsert` and `nestedWrites`. Each one takes a boolean or a per-table predicate.
  * See {@link BuildSchemaConfig.features}.
  */
 export type SchemaFeatures = {
   /** `<plural>Aggregate` root queries and the aggregate output types. @default true */
-  aggregates?: boolean;
+  aggregates?: FeatureSwitch;
   /**
    * `<plural>GroupBy` root queries — the same aggregates, one row per group. Requires
    * `aggregates`, whose output types the grouped result reuses.
    *
    * @default true
    */
-  groupBy?: boolean;
+  groupBy?: FeatureSwitch;
   /** `<relation>Aggregate` fields on object types, for to-many relations. @default true */
-  relationAggregates?: boolean;
+  relationAggregates?: FeatureSwitch;
   /** The `distinct` argument on list queries. @default true */
-  distinct?: boolean;
+  distinct?: FeatureSwitch;
   /** `create<Table>` / `create<Table>Single` mutations. @default true */
-  insert?: boolean;
+  insert?: FeatureSwitch;
   /** `update<Table>` / `update<Table>Single` mutations. @default true */
-  update?: boolean;
+  update?: FeatureSwitch;
   /**
    * `update<Table>Many` mutations — batch update with a per-entry `set` and `where`,
    * executed inside one transaction. Only generated when `update` is also enabled,
@@ -681,9 +692,9 @@ export type SchemaFeatures = {
    *
    * @default true
    */
-  updateMany?: boolean;
+  updateMany?: FeatureSwitch;
   /** `delete<Table>` / `delete<Table>Single` mutations. @default true */
-  delete?: boolean;
+  delete?: FeatureSwitch;
   /**
    * `upsert<Table>` / `upsert<Table>Single` mutations — insert, or update the row that
    * already holds the same unique key. Off unless asked for, so an existing schema does
@@ -691,7 +702,7 @@ export type SchemaFeatures = {
    *
    * @default false
    */
-  upsert?: boolean;
+  upsert?: FeatureSwitch;
   /**
    * Relation fields on `Create<Table>Input` and `Update<Table>Input`, so a parent row and
    * the rows it is related to can be written in one mutation. Off unless asked for: it adds
@@ -734,7 +745,7 @@ export type SchemaFeatures = {
    *
    * @default false
    */
-  requireWhere?: boolean;
+  requireWhere?: FeatureSwitch;
 };
 
 /**
@@ -894,11 +905,11 @@ export type BuildSchemaConfig = {
    */
   complexity?: boolean | ComplexityConfig;
   /**
-   * Turns individual generated features off.
+   * Turns individual generated features off, for the whole build or per table.
    *
-   * Every flag defaults to `true` except `upsert`, which is opt-in: a build with no
-   * `features` block generates exactly what it generated before this option existed.
-   * Turning one off removes both the schema surface it adds and the work behind it.
+   * Every flag defaults to `true` except `upsert` and `nestedWrites`, which are opt-in: a
+   * build with no `features` block generates exactly what it generated before this option
+   * existed. Turning one off removes both the schema surface it adds and the work behind it.
    *
    * ```ts
    * buildSchema(db, {
@@ -912,9 +923,34 @@ export type BuildSchemaConfig = {
    * });
    * ```
    *
-   * Turning off every mutation feature omits the `Mutation` type entirely, exactly as
-   * `mutations: false` does. Query-side features can all be off — the list and single
-   * queries are always generated, so `Query` is never empty.
+   * Any flag may instead be a predicate, which is asked once per table with the table's key
+   * in the Drizzle schema — the usual case, where a handful of tables must not be written
+   * through the API and the rest want the full set:
+   *
+   * ```ts
+   * buildSchema(db, {
+   *   features: {
+   *     delete: (table) => table !== 'auditLog',
+   *     update: (table) => !ownedByCustomResolver.has(table),
+   *     upsert: (table) => table === 'settings',
+   *   },
+   * });
+   * ```
+   *
+   * A table that generates nothing at all belongs in {@link BuildSchemaConfig.exclude}; this
+   * decides which operations a table that *is* in the schema offers. `nestedWrites` is the one
+   * flag that stays build-wide: its plans are computed once over the whole relation graph, and
+   * a nested write reaches a second table by definition.
+   *
+   * Some operations are built out of others — an upsert writes through insert and update, a
+   * batch update reuses the update input, a grouped query reuses the aggregate types. Flags
+   * that contradict those implications warn on the console at build time (naming the tables)
+   * rather than leaving a second write path past the operation you turned off to be found
+   * later.
+   *
+   * Turning off every mutation feature for every table omits the `Mutation` type entirely,
+   * exactly as `mutations: false` does. Query-side features can all be off — the list and
+   * single queries are always generated, so `Query` is never empty.
    */
   features?: SchemaFeatures;
   /**
@@ -1024,8 +1060,20 @@ export type BuildSchemaConfig = {
    * Example: `(name) => name === 'users' ? { singular: 'user', plural: 'users' } : undefined`
    * produces type `User`, queries `users` / `user`, mutations `createUsers` / `createUser` for
    * the `users` table, and leaves other tables with their default names.
+   *
+   * Pass the string `'singularize'` for the built-in preset, which derives both forms of every
+   * table key with the library's own `pluralize` — the mapper most schemas with plural table
+   * keys would otherwise write by hand:
+   *
+   * ```ts
+   * buildSchema(db, { typeNameMapper: 'singularize' });
+   * // tasks -> type Task, queries `tasks` / `task`, mutations `createTasks` / `createTask`
+   * ```
+   *
+   * The same function is exported as `singularizeMapper` for wrapping — e.g. to keep one
+   * table's names as they are: `(t) => (t === 'audit_log' ? undefined : singularizeMapper(t))`.
    */
-  typeNameMapper?: (tableName: string) => { singular: string; plural: string } | undefined;
+  typeNameMapper?: 'singularize' | ((tableName: string) => { singular: string; plural: string } | undefined);
   /**
    * Controls whether a relation is eagerly pre-fetched via Drizzle's `with:` clause
    * when its parent is loaded through a generated query or mutation.

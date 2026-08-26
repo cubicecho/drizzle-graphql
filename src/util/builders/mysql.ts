@@ -54,6 +54,7 @@ import {
   toGraphQLError,
 } from '../builders/common.ts';
 import { remapFromGraphQLArrayInput, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
+import { resolveTableFeatures } from '../features.ts';
 import { registerEnumConfig, registerScalarOverrides } from '../type-converter/index.ts';
 import {
   createRelationAggregateFactory,
@@ -68,6 +69,7 @@ import type {
   CreatedResolver,
   Filters,
   SchemaGeneratorOptions,
+  TableFeatures,
   TableNamedRelations,
   TableSelectArgs,
 } from './types.ts';
@@ -550,6 +552,12 @@ export const generateSchemaData = <
   ][];
   const tables = Object.fromEntries(tableEntries);
 
+  // A feature flag may be a per-table predicate, so every flag is resolved against the table
+  // it applies to. `anyTable` answers the build-wide question — whether machinery shared
+  // across tables is worth constructing at all.
+  const featureOf = resolveTableFeatures(features);
+  const anyTable = (feature: keyof TableFeatures) => tableEntries.some(([name]) => featureOf(name)[feature]);
+
   if (!tableEntries.length) {
     throw new Error(
       "Drizzle-GraphQL Error: No tables detected in Drizzle-ORM's database instance. Did you forget to pass schema to drizzle constructor?",
@@ -610,9 +618,10 @@ export const generateSchemaData = <
     docs: options.docs ?? {},
   };
 
-  // Left undefined when the feature is off — generateTableTypes then emits no
-  // `${relation}Aggregate` fields at all.
-  const relationAggregateFactory: RelationAggregateFactory | undefined = features.relationAggregates
+  // Built when at least one table wants relation aggregates; a table that has them off is
+  // handed `undefined` below, so `generateTableTypes` emits no `${relation}Aggregate` fields
+  // on its object type.
+  const relationAggregateFactory: RelationAggregateFactory | undefined = anyTable('relationAggregates')
     ? createRelationAggregateFactory(db, tables, cacheCtx, typeNameMapper, filterCtx)
     : undefined;
 
@@ -635,7 +644,7 @@ export const generateSchemaData = <
         prefixes.insert,
         prefixes.update,
         resolverFactory,
-        relationAggregateFactory,
+        featureOf(tableName).relationAggregates ? relationAggregateFactory : undefined,
       ),
     ]),
   );
@@ -653,11 +662,13 @@ export const generateSchemaData = <
   const outputs: Record<string, GraphQLObjectType> = {};
   // Every MySQL mutation returns it, so it only belongs in the type map when at least one
   // mutation is generated.
-  if (features.insert || features.upsert || features.update || features.delete) {
+  if ((['insert', 'upsert', 'update', 'delete'] as const).some((feature) => anyTable(feature))) {
     outputs.MutationReturn = mutationReturnType;
   }
 
   for (const [tableName, tableTypes] of Object.entries(gqlSchemaTypes)) {
+    // Everything this table generates, with any per-table predicate already run.
+    const tableFeatures = featureOf(tableName);
     const { insertInput, updateInput, tableFilters, tableOrder } = tableTypes.inputs;
     const { selectSingleOutput, selectArrOutput } = tableTypes.outputs;
 
@@ -690,7 +701,7 @@ export const generateSchemaData = <
       typeName,
       typeNameMapper,
       filterCtx,
-      features.distinct,
+      tableFeatures.distinct,
       limits,
     );
     const selectSingleGenerated = generateSelectSingle(
@@ -706,7 +717,7 @@ export const generateSchemaData = <
       filterCtx,
       limits,
     );
-    const insertArrGenerated = features.insert
+    const insertArrGenerated = tableFeatures.insert
       ? generateInsertArray(
           db,
           tableName,
@@ -716,7 +727,7 @@ export const generateSchemaData = <
           mutationTxCtx,
         )
       : undefined;
-    const insertSingleGenerated = features.insert
+    const insertSingleGenerated = tableFeatures.insert
       ? generateInsertSingle(
           db,
           tableName,
@@ -728,7 +739,7 @@ export const generateSchemaData = <
       : undefined;
     // MySQL detects a conflict on any unique key, so unlike PostgreSQL and SQLite every
     // table can be upserted — there is no target to validate.
-    const onConflictInput = features.upsert
+    const onConflictInput = tableFeatures.upsert
       ? generateOnConflictInput({
           table: schema[tableName] as MySqlTable,
           typeName,
@@ -759,7 +770,7 @@ export const generateSchemaData = <
           mutationTxCtx,
         )
       : undefined;
-    const updateGenerated = features.update
+    const updateGenerated = tableFeatures.update
       ? generateUpdate(
           db,
           tableName,
@@ -768,12 +779,12 @@ export const generateSchemaData = <
           tableFilters,
           updateFieldName,
           false,
-          features.requireWhere,
+          tableFeatures.requireWhere,
           filterCtx,
           mutationTxCtx,
         )
       : undefined;
-    const updateSingleGenerated = features.update
+    const updateSingleGenerated = tableFeatures.update
       ? generateUpdate(
           db,
           tableName,
@@ -782,14 +793,14 @@ export const generateSchemaData = <
           tableFilters,
           updateSingleFieldName,
           true,
-          features.requireWhere,
+          tableFeatures.requireWhere,
           filterCtx,
           mutationTxCtx,
         )
       : undefined;
     // The batch update reuses the update `set` input, so it needs `update` on too.
     const updateManyInput =
-      features.update && features.updateMany
+      tableFeatures.update && tableFeatures.updateMany
         ? generateUpdateManyInput({ typeName, updatePrefix: prefixes.update, updateInput, tableFilters })
         : undefined;
     const updateManyGenerated = updateManyInput
@@ -803,7 +814,7 @@ export const generateSchemaData = <
           mutationTxCtx,
         )
       : undefined;
-    const deleteGenerated = features.delete
+    const deleteGenerated = tableFeatures.delete
       ? generateDelete(
           db,
           tableName,
@@ -811,12 +822,12 @@ export const generateSchemaData = <
           tableFilters,
           deleteFieldName,
           false,
-          features.requireWhere,
+          tableFeatures.requireWhere,
           filterCtx,
           mutationTxCtx,
         )
       : undefined;
-    const deleteSingleGenerated = features.delete
+    const deleteSingleGenerated = tableFeatures.delete
       ? generateDelete(
           db,
           tableName,
@@ -824,15 +835,15 @@ export const generateSchemaData = <
           tableFilters,
           deleteSingleFieldName,
           true,
-          features.requireWhere,
+          tableFeatures.requireWhere,
           filterCtx,
           mutationTxCtx,
         )
       : undefined;
-    const aggregateType = features.aggregates
+    const aggregateType = tableFeatures.aggregates
       ? generateAggregateTypes(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
       : undefined;
-    const aggregateGenerated = features.aggregates
+    const aggregateGenerated = tableFeatures.aggregates
       ? generateAggregate(
           db,
           tableName,
@@ -846,7 +857,7 @@ export const generateSchemaData = <
 
     // The grouped result reuses the aggregate output types, so it only exists alongside them.
     const groupByType =
-      features.aggregates && features.groupBy
+      tableFeatures.aggregates && tableFeatures.groupBy
         ? generateGroupByType(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
         : undefined;
     const groupByEnum = groupByType
@@ -920,9 +931,9 @@ export const generateSchemaData = <
     // only reach the schema's type map when a mutation actually references them.
     const activeInputs = [
       // The insert input types the upsert mutations too, so either feature keeps it.
-      ...(features.insert || onConflictInput ? [insertInput] : []),
+      ...(tableFeatures.insert || onConflictInput ? [insertInput] : []),
       ...(onConflictInput ? [onConflictInput] : []),
-      ...(features.update ? [updateInput] : []),
+      ...(tableFeatures.update ? [updateInput] : []),
       ...(updateManyInput ? [updateManyInput] : []),
       tableFilters,
       tableOrder,
