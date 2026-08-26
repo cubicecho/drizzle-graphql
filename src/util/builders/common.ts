@@ -1196,10 +1196,17 @@ const generateSelectFields = <TWithOrder extends boolean>(
       const resolve = resolverFactory?.({ tableName, relationName, relEntry: relEntry as TableNamedRelations, isOne });
 
       if (isOne) {
+        // Honor the relation's declared optionality: `r.one.Target({ ..., optional: false })`
+        // asserts the related row always exists (a NOT NULL foreign key), so the field is
+        // emitted as `Target!`. The default (`optional: true` / omitted) stays nullable.
+        // Column nullability alone is NOT used to infer this — a notNull `from` column does
+        // not guarantee a related row exists when the FK constraint lives on the other side
+        // (e.g. `Users.customer` joins the notNull `Users.id` to `Customers.userId`).
+        const isRequired = (relation as One<any, any>).optional === false;
         rawRelationFields.push([
           relationName,
           {
-            type: relType,
+            type: isRequired ? new GraphQLNonNull(relType) : relType,
             args: {
               where: { type: relSelectData.filters },
             },
