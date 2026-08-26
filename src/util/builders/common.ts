@@ -953,6 +953,13 @@ const generateTableSelectTypeFieldsCached = (table: Table, tableName: string): R
 };
 
 /**
+ * Whether a to-one relation can back a relation orderBy hop. `.through()` (junction)
+ * relations are excluded — the ordering subquery only joins the direct target, never the
+ * junction table. (Relation *filters* do support `.through()` — this guard is orderBy-only.)
+ */
+const isFilterableRelation = (relation: Relation<string>): boolean => !(relation as any).through;
+
+/**
  * Order fields for a table's to-one relations: each takes the target table's own OrderBy
  * input, so a list can be sorted by a related row's column (compiled as a correlated
  * subquery in the ORDER BY — see `extractOrderBy`). To-many relations are left out: "order
