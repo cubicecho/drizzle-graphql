@@ -74,10 +74,12 @@ beforeAll(async () => {
         deleteFromCustomUsers: entities.mutations.deleteUsers,
         deleteFromCustomCustomers: entities.mutations.deleteCustomers,
         deleteFromCustomPosts: entities.mutations.deletePosts,
+        deleteFromCustomPostsSingle: entities.mutations.deletePostsSingle,
         updateCustomUsers: entities.mutations.updateUsers,
         updateCustomUsersMany: entities.mutations.updateUsersMany,
         updateCustomCustomers: entities.mutations.updateCustomers,
         updateCustomPosts: entities.mutations.updatePosts,
+        updateCustomPostsSingle: entities.mutations.updatePostsSingle,
         insertIntoCustomUsers: entities.mutations.createUsers,
         insertIntoCustomUsersSingle: entities.mutations.createUsersSingle,
         insertIntoCustomCustomers: entities.mutations.createCustomers,
@@ -1816,6 +1818,133 @@ describe.sequential('Arguments tests', async () => {
             content: '2MESSAGE',
           },
         ],
+      },
+    });
+  });
+
+  it('Update single', async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			mutation {
+				updateCustomPostsSingle(where: { id: { eq: 6 } }, set: { content: "UPDATED" }) {
+					id
+					authorId
+					content
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        updateCustomPostsSingle: {
+          id: 6,
+          authorId: 1,
+          content: 'UPDATED',
+        },
+      },
+    });
+  });
+
+  it('Update single with no match returns null', async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			mutation {
+				updateCustomPostsSingle(where: { id: { eq: 999 } }, set: { content: "UPDATED" }) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        updateCustomPostsSingle: null,
+      },
+    });
+  });
+
+  it('Update single with multiple matches throws and writes nothing', async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			mutation {
+				updateCustomPostsSingle(where: { authorId: { eq: 5 } }, set: { content: "UPDATED" }) {
+					id
+				}
+			}
+		`);
+
+    expect(res.errors?.[0]?.message).toContain('matched more than one row');
+
+    const check = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				customPosts(where: { content: { eq: "UPDATED" } }) {
+					id
+				}
+			}
+		`);
+    expect(check).toStrictEqual({ data: { customPosts: [] } });
+  });
+
+  it('Update single without where is rejected by validation', async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			mutation {
+				updateCustomPostsSingle(set: { content: "UPDATED" }) {
+					id
+				}
+			}
+		`);
+
+    expect(res.errors).toBeDefined();
+  });
+
+  it('Delete single', async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			mutation {
+				deleteFromCustomPostsSingle(where: { id: { eq: 6 } }) {
+					id
+					authorId
+					content
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        deleteFromCustomPostsSingle: {
+          id: 6,
+          authorId: 1,
+          content: '4MESSAGE',
+        },
+      },
+    });
+
+    const check = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				customPosts(where: { id: { eq: 6 } }) {
+					id
+				}
+			}
+		`);
+    expect(check).toStrictEqual({ data: { customPosts: [] } });
+  });
+
+  it('Delete single with multiple matches throws and deletes nothing', async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			mutation {
+				deleteFromCustomPostsSingle(where: { authorId: { eq: 5 } }) {
+					id
+				}
+			}
+		`);
+
+    expect(res.errors?.[0]?.message).toContain('matched more than one row');
+
+    const check = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				customPosts(where: { authorId: { eq: 5 } }) {
+					id
+				}
+			}
+		`);
+    expect(check).toStrictEqual({
+      data: {
+        customPosts: [{ id: 4 }, { id: 5 }],
       },
     });
   });

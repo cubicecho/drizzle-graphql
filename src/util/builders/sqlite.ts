@@ -16,6 +16,7 @@ import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import type { GeneratedEntities } from '../../types.ts';
 import {
   aggregateFieldComplexity,
+  assertSingleMatch,
   attachTargetPrimaryKeys,
   buildNamedRelations,
   computeResolverFieldNames,
@@ -23,6 +24,7 @@ import {
   eagerLoadMutationRelations,
   excludedColumnRef,
   extractFilters,
+  extractRequiredFilters,
   extractSelectedColumnsFromTreeSQLFormat,
   generateDistinctEnum,
   generateOnConflictInput,
@@ -123,6 +125,8 @@ const generateSelectArray = (
           filterCtx,
           pkNames,
           db: executor,
+          // SQLite sorts NULLs as the smallest values (first in ASC).
+          nullOrdering: 'nulls-smallest',
         });
       } catch (e) {
         throw toGraphQLError(e);
@@ -433,6 +437,8 @@ const generateUpdate = (
   filterArgs: GraphQLInputObjectType,
   fieldName: string,
   typeName: string,
+  single: boolean,
+  requireWhere: boolean,
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
 ): CreatedResolver => {
@@ -441,7 +447,7 @@ const generateUpdate = (
       type: new GraphQLNonNull(setArgs),
     },
     where: {
-      type: filterArgs,
+      type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
     },
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
@@ -474,10 +480,21 @@ const generateUpdate = (
           throw new GraphQLError('Unable to update with no values specified!');
         }
 
+        const relationCtx = relationFilterCtx(filterCtx, tableName);
+        const filters =
+          single || requireWhere
+            ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+            : where
+              ? extractFilters(table, tableName, where, relationCtx)
+              : undefined;
+
         const executor = resolveExecutor(db, context);
+        if (single) {
+          await assertSingleMatch(executor, table, filters!, fieldName);
+        }
+
         let query = executor.update(table).set(input);
-        if (where) {
-          const filters = extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName));
+        if (filters) {
           query = query.where(filters) as any;
         }
 
@@ -485,11 +502,22 @@ const generateUpdate = (
 
         const result = await query;
 
+        if (single && result.length > 1) {
+          // A row started matching between the pre-check and the write.
+          throw new GraphQLError(`${fieldName}: 'where' matched more than one row!`);
+        }
+
+        if (single && !result[0]) {
+          return undefined;
+        }
+
         const enriched = hasRelations
           ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
           : result;
 
-        return remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
+        return single
+          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
+          : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -643,12 +671,14 @@ const generateDelete = (
   filterArgs: GraphQLInputObjectType,
   fieldName: string,
   typeName: string,
+  single: boolean,
+  requireWhere: boolean,
   filterCtx?: RelationFilterBase,
   selectionCtx?: SelectionCtx,
 ): CreatedResolver => {
   const queryArgs = {
     where: {
-      type: filterArgs,
+      type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
     },
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
@@ -668,16 +698,36 @@ const generateDelete = (
           selectionCtx,
         );
 
+        const relationCtx = relationFilterCtx(filterCtx, tableName);
+        const filters =
+          single || requireWhere
+            ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+            : where
+              ? extractFilters(table, tableName, where, relationCtx)
+              : undefined;
+
         const executor = resolveExecutor(db, context);
+        if (single) {
+          await assertSingleMatch(executor, table, filters!, fieldName);
+        }
+
         let query = executor.delete(table);
-        if (where) {
-          const filters = extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName));
+        if (filters) {
           query = query.where(filters) as any;
         }
 
         query = query.returning(columns) as any;
 
         const result = await query;
+
+        if (single && result.length > 1) {
+          // A row started matching between the pre-check and the write.
+          throw new GraphQLError(`${fieldName}: 'where' matched more than one row!`);
+        }
+
+        if (single) {
+          return result[0] ? remapToGraphQLSingleOutput(result[0], tableName, table) : undefined;
+        }
 
         return remapToGraphQLArrayOutput(result, tableName, table);
       } catch (e) {
@@ -793,7 +843,9 @@ export const generateSchemaData = <
       upsertSingleFieldName,
       updateFieldName,
       updateManyFieldName,
+      updateSingleFieldName,
       deleteFieldName,
+      deleteSingleFieldName,
     } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
 
     const selectArrGenerated = generateSelectArray(
@@ -906,6 +958,25 @@ export const generateSchemaData = <
           tableFilters,
           updateFieldName,
           typeName,
+          false,
+          features.requireWhere,
+          typeNameMapper,
+          filterCtx,
+        )
+      : undefined;
+    const updateSingleGenerated = features.update
+      ? generateUpdate(
+          db,
+          tableName,
+          schema[tableName] as SQLiteTable,
+          tables,
+          eagerRelations,
+          updateInput,
+          tableFilters,
+          updateSingleFieldName,
+          typeName,
+          true,
+          features.requireWhere,
           typeNameMapper,
           filterCtx,
         )
@@ -937,6 +1008,22 @@ export const generateSchemaData = <
           tableFilters,
           deleteFieldName,
           typeName,
+          false,
+          features.requireWhere,
+          filterCtx,
+          { tableName, relationMap: namedRelations, tables },
+        )
+      : undefined;
+    const deleteSingleGenerated = features.delete
+      ? generateDelete(
+          db,
+          tableName,
+          schema[tableName] as SQLiteTable,
+          tableFilters,
+          deleteSingleFieldName,
+          typeName,
+          true,
+          features.requireWhere,
           filterCtx,
           { tableName, relationMap: namedRelations, tables },
         )
@@ -1052,11 +1139,25 @@ export const generateSchemaData = <
         resolve: updateManyGenerated.resolver,
       };
     }
+    if (updateSingleGenerated) {
+      mutations[updateSingleGenerated.name] = {
+        type: singleTableItemOutput,
+        args: updateSingleGenerated.args,
+        resolve: updateSingleGenerated.resolver,
+      };
+    }
     if (deleteGenerated) {
       mutations[deleteGenerated.name] = {
         type: arrTableItemOutput,
         args: deleteGenerated.args,
         resolve: deleteGenerated.resolver,
+      };
+    }
+    if (deleteSingleGenerated) {
+      mutations[deleteSingleGenerated.name] = {
+        type: singleTableItemOutput,
+        args: deleteSingleGenerated.args,
+        resolve: deleteSingleGenerated.resolver,
       };
     }
     // The insert/update inputs are still built (they type the mutations that survive) but

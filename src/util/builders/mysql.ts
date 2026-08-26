@@ -17,11 +17,13 @@ import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import type { GeneratedEntities } from '../../types.ts';
 import {
   aggregateFieldComplexity,
+  assertSingleMatch,
   attachTargetPrimaryKeys,
   buildNamedRelations,
   computeResolverFieldNames,
   createRelationResolverFactory,
   extractFilters,
+  extractRequiredFilters,
   generateDistinctEnum,
   generateOnConflictInput,
   generateTableTypes,
@@ -114,6 +116,8 @@ const generateSelectArray = (
           filterCtx,
           pkNames,
           db: executor,
+          // MySQL sorts NULLs as the smallest values (first in ASC).
+          nullOrdering: 'nulls-smallest',
         });
       } catch (e) {
         throw toGraphQLError(e);
@@ -313,6 +317,8 @@ const generateUpdate = (
   setArgs: GraphQLInputObjectType,
   filterArgs: GraphQLInputObjectType,
   fieldName: string,
+  single: boolean,
+  requireWhere: boolean,
   filterCtx?: RelationFilterBase,
 ): CreatedResolver => {
   const queryArgs = {
@@ -320,7 +326,7 @@ const generateUpdate = (
       type: new GraphQLNonNull(setArgs),
     },
     where: {
-      type: filterArgs,
+      type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
     },
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
@@ -335,10 +341,21 @@ const generateUpdate = (
           throw new GraphQLError('Unable to update with no values specified!');
         }
 
+        const relationCtx = relationFilterCtx(filterCtx, tableName);
+        const filters =
+          single || requireWhere
+            ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+            : where
+              ? extractFilters(table, tableName, where, relationCtx)
+              : undefined;
+
         const executor = resolveExecutor(db, context);
+        if (single) {
+          await assertSingleMatch(executor, table, filters!, fieldName);
+        }
+
         let query = executor.update(table).set(input);
-        if (where) {
-          const filters = extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName));
+        if (filters) {
           query = query.where(filters) as any;
         }
 
@@ -433,11 +450,13 @@ const generateDelete = (
   table: MySqlTable,
   filterArgs: GraphQLInputObjectType,
   fieldName: string,
+  single: boolean,
+  requireWhere: boolean,
   filterCtx?: RelationFilterBase,
 ): CreatedResolver => {
   const queryArgs = {
     where: {
-      type: filterArgs,
+      type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
     },
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
@@ -447,10 +466,21 @@ const generateDelete = (
       try {
         const { where } = args;
 
+        const relationCtx = relationFilterCtx(filterCtx, tableName);
+        const filters =
+          single || requireWhere
+            ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+            : where
+              ? extractFilters(table, tableName, where, relationCtx)
+              : undefined;
+
         const executor = resolveExecutor(db, context);
+        if (single) {
+          await assertSingleMatch(executor, table, filters!, fieldName);
+        }
+
         let query = executor.delete(table);
-        if (where) {
-          const filters = extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName));
+        if (filters) {
           query = query.where(filters) as any;
         }
 
@@ -579,7 +609,9 @@ export const generateSchemaData = <
       upsertSingleFieldName,
       updateFieldName,
       updateManyFieldName,
+      updateSingleFieldName,
       deleteFieldName,
+      deleteSingleFieldName,
     } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
 
     const selectArrGenerated = generateSelectArray(
@@ -638,6 +670,21 @@ export const generateSchemaData = <
           updateInput,
           tableFilters,
           updateFieldName,
+          false,
+          features.requireWhere,
+          filterCtx,
+        )
+      : undefined;
+    const updateSingleGenerated = features.update
+      ? generateUpdate(
+          db,
+          tableName,
+          schema[tableName] as MySqlTable,
+          updateInput,
+          tableFilters,
+          updateSingleFieldName,
+          true,
+          features.requireWhere,
           filterCtx,
         )
       : undefined;
@@ -657,7 +704,28 @@ export const generateSchemaData = <
         )
       : undefined;
     const deleteGenerated = features.delete
-      ? generateDelete(db, tableName, schema[tableName] as MySqlTable, tableFilters, deleteFieldName, filterCtx)
+      ? generateDelete(
+          db,
+          tableName,
+          schema[tableName] as MySqlTable,
+          tableFilters,
+          deleteFieldName,
+          false,
+          features.requireWhere,
+          filterCtx,
+        )
+      : undefined;
+    const deleteSingleGenerated = features.delete
+      ? generateDelete(
+          db,
+          tableName,
+          schema[tableName] as MySqlTable,
+          tableFilters,
+          deleteSingleFieldName,
+          true,
+          features.requireWhere,
+          filterCtx,
+        )
       : undefined;
     const aggregateType = features.aggregates
       ? generateAggregateTypes(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
@@ -734,7 +802,9 @@ export const generateSchemaData = <
       upsertSingleGenerated,
       updateGenerated,
       updateManyGenerated,
+      updateSingleGenerated,
       deleteGenerated,
+      deleteSingleGenerated,
     ]) {
       if (generated) {
         mutations[generated.name] = {
