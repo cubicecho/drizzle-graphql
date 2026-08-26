@@ -1,3 +1,10 @@
+# [5.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v5.0.0...v5.1.0) (2026-08-26)
+
+
+### Features
+
+* **schema:** pick column filters by data type instead of column name ([3ec61ac](https://github.com/cubicecho/drizzle-graphql/commit/3ec61ac7c85382cceeb5e47b00508a603faa0d5c)), closes [#22](https://github.com/cubicecho/drizzle-graphql/issues/22)
+
 # [5.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v4.2.0...v5.0.0) (2026-08-26)
 
 
