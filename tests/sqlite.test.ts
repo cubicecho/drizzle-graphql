@@ -1944,6 +1944,87 @@ describe.sequential('Arguments tests', async () => {
   });
 });
 
+describe.sequential('Safe string operator tests', () => {
+  it('startsWith, endsWith and contains match literally, escaping wildcards', async () => {
+    await ctx.db.insert(schema.Users).values([
+      { id: 10, name: '100% real' },
+      { id: 11, name: '100x real' },
+      { id: 12, name: 'user_name' },
+      { id: 13, name: 'userXname' },
+      { id: 14, name: 'back\\slash' },
+      { id: 15, name: 'backslash' },
+    ]);
+
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				literalPercent: users(where: { name: { contains: "100%" } }) {
+					id
+					name
+				}
+				literalUnderscore: users(where: { name: { startsWith: "user_" } }) {
+					id
+					name
+				}
+				literalBackslash: users(where: { name: { contains: "back\\\\sl" } }) {
+					id
+					name
+				}
+				endsWith: users(where: { name: { endsWith: "% real" } }) {
+					id
+					name
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        literalPercent: [{ id: 10, name: '100% real' }],
+        literalUnderscore: [{ id: 12, name: 'user_name' }],
+        literalBackslash: [{ id: 14, name: 'back\\slash' }],
+        endsWith: [{ id: 10, name: '100% real' }],
+      },
+    });
+  });
+
+  it('case-insensitive variants match via lower() on SQLite', async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				iStartsWith: users(where: { name: { iStartsWith: "first" } }) {
+					id
+					name
+				}
+				iEndsWith: users(where: { name: { iEndsWith: "ONDUSER" } }) {
+					id
+					name
+				}
+				iContains: users(where: { name: { iContains: "SECOND" } }) {
+					id
+					name
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        iStartsWith: [{ id: 1, name: 'FirstUser' }],
+        iEndsWith: [{ id: 2, name: 'SecondUser' }],
+        iContains: [{ id: 2, name: 'SecondUser' }],
+      },
+    });
+  });
+
+  it('exposes the safe operators on SQLite string filters', () => {
+    const safeOps = ['startsWith', 'endsWith', 'contains', 'iStartsWith', 'iEndsWith', 'iContains'];
+
+    const stringFilter = ctx.schema.getType('StringFilter');
+    expect(stringFilter).toBeInstanceOf(GraphQLInputObjectType);
+    const stringFields = Object.keys((stringFilter as GraphQLInputObjectType).getFields());
+    for (const op of safeOps) {
+      expect(stringFields).toContain(op);
+    }
+  });
+});
+
 describe.sequential('Aggregate query tests', () => {
   it(`Count`, async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `

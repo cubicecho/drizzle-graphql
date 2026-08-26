@@ -256,6 +256,12 @@ export type FilterColumnOperatorsCore<TColumn extends Column, TColType = GetColu
   notLike: string;
   ilike: string;
   notIlike: string;
+  startsWith: string;
+  endsWith: string;
+  contains: string;
+  iStartsWith: string;
+  iEndsWith: string;
+  iContains: string;
   inArray: Array<TColType>;
   notInArray: Array<TColType>;
   isNull: boolean;

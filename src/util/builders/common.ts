@@ -778,6 +778,30 @@ const generateColumnFilterValues = (
           notLike: { type: GraphQLString },
           ilike: { type: GraphQLString },
           notIlike: { type: GraphQLString },
+          startsWith: {
+            type: GraphQLString,
+            description: 'Matches values starting with the given string. `%`, `_` and `\\` are matched literally.',
+          },
+          endsWith: {
+            type: GraphQLString,
+            description: 'Matches values ending with the given string. `%`, `_` and `\\` are matched literally.',
+          },
+          contains: {
+            type: GraphQLString,
+            description: 'Matches values containing the given string. `%`, `_` and `\\` are matched literally.',
+          },
+          iStartsWith: {
+            type: GraphQLString,
+            description: 'Case-insensitive `startsWith`.',
+          },
+          iEndsWith: {
+            type: GraphQLString,
+            description: 'Case-insensitive `endsWith`.',
+          },
+          iContains: {
+            type: GraphQLString,
+            description: 'Case-insensitive `contains`.',
+          },
         }),
     inArray: { type: colArr, description: `Array<${colDesc}>` },
     notInArray: { type: colArr, description: `Array<${colDesc}>` },
@@ -1414,6 +1438,49 @@ export const extractOrderBy = <TTable extends Table, TArgs extends OrderByArgs<a
     direction === 'asc' ? asc(getColumns(table)[column]!) : desc(getColumns(table)[column]!),
   );
 
+/**
+ * Escape character pinned via `ESCAPE` on every generated safe-LIKE predicate. Bound as a
+ * query parameter (never spliced into the SQL text), so no dialect-specific string-literal
+ * escaping rules apply to it.
+ */
+const LIKE_ESCAPE_CHAR = '\\';
+
+/**
+ * Escapes the LIKE wildcards (`%`, `_`) and the escape character itself (`\`) in a literal
+ * search term, so the term only ever matches literally inside a LIKE pattern.
+ */
+const escapeLikeValue = (value: string): string => value.replace(/[\\%_]/g, (char) => `\\${char}`);
+
+/**
+ * The injection-safe string operators: the caller passes a literal search term, the library
+ * builds the LIKE pattern with the term's `%` / `_` / `\` escaped and the `ESCAPE` clause pinned.
+ * The `i`-prefixed variants match case-insensitively.
+ */
+const safeLikeOps: Record<string, { buildPattern: (value: string) => string; insensitive: boolean }> = {
+  startsWith: { buildPattern: (value) => `${escapeLikeValue(value)}%`, insensitive: false },
+  endsWith: { buildPattern: (value) => `%${escapeLikeValue(value)}`, insensitive: false },
+  contains: { buildPattern: (value) => `%${escapeLikeValue(value)}%`, insensitive: false },
+  iStartsWith: { buildPattern: (value) => `${escapeLikeValue(value)}%`, insensitive: true },
+  iEndsWith: { buildPattern: (value) => `%${escapeLikeValue(value)}`, insensitive: true },
+  iContains: { buildPattern: (value) => `%${escapeLikeValue(value)}%`, insensitive: true },
+};
+
+/**
+ * `LIKE <pattern> ESCAPE '\'` for a safe string operator. Case-insensitive variants use
+ * Postgres's native `ILIKE`; MySQL and SQLite have no `ILIKE`, so they compare `lower()`
+ * on both sides instead (mirroring how the raw `ilike` operator is Postgres-only).
+ */
+const safeLikeCondition = (column: Column, pattern: string, insensitive: boolean): SQL => {
+  if (!insensitive) {
+    return sql`${column} like ${pattern} escape ${LIKE_ESCAPE_CHAR}`;
+  }
+
+  const isPg = (((column as any).columnType ?? '') as string).startsWith('Pg');
+  return isPg
+    ? sql`${column} ilike ${pattern} escape ${LIKE_ESCAPE_CHAR}`
+    : sql`lower(${column}) like ${pattern.toLowerCase()} escape ${LIKE_ESCAPE_CHAR}`;
+};
+
 export const extractFiltersColumn = <TColumn extends Column>(
   column: TColumn,
   columnName: string,
@@ -1459,6 +1526,9 @@ export const extractFiltersColumn = <TColumn extends Column>(
       variants.push(singleValueOps[operatorName]!(column, singleValue));
     } else if (operatorName in stringValueOps) {
       variants.push(stringValueOps[operatorName]!(column, operatorValue as string));
+    } else if (operatorName in safeLikeOps) {
+      const { buildPattern, insensitive } = safeLikeOps[operatorName]!;
+      variants.push(safeLikeCondition(column, buildPattern(operatorValue as string), insensitive));
     } else if (operatorName in arrayValueOps) {
       if (!(operatorValue as any[]).length) {
         throw new GraphQLError(`WHERE ${columnName}: Unable to use operator ${operatorName} with an empty array!`);
