@@ -1,3 +1,10 @@
+# [5.5.0](https://github.com/cubicecho/drizzle-graphql/compare/v5.4.0...v5.5.0) (2026-08-26)
+
+
+### Features
+
+* **mutations:** wrap multi-mutation requests in an automatic transaction ([4845f70](https://github.com/cubicecho/drizzle-graphql/commit/4845f70cdd90116b141098f5bc1e16c1f287eca3)), closes [#9](https://github.com/cubicecho/drizzle-graphql/issues/9)
+
 # [5.4.0](https://github.com/cubicecho/drizzle-graphql/compare/v5.3.0...v5.4.0) (2026-08-26)
 
 
