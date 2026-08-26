@@ -1,3 +1,10 @@
+# [5.3.0](https://github.com/cubicecho/drizzle-graphql/compare/v5.2.0...v5.3.0) (2026-08-26)
+
+
+### Features
+
+* **query:** add cursor (keyset) pagination to list queries ([9317db6](https://github.com/cubicecho/drizzle-graphql/commit/9317db66e5c62cad730044aa681fe781e9ed00ed)), closes [#25](https://github.com/cubicecho/drizzle-graphql/issues/25)
+
 # [5.2.0](https://github.com/cubicecho/drizzle-graphql/compare/v5.1.0...v5.2.0) (2026-08-26)
 
 
