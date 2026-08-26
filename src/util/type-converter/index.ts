@@ -16,7 +16,14 @@ import {
   GraphQLString,
 } from 'graphql';
 import { capitalize } from '../case-ops/index.ts';
-import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQLUUID } from '../scalars/index.ts';
+import {
+  GraphQLBigIntString,
+  GraphQLDate,
+  GraphQLDateTime,
+  GraphQLDecimalString,
+  GraphQLJSON,
+  GraphQLUUID,
+} from '../scalars/index.ts';
 import type { ConvertedColumn } from './types.ts';
 
 const allowedNameChars = /^[a-zA-Z0-9_]+$/;
@@ -67,7 +74,7 @@ const columnToGraphQLCore = (
   tableName: string,
   isInput: boolean,
 ): ConvertedColumn<boolean> => {
-  const { type: baseType } = extractExtendedColumnType(column);
+  const { type: baseType, constraint } = extractExtendedColumnType(column);
   switch (baseType) {
     case 'boolean':
       return { type: GraphQLBoolean, description: 'Boolean' };
@@ -91,6 +98,14 @@ const columnToGraphQLCore = (
         return { type: generateEnumCached(column, columnName, tableName) };
       }
 
+      // numeric/decimal columns (pg numeric, mysql decimal, sqlite numeric) transport as
+      // strings, but they are numbers — give them the named Decimal scalar so the SDL says
+      // so and non-numeric input is rejected. Array-typed numeric columns (dimensions > 0)
+      // keep their existing mapping.
+      if (constraint === 'numeric' && !(column as any).dimensions) {
+        return { type: GraphQLDecimalString, description: 'Decimal' };
+      }
+
       if (column instanceof PgTimestamp || column instanceof PgTimestampString) {
         return { type: GraphQLDateTime, description: 'DateTime' };
       }
@@ -101,6 +116,20 @@ const columnToGraphQLCore = (
         // For input, accept any string (drivers truncate ISO timestamps to date on write).
         // For output, keep the strict GraphQLDate scalar so the returned value is validated.
         return isInput ? { type: GraphQLString, description: 'Date' } : { type: GraphQLDate, description: 'Date' };
+      }
+
+      {
+        // text().array() columns keep dataType='string' but gain a `dimensions` property,
+        // just like the numeric arrays handled in the 'number' branch below. The 'array'
+        // case (baseColumn recursion) still covers drizzle versions that report
+        // dataType='array'; this is a fallback beside it, not a replacement.
+        const dims = (column as any).dimensions as number | undefined;
+        if (dims !== undefined && dims > 0) {
+          return {
+            type: new GraphQLList(new GraphQLNonNull(GraphQLString)),
+            description: 'Array<String>',
+          };
+        }
       }
 
       return { type: GraphQLString, description: 'String' };
