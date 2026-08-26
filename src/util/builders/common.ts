@@ -242,6 +242,59 @@ export type RelationAggregateFactory = (params: {
 }) => { type: GraphQLObjectType; resolve: GraphQLFieldResolver<any, any> } | undefined;
 
 /**
+ * Key on the GraphQL context object under which a caller can place a Drizzle transaction
+ * (or any other executor: a pooled connection, a logging proxy). Every generated resolver
+ * reads it at resolve time and runs its statements there instead of on the database the
+ * schema was built from, which is what lets several mutations in one request share a
+ * transaction and lets a query see that transaction's uncommitted rows:
+ *
+ * ```ts
+ * await db.transaction(async (tx) => {
+ *   await graphql({ schema, source, contextValue: { [drizzleExecutorKey]: tx } });
+ * });
+ * ```
+ *
+ * Registered with `Symbol.for` so the ESM and CJS builds of this package agree on it when
+ * both end up loaded in one process.
+ */
+export const drizzleExecutorKey: unique symbol = Symbol.for('drizzle-graphql:executor') as any;
+
+/**
+ * The executor a resolver should run on: the request's transaction when the context
+ * carries one, otherwise the database the schema was built from.
+ */
+export const resolveExecutor = <T>(db: T, context: any): T => {
+  if (context && typeof context === 'object') {
+    const executor = context[drizzleExecutorKey];
+    if (executor) {
+      return executor as T;
+    }
+  }
+  return db;
+};
+
+/**
+ * This request's executor together with the relational query builder to select through.
+ *
+ * `buildTimeQueryBase` decides whether the table supports the relational query builder at
+ * all — a table with no relations has none, and the caller falls back to a plain select.
+ * The executor only decides which connection the query runs on, so a transaction that is
+ * missing `query` (or a table absent from its schema) keeps the build-time builder.
+ */
+export const resolveQueryExecutor = (
+  db: any,
+  context: any,
+  tableName: string,
+  buildTimeQueryBase: any,
+): { executor: any; queryBase: any } => {
+  const executor = resolveExecutor(db, context);
+  return {
+    executor,
+    queryBase: buildTimeQueryBase ? (executor?.query?.[tableName] ?? buildTimeQueryBase) : buildTimeQueryBase,
+  };
+};
+
+/**
  * Fetches a to-many relation with per-parent limit/offset for ALL parents in a
  * single query, using a window function (ROW_NUMBER() OVER (PARTITION BY fk ...)).
  *
@@ -357,6 +410,9 @@ export const createRelationResolverFactory =
       const loaderKey = `${tableName}::${relationName}::${argsKey}`;
 
       const loader = getOrCreateLoader(context, loaderKey, async (parentIds: readonly any[]) => {
+        // Loaders are cached per context, so every call batched here shares this request's
+        // executor — the transaction on the context, when there is one.
+        const executor = resolveExecutor(db, context);
         const uniqueIds = [...new Set(parentIds)];
         const whereCondition = and(
           inArray(foreignCol, uniqueIds),
@@ -369,7 +425,7 @@ export const createRelationResolverFactory =
         if (limit != null || offset != null) {
           // Per-parent pagination across the whole batch in one query.
           rows = await batchedPaginatedRelationQuery(
-            db,
+            executor,
             targetTable,
             foreignCol,
             whereCondition,
@@ -381,7 +437,7 @@ export const createRelationResolverFactory =
         } else {
           // Use plain db.select() so column refs are never aliased — avoids drizzle-orm v1
           // RQB aliasing requirements that would require referencing via aliasedTable proxy.
-          let q = db.select().from(targetTable).where(whereCondition) as any;
+          let q = executor.select().from(targetTable).where(whereCondition) as any;
           if (orderByArg) {
             q = q.orderBy(...extractOrderBy(targetTable, orderByArg));
           }
@@ -1808,35 +1864,125 @@ export const primaryKeyOrderExprs = (table: Table, pkNames: readonly string[]): 
     .map((col) => asc(col!));
 };
 
+/**
+ * Every set of columns that uniquely identifies a row of `table`: the primary key first,
+ * then each unique constraint and unique index, then each column declared `.unique()`
+ * inline. Sets are property names (what GraphQL inputs use), not database column names.
+ *
+ * `getTableConfig` is the dialect's own — the three dialects expose the same
+ * `{ primaryKeys, uniqueConstraints, indexes }` shape but from different modules, so the
+ * caller passes theirs in, as `getPrimaryKeyPropNamesFromConfig` does.
+ *
+ * Index entries whose columns are SQL expressions rather than plain columns are skipped:
+ * an expression index is a valid conflict target in the database but cannot be named by a
+ * column enum. Deduplicated, order-insensitive — a column that is both the primary key and
+ * a unique constraint yields one set.
+ */
+export const getUniqueColumnSets = (
+  table: Table,
+  getTableConfig: (table: Table) => {
+    primaryKeys: { columns: { name: string }[] }[];
+    uniqueConstraints?: { columns: { name: string }[] }[];
+    indexes?: { config: { unique?: boolean; columns: any[] } }[];
+  },
+): string[][] => {
+  const cols = getColumns(table);
+  const propNameByColumnName = new Map(Object.entries(cols).map(([propName, col]) => [(col as any).name, propName]));
+  // A set is usable only if every one of its columns maps back to a property on the table.
+  const toPropNames = (columnNames: (string | undefined)[]): string[] | undefined => {
+    const propNames: string[] = [];
+    for (const columnName of columnNames) {
+      const propName = columnName === undefined ? undefined : propNameByColumnName.get(columnName);
+      if (!propName) {
+        return undefined;
+      }
+      propNames.push(propName);
+    }
+    return propNames.length ? propNames : undefined;
+  };
+
+  const config = getTableConfig(table);
+  const candidates: (string[] | undefined)[] = [
+    // Inline `.primaryKey()` columns, then table-level `primaryKey({ columns })`.
+    Object.entries(cols)
+      .filter(([, col]) => (col as any).primary)
+      .map(([propName]) => propName),
+    ...config.primaryKeys.map((pk) => toPropNames(pk.columns.map((c) => c.name))),
+    ...(config.uniqueConstraints ?? []).map((uc) => toPropNames(uc.columns.map((c) => c.name))),
+    ...(config.indexes ?? [])
+      .filter((index) => index.config.unique)
+      .map((index) => toPropNames(index.config.columns.map((c) => (c as any)?.name))),
+    ...Object.entries(cols)
+      .filter(([, col]) => (col as any).isUnique)
+      .map(([propName]) => [propName]),
+  ];
+
+  const seen = new Set<string>();
+  const sets: string[][] = [];
+  for (const set of candidates) {
+    if (!set?.length) {
+      continue;
+    }
+    const key = [...set].sort().join(',');
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    sets.push(set);
+  }
+  return sets;
+};
+
 /** Alias of the row-number helper column in the `distinct` pass. Namespaced against real columns. */
 const DISTINCT_RN = '__drizzle_graphql_distinct_rn';
 
-const distinctEnumCache = new WeakMap<object, GraphQLEnumType>();
+const columnEnumCache = new WeakMap<object, Map<string, GraphQLEnumType>>();
 
 /**
- * `${typeName}DistinctColumn` — the enum of columns a list query may be made distinct on.
- * Cached per table object, like the order/filter inputs, so repeated builds reuse one instance.
+ * An enum of a table's column property names, under `enumName`. Cached per (table, enum
+ * name), like the order/filter inputs, so repeated builds reuse one instance and two enums
+ * over the same table never collide.
+ *
+ * Returns `undefined` when no column qualifies — the caller then omits the argument or
+ * input field the enum would have typed, rather than emitting an empty enum, which is
+ * invalid GraphQL.
  */
-export const generateDistinctEnum = (table: Table, typeName: string): GraphQLEnumType | undefined => {
-  const cached = distinctEnumCache.get(table);
+export const generateColumnEnum = (
+  table: Table,
+  enumName: string,
+  description: string,
+  predicate: (column: Column, columnName: string) => boolean = () => true,
+): GraphQLEnumType | undefined => {
+  let tableCache = columnEnumCache.get(table);
+  const cached = tableCache?.get(enumName);
   if (cached) {
     return cached;
   }
 
-  const columnNames = Object.keys(getColumns(table));
+  const columnNames = Object.entries(getColumns(table))
+    .filter(([columnName, column]) => predicate(column as Column, columnName))
+    .map(([columnName]) => columnName);
   if (!columnNames.length) {
     return undefined;
   }
 
   const enumType = new GraphQLEnumType({
-    name: `${typeName}DistinctColumn`,
-    description: `Columns of ${typeName} that a query can be made distinct on`,
+    name: enumName,
+    description,
     values: Object.fromEntries(columnNames.map((columnName) => [columnName, { value: columnName }])),
   });
 
-  distinctEnumCache.set(table, enumType);
+  if (!tableCache) {
+    tableCache = new Map();
+    columnEnumCache.set(table, tableCache);
+  }
+  tableCache.set(enumName, enumType);
   return enumType;
 };
+
+/** `${typeName}DistinctColumn` — the enum of columns a list query may be made distinct on. */
+export const generateDistinctEnum = (table: Table, typeName: string): GraphQLEnumType | undefined =>
+  generateColumnEnum(table, `${typeName}DistinctColumn`, `Columns of ${typeName} that a query can be made distinct on`);
 
 /**
  * Keeps the first row of each distinct combination of the requested columns, following the

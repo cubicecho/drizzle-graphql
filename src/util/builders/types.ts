@@ -15,6 +15,33 @@ import type { ConvertedColumn, ConvertedRelationColumnWithArgs } from '../type-c
 //   ConvertedRelationColumnWithArgs,
 // } from "../type-converter/index.ts";
 
+/**
+ * Which generated features a build includes, after `BuildSchemaConfig.features` has been
+ * merged with the defaults. Every flag is resolved — the builders never see `undefined`.
+ */
+export type GeneratorFeatures = {
+  aggregates: boolean;
+  relationAggregates: boolean;
+  distinct: boolean;
+  insert: boolean;
+  update: boolean;
+  delete: boolean;
+};
+
+/**
+ * Everything a dialect generator needs beyond the database, schema and relations, which
+ * stay positional so their generic parameters still infer. Assembled by `buildSchema`.
+ */
+export type SchemaGeneratorOptions = {
+  relationsDepthLimit: number | undefined;
+  prefixes: { insert: string; update: string; delete: string };
+  suffixes: { list: string; single: string };
+  conflictDoNothing: boolean;
+  typeNameMapper?: (tableName: string) => { singular: string; plural: string } | undefined;
+  shouldEagerLoad: (tableName: string, relationName: string) => boolean;
+  features: GeneratorFeatures;
+};
+
 export type TableNamedRelations = {
   relation: Relation;
   targetTableName: string;

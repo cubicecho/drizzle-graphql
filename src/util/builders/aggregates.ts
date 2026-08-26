@@ -34,6 +34,7 @@ import {
   type RelationAggregateFactory,
   type RelationFilterBase,
   relationFilterCtx,
+  resolveExecutor,
   resolveTypeName,
   type TypeCacheCtx,
   type TypeNameMapper,
@@ -351,14 +352,14 @@ export const generateAggregate = (
 
   return {
     name: fieldName,
-    resolver: async (_source, args: { where?: Filters<Table> }, _context, info) => {
+    resolver: async (_source, args: { where?: Filters<Table> }, context, info) => {
       try {
         const request = parseAggregateRequest(info, target);
         if (!Object.keys(request.selection).length) {
           return {};
         }
 
-        let query = db.select(request.selection).from(table);
+        let query = resolveExecutor(db, context).select(request.selection).from(table);
         if (args.where) {
           query = query.where(extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName)));
         }
@@ -434,6 +435,8 @@ export const createRelationAggregateFactory = (
         const loaderKey = `${tableName}::${relationName}::aggregate::${argsKey}`;
 
         const loader = getOrCreateLoader(context, loaderKey, async (parentIds: readonly any[]) => {
+          // Loaders are cached per context, so the whole batch shares this request's executor.
+          const executor = resolveExecutor(db, context);
           const uniqueIds = [...new Set(parentIds)];
           const whereCondition = and(
             inArray(foreignCol, uniqueIds),
@@ -442,7 +445,7 @@ export const createRelationAggregateFactory = (
               : undefined,
           );
 
-          const rows: any[] = await db
+          const rows: any[] = await executor
             .select({ [GROUP_KEY]: foreignCol, ...request.selection })
             .from(targetTable)
             .where(whereCondition)

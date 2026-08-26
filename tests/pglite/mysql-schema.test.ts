@@ -29,7 +29,21 @@ const tableSchema = { Users: schema.Users, Customers: schema.Customers, Posts: s
 const prefixes = { insert: 'create', delete: 'delete', update: 'update' };
 const suffixes = { list: '', single: 'Single' };
 
-const entities = generateMySQL(mockDb, tableSchema, schema.relations, undefined, prefixes, suffixes) as any;
+const entities = generateMySQL(mockDb, tableSchema, schema.relations, {
+  relationsDepthLimit: undefined,
+  prefixes,
+  suffixes,
+  conflictDoNothing: false,
+  shouldEagerLoad: () => true,
+  features: {
+    aggregates: true,
+    relationAggregates: true,
+    distinct: true,
+    insert: true,
+    update: true,
+    delete: true,
+  },
+}) as any;
 
 // ── query structure ───────────────────────────────────────────────────────────
 

@@ -85,6 +85,34 @@ Automatically create GraphQL schema or customizable schema config fields from Dr
     })
     ```
 
+## Choosing what gets generated
+
+Every generated operation is on by default. `features` turns individual ones off, which
+keeps them out of the schema, out of `entities`, and out of the type map — a schema for a
+read-only API, or one that never exposes aggregates, does not pay for types nobody can
+reach:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    features: {
+        aggregates: false,        // <plural>Aggregate root queries
+        relationAggregates: false, // <relation>Aggregate fields on object types
+        distinct: false,          // the `distinct` argument on list queries
+        insert: false,            // create<Table> / create<Table>Single mutations
+        update: false,            // update<Table> mutations
+        delete: false,            // delete<Table> mutations
+    },
+})
+```
+
+-   Any flag left out keeps its default of `true`, so `{ features: { delete: false } }`
+    changes nothing else
+-   Turning off `insert` or `update` also drops the input type that only that mutation
+    used (`Create<Type>Input` / `Update<Type>Input`)
+-   Turning off all three mutation features omits the `Mutation` type entirely, the same as
+    `mutations: false`
+-   List and single queries are always generated, so `Query` is never empty
+
 ## Scalars
 
 Columns whose values don't fit a built-in GraphQL scalar get a named custom scalar, so the
@@ -345,6 +373,41 @@ buildSchema(db, {
 The hook covers root queries and mutations, relation and aggregate fields, and the
 standalone `entities.fieldResolvers`. The default is exported as `defaultErrorMapper` if you
 want to fall back to it explicitly.
+
+## Transactions
+
+Each resolver runs its statements on the database the schema was built from. A request that
+fires several mutations therefore commits each one separately, and a failure halfway leaves
+the earlier ones in place. To run a whole request as one unit, open a transaction yourself
+and put it on the GraphQL context under the exported `drizzleExecutorKey`:
+
+```Typescript
+import { buildSchema, drizzleExecutorKey } from 'drizzle-graphql'
+
+const { schema } = buildSchema(db)
+
+await db.transaction(async (tx) => {
+    const result = await graphql({
+        schema,
+        source: request.query,
+        variableValues: request.variables,
+        contextValue: { [drizzleExecutorKey]: tx },
+    })
+
+    if (result.errors?.length) throw new Error('rolling back')
+    return result
+})
+```
+
+Every generated resolver reads the key at resolve time, so queries, mutations, aggregates
+and relation field resolvers all run on the executor you supply and see its uncommitted
+rows. With no key on the context, everything falls back to the build-time database, which
+is what an ordinary request does.
+
+The value does not have to be a transaction — any object with the same interface works, for
+example a pooled connection bound to a tenant, or a logging proxy around `db`. Because the
+key is created with `Symbol.for`, the ESM and CJS builds of this package agree on it when
+both end up loaded in one process.
 
 ## Relations & N+1 handling
 

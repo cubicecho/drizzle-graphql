@@ -6,14 +6,16 @@ Supabase's `pg_graphql`. Roughly ordered within each group; nothing here is comm
 ## Planned
 
 - **Upsert + nested writes** — designed in
-  [docs/plans/upsert-and-nested-writes.md](docs/plans/upsert-and-nested-writes.md). Not started.
+  [docs/plans/upsert-and-nested-writes.md](docs/plans/upsert-and-nested-writes.md). The shared
+  groundwork (steps 1, 2 and 4) has landed; upsert and nested writes themselves have not.
 
 ## Medium priority
 
-- **Multi-mutation transactions** — a request that fires several mutations runs each on its
-  own connection, so a failure halfway leaves the earlier ones committed. Needs the mutation
-  resolvers to take an executor parameter instead of closing over `db`, plus a
-  request-scoped transaction. Shared prerequisite with nested writes.
+- **Multi-mutation transactions** — a caller can now run a whole request on one transaction
+  by putting it on the GraphQL context under `drizzleExecutorKey`; every resolver reads it at
+  resolve time. What is left is doing it automatically: wrapping a request that fires several
+  mutations in a transaction the library opens itself, without the caller wiring up the
+  context.
 - **`groupBy` / `having` on aggregates** — the aggregate queries compute one row over the
   whole filtered set. Grouping is the obvious next step and the most-asked-for aggregate
   feature after the ones already built.

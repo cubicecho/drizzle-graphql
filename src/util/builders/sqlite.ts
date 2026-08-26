@@ -13,7 +13,7 @@ import {
 import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { parseResolveInfo } from 'graphql-parse-resolve-info';
 
-import type { BuildSchemaConfig, GeneratedEntities, MakeRequired } from '../../types.ts';
+import type { GeneratedEntities } from '../../types.ts';
 import {
   attachTargetPrimaryKeys,
   buildNamedRelations,
@@ -31,6 +31,8 @@ import {
   type RelationFilterBase,
   type RelationResolverFactory,
   relationFilterCtx,
+  resolveExecutor,
+  resolveQueryExecutor,
   runRelationalSelect,
   type SelectionCtx,
   selectArrayArgs,
@@ -47,7 +49,13 @@ import {
   remapToGraphQLSingleOutput,
 } from '../data-mappers/index.ts';
 import { createRelationAggregateFactory, generateAggregate, generateAggregateTypes } from './aggregates.ts';
-import type { CreatedResolver, Filters, TableNamedRelations, TableSelectArgs } from './types.ts';
+import type {
+  CreatedResolver,
+  Filters,
+  SchemaGeneratorOptions,
+  TableNamedRelations,
+  TableSelectArgs,
+} from './types.ts';
 
 const generateSelectArray = (
   db: BaseSQLiteDatabase<any, any, any, any>,
@@ -60,6 +68,7 @@ const generateSelectArray = (
   typeName: string,
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
+  distinctEnabled: boolean = true,
 ): CreatedResolver => {
   const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
     | RelationalQueryBuilder<any, any, any>
@@ -72,15 +81,20 @@ const generateSelectArray = (
 
   const table = tables[tableName]!;
   const pkNames = sqlitePrimaryKeyPropNames(table as SQLiteTable);
-  const queryArgs = selectArrayArgs(orderArgs, filterArgs, generateDistinctEnum(table, typeName));
+  const queryArgs = selectArrayArgs(
+    orderArgs,
+    filterArgs,
+    distinctEnabled ? generateDistinctEnum(table, typeName) : undefined,
+  );
 
   return {
     name: fieldName,
-    resolver: async (_source: any, args: Partial<TableSelectArgs>, _context: any, info: GraphQLResolveInfo) => {
+    resolver: async (_source: any, args: Partial<TableSelectArgs>, context: any, info: GraphQLResolveInfo) => {
       try {
         const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
+        const { executor, queryBase: requestQueryBase } = resolveQueryExecutor(db, context, tableName, queryBase);
         return await runRelationalSelect({
-          queryBase,
+          queryBase: requestQueryBase,
           tables,
           tableName,
           table,
@@ -92,7 +106,7 @@ const generateSelectArray = (
           single: false,
           filterCtx,
           pkNames,
-          db,
+          db: executor,
         });
       } catch (e) {
         throw toGraphQLError(e);
@@ -130,11 +144,12 @@ const generateSelectSingle = (
 
   return {
     name: fieldName,
-    resolver: async (_source, args: Partial<TableSelectArgs>, _context, info) => {
+    resolver: async (_source, args: Partial<TableSelectArgs>, context, info) => {
       try {
         const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
+        const { executor, queryBase: requestQueryBase } = resolveQueryExecutor(db, context, tableName, queryBase);
         return await runRelationalSelect({
-          queryBase,
+          queryBase: requestQueryBase,
           tables,
           tableName,
           table,
@@ -146,7 +161,7 @@ const generateSelectSingle = (
           single: true,
           filterCtx,
           pkNames,
-          db,
+          db: executor,
         });
       } catch (e) {
         throw toGraphQLError(e);
@@ -170,6 +185,7 @@ const generateInsertArray = (
   fieldName: string,
   typeName: string,
   typeNameMapper?: TypeNameMapper,
+  conflictDoNothing: boolean = false,
 ): CreatedResolver => {
   const queryArgs: GraphQLFieldConfigArgumentMap = {
     values: {
@@ -183,7 +199,7 @@ const generateInsertArray = (
 
   return {
     name: fieldName,
-    resolver: async (_source, args: { values: Record<string, any>[] }, _context, info) => {
+    resolver: async (_source, args: { values: Record<string, any>[] }, context, info) => {
       try {
         const input = remapFromGraphQLArrayInput(args.values, table);
         if (!input.length) {
@@ -205,10 +221,15 @@ const generateInsertArray = (
           parsedInfo,
         });
 
-        const result = await db.insert(table).values(input).returning(columns).onConflictDoNothing();
+        const executor = resolveExecutor(db, context);
+        let query = executor.insert(table).values(input).returning(columns);
+        if (conflictDoNothing) {
+          query = query.onConflictDoNothing() as any;
+        }
+        const result = await query;
 
         const enriched = hasRelations
-          ? await eagerLoadMutationRelations(db, tableName, result, pkNames, withParams)
+          ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
           : result;
 
         return remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
@@ -230,6 +251,7 @@ const generateInsertSingle = (
   fieldName: string,
   typeName: string,
   typeNameMapper?: TypeNameMapper,
+  conflictDoNothing: boolean = false,
 ): CreatedResolver => {
   const queryArgs: GraphQLFieldConfigArgumentMap = {
     values: {
@@ -242,7 +264,7 @@ const generateInsertSingle = (
 
   return {
     name: fieldName,
-    resolver: async (_source, args: { values: Record<string, any> }, _context, info) => {
+    resolver: async (_source, args: { values: Record<string, any> }, context, info) => {
       try {
         const input = remapFromGraphQLSingleInput(args.values, table);
 
@@ -260,14 +282,19 @@ const generateInsertSingle = (
           pkNames,
           parsedInfo,
         });
-        const result = await db.insert(table).values(input).returning(columns).onConflictDoNothing();
+        const executor = resolveExecutor(db, context);
+        let query = executor.insert(table).values(input).returning(columns);
+        if (conflictDoNothing) {
+          query = query.onConflictDoNothing() as any;
+        }
+        const result = await query;
 
         if (!result[0]) {
           return undefined;
         }
 
         const enriched = hasRelations
-          ? await eagerLoadMutationRelations(db, tableName, result, pkNames, withParams)
+          ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
           : result;
 
         return remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap);
@@ -306,7 +333,7 @@ const generateUpdate = (
 
   return {
     name: fieldName,
-    resolver: async (_source, args: { where?: Filters<Table>; set: Record<string, any> }, _context, info) => {
+    resolver: async (_source, args: { where?: Filters<Table>; set: Record<string, any> }, context, info) => {
       try {
         const { where, set } = args;
 
@@ -330,7 +357,8 @@ const generateUpdate = (
           throw new GraphQLError('Unable to update with no values specified!');
         }
 
-        let query = db.update(table).set(input);
+        const executor = resolveExecutor(db, context);
+        let query = executor.update(table).set(input);
         if (where) {
           const filters = extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName));
           query = query.where(filters) as any;
@@ -341,7 +369,7 @@ const generateUpdate = (
         const result = await query;
 
         const enriched = hasRelations
-          ? await eagerLoadMutationRelations(db, tableName, result, pkNames, withParams)
+          ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
           : result;
 
         return remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
@@ -371,7 +399,7 @@ const generateDelete = (
 
   return {
     name: fieldName,
-    resolver: async (_source, args: { where?: Filters<Table> }, _context, info) => {
+    resolver: async (_source, args: { where?: Filters<Table> }, context, info) => {
       try {
         const { where } = args;
 
@@ -385,7 +413,8 @@ const generateDelete = (
           selectionCtx,
         );
 
-        let query = db.delete(table);
+        const executor = resolveExecutor(db, context);
+        let query = executor.delete(table);
         if (where) {
           const filters = extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName));
           query = query.where(filters) as any;
@@ -411,12 +440,10 @@ export const generateSchemaData = <
   db: TDrizzleInstance,
   schema: TSchema,
   relations: TablesRelationalConfig,
-  relationsDepthLimit: number | undefined,
-  prefixes: MakeRequired<MakeRequired<BuildSchemaConfig>['prefixes']>,
-  suffixes: MakeRequired<MakeRequired<BuildSchemaConfig>['suffixes']>,
-  typeNameMapper?: TypeNameMapper,
-  shouldEagerLoad: (tableName: string, relationName: string) => boolean = () => true,
+  options: SchemaGeneratorOptions,
 ): GeneratedEntities<TDrizzleInstance, TSchema> => {
+  const { relationsDepthLimit, prefixes, suffixes, conflictDoNothing, typeNameMapper, shouldEagerLoad, features } =
+    options;
   const rawSchema = schema;
   const schemaEntries = Object.entries(rawSchema);
 
@@ -455,13 +482,11 @@ export const generateSchemaData = <
     aggregateTypeCache: new Map(),
   };
 
-  const relationAggregateFactory: RelationAggregateFactory = createRelationAggregateFactory(
-    db,
-    tables,
-    cacheCtx,
-    typeNameMapper,
-    filterCtx,
-  );
+  // Left undefined when the feature is off — generateTableTypes then emits no
+  // `${relation}Aggregate` fields at all.
+  const relationAggregateFactory: RelationAggregateFactory | undefined = features.relationAggregates
+    ? createRelationAggregateFactory(db, tables, cacheCtx, typeNameMapper, filterCtx)
+    : undefined;
 
   const queries: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
   const mutations: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
@@ -514,6 +539,7 @@ export const generateSchemaData = <
       typeName,
       typeNameMapper,
       filterCtx,
+      features.distinct,
     );
     const selectSingleGenerated = generateSelectSingle(
       db,
@@ -527,61 +553,75 @@ export const generateSchemaData = <
       typeNameMapper,
       filterCtx,
     );
-    const insertArrGenerated = generateInsertArray(
-      db,
-      tableName,
-      schema[tableName] as SQLiteTable,
-      tables,
-      eagerRelations,
-      insertInput,
-      createArrayFieldName,
-      typeName,
-      typeNameMapper,
-    );
-    const insertSingleGenerated = generateInsertSingle(
-      db,
-      tableName,
-      schema[tableName] as SQLiteTable,
-      tables,
-      eagerRelations,
-      insertInput,
-      createSingleFieldName,
-      typeName,
-      typeNameMapper,
-    );
-    const updateGenerated = generateUpdate(
-      db,
-      tableName,
-      schema[tableName] as SQLiteTable,
-      tables,
-      eagerRelations,
-      updateInput,
-      tableFilters,
-      updateFieldName,
-      typeName,
-      typeNameMapper,
-      filterCtx,
-    );
-    const deleteGenerated = generateDelete(
-      db,
-      tableName,
-      schema[tableName] as SQLiteTable,
-      tableFilters,
-      deleteFieldName,
-      typeName,
-      filterCtx,
-      { tableName, relationMap: namedRelations, tables },
-    );
-    const aggregateType = generateAggregateTypes(schema[tableName] as SQLiteTable, tableName, typeName, cacheCtx);
-    const aggregateGenerated = generateAggregate(
-      db,
-      tableName,
-      schema[tableName] as SQLiteTable,
-      typeName,
-      aggregateFieldName,
-      tableFilters,
-      filterCtx,
-    );
+    const insertArrGenerated = features.insert
+      ? generateInsertArray(
+          db,
+          tableName,
+          schema[tableName] as SQLiteTable,
+          tables,
+          eagerRelations,
+          insertInput,
+          createArrayFieldName,
+          typeName,
+          typeNameMapper,
+          conflictDoNothing,
+        )
+      : undefined;
+    const insertSingleGenerated = features.insert
+      ? generateInsertSingle(
+          db,
+          tableName,
+          schema[tableName] as SQLiteTable,
+          tables,
+          eagerRelations,
+          insertInput,
+          createSingleFieldName,
+          typeName,
+          typeNameMapper,
+          conflictDoNothing,
+        )
+      : undefined;
+    const updateGenerated = features.update
+      ? generateUpdate(
+          db,
+          tableName,
+          schema[tableName] as SQLiteTable,
+          tables,
+          eagerRelations,
+          updateInput,
+          tableFilters,
+          updateFieldName,
+          typeName,
+          typeNameMapper,
+          filterCtx,
+        )
+      : undefined;
+    const deleteGenerated = features.delete
+      ? generateDelete(
+          db,
+          tableName,
+          schema[tableName] as SQLiteTable,
+          tableFilters,
+          deleteFieldName,
+          typeName,
+          filterCtx,
+          { tableName, relationMap: namedRelations, tables },
+        )
+      : undefined;
+    const aggregateType = features.aggregates
+      ? generateAggregateTypes(schema[tableName] as SQLiteTable, tableName, typeName, cacheCtx)
+      : undefined;
+    const aggregateGenerated = features.aggregates
+      ? generateAggregate(
+          db,
+          tableName,
+          schema[tableName] as SQLiteTable,
+          typeName,
+          aggregateFieldName,
+          tableFilters,
+          filterCtx,
+        )
+      : undefined;
 
     queries[selectArrGenerated.name] = {
       type: selectArrOutput,
@@ -593,37 +633,57 @@ export const generateSchemaData = <
       args: selectSingleGenerated.args,
       resolve: selectSingleGenerated.resolver,
     };
-    queries[aggregateGenerated.name] = {
-      type: new GraphQLNonNull(aggregateType),
-      args: aggregateGenerated.args,
-      resolve: aggregateGenerated.resolver,
-    };
-    mutations[insertArrGenerated.name] = {
-      type: arrTableItemOutput,
-      args: insertArrGenerated.args,
-      resolve: insertArrGenerated.resolver,
-    };
-    mutations[insertSingleGenerated.name] = {
-      type: singleTableItemOutput,
-      args: insertSingleGenerated.args,
-      resolve: insertSingleGenerated.resolver,
-    };
-    mutations[updateGenerated.name] = {
-      type: arrTableItemOutput,
-      args: updateGenerated.args,
-      resolve: updateGenerated.resolver,
-    };
-    mutations[deleteGenerated.name] = {
-      type: arrTableItemOutput,
-      args: deleteGenerated.args,
-      resolve: deleteGenerated.resolver,
-    };
-    [insertInput, updateInput, tableFilters, tableOrder].forEach((e) => {
+    if (aggregateGenerated && aggregateType) {
+      queries[aggregateGenerated.name] = {
+        type: new GraphQLNonNull(aggregateType),
+        args: aggregateGenerated.args,
+        resolve: aggregateGenerated.resolver,
+      };
+    }
+    if (insertArrGenerated) {
+      mutations[insertArrGenerated.name] = {
+        type: arrTableItemOutput,
+        args: insertArrGenerated.args,
+        resolve: insertArrGenerated.resolver,
+      };
+    }
+    if (insertSingleGenerated) {
+      mutations[insertSingleGenerated.name] = {
+        type: singleTableItemOutput,
+        args: insertSingleGenerated.args,
+        resolve: insertSingleGenerated.resolver,
+      };
+    }
+    if (updateGenerated) {
+      mutations[updateGenerated.name] = {
+        type: arrTableItemOutput,
+        args: updateGenerated.args,
+        resolve: updateGenerated.resolver,
+      };
+    }
+    if (deleteGenerated) {
+      mutations[deleteGenerated.name] = {
+        type: arrTableItemOutput,
+        args: deleteGenerated.args,
+        resolve: deleteGenerated.resolver,
+      };
+    }
+    // The insert/update inputs are still built (they type the mutations that survive) but
+    // only reach the schema's type map when a mutation actually references them.
+    const activeInputs = [
+      ...(features.insert ? [insertInput] : []),
+      ...(features.update ? [updateInput] : []),
+      tableFilters,
+      tableOrder,
+    ];
+    activeInputs.forEach((e) => {
       inputs[e.name] = e;
     });
     outputs[selectSingleOutput.name] = selectSingleOutput;
     outputs[singleTableItemOutput.name] = singleTableItemOutput;
-    outputs[aggregateType.name] = aggregateType;
+    if (aggregateType) {
+      outputs[aggregateType.name] = aggregateType;
+    }
   }
 
   const fieldResolvers: Record<string, Record<string, any>> = {};

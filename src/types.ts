@@ -435,6 +435,25 @@ export type GeneratedData<TDatabase extends AnyDrizzleDB<any>> = {
   entities: GeneratedEntities<TDatabase>;
 };
 
+/**
+ * Per-feature switches for what `buildSchema` generates. Every flag defaults to `true`.
+ * See {@link BuildSchemaConfig.features}.
+ */
+export type SchemaFeatures = {
+  /** `<plural>Aggregate` root queries and the aggregate output types. @default true */
+  aggregates?: boolean;
+  /** `<relation>Aggregate` fields on object types, for to-many relations. @default true */
+  relationAggregates?: boolean;
+  /** The `distinct` argument on list queries. @default true */
+  distinct?: boolean;
+  /** `create<Table>` / `create<Table>Single` mutations. @default true */
+  insert?: boolean;
+  /** `update<Table>` mutations. @default true */
+  update?: boolean;
+  /** `delete<Table>` mutations. @default true */
+  delete?: boolean;
+};
+
 export type BuildSchemaConfig = {
   /**
    * Determines whether generated mutations will be passed to returned schema.
@@ -492,8 +511,34 @@ export type BuildSchemaConfig = {
   /**
    * When true, insert mutations will use onConflictDoNothing() to silently
    * ignore duplicate key violations. Defaults to false (conflicts throw errors).
+   *
+   * PostgreSQL and SQLite only — MySQL's insert builder has no equivalent, so the flag is
+   * ignored there and conflicts keep throwing.
    */
   conflictDoNothing?: boolean;
+  /**
+   * Turns individual generated features off.
+   *
+   * Every flag defaults to `true`: a build with no `features` block generates exactly what
+   * it generated before this option existed. Turning one off removes both the schema
+   * surface it adds and the work behind it.
+   *
+   * ```ts
+   * buildSchema(db, {
+   *   features: {
+   *     aggregates: false,         // no `<plural>Aggregate` root queries
+   *     relationAggregates: false, // no `<relation>Aggregate` fields on object types
+   *     distinct: false,           // no `distinct` argument on list queries
+   *     delete: false,             // no delete mutations
+   *   },
+   * });
+   * ```
+   *
+   * Turning off every mutation feature omits the `Mutation` type entirely, exactly as
+   * `mutations: false` does. Query-side features can all be off — the list and single
+   * queries are always generated, so `Query` is never empty.
+   */
+  features?: SchemaFeatures;
   /**
    * Optional mapper from table key to singular/plural name pair.
    * When provided for a table, overrides the default (table key) naming for GraphQL type names,

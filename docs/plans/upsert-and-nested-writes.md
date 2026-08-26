@@ -1,6 +1,18 @@
 # Plan: upsert and nested writes
 
-Status: **not started** — this is a design document, no code has been written.
+Status: **partially built** — the shared groundwork is in place, the two features are not.
+
+- Step 1 (shared column enum + unique-key derivation) — **done**: `generateColumnEnum` and
+  `getUniqueColumnSets` in `src/util/builders/common.ts`; `generateDistinctEnum` is now a
+  thin wrapper over the former.
+- Step 2 (executor parameter) — **done**: every generated resolver resolves its executor from
+  the GraphQL context at resolve time via `resolveExecutor` / `drizzleExecutorKey`, so a
+  caller can run a whole request on one transaction.
+- Step 4 (SQLite conflict handling) — **half done**: SQLite honours `config.conflictDoNothing`
+  instead of appending `onConflictDoNothing()` unconditionally. `config.conflictDoNothing`
+  is not deprecated yet, because the `onConflict` argument that replaces it does not exist.
+- Steps 3 and 5 (upsert, nested writes) — **not started**. Everything below still describes
+  the intended design for those.
 
 Two features that Prisma, Hasura and pg_graphql all expose and this library does not:
 
@@ -15,12 +27,12 @@ useful, and both need the same transaction wrapper.
 - `create<Table>` / `create<Table>Single` insert and return the rows. PostgreSQL and SQLite
   use `.returning()`; MySQL returns only `{ isSuccess }`.
 - `config.conflictDoNothing` is a **build-wide** boolean that adds `onConflictDoNothing()` to
-  PostgreSQL inserts. SQLite hardcodes `onConflictDoNothing()` on every insert, which is a
-  separate bug worth fixing under this work — it silently swallows conflicts with no way to
-  opt out.
+  PostgreSQL and SQLite inserts. (SQLite used to hardcode it on every insert, silently
+  swallowing conflicts with no way to opt out; that is fixed.)
 - Insert inputs (`Create<Table>Input`) contain columns only. Relations are output-only.
-- Nothing is wrapped in a transaction. A multi-row insert is one statement, so it is atomic
-  by accident, not by design.
+- Nothing is wrapped in a transaction by the library. A multi-row insert is one statement, so
+  it is atomic by accident, not by design — but a caller can now supply a transaction on the
+  GraphQL context (`drizzleExecutorKey`) and every resolver will run on it.
 
 ## Part 1 — upsert
 
@@ -97,8 +109,8 @@ partial row nulls out everything it omitted.
 Once `onConflict` exists as a per-request argument, the build-wide `config.conflictDoNothing`
 is redundant and confusing (a request cannot opt out of it). Deprecate it: keep it working
 as the default for `create*` mutations, document the replacement, and remove it in a later
-major. SQLite's unconditional `onConflictDoNothing()` should start honouring the same flag,
-which is a breaking change and needs to ship in the same release.
+major. SQLite already honours the flag rather than applying `onConflictDoNothing()`
+unconditionally — that part shipped ahead of the rest as a breaking change.
 
 ## Part 2 — nested writes
 
@@ -157,10 +169,11 @@ filters.
 ### Transactions
 
 Every nested write is at least two statements and must be atomic. `db.transaction(async (tx) => …)`
-exists on all three dialects, but every resolver currently closes over `db` directly. The
-resolvers would need to take the executor as a parameter instead, which is the same
-refactor [TODO #7 (multi-mutation transactions)](../../TODO.md) needs — worth doing once, for
-both.
+exists on all three dialects. Resolvers no longer close over `db`: they resolve their
+executor from the GraphQL context at resolve time (`resolveExecutor`), which is the same
+refactor [multi-mutation transactions](../../TODO.md) needed. Nested writes still have to
+open the transaction themselves and pass it down, rather than relying on the caller having
+put one on the context.
 
 Note that a transaction changes the eager relation re-fetch too: the re-fetch after an insert
 has to run on `tx`, not `db`, or it will not see the uncommitted rows.
@@ -172,11 +185,15 @@ auto-increment primary key, or left unsupported in the first pass.
 
 ## Suggested order
 
-1. Extract `generateColumnEnum` and a `WhereUnique` derivation from the table's unique
-   constraints. Both features need them; neither is user-visible on its own.
-2. Thread an executor parameter through the mutation resolvers (shared with TODO #7).
+1. ~~Extract `generateColumnEnum` and a `WhereUnique` derivation from the table's unique
+   constraints.~~ Done — `generateColumnEnum` and `getUniqueColumnSets`. The `WhereUnique`
+   *input type* built from those sets is still to do.
+2. ~~Thread an executor parameter through the mutation resolvers.~~ Done, and it covers the
+   query, relation and aggregate resolvers too.
 3. Upsert, PostgreSQL and SQLite first, then MySQL with the reduced input.
-4. Fix SQLite's unconditional `onConflictDoNothing()` and deprecate `config.conflictDoNothing`.
+4. ~~Fix SQLite's unconditional `onConflictDoNothing()`~~ (done) and deprecate
+   `config.conflictDoNothing` — the deprecation waits on step 3, which supplies the
+   replacement.
 5. Nested `create` for to-many relations, then to-one, then `connect`.
 
 Steps 1–4 are each independently shippable. Step 5 is the only one that needs all of the
