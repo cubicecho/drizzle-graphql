@@ -136,3 +136,17 @@ describe.sequential('SQLite upsert', () => {
     expect((await items())[0]).toMatchObject({ name: 'Original' });
   });
 });
+
+describe.sequential('SQLite complexity hints', () => {
+  const estimate = (field: any, args: any, childComplexity: number) =>
+    field.extensions.complexity({ args, childComplexity });
+
+  it('prices list queries and aggregates the same way the other dialects do', () => {
+    const queries = gqlSchema.getQueryType()!.getFields();
+
+    expect(estimate(queries['items'], { limit: 3 }, 2)).toBe(6);
+    expect(estimate(queries['items'], {}, 2)).toBe(20);
+    expect(estimate(queries['itemsAggregate'], {}, 1)).toBe(11);
+    expect(queries['itemsSingle']!.extensions['complexity']).toBeUndefined();
+  });
+});

@@ -54,4 +54,6 @@ export type ConvertedRelationColumn = {
 export type ConvertedRelationColumnWithArgs = ConvertedRelationColumn & {
   args?: GraphQLFieldConfig<any, any>['args'];
   resolve?: GraphQLFieldResolver<any, any>;
+  /** Carries the `complexity` cost hint when the build generates them. */
+  extensions?: GraphQLFieldConfig<any, any>['extensions'];
 };

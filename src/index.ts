@@ -18,6 +18,7 @@ export type {
   AggregateResolver,
   AnyDrizzleDB,
   BuildSchemaConfig,
+  ComplexityConfig,
   DeleteResolver,
   ExtractRelations,
   ExtractTableByName,
@@ -110,6 +111,17 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     upsert: config?.features?.upsert ?? false,
   };
 
+  // Cost hints are inert without a complexity rule installed, so they are generated unless the
+  // caller opts out.
+  const complexityConfig = config?.complexity ?? true;
+  const complexity =
+    complexityConfig === false
+      ? undefined
+      : {
+          defaultListSize: (complexityConfig === true ? undefined : complexityConfig.defaultListSize) ?? 10,
+          aggregateCost: (complexityConfig === true ? undefined : complexityConfig.aggregateCost) ?? 10,
+        };
+
   // Normalize eagerLoadRelations (boolean | predicate | undefined) into a predicate.
   const eagerOpt = config?.eagerLoadRelations;
   const shouldEagerLoad: (tableName: string, relationName: string) => boolean =
@@ -145,6 +157,7 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     typeNameMapper,
     shouldEagerLoad,
     features,
+    complexity,
   };
 
   let generatorOutput;
