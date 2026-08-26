@@ -259,12 +259,24 @@ export type FilterColumnOperatorsCore<TColumn extends Column, TColType = GetColu
   notIlike: string;
   startsWith: string;
   endsWith: string;
-  contains: string;
+  /**
+   * String columns: safe substring match (`%`, `_` and `\` matched literally).
+   * JSON columns: structural containment (Postgres `@>` / MySQL JSON_CONTAINS).
+   */
+  contains: string | TColType;
   iStartsWith: string;
   iEndsWith: string;
   iContains: string;
   inArray: Array<TColType>;
   notInArray: Array<TColType>;
+  /** Array columns only: the array contains this element. */
+  has: TColType extends Array<infer TElement> ? TElement : never;
+  /** Array columns only: the array overlaps these elements (`&&`). */
+  hasSome: TColType extends Array<infer TElement> ? Array<TElement> : never;
+  /** Array columns only: the array contains all of these elements (`@>`). */
+  hasEvery: TColType extends Array<infer TElement> ? Array<TElement> : never;
+  /** Array columns only: when true, matches arrays with no elements. */
+  isEmpty: boolean;
   isNull: boolean;
   isNotNull: boolean;
 }>;

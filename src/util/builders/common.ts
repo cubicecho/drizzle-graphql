@@ -19,6 +19,8 @@ import type { Column, Relation, Table } from 'drizzle-orm';
 import {
   aliasedTable,
   and,
+  arrayContains,
+  arrayOverlaps,
   asc,
   desc,
   eq,
@@ -62,7 +64,7 @@ import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { getOrCreateLoader } from '../batch-loader/index.ts';
 import { capitalize, uncapitalize } from '../case-ops/index.ts';
 import { remapFromGraphQLCore, remapToGraphQLArrayOutput, remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
-import { GraphQLBigIntString, GraphQLDecimalString, GraphQLUUID } from '../scalars/index.ts';
+import { GraphQLBigIntString, GraphQLDecimalString, GraphQLJSON, GraphQLUUID } from '../scalars/index.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type {
   ConvertedColumn,
@@ -733,83 +735,153 @@ export const innerOrder = new GraphQLInputObjectType({
   } as const,
 });
 
+/** The dialect a column belongs to, inferred from its drizzle columnType string (e.g. 'PgJsonb'). */
+const columnDialect = (column: Column): 'pg' | 'mysql' | 'sqlite' | undefined => {
+  const ct: string = (column as any).columnType ?? '';
+  if (ct.startsWith('Pg')) {
+    return 'pg';
+  }
+  if (ct.startsWith('MySql')) {
+    return 'mysql';
+  }
+  if (ct.startsWith('SQLite')) {
+    return 'sqlite';
+  }
+  return undefined;
+};
+
+/** How a column's generic filter input should be shaped, alongside the cache key to store it under. */
+interface GenericFilterDescriptor {
+  name: string;
+  kind: 'scalar' | 'json' | 'array';
+}
+
 /**
- * Maps a Drizzle column to the generic filter type name to use.
+ * Maps a Drizzle column to the generic filter type to use.
  *
  * Selection is keyed on the column's data type, never its name: a text column named
  * `userId` gets the full String filter (string operators included), while a uuid column
  * gets the lean Id filter whatever it is called.
+ * - "JSON"            → json/jsonb columns (eq/ne + containment, no scalar comparison ops)
+ * - `${Element}Array` → array columns, keyed per element type (IntArray, FloatArray,
+ *                       StringArray, …) so arrays with different element types never share
+ *                       one filter input; membership operators instead of scalar comparisons
  * - "Id"          → uuid-typed columns (no string pattern operators)
  * - "Boolean"     → boolean columns
  * - "BigInt"      → bigint columns (BigInt-scalar-typed operators, no string pattern operators)
  * - "Decimal"     → numeric/decimal columns (Decimal-scalar-typed operators, no string pattern operators)
  * - the enum GraphQL type name → enum columns (still unique per enum)
- * - "IntArray"    → integer[]/serial[] array columns
- * - "FloatArray"  → float[]/numeric[] array columns
- * - "StringArray" → text[]/varchar[] array columns
  * - "DateTime"    → timestamp and date columns
  * - "Int"         → integer/serial columns (no string pattern operators)
  * - "Float"       → real/double columns (no string pattern operators)
  * - "String"      → all other text/varchar columns
  */
-const resolveGenericFilterName = (
+const resolveGenericFilterDescriptor = (
   column: Column,
   columnGraphQLType: ReturnType<typeof drizzleColumnToGraphQLType>,
-): string => {
+): GenericFilterDescriptor => {
+  // JSON / JSONB columns — structural values with their own operator set.
+  if (columnGraphQLType.type === GraphQLJSON) {
+    return { name: 'JSON', kind: 'json' };
+  }
+  // Array columns — keyed per element type so an int[] and a text[] column never share
+  // one cached filter input.
+  if (columnGraphQLType.type instanceof GraphQLList) {
+    let element = columnGraphQLType.type.ofType;
+    if (element instanceof GraphQLNonNull) {
+      element = element.ofType;
+    }
+    return { name: `${element.name}Array`, kind: 'array' };
+  }
   // Opaque uuid keys — keyed on the column type, not on an `id`/`*Id` naming convention.
   if (columnGraphQLType.type === GraphQLUUID) {
-    return 'Id';
+    return { name: 'Id', kind: 'scalar' };
   }
   // Boolean scalar
   if (columnGraphQLType.type === GraphQLBoolean) {
-    return 'Boolean';
+    return { name: 'Boolean', kind: 'scalar' };
   }
   // Enum type — keep unique per enum since values differ
   if (columnGraphQLType.type instanceof GraphQLEnumType) {
-    return columnGraphQLType.type.name;
+    return { name: columnGraphQLType.type.name, kind: 'scalar' };
   }
   // Named numeric-string scalars — give them their own filters so the operators
   // are typed with the scalar (and validated by it) instead of a shared StringFilter.
   if (columnGraphQLType.type === GraphQLBigIntString) {
-    return 'BigInt';
+    return { name: 'BigInt', kind: 'scalar' };
   }
   if (columnGraphQLType.type === GraphQLDecimalString) {
-    return 'Decimal';
-  }
-  // Array columns — give them a distinct name so they never collide with StringFilter
-  // or with each other. integer().array() / text().array() columns have a `dimensions`
-  // property set on them. The description is stripped for scalar base types before we
-  // get here, so fall back to the list's inner type to tell Int/Float/String apart.
-  if (columnGraphQLType.type instanceof GraphQLList) {
-    const desc = (columnGraphQLType as any).description ?? '';
-    let inner: unknown = columnGraphQLType.type.ofType;
-    if (inner instanceof GraphQLNonNull) {
-      inner = inner.ofType;
-    }
-    if (desc.includes('Integer') || inner === GraphQLInt) {
-      return 'IntArray';
-    }
-    if (desc.includes('Float') || inner === GraphQLFloat) {
-      return 'FloatArray';
-    }
-    return 'StringArray';
+    return { name: 'Decimal', kind: 'scalar' };
   }
   // Date / timestamp columns (check Drizzle internal columnType string)
   const ct: string = (column as any).columnType ?? '';
   if (ct === 'PgTimestamp' || ct === 'PgTimestampString' || ct === 'PgDate') {
-    return 'DateTime';
+    return { name: 'DateTime', kind: 'scalar' };
   }
   // Numeric scalars — distinct names so an int/float column never shares (and never
   // mistypes) the StringFilter, and integer ids keep a filter without string operators.
   // (BigInt/Decimal columns are handled above via their named scalars.)
   if (columnGraphQLType.type === GraphQLInt) {
-    return 'Int';
+    return { name: 'Int', kind: 'scalar' };
   }
   if (columnGraphQLType.type === GraphQLFloat) {
-    return 'Float';
+    return { name: 'Float', kind: 'scalar' };
   }
   // Default: plain text/varchar
-  return 'String';
+  return { name: 'String', kind: 'scalar' };
+};
+
+/**
+ * Filter fields for a json/jsonb column. `eq`/`ne` compare the whole document (jsonb equality
+ * on Postgres, driver-level comparison elsewhere); `contains` is structural containment —
+ * Postgres `@>` / MySQL `JSON_CONTAINS`. SQLite stores json as text and has no containment
+ * operator, so `contains` is omitted there (same precedent as dialect-specific ops like ilike).
+ */
+const jsonFilterFields = (column: Column, colType: ReturnType<typeof drizzleColumnToGraphQLType>['type']) => {
+  const dialect = columnDialect(column);
+  return {
+    eq: { type: colType, description: 'JSON equality on the whole value' },
+    ne: { type: colType, description: 'JSON inequality on the whole value' },
+    ...(dialect === 'pg' || dialect === 'mysql'
+      ? {
+          contains: {
+            type: colType,
+            description: 'Value structurally contains this JSON (Postgres `@>` / MySQL JSON_CONTAINS)',
+          },
+        }
+      : {}),
+    isNull: { type: GraphQLBoolean },
+    isNotNull: { type: GraphQLBoolean },
+  };
+};
+
+/**
+ * Filter fields for an array column (Postgres-only in drizzle). Membership operators replace
+ * the scalar comparison and string pattern sets: `has` checks a single element (`@>` with a
+ * one-element array), `hasSome` is overlap (`&&`), `hasEvery` is containment (`@>`), `isEmpty`
+ * matches arrays with no elements. `eq`/`ne` still compare the whole array, and
+ * `inArray`/`notInArray` still match the whole array against a list of candidate arrays
+ * (SQL `IN`, typed `[[Element!]!]`).
+ */
+const arrayFilterFields = (colType: GraphQLList<any>, colArr: GraphQLList<any>, colDesc: string | undefined) => {
+  let element = colType.ofType;
+  if (element instanceof GraphQLNonNull) {
+    element = element.ofType;
+  }
+  const elementList = new GraphQLList(new GraphQLNonNull(element));
+
+  return {
+    eq: { type: colType, description: colDesc },
+    ne: { type: colType, description: colDesc },
+    has: { type: element, description: 'Array contains this element' },
+    hasSome: { type: elementList, description: 'Array contains at least one of these elements (overlap, `&&`)' },
+    hasEvery: { type: elementList, description: 'Array contains every one of these elements (containment, `@>`)' },
+    isEmpty: { type: GraphQLBoolean, description: 'When true, matches arrays with no elements' },
+    inArray: { type: colArr, description: `Array<${colDesc}>` },
+    notInArray: { type: colArr, description: `Array<${colDesc}>` },
+    isNull: { type: GraphQLBoolean },
+    isNotNull: { type: GraphQLBoolean },
+  };
 };
 
 /**
@@ -828,7 +900,7 @@ const generateColumnFilterValues = (
 ): GraphQLInputObjectType => {
   const columnGraphQLType = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, true);
 
-  const genericName = resolveGenericFilterName(column, columnGraphQLType);
+  const { name: genericName, kind } = resolveGenericFilterDescriptor(column, columnGraphQLType);
   const cached = cacheCtx.genericFilterCache.get(genericName);
   if (cached) {
     return cached;
@@ -842,50 +914,57 @@ const generateColumnFilterValues = (
   // (like/ilike/startsWith/contains/…) — decided by column type, never by column name.
   const omitStringOps = FILTERS_WITHOUT_STRING_OPS.has(genericName);
 
-  const baseFields = {
-    eq: { type: colType, description: colDesc },
-    ne: { type: colType, description: colDesc },
-    lt: { type: colType, description: colDesc },
-    lte: { type: colType, description: colDesc },
-    gt: { type: colType, description: colDesc },
-    gte: { type: colType, description: colDesc },
-    ...(omitStringOps
-      ? {}
-      : {
-          like: { type: GraphQLString },
-          notLike: { type: GraphQLString },
-          ilike: { type: GraphQLString },
-          notIlike: { type: GraphQLString },
-          startsWith: {
-            type: GraphQLString,
-            description: 'Matches values starting with the given string. `%`, `_` and `\\` are matched literally.',
-          },
-          endsWith: {
-            type: GraphQLString,
-            description: 'Matches values ending with the given string. `%`, `_` and `\\` are matched literally.',
-          },
-          contains: {
-            type: GraphQLString,
-            description: 'Matches values containing the given string. `%`, `_` and `\\` are matched literally.',
-          },
-          iStartsWith: {
-            type: GraphQLString,
-            description: 'Case-insensitive `startsWith`.',
-          },
-          iEndsWith: {
-            type: GraphQLString,
-            description: 'Case-insensitive `endsWith`.',
-          },
-          iContains: {
-            type: GraphQLString,
-            description: 'Case-insensitive `contains`.',
-          },
-        }),
-    inArray: { type: colArr, description: `Array<${colDesc}>` },
-    notInArray: { type: colArr, description: `Array<${colDesc}>` },
-    isNull: { type: GraphQLBoolean },
-    isNotNull: { type: GraphQLBoolean },
-  };
+  const baseFields =
+    kind === 'json'
+      ? jsonFilterFields(column, colType)
+      : kind === 'array'
+        ? arrayFilterFields(colType as GraphQLList<any>, colArr, colDesc)
+        : {
+            eq: { type: colType, description: colDesc },
+            ne: { type: colType, description: colDesc },
+            lt: { type: colType, description: colDesc },
+            lte: { type: colType, description: colDesc },
+            gt: { type: colType, description: colDesc },
+            gte: { type: colType, description: colDesc },
+            ...(omitStringOps
+              ? {}
+              : {
+                  like: { type: GraphQLString },
+                  notLike: { type: GraphQLString },
+                  ilike: { type: GraphQLString },
+                  notIlike: { type: GraphQLString },
+                  startsWith: {
+                    type: GraphQLString,
+                    description:
+                      'Matches values starting with the given string. `%`, `_` and `\\` are matched literally.',
+                  },
+                  endsWith: {
+                    type: GraphQLString,
+                    description:
+                      'Matches values ending with the given string. `%`, `_` and `\\` are matched literally.',
+                  },
+                  contains: {
+                    type: GraphQLString,
+                    description: 'Matches values containing the given string. `%`, `_` and `\\` are matched literally.',
+                  },
+                  iStartsWith: {
+                    type: GraphQLString,
+                    description: 'Case-insensitive `startsWith`.',
+                  },
+                  iEndsWith: {
+                    type: GraphQLString,
+                    description: 'Case-insensitive `endsWith`.',
+                  },
+                  iContains: {
+                    type: GraphQLString,
+                    description: 'Case-insensitive `contains`.',
+                  },
+                }),
+            inArray: { type: colArr, description: `Array<${colDesc}>` },
+            notInArray: { type: colArr, description: `Array<${colDesc}>` },
+            isNull: { type: GraphQLBoolean },
+            isNotNull: { type: GraphQLBoolean },
+          };
 
   // The boolean branches are recursive — each branch is this filter type itself — so the
   // fields are thunked and reference the type being constructed.
@@ -1812,6 +1891,36 @@ const safeLikeCondition = (column: Column, pattern: string, insensitive: boolean
     : sql`lower(${column}) like ${pattern.toLowerCase()} escape ${LIKE_ESCAPE_CHAR}`;
 };
 
+/**
+ * Whether the column stores JSON — its `contains` operator is structural containment,
+ * not the safe substring operator string columns get.
+ */
+const isJsonColumn = (column: Column): boolean => (((column as any).columnType ?? '') as string).includes('Json');
+
+/**
+ * Structural JSON containment for the `contains` operator on json/jsonb columns.
+ * The value is serialized and bound as a parameter (never interpolated into the SQL text):
+ * - Postgres: `col @> $1::jsonb` (a plain `json` column is cast through jsonb — `json` has
+ *   no containment operator of its own)
+ * - MySQL: `JSON_CONTAINS(col, ?)`
+ * SQLite has no containment operator, so the filter input never exposes `contains` there;
+ * reaching this with an unsupported dialect is a programming error surfaced as a GraphQLError.
+ */
+const jsonContains = (column: Column, columnName: string, value: any): SQL => {
+  const serialized = JSON.stringify(value);
+
+  switch (columnDialect(column)) {
+    case 'pg':
+      return (column as any).columnType === 'PgJson'
+        ? sql`${column}::jsonb @> ${serialized}::jsonb`
+        : sql`${column} @> ${serialized}::jsonb`;
+    case 'mysql':
+      return sql`json_contains(${column}, ${serialized})`;
+    default:
+      throw new GraphQLError(`WHERE ${columnName}: Operator 'contains' is not supported for this dialect!`);
+  }
+};
+
 export const extractFiltersColumn = <TColumn extends Column>(
   column: TColumn,
   columnName: string,
@@ -1826,6 +1935,11 @@ export const extractFiltersColumn = <TColumn extends Column>(
   const singleValueOps: Record<string, (...args: any[]) => SQL> = { eq, ne, gt, gte, lt, lte };
   const stringValueOps: Record<string, (...args: any[]) => SQL> = { like, notLike, ilike, notIlike };
   const arrayValueOps: Record<string, (...args: any[]) => SQL> = { inArray, notInArray };
+  // Membership operators for array columns: element list → SQL. Empty lists are rejected below.
+  const arrayMembershipOps: Record<string, (...args: any[]) => SQL> = {
+    hasSome: arrayOverlaps,
+    hasEvery: arrayContains,
+  };
   const nullableOps: Record<string, (...args: any[]) => SQL> = { isNull, isNotNull };
 
   const variants = [] as SQL[];
@@ -1839,6 +1953,10 @@ export const extractFiltersColumn = <TColumn extends Column>(
       variants.push(singleValueOps[operatorName]!(column, singleValue));
     } else if (operatorName in stringValueOps) {
       variants.push(stringValueOps[operatorName]!(column, operatorValue as string));
+    } else if (operatorName === 'contains' && isJsonColumn(column)) {
+      // `contains` is JSON containment on json/jsonb columns; on string columns it is the
+      // safe substring operator handled by safeLikeOps below.
+      variants.push(jsonContains(column, columnName, operatorValue));
     } else if (operatorName in safeLikeOps) {
       const { buildPattern, insensitive } = safeLikeOps[operatorName]!;
       variants.push(safeLikeCondition(column, buildPattern(operatorValue as string), insensitive));
@@ -1848,6 +1966,16 @@ export const extractFiltersColumn = <TColumn extends Column>(
       }
       const arrayValue = (operatorValue as any[]).map((val) => remapFromGraphQLCore(val, column, columnName));
       variants.push(arrayValueOps[operatorName]!(column, arrayValue));
+    } else if (operatorName === 'has') {
+      // Single-element membership: containment with a one-element array (`col @> ARRAY[value]`).
+      variants.push(arrayContains(column, [operatorValue]));
+    } else if (operatorName in arrayMembershipOps) {
+      if (!(operatorValue as any[]).length) {
+        throw new GraphQLError(`WHERE ${columnName}: Unable to use operator ${operatorName} with an empty array!`);
+      }
+      variants.push(arrayMembershipOps[operatorName]!(column, operatorValue as any[]));
+    } else if (operatorName === 'isEmpty') {
+      variants.push(sql`cardinality(${column}) = 0`);
     } else if (operatorName in nullableOps) {
       variants.push(nullableOps[operatorName]!(column));
     } else {
