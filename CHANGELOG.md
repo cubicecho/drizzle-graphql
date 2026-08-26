@@ -1,3 +1,10 @@
+# [5.6.0](https://github.com/cubicecho/drizzle-graphql/compare/v5.5.0...v5.6.0) (2026-08-26)
+
+
+### Features
+
+* **schema:** per-column scalar overrides via scalars map and mapColumnType ([0cd0ba6](https://github.com/cubicecho/drizzle-graphql/commit/0cd0ba6045850dabaefeb33d2164dbb572bcddab))
+
 # [5.5.0](https://github.com/cubicecho/drizzle-graphql/compare/v5.4.0...v5.5.0) (2026-08-26)
 
 
