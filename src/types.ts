@@ -31,6 +31,7 @@ import type {
   GetRemappedTableUpdateDataType,
   OrderByArgs,
 } from './util/builders/index.ts';
+import type { ColumnTypeMapper, ScalarOverridesConfig } from './util/type-converter/types.ts';
 
 export type MakeRequired<T> = T & { [P in keyof T]-?: T[P] };
 
@@ -730,6 +731,56 @@ export type BuildSchemaConfig = {
    * @default true
    */
   eagerLoadRelations?: boolean | ((tableName: string, relationName: string) => boolean);
+  /**
+   * Declarative per-table, per-column scalar overrides — replaces the GraphQL type built-in
+   * detection would pick for a column with the scalar you provide, everywhere that column's
+   * type surfaces: the object type, create/update inputs, filter operands (in a filter type
+   * named `${Scalar}Filter`), and aggregate min/max fields.
+   *
+   * Keys are the Drizzle schema keys: the table's key in your schema object and the column's
+   * property name. The value is either one scalar for both directions, or `{ output, input }`
+   * to type outputs and inputs differently (either side may be omitted to keep the default).
+   *
+   * ```ts
+   * buildSchema(db, {
+   *   scalars: {
+   *     users: {
+   *       balance: GraphQLBigIntString,                      // both directions
+   *       settings: { output: PrettyJSON },                  // output only, input stays default
+   *     },
+   *   },
+   * });
+   * ```
+   *
+   * Validation and coercion become the scalar's job: for an overridden column the generated
+   * resolvers pass values through untouched — `parseValue`/`parseLiteral` results go to the
+   * database driver as-is, and raw driver values go to `serialize` as-is — so the scalar must
+   * accept what the driver produces and produce what the driver accepts.
+   *
+   * A declarative entry fully decides its column and wins over {@link mapColumnType}.
+   */
+  scalars?: ScalarOverridesConfig;
+  /**
+   * Rule-based scalar mapping, called once per column at build time — the tool for applying
+   * a convention across many columns (e.g. "every `numeric` column is `Money`") or for typing
+   * custom column types the built-in detection does not know.
+   *
+   * Return a scalar (or `{ output, input }` pair) to override the column, or `undefined` to
+   * keep the default. `info` carries the table/column schema keys and the types built-in
+   * detection would use (`defaultType` / `defaultInputType`), so rules can key off either the
+   * Drizzle column or the default GraphQL type.
+   *
+   * ```ts
+   * buildSchema(db, {
+   *   mapColumnType: (column, { columnName }) =>
+   *     column.columnType === 'PgNumeric' ? MoneyScalar : undefined,
+   * });
+   * ```
+   *
+   * Same semantics as {@link scalars} otherwise; a column matched by both is decided by
+   * `scalars` alone.
+   */
+  mapColumnType?: ColumnTypeMapper;
   /**
    * Called for every error thrown by a generated resolver, before it reaches the client.
    *

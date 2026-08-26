@@ -9,7 +9,12 @@ import type {
   GraphQLObjectType,
   GraphQLScalarType,
 } from 'graphql';
-import type { ConvertedColumn, ConvertedRelationColumnWithArgs } from '../type-converter/types.ts';
+import type {
+  ColumnTypeMapper,
+  ConvertedColumn,
+  ConvertedRelationColumnWithArgs,
+  ScalarOverridesConfig,
+} from '../type-converter/types.ts';
 import type { ResolvedComplexityOptions } from './common.ts';
 // import type {
 //   ConvertedColumn,
@@ -45,6 +50,10 @@ export type SchemaGeneratorOptions = {
   features: GeneratorFeatures;
   /** Resolved cost-hint settings, or `undefined` when the caller passed `complexity: false`. */
   complexity: ResolvedComplexityOptions | undefined;
+  /** Declarative per-table/per-column scalar overrides. See `BuildSchemaConfig.scalars`. */
+  scalars?: ScalarOverridesConfig;
+  /** Rule-based scalar mapping. See `BuildSchemaConfig.mapColumnType`. */
+  mapColumnType?: ColumnTypeMapper;
 };
 
 export type TableNamedRelations = {

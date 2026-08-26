@@ -2,6 +2,7 @@
 import { type Column, getTableColumns, is, One, type Table } from 'drizzle-orm';
 import { GraphQLError } from 'graphql';
 import type { TableNamedRelations } from '../builders/index.ts';
+import { getColumnScalarOverride } from '../type-converter/index.ts';
 
 // drizzle-orm v1 uses compound dataType strings (e.g. "object json"), so inclusion rather
 // than equality. PgGeometryObject is stored as json but has its own object type.
@@ -46,6 +47,13 @@ export const remapToGraphQLCore = (
 
   // For non-relation fields, require a column definition.
   if (!column) {
+    return value;
+  }
+
+  // Columns whose output type is a scalar override hand the driver's raw value straight to
+  // that scalar — serialization is wholly the scalar's job, and converting here first would
+  // double-convert.
+  if (getColumnScalarOverride(column, false)) {
     return value;
   }
 
@@ -137,6 +145,17 @@ export const remapToGraphQLArrayOutput = (
 };
 
 export const remapFromGraphQLCore = (value: any, column: Column, columnName: string) => {
+  // Columns whose input type is a scalar override receive exactly what that scalar's
+  // parseValue/parseLiteral produced — coercion is the scalar's job, so the value goes to
+  // the driver untouched. Only the null-prototype normalization still applies (it undoes a
+  // graphql-js artifact, not a coercion — see the default case below).
+  if (getColumnScalarOverride(column, true)) {
+    if (typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === null) {
+      return Object.assign({}, value);
+    }
+    return value;
+  }
+
   // drizzle-orm v1 uses compound dataType strings (e.g. "object date", "bigint int64").
   // We must check inclusion rather than equality to handle these cases.
   const dataType: string = (column as any).dataType ?? '';

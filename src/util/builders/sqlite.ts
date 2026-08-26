@@ -55,6 +55,7 @@ import {
   remapToGraphQLArrayOutput,
   remapToGraphQLSingleOutput,
 } from '../data-mappers/index.ts';
+import { registerScalarOverrides } from '../type-converter/index.ts';
 import {
   createRelationAggregateFactory,
   generateAggregate,
@@ -580,6 +581,10 @@ export const generateSchemaData = <
     );
   }
 
+  // Resolve scalar overrides into the type-converter's registry before any type generation —
+  // every subsequent column→GraphQL type decision and runtime value remap consults it.
+  registerScalarOverrides(tables, options);
+
   // Build namedRelations from the drizzle-orm v1 relations config.
   const namedRelations = buildNamedRelations(relations ?? {}, tableEntries);
   // Record each relation target's (composite-aware) primary key for deterministic
@@ -600,6 +605,8 @@ export const generateSchemaData = <
     relationFieldContainers: new Map(),
     fullyBuiltTables: new Set(),
     relationTypeCache: new Map(),
+    selectFieldCache: new WeakMap(),
+    filterFieldCache: new WeakMap(),
     orderTypeCache: new WeakMap(),
     filterTypeCache: new WeakMap(),
     listRelationFilterCache: new Map(),
