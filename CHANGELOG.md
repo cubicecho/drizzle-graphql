@@ -1,3 +1,10 @@
+# [5.2.0](https://github.com/cubicecho/drizzle-graphql/compare/v5.1.0...v5.2.0) (2026-08-26)
+
+
+### Features
+
+* **query:** add JSON and array column filter operators ([9b5e1b7](https://github.com/cubicecho/drizzle-graphql/commit/9b5e1b76142e29894c8e14b4aa441228dd998771))
+
 # [5.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v5.0.0...v5.1.0) (2026-08-26)
 
 
