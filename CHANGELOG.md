@@ -1,3 +1,10 @@
+# [4.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v4.0.0...v4.1.0) (2026-08-26)
+
+
+### Features
+
+* **schema:** publish per-field complexity hints ([#14](https://github.com/cubicecho/drizzle-graphql/issues/14)) ([377410a](https://github.com/cubicecho/drizzle-graphql/commit/377410a976527aafdbb30490616ea931addf68c4)), closes [#11](https://github.com/cubicecho/drizzle-graphql/issues/11)
+
 # [4.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v3.0.0...v4.0.0) (2026-08-26)
 
 
