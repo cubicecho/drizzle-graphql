@@ -1020,14 +1020,6 @@ const generateTableOrderTypeCached = (
 };
 
 /**
- * Relations that can be expressed as a correlated `EXISTS` subquery. Many-to-many relations
- * declared with `.through()` need a junction join that the filter builder doesn't emit yet,
- * so they're left out of the filter input entirely — a missing field is a clean GraphQL
- * validation error, whereas a silently ignored filter would return too many rows.
- */
-const isFilterableRelation = (relation: Relation<string>): boolean => !(relation as any).through;
-
-/**
  * `${Target}ListRelationFilter` — the Prisma-style some/every/none wrapper for a to-many
  * relation. Shared by every table that points at the same target, and built through a thunk
  * so mutually-referencing tables (Users.posts ⇄ Posts.author) don't recurse forever.
@@ -1097,7 +1089,7 @@ const generateRelationFilterFields = (
 
     const targetTable = tables[relEntry.targetTableName];
     const relation = (relEntry as any).relation ?? relEntry;
-    if (!targetTable || !isFilterableRelation(relation)) {
+    if (!targetTable) {
       continue;
     }
 
@@ -1928,7 +1920,90 @@ const buildRelationJoinCondition = (
 };
 
 /**
+ * Resolves one side of a `.through()` junction pair to the corresponding column on the
+ * aliased junction table. Drizzle stores the junction column as a RelationsBuilderColumn
+ * (`_.column` is the Column, `_.key` its property name), so look up by property name first
+ * and fall back to matching by SQL name.
+ */
+const resolveJunctionColumn = (aliasedThrough: Table, junctionRef: any, relationName: string): Column => {
+  const throughColumns = getColumns(aliasedThrough);
+
+  const key: string | undefined = junctionRef?._?.key;
+  const byKey = key ? throughColumns[key] : undefined;
+  if (byKey) {
+    return byKey;
+  }
+
+  const columnName: string | undefined = junctionRef?._?.column?.name;
+  const byName = columnName ? Object.values(throughColumns).find((c) => c.name === columnName) : undefined;
+  if (!byName) {
+    throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+  }
+
+  return byName;
+};
+
+/**
+ * Join conditions for a `.through()` (many-to-many) relation, split into the two legs of the
+ * junction: `correlation` ties the parent row to the aliased junction table on the relation's
+ * source keys, `junctionJoin` ties the aliased junction table to the aliased target on the
+ * target keys. Column matching mirrors {@link buildRelationJoinCondition} — by SQL name on the
+ * parent/target so aliased proxies work — while junction columns come from the relation's own
+ * `through` metadata.
+ */
+const buildThroughJoinConditions = (
+  parentTable: Table,
+  relation: Relation<string>,
+  aliasedThrough: Table,
+  aliasedTarget: Table,
+  relationName: string,
+): { correlation: SQL | undefined; junctionJoin: SQL | undefined } => {
+  const sourceColumns = (relation as any).sourceColumns as Column[] | undefined;
+  const targetColumns = (relation as any).targetColumns as Column[] | undefined;
+  const through = (relation as any).through as { source: any[]; target: any[] } | undefined;
+
+  if (
+    !sourceColumns?.length ||
+    !targetColumns?.length ||
+    through?.source.length !== sourceColumns.length ||
+    through.target.length !== targetColumns.length
+  ) {
+    throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+  }
+
+  const parentColumns = Object.values(getColumns(parentTable));
+  const targetTableColumns = Object.values(getColumns(aliasedTarget));
+
+  const correlationConditions: SQL[] = [];
+  for (let i = 0; i < sourceColumns.length; i++) {
+    const localColumn = parentColumns.find((c) => c.name === sourceColumns[i]!.name);
+    if (!localColumn) {
+      throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+    }
+    correlationConditions.push(eq(localColumn, resolveJunctionColumn(aliasedThrough, through.source[i], relationName)));
+  }
+
+  const junctionJoinConditions: SQL[] = [];
+  for (let i = 0; i < targetColumns.length; i++) {
+    const foreignColumn = targetTableColumns.find((c) => c.name === targetColumns[i]!.name);
+    if (!foreignColumn) {
+      throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+    }
+    junctionJoinConditions.push(
+      eq(resolveJunctionColumn(aliasedThrough, through.target[i], relationName), foreignColumn),
+    );
+  }
+
+  return {
+    correlation: correlationConditions.length > 1 ? and(...correlationConditions) : correlationConditions[0],
+    junctionJoin: junctionJoinConditions.length > 1 ? and(...junctionJoinConditions) : junctionJoinConditions[0],
+  };
+};
+
+/**
  * Builds one `[NOT] EXISTS (SELECT 1 FROM target alias WHERE …)` for a relation filter.
+ * A `.through()` (many-to-many) relation adds an `INNER JOIN` on the aliased junction table
+ * inside the subquery, correlated to the parent on the relation's source keys.
  *
  * `some` / the to-one shorthand match when a related row satisfies the inner filters, `none`
  * when none does, and `every` is expressed as "no related row fails the inner filters".
@@ -1947,7 +2022,7 @@ const buildRelationExists = (
   const targetTable = ctx.tables[targetTableName];
   const relation = ((relEntry as any).relation ?? relEntry) as Relation<string>;
 
-  if (!targetTable || !isFilterableRelation(relation)) {
+  if (!targetTable) {
     throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
   }
 
@@ -1955,7 +2030,28 @@ const buildRelationExists = (
   const aliases = ctx.aliases;
   const aliasedTarget = aliasedTable(targetTable, `dgql_rel_${aliases.n++}`);
 
-  const joinCondition = buildRelationJoinCondition(parentTable, relation, aliasedTarget, relationName);
+  // A `.through()` relation reaches the target via a junction table: the subquery joins the
+  // aliased junction to the aliased target and correlates the junction to the parent, so
+  // `some` / `none` / `every` compile exactly like the direct case with a longer FROM clause.
+  const throughTable = (relation as any).throughTable as Table | undefined;
+  let fromClause: SQL;
+  let joinCondition: SQL | undefined;
+  if (throughTable) {
+    const aliasedThrough = aliasedTable(throughTable, `dgql_rel_${aliases.n++}`);
+    const { correlation, junctionJoin } = buildThroughJoinConditions(
+      parentTable,
+      relation,
+      aliasedThrough,
+      aliasedTarget,
+      relationName,
+    );
+    fromClause = sql`${getTableAsAliasSQL(aliasedTarget)} inner join ${getTableAsAliasSQL(aliasedThrough)} on ${junctionJoin}`;
+    joinCondition = correlation;
+  } else {
+    fromClause = getTableAsAliasSQL(aliasedTarget);
+    joinCondition = buildRelationJoinCondition(parentTable, relation, aliasedTarget, relationName);
+  }
+
   // A relation declared with its own `where` only ever exposes the rows it selects, so the
   // subquery has to honour it too — otherwise a filter could match a row the relation hides.
   const relationWhere = (relation as any).where
@@ -1972,14 +2068,14 @@ const buildRelationExists = (
       return undefined;
     }
 
-    return sql`not exists (select 1 from ${getTableAsAliasSQL(aliasedTarget)} where ${and(joinCondition, relationWhere, not(inner))})`;
+    return sql`not exists (select 1 from ${fromClause} where ${and(joinCondition, relationWhere, not(inner))})`;
   }
 
   const condition = and(joinCondition, relationWhere, inner);
 
   return mode === 'none'
-    ? sql`not exists (select 1 from ${getTableAsAliasSQL(aliasedTarget)} where ${condition})`
-    : sql`exists (select 1 from ${getTableAsAliasSQL(aliasedTarget)} where ${condition})`;
+    ? sql`not exists (select 1 from ${fromClause} where ${condition})`
+    : sql`exists (select 1 from ${fromClause} where ${condition})`;
 };
 
 /**

@@ -205,8 +205,10 @@ A **to-many** relation takes a `some` / `none` / `every` wrapper
 -   `some: {}` means "at least one related row exists"; `none: {}` means "none exist"
 -   Several modes may be given at once and are `AND`ed together
 -   A relation whose name collides with a column name is skipped — the column keeps the field
--   Many-to-many relations declared with `.through()` are not filterable yet and are left out
-    of the filter input
+-   Many-to-many relations declared with `.through()` are filterable too: the `EXISTS`
+    subquery joins the junction table to the target, so
+    `users(where: { roles: { some: { name: { eq: "admin" } } } })` works the same as a direct
+    to-many relation
 
 ## Aggregate queries
 
