@@ -313,12 +313,10 @@ describe.sequential('Safe string operator tests', () => {
       expect(stringFields).toContain(op);
     }
 
-    const stringFilterOr = ctx.schema.getType('StringFilterOr');
-    expect(stringFilterOr).toBeInstanceOf(GraphQLInputObjectType);
-    const stringOrFields = Object.keys((stringFilterOr as GraphQLInputObjectType).getFields());
-    for (const op of safeOps) {
-      expect(stringOrFields).toContain(op);
-    }
+    // The recursive filter tree reuses the filter type itself for OR branches, so the
+    // safe operators are available inside OR too.
+    const orBranch = (stringFilter as GraphQLInputObjectType).getFields()['OR']!.type as any;
+    expect(orBranch.ofType.ofType).toBe(stringFilter);
 
     const idFilter = ctx.schema.getType('IdFilter');
     expect(idFilter).toBeInstanceOf(GraphQLInputObjectType);

@@ -58,6 +58,7 @@ export {
   GraphQLBigIntString,
   GraphQLDate,
   GraphQLDateTime,
+  GraphQLDecimalString,
   GraphQLJSON,
   GraphQLUUID,
 } from './util/scalars/index.ts';

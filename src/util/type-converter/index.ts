@@ -16,7 +16,14 @@ import {
   GraphQLString,
 } from 'graphql';
 import { capitalize } from '../case-ops/index.ts';
-import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQLUUID } from '../scalars/index.ts';
+import {
+  GraphQLBigIntString,
+  GraphQLDate,
+  GraphQLDateTime,
+  GraphQLDecimalString,
+  GraphQLJSON,
+  GraphQLUUID,
+} from '../scalars/index.ts';
 import type { ConvertedColumn } from './types.ts';
 
 const allowedNameChars = /^[a-zA-Z0-9_]+$/;
@@ -67,7 +74,7 @@ const columnToGraphQLCore = (
   tableName: string,
   isInput: boolean,
 ): ConvertedColumn<boolean> => {
-  const { type: baseType } = extractExtendedColumnType(column);
+  const { type: baseType, constraint } = extractExtendedColumnType(column);
   switch (baseType) {
     case 'boolean':
       return { type: GraphQLBoolean, description: 'Boolean' };
@@ -89,6 +96,14 @@ const columnToGraphQLCore = (
     case 'string':
       if (column.enumValues?.length) {
         return { type: generateEnumCached(column, columnName, tableName) };
+      }
+
+      // numeric/decimal columns (pg numeric, mysql decimal, sqlite numeric) transport as
+      // strings, but they are numbers — give them the named Decimal scalar so the SDL says
+      // so and non-numeric input is rejected. Array-typed numeric columns (dimensions > 0)
+      // keep their existing mapping.
+      if (constraint === 'numeric' && !(column as any).dimensions) {
+        return { type: GraphQLDecimalString, description: 'Decimal' };
       }
 
       if (column instanceof PgTimestamp || column instanceof PgTimestampString) {

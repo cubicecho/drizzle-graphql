@@ -98,8 +98,8 @@ describe('extractFiltersColumn unknown operator handling', () => {
   const nameColumn = getColumns(schema.Users).name;
 
   it('throws a GraphQLError for an unrecognized operator', () => {
-    expect(() => extractFiltersColumn(nameColumn, 'name', { contains: 'First' } as any)).toThrow(
-      /WHERE name: Unknown operator: contains/,
+    expect(() => extractFiltersColumn(nameColumn, 'name', { matches: 'First' } as any)).toThrow(
+      /WHERE name: Unknown operator: matches/,
     );
 
     try {
@@ -117,8 +117,8 @@ describe('extractFiltersColumn unknown operator handling', () => {
   });
 
   it('throws for an unrecognized operator inside a column-level OR variant', () => {
-    expect(() => extractFiltersColumn(nameColumn, 'name', { OR: [{ eq: 'a' }, { contains: 'b' }] } as any)).toThrow(
-      /WHERE name: Unknown operator: contains/,
+    expect(() => extractFiltersColumn(nameColumn, 'name', { OR: [{ eq: 'a' }, { matches: 'b' }] } as any)).toThrow(
+      /WHERE name: Unknown operator: matches/,
     );
   });
 });

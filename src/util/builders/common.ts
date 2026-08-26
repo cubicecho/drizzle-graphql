@@ -60,6 +60,7 @@ import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { getOrCreateLoader } from '../batch-loader/index.ts';
 import { capitalize, uncapitalize } from '../case-ops/index.ts';
 import { remapFromGraphQLCore, remapToGraphQLArrayOutput, remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
+import { GraphQLBigIntString, GraphQLDecimalString } from '../scalars/index.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type {
   ConvertedColumn,
@@ -735,6 +736,8 @@ export const innerOrder = new GraphQLInputObjectType({
  * - "Id"          → uuid PK/FK columns (no like/ilike operators)
  * - "DateTime"    → timestamp and date columns
  * - "Boolean"     → boolean columns
+ * - "BigInt"      → bigint columns (BigInt-scalar-typed operators)
+ * - "Decimal"     → numeric/decimal columns (Decimal-scalar-typed operators)
  * - the enum GraphQL type name → enum columns (still unique per enum)
  * - "IntArray"    → integer[]/serial[] array columns
  * - "FloatArray"  → float[]/numeric[] array columns
@@ -757,6 +760,14 @@ const resolveGenericFilterName = (
   // Enum type — keep unique per enum since values differ
   if (columnGraphQLType.type instanceof GraphQLEnumType) {
     return columnGraphQLType.type.name;
+  }
+  // Named numeric-string scalars — give them their own filters so the operators
+  // are typed with the scalar (and validated by it) instead of a shared StringFilter.
+  if (columnGraphQLType.type === GraphQLBigIntString) {
+    return 'BigInt';
+  }
+  if (columnGraphQLType.type === GraphQLDecimalString) {
+    return 'Decimal';
   }
   // Array columns — give them a distinct name so they never collide with StringFilter
   // or with each other. integer().array() / text().array() columns have a `dimensions`
@@ -803,8 +814,9 @@ const generateColumnFilterValues = (
   const colDesc = columnGraphQLType.description;
   const colArr = new GraphQLList(new GraphQLNonNull(colType));
 
-  // IdFilter omits like/notLike/ilike/notIlike — they are nonsensical on UUIDs.
-  const isId = genericName === 'Id';
+  // Id, BigInt and Decimal filters omit the string pattern operators
+  // (like/ilike/startsWith/contains/…) — they are nonsensical on UUIDs and numbers.
+  const omitStringOps = genericName === 'Id' || genericName === 'BigInt' || genericName === 'Decimal';
 
   const baseFields = {
     eq: { type: colType, description: colDesc },
@@ -813,7 +825,7 @@ const generateColumnFilterValues = (
     lte: { type: colType, description: colDesc },
     gt: { type: colType, description: colDesc },
     gte: { type: colType, description: colDesc },
-    ...(isId
+    ...(omitStringOps
       ? {}
       : {
           like: { type: GraphQLString },
@@ -939,6 +951,13 @@ const generateTableSelectTypeFieldsCached = (table: Table, tableName: string): R
 
   return remapped;
 };
+
+/**
+ * Whether a to-one relation can back a relation orderBy hop. `.through()` (junction)
+ * relations are excluded — the ordering subquery only joins the direct target, never the
+ * junction table. (Relation *filters* do support `.through()` — this guard is orderBy-only.)
+ */
+const isFilterableRelation = (relation: Relation<string>): boolean => !(relation as any).through;
 
 /**
  * Order fields for a table's to-one relations: each takes the target table's own OrderBy
