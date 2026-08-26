@@ -1467,6 +1467,12 @@ export const extractFiltersColumn = <TColumn extends Column>(
       variants.push(arrayValueOps[operatorName]!(column, arrayValue));
     } else if (operatorName in nullableOps) {
       variants.push(nullableOps[operatorName]!(column));
+    } else {
+      // An unrecognized operator must throw rather than be dropped: when the generated
+      // schema is stitched/merged with another schema, foreign operators (e.g. `equals`,
+      // `contains`, `mode`) can pass input validation, and silently dropping them could
+      // turn a constrained where into an unbounded one.
+      throw new GraphQLError(`WHERE ${columnName}: Unknown operator: ${operatorName}`);
     }
   }
 
@@ -1615,14 +1621,22 @@ const extractRelationFilter = (
     return buildRelationExists(parentTable, relationName, relEntry, value, 'some', ctx);
   }
 
+  const relationMatchModes: readonly RelationMatchMode[] = ['some', 'none', 'every'];
+
   const variants: SQL[] = [];
-  for (const mode of ['some', 'none', 'every'] as const) {
-    const inner = value[mode];
+  for (const [mode, inner] of Object.entries(value)) {
     if (inner === undefined || inner === null) {
       continue;
     }
 
-    const extracted = buildRelationExists(parentTable, relationName, relEntry, inner, mode, ctx);
+    // Unknown keys inside the some/none/every wrapper must throw rather than be dropped —
+    // a stitched schema can contribute foreign keys here too, and dropping them all would
+    // silently turn the relation filter into no filter at all.
+    if (!relationMatchModes.includes(mode as RelationMatchMode)) {
+      throw new GraphQLError(`WHERE ${relationName}: Unknown relation filter key: ${mode}`);
+    }
+
+    const extracted = buildRelationExists(parentTable, relationName, relEntry, inner, mode as RelationMatchMode, ctx);
     if (extracted) {
       variants.push(extracted);
     }
@@ -1673,11 +1687,18 @@ export const extractFilters = <TTable extends Table>(
     }
 
     const column = columns[fieldName];
+
+    // A key that is neither a column nor a filterable relation must throw rather than be
+    // dropped: when the generated schema is stitched/merged with another schema, same-named
+    // inputs can contribute foreign keys that pass input validation, and a where that loses
+    // all of its keys silently becomes an unbounded select/update/delete.
+    if (!column && !(relations?.[fieldName] && relationCtx)) {
+      throw new GraphQLError(`WHERE ${tableName}: Unknown filter key: ${fieldName}`);
+    }
+
     const extracted = column
       ? extractFiltersColumn(column, fieldName, operators)
-      : relations?.[fieldName] && relationCtx
-        ? extractRelationFilter(table, fieldName, relations[fieldName]!, operators as any, relationCtx)
-        : undefined;
+      : extractRelationFilter(table, fieldName, relations![fieldName]!, operators as any, relationCtx!);
 
     if (extracted) {
       variants.push(extracted);
