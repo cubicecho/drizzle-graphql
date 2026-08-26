@@ -1,3 +1,10 @@
+# [4.2.0](https://github.com/cubicecho/drizzle-graphql/compare/v4.1.0...v4.2.0) (2026-08-26)
+
+
+### Features
+
+* **query:** add groupBy and having to aggregate queries ([#28](https://github.com/cubicecho/drizzle-graphql/issues/28)) ([c0308a9](https://github.com/cubicecho/drizzle-graphql/commit/c0308a9639bc215d5c08da103b6e68590754e235)), closes [#10](https://github.com/cubicecho/drizzle-graphql/issues/10)
+
 # [4.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v4.0.0...v4.1.0) (2026-08-26)
 
 
