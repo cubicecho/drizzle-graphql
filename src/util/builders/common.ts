@@ -15,11 +15,13 @@
 // @ts-nocheck — vendored file, drizzle-orm 1.0 type compat not guaranteed
 import type { Column, Relation, Table } from 'drizzle-orm';
 import {
+  aliasedTable,
   and,
   asc,
   desc,
   eq,
   getColumns,
+  getTableAsAliasSQL,
   gt,
   gte,
   ilike,
@@ -31,11 +33,13 @@ import {
   lt,
   lte,
   ne,
+  not,
   notIlike,
   notInArray,
   notLike,
   One,
   or,
+  relationsFilterToSQL,
   type SQL,
   sql,
 } from 'drizzle-orm';
@@ -83,7 +87,7 @@ const rqbCrashTypes = ['SQLiteBigInt', 'SQLiteBlobJson', 'SQLiteBlobBuffer'];
 export type TypeNameMapper = (tableName: string) => { singular: string; plural: string } | undefined;
 
 /** Produce the GraphQL object type name for a table, using the mapper if provided. */
-const resolveTypeName = (name: string, typeNameMapper?: TypeNameMapper): string => {
+export const resolveTypeName = (name: string, typeNameMapper?: TypeNameMapper): string => {
   const mapped = typeNameMapper?.(name);
   return mapped ? capitalize(mapped.singular) : capitalize(name);
 };
@@ -227,6 +231,70 @@ export type RelationResolverFactory = (params: {
 }) => GraphQLFieldResolver<any, any> | undefined;
 
 /**
+ * Builds the `${relationName}Aggregate` field for a to-many relation. Implemented in
+ * `aggregates.ts` and injected here so the aggregate code can depend on this module
+ * without the two importing each other.
+ */
+export type RelationAggregateFactory = (params: {
+  tableName: string;
+  relationName: string;
+  relEntry: TableNamedRelations;
+}) => { type: GraphQLObjectType; resolve: GraphQLFieldResolver<any, any> } | undefined;
+
+/**
+ * Key on the GraphQL context object under which a caller can place a Drizzle transaction
+ * (or any other executor: a pooled connection, a logging proxy). Every generated resolver
+ * reads it at resolve time and runs its statements there instead of on the database the
+ * schema was built from, which is what lets several mutations in one request share a
+ * transaction and lets a query see that transaction's uncommitted rows:
+ *
+ * ```ts
+ * await db.transaction(async (tx) => {
+ *   await graphql({ schema, source, contextValue: { [drizzleExecutorKey]: tx } });
+ * });
+ * ```
+ *
+ * Registered with `Symbol.for` so the ESM and CJS builds of this package agree on it when
+ * both end up loaded in one process.
+ */
+export const drizzleExecutorKey: unique symbol = Symbol.for('drizzle-graphql:executor') as any;
+
+/**
+ * The executor a resolver should run on: the request's transaction when the context
+ * carries one, otherwise the database the schema was built from.
+ */
+export const resolveExecutor = <T>(db: T, context: any): T => {
+  if (context && typeof context === 'object') {
+    const executor = context[drizzleExecutorKey];
+    if (executor) {
+      return executor as T;
+    }
+  }
+  return db;
+};
+
+/**
+ * This request's executor together with the relational query builder to select through.
+ *
+ * `buildTimeQueryBase` decides whether the table supports the relational query builder at
+ * all — a table with no relations has none, and the caller falls back to a plain select.
+ * The executor only decides which connection the query runs on, so a transaction that is
+ * missing `query` (or a table absent from its schema) keeps the build-time builder.
+ */
+export const resolveQueryExecutor = (
+  db: any,
+  context: any,
+  tableName: string,
+  buildTimeQueryBase: any,
+): { executor: any; queryBase: any } => {
+  const executor = resolveExecutor(db, context);
+  return {
+    executor,
+    queryBase: buildTimeQueryBase ? (executor?.query?.[tableName] ?? buildTimeQueryBase) : buildTimeQueryBase,
+  };
+};
+
+/**
  * Fetches a to-many relation with per-parent limit/offset for ALL parents in a
  * single query, using a window function (ROW_NUMBER() OVER (PARTITION BY fk ...)).
  *
@@ -297,7 +365,7 @@ const batchedPaginatedRelationQuery = async (
  *      into a single IN-clause query, eliminating N+1 database round-trips.
  */
 export const createRelationResolverFactory =
-  (db: any, tables: Record<string, Table>): RelationResolverFactory =>
+  (db: any, tables: Record<string, Table>, filterCtx?: RelationFilterBase): RelationResolverFactory =>
   ({ tableName, relationName, relEntry, isOne }) => {
     const parentTable = tables[tableName];
     const targetTableName = relEntry.targetTableName;
@@ -342,17 +410,22 @@ export const createRelationResolverFactory =
       const loaderKey = `${tableName}::${relationName}::${argsKey}`;
 
       const loader = getOrCreateLoader(context, loaderKey, async (parentIds: readonly any[]) => {
+        // Loaders are cached per context, so every call batched here shares this request's
+        // executor — the transaction on the context, when there is one.
+        const executor = resolveExecutor(db, context);
         const uniqueIds = [...new Set(parentIds)];
         const whereCondition = and(
           inArray(foreignCol, uniqueIds),
-          whereArg ? extractFilters(targetTable, targetTableName, whereArg) : undefined,
+          whereArg
+            ? extractFilters(targetTable, targetTableName, whereArg, relationFilterCtx(filterCtx, targetTableName))
+            : undefined,
         );
 
         let rows: any[];
         if (limit != null || offset != null) {
           // Per-parent pagination across the whole batch in one query.
           rows = await batchedPaginatedRelationQuery(
-            db,
+            executor,
             targetTable,
             foreignCol,
             whereCondition,
@@ -364,7 +437,7 @@ export const createRelationResolverFactory =
         } else {
           // Use plain db.select() so column refs are never aliased — avoids drizzle-orm v1
           // RQB aliasing requirements that would require referencing via aliasedTable proxy.
-          let q = db.select().from(targetTable).where(whereCondition) as any;
+          let q = executor.select().from(targetTable).where(whereCondition) as any;
           if (orderByArg) {
             q = q.orderBy(...extractOrderBy(targetTable, orderByArg));
           }
@@ -423,11 +496,75 @@ export interface TypeCacheCtx {
   orderTypeCache: WeakMap<object, GraphQLInputObjectType>;
   /** Per-call cache for filter GraphQL input types, keyed by table reference. */
   filterTypeCache: WeakMap<object, GraphQLInputObjectType>;
+  /**
+   * Per-call cache for `${Target}ListRelationFilter` input types (the some/every/none wrapper
+   * used by to-many relation filters), keyed by target table name.
+   */
+  listRelationFilterCache: Map<string, GraphQLInputObjectType>;
+  /**
+   * Per-call cache for `${Table}Aggregate` output types, keyed by table name. Shared between the
+   * root `<table>Aggregate` query and the `<relation>Aggregate` field on every table that points
+   * at it, so the schema never holds two types with the same name.
+   */
+  aggregateTypeCache: Map<string, GraphQLObjectType>;
 }
+
+/**
+ * Everything needed to work out which extra columns a selection implies. Passed to the column
+ * extractors so a requested `<relation>Aggregate` field can pull in the join column it resolves
+ * from, which the client has no reason to have selected itself.
+ */
+export interface SelectionCtx {
+  tableName: string;
+  relationMap: Record<string, Record<string, TableNamedRelations>>;
+  tables: Record<string, Table>;
+}
+
+const AGGREGATE_FIELD_SUFFIX = 'Aggregate';
+
+/**
+ * Property names of the join columns that the `<relation>Aggregate` fields in this selection
+ * correlate on. Without them the parent row reaches the aggregate resolver with no key and
+ * every count would come back 0.
+ */
+const relationAggregateJoinColumns = (
+  tree: Record<string, ResolveTree>,
+  table: Table,
+  selectionCtx: SelectionCtx | undefined,
+): string[] => {
+  const relations = selectionCtx?.relationMap[selectionCtx.tableName];
+  if (!relations || !selectionCtx) {
+    return [];
+  }
+
+  const tableColumns = getColumns(table);
+  const needed: string[] = [];
+
+  for (const fieldData of Object.values(tree)) {
+    // A column that happens to end in "Aggregate" is a column, not a relation aggregate.
+    if (tableColumns[fieldData.name] || !fieldData.name.endsWith(AGGREGATE_FIELD_SUFFIX)) {
+      continue;
+    }
+
+    const relEntry = relations[fieldData.name.slice(0, -AGGREGATE_FIELD_SUFFIX.length)];
+    const targetTable = relEntry ? selectionCtx.tables[relEntry.targetTableName] : undefined;
+    if (!relEntry || !targetTable) {
+      continue;
+    }
+
+    const joinCols = extractRelationJoinColumns(relEntry, table, targetTable);
+    if (joinCols) {
+      needed.push(joinCols.localColPropName);
+    }
+  }
+
+  return needed;
+};
 
 export const extractSelectedColumnsFromTree = (
   tree: Record<string, ResolveTree>,
   table: Table,
+  selectionCtx?: SelectionCtx,
 ): Record<string, true> => {
   const tableColumns = getColumns(table);
 
@@ -440,6 +577,10 @@ export const extractSelectedColumnsFromTree = (
     }
 
     selectedColumns.push([fieldData.name, true]);
+  }
+
+  for (const columnName of relationAggregateJoinColumns(tree, table, selectionCtx)) {
+    selectedColumns.push([columnName, true]);
   }
 
   if (!selectedColumns.length) {
@@ -460,6 +601,7 @@ export const extractSelectedColumnsFromTree = (
 export const extractSelectedColumnsFromTreeSQLFormat = <TColType extends Column = Column>(
   tree: Record<string, ResolveTree>,
   table: Table,
+  selectionCtx?: SelectionCtx,
 ): Record<string, TColType> => {
   const tableColumns = getColumns(table);
 
@@ -472,6 +614,10 @@ export const extractSelectedColumnsFromTreeSQLFormat = <TColType extends Column 
     }
 
     selectedColumns.push([fieldData.name, tableColumns[fieldData.name]!]);
+  }
+
+  for (const columnName of relationAggregateJoinColumns(tree, table, selectionCtx)) {
+    selectedColumns.push([columnName, tableColumns[columnName]!]);
   }
 
   if (!selectedColumns.length) {
@@ -701,32 +847,150 @@ const generateTableOrderTypeCached = (
   return order;
 };
 
+/**
+ * Relations that can be expressed as a correlated `EXISTS` subquery. Many-to-many relations
+ * declared with `.through()` need a junction join that the filter builder doesn't emit yet,
+ * so they're left out of the filter input entirely — a missing field is a clean GraphQL
+ * validation error, whereas a silently ignored filter would return too many rows.
+ */
+const isFilterableRelation = (relation: Relation<string>): boolean => !(relation as any).through;
+
+/**
+ * `${Target}ListRelationFilter` — the Prisma-style some/every/none wrapper for a to-many
+ * relation. Shared by every table that points at the same target, and built through a thunk
+ * so mutually-referencing tables (Users.posts ⇄ Posts.author) don't recurse forever.
+ */
+const generateListRelationFilterCached = (
+  targetTable: Table,
+  targetTableName: string,
+  cacheCtx: TypeCacheCtx,
+  typeNameMapper: TypeNameMapper | undefined,
+  relationMap: Record<string, Record<string, TableNamedRelations>> | undefined,
+  tables: Record<string, Table> | undefined,
+): GraphQLInputObjectType => {
+  const cached = cacheCtx.listRelationFilterCache.get(targetTableName);
+  if (cached) {
+    return cached;
+  }
+
+  const listFilter = new GraphQLInputObjectType({
+    name: `${resolveTypeName(targetTableName, typeNameMapper)}ListRelationFilter`,
+    fields: () => {
+      const targetFilters = generateTableFilterTypeCached(
+        targetTable,
+        targetTableName,
+        cacheCtx,
+        typeNameMapper,
+        relationMap,
+        tables,
+      );
+
+      return {
+        some: { type: targetFilters, description: 'At least one related row matches' },
+        none: { type: targetFilters, description: 'No related row matches' },
+        every: { type: targetFilters, description: 'Every related row matches' },
+      };
+    },
+  });
+
+  cacheCtx.listRelationFilterCache.set(targetTableName, listFilter);
+
+  return listFilter;
+};
+
+/**
+ * Filter fields for a table's relations: a to-one relation takes the target's own filter input
+ * directly, a to-many relation takes the some/every/none wrapper. A relation whose name collides
+ * with a column name is skipped — the column keeps the field.
+ */
+const generateRelationFilterFields = (
+  tableName: string,
+  cacheCtx: TypeCacheCtx,
+  typeNameMapper: TypeNameMapper | undefined,
+  columnFields: Record<string, ConvertedInputColumn>,
+  relationMap?: Record<string, Record<string, TableNamedRelations>>,
+  tables?: Record<string, Table>,
+): Record<string, { type: GraphQLInputObjectType; description?: string }> => {
+  const relations = relationMap?.[tableName];
+  if (!relations || !tables) {
+    return {};
+  }
+
+  const fields: Record<string, { type: GraphQLInputObjectType; description?: string }> = {};
+
+  for (const [relationName, relEntry] of Object.entries(relations)) {
+    if (relationName in columnFields) {
+      continue;
+    }
+
+    const targetTable = tables[relEntry.targetTableName];
+    const relation = (relEntry as any).relation ?? relEntry;
+    if (!targetTable || !isFilterableRelation(relation)) {
+      continue;
+    }
+
+    fields[relationName] = is(relation, One)
+      ? {
+          type: generateTableFilterTypeCached(
+            targetTable,
+            relEntry.targetTableName,
+            cacheCtx,
+            typeNameMapper,
+            relationMap,
+            tables,
+          ),
+          description: `Matches rows whose ${relationName} matches these filters`,
+        }
+      : {
+          type: generateListRelationFilterCached(
+            targetTable,
+            relEntry.targetTableName,
+            cacheCtx,
+            typeNameMapper,
+            relationMap,
+            tables,
+          ),
+        };
+  }
+
+  return fields;
+};
+
 const generateTableFilterTypeCached = (
   table: Table,
   tableName: string,
   cacheCtx: TypeCacheCtx,
   typeNameMapper?: TypeNameMapper,
+  relationMap?: Record<string, Record<string, TableNamedRelations>>,
+  tables?: Record<string, Table>,
 ) => {
   if (cacheCtx.filterTypeCache.has(table)) {
     return cacheCtx.filterTypeCache.get(table)!;
   }
 
-  const filterColumns = generateTableFilterValuesCached(table, tableName, cacheCtx);
+  // Fields are thunked so that relation filters, which reference other tables' filter inputs
+  // (and eventually this one again), are only resolved after this type is in the cache.
+  const buildFields = () => {
+    const filterColumns = generateTableFilterValuesCached(table, tableName, cacheCtx);
+    return {
+      ...filterColumns,
+      ...generateRelationFilterFields(tableName, cacheCtx, typeNameMapper, filterColumns, relationMap, tables),
+    };
+  };
+
+  const orFilters = new GraphQLInputObjectType({
+    name: `${resolveTypeName(tableName, typeNameMapper)}FiltersOr`,
+    fields: buildFields,
+  });
+
   const filters = new GraphQLInputObjectType({
     name: `${resolveTypeName(tableName, typeNameMapper)}Filters`,
-    fields: {
-      ...filterColumns,
+    fields: () => ({
+      ...buildFields(),
       OR: {
-        type: new GraphQLList(
-          new GraphQLNonNull(
-            new GraphQLInputObjectType({
-              name: `${resolveTypeName(tableName, typeNameMapper)}FiltersOr`,
-              fields: filterColumns,
-            }),
-          ),
-        ),
+        type: new GraphQLList(new GraphQLNonNull(orFilters)),
       },
-    },
+    }),
   });
 
   cacheCtx.filterTypeCache.set(table, filters);
@@ -758,10 +1022,11 @@ const generateSelectFields = <TWithOrder extends boolean>(
   usedTables: Set<string> = new Set(),
   resolverFactory?: RelationResolverFactory,
   currentDepth: number = 0,
+  relationAggregateFactory?: RelationAggregateFactory,
 ): SelectData<TWithOrder> => {
   const table = tables[tableName]!;
   const order = withOrder ? generateTableOrderTypeCached(table, tableName, typeNameMapper, cacheCtx) : undefined;
-  const filters = generateTableFilterTypeCached(table, tableName, cacheCtx, typeNameMapper);
+  const filters = generateTableFilterTypeCached(table, tableName, cacheCtx, typeNameMapper, relationMap, tables);
   const tableFields = generateTableSelectTypeFieldsCached(table, tableName);
 
   const relationsForTable = relationMap[tableName];
@@ -856,6 +1121,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
         nextUsedTables,
         resolverFactory,
         currentDepth + 1,
+        relationAggregateFactory,
       );
 
       // Use the target table's own GraphQL type directly instead of creating an intermediate relation type.
@@ -914,6 +1180,30 @@ const generateSelectFields = <TWithOrder extends boolean>(
           resolve,
         },
       ]);
+
+      // Aggregate over the related rows without fetching them: `user { postsAggregate { count } }`.
+      // Skipped when the name would shadow a column or another relation.
+      const aggregateFieldName = `${relationName}Aggregate`;
+      if (!tableFields[aggregateFieldName] && !relationsForTable?.[aggregateFieldName]) {
+        const relationAggregate = relationAggregateFactory?.({
+          tableName,
+          relationName,
+          relEntry: relEntry as TableNamedRelations,
+        });
+
+        if (relationAggregate) {
+          rawRelationFields.push([
+            aggregateFieldName,
+            {
+              type: new GraphQLNonNull(relationAggregate.type),
+              args: {
+                where: { type: relSelectData.filters },
+              },
+              resolve: relationAggregate.resolve,
+            } as unknown as ConvertedRelationColumnWithArgs,
+          ]);
+        }
+      }
     }
 
     const builtRelationFields = Object.fromEntries(rawRelationFields);
@@ -959,6 +1249,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   insertPrefix: string = 'create',
   updatePrefix: string = 'update',
   resolverFactory?: RelationResolverFactory,
+  relationAggregateFactory?: RelationAggregateFactory,
 ): GeneratedTableTypes<WithReturning> => {
   const { tableFields, relationFields, filters, order } = generateSelectFields(
     tables,
@@ -973,6 +1264,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
     new Set(),
     resolverFactory,
     0,
+    relationAggregateFactory,
   );
 
   const table = tables[tableName]!;
@@ -1057,25 +1349,24 @@ export const generateTableTypes = <WithReturning extends boolean>(
   };
 };
 
+/**
+ * Column name / direction pairs from an `orderBy` argument, highest priority first. Split out
+ * of `extractOrderBy` so the same ordering can be rebuilt against a subquery's fields, where
+ * there is no `Table` to read columns from.
+ */
+export const orderByEntries = (orderArgs: Record<string, any>): [string, 'asc' | 'desc'][] =>
+  Object.entries(orderArgs)
+    .sort((a, b) => (b[1]?.priority ?? 0) - (a[1]?.priority ?? 0))
+    .filter(([, config]) => config)
+    .map(([column, config]) => [column, config.direction]);
+
 export const extractOrderBy = <TTable extends Table, TArgs extends OrderByArgs<any> = OrderByArgs<TTable>>(
   table: TTable,
   orderArgs: TArgs,
-): SQL[] => {
-  const res = [] as SQL[];
-
-  for (const [column, config] of Object.entries(orderArgs).sort(
-    (a, b) => (b[1]?.priority ?? 0) - (a[1]?.priority ?? 0),
-  )) {
-    if (!config) {
-      continue;
-    }
-    const { direction } = config;
-
-    res.push(direction === 'asc' ? asc(getColumns(table)[column]!) : desc(getColumns(table)[column]!));
-  }
-
-  return res;
-};
+): SQL[] =>
+  orderByEntries(orderArgs).map(([column, direction]) =>
+    direction === 'asc' ? asc(getColumns(table)[column]!) : desc(getColumns(table)[column]!),
+  );
 
 export const extractFiltersColumn = <TColumn extends Column>(
   column: TColumn,
@@ -1136,10 +1427,169 @@ export const extractFiltersColumn = <TColumn extends Column>(
   return variants.length ? (variants.length > 1 ? and(...variants) : variants[0]) : undefined;
 };
 
+/**
+ * Everything `extractFilters` needs to turn a relation key in a `where` argument into a
+ * correlated subquery. Omitted by callers that don't generate relation filters, in which case
+ * relation keys can't appear in the input to begin with.
+ */
+export interface RelationFilterContext {
+  /** Every table in the schema, keyed by its schema key. */
+  tables: Record<string, Table>;
+  /** Relations keyed by table schema key, then relation name. */
+  relationMap: Record<string, Record<string, TableNamedRelations>>;
+  /**
+   * Schema key of the table being filtered. Not always the same as the `tableName` label
+   * used in error messages (relation `where` callbacks pass the relation name there).
+   */
+  tableKey: string;
+  /** Shared counter making every subquery alias unique within one extraction. */
+  aliases?: { n: number };
+}
+
+/**
+ * The build-scoped half of {@link RelationFilterContext}. Created once per generated schema and
+ * handed to every resolver, which adds the table it is filtering.
+ */
+export type RelationFilterBase = Pick<RelationFilterContext, 'tables' | 'relationMap'>;
+
+/** Narrows the build-scoped relation filter context to the table a resolver is filtering. */
+export const relationFilterCtx = (
+  base: RelationFilterBase | undefined,
+  tableKey: string,
+): RelationFilterContext | undefined => (base ? { ...base, tableKey } : undefined);
+
+/** The three ways a to-many relation can be required to match, plus the to-one shorthand. */
+type RelationMatchMode = 'some' | 'none' | 'every';
+
+/**
+ * Correlates the parent row with the aliased target table using the relation's own join
+ * columns. Columns are matched by SQL name rather than object identity so this also works when
+ * the parent is an aliased proxy (as it is inside a relational `with:` where callback).
+ */
+const buildRelationJoinCondition = (
+  parentTable: Table,
+  relation: Relation<string>,
+  aliasedTarget: Table,
+  relationName: string,
+): SQL | undefined => {
+  const sourceColumns = (relation as any).sourceColumns as Column[] | undefined;
+  const targetColumns = (relation as any).targetColumns as Column[] | undefined;
+
+  if (!sourceColumns?.length || sourceColumns.length !== targetColumns?.length) {
+    throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+  }
+
+  const parentColumns = Object.values(getColumns(parentTable));
+  const targetColumnsByName = Object.values(getColumns(aliasedTarget));
+
+  const conditions: SQL[] = [];
+  for (let i = 0; i < sourceColumns.length; i++) {
+    const localColumn = parentColumns.find((c) => c.name === sourceColumns[i]!.name);
+    const foreignColumn = targetColumnsByName.find((c) => c.name === targetColumns[i]!.name);
+
+    if (!localColumn || !foreignColumn) {
+      throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+    }
+
+    conditions.push(eq(localColumn, foreignColumn));
+  }
+
+  return conditions.length > 1 ? and(...conditions) : conditions[0];
+};
+
+/**
+ * Builds one `[NOT] EXISTS (SELECT 1 FROM target alias WHERE …)` for a relation filter.
+ *
+ * `some` / the to-one shorthand match when a related row satisfies the inner filters, `none`
+ * when none does, and `every` is expressed as "no related row fails the inner filters".
+ * Because `every` negates the inner condition, a related row whose compared column is NULL
+ * counts as matching (SQL three-valued logic) — the same caveat Prisma carries.
+ */
+const buildRelationExists = (
+  parentTable: Table,
+  relationName: string,
+  relEntry: TableNamedRelations,
+  innerFilters: Filters<Table> | undefined,
+  mode: RelationMatchMode,
+  ctx: RelationFilterContext,
+): SQL | undefined => {
+  const { targetTableName } = relEntry;
+  const targetTable = ctx.tables[targetTableName];
+  const relation = ((relEntry as any).relation ?? relEntry) as Relation<string>;
+
+  if (!targetTable || !isFilterableRelation(relation)) {
+    throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+  }
+
+  ctx.aliases ??= { n: 0 };
+  const aliases = ctx.aliases;
+  const aliasedTarget = aliasedTable(targetTable, `dgql_rel_${aliases.n++}`);
+
+  const joinCondition = buildRelationJoinCondition(parentTable, relation, aliasedTarget, relationName);
+  // A relation declared with its own `where` only ever exposes the rows it selects, so the
+  // subquery has to honour it too — otherwise a filter could match a row the relation hides.
+  const relationWhere = (relation as any).where
+    ? relationsFilterToSQL((relation as any).isReversed ? parentTable : aliasedTarget, (relation as any).where)
+    : undefined;
+
+  const inner = innerFilters
+    ? extractFilters(aliasedTarget, targetTableName, innerFilters, { ...ctx, tableKey: targetTableName, aliases })
+    : undefined;
+
+  if (mode === 'every') {
+    // "every related row matches" with no inner condition is vacuously true.
+    if (!inner) {
+      return undefined;
+    }
+
+    return sql`not exists (select 1 from ${getTableAsAliasSQL(aliasedTarget)} where ${and(joinCondition, relationWhere, not(inner))})`;
+  }
+
+  const condition = and(joinCondition, relationWhere, inner);
+
+  return mode === 'none'
+    ? sql`not exists (select 1 from ${getTableAsAliasSQL(aliasedTarget)} where ${condition})`
+    : sql`exists (select 1 from ${getTableAsAliasSQL(aliasedTarget)} where ${condition})`;
+};
+
+/**
+ * Handles one relation key in a `where` argument. To-one relations take the target's filters
+ * inline; to-many relations take any combination of `some` / `none` / `every`, ANDed together.
+ */
+const extractRelationFilter = (
+  parentTable: Table,
+  relationName: string,
+  relEntry: TableNamedRelations,
+  value: Record<string, any>,
+  ctx: RelationFilterContext,
+): SQL | undefined => {
+  const relation = ((relEntry as any).relation ?? relEntry) as Relation<string>;
+
+  if (is(relation, One)) {
+    return buildRelationExists(parentTable, relationName, relEntry, value, 'some', ctx);
+  }
+
+  const variants: SQL[] = [];
+  for (const mode of ['some', 'none', 'every'] as const) {
+    const inner = value[mode];
+    if (inner === undefined || inner === null) {
+      continue;
+    }
+
+    const extracted = buildRelationExists(parentTable, relationName, relEntry, inner, mode, ctx);
+    if (extracted) {
+      variants.push(extracted);
+    }
+  }
+
+  return variants.length ? (variants.length > 1 ? and(...variants) : variants[0]) : undefined;
+};
+
 export const extractFilters = <TTable extends Table>(
   table: TTable,
   tableName: string,
   filters: Filters<TTable>,
+  relationCtx?: RelationFilterContext,
 ): SQL | undefined => {
   if (!filters.OR?.length) {
     delete filters.OR;
@@ -1158,7 +1608,7 @@ export const extractFilters = <TTable extends Table>(
     const variants = [] as SQL[];
 
     for (const variant of filters.OR) {
-      const extracted = extractFilters(table, tableName, variant);
+      const extracted = extractFilters(table, tableName, variant, relationCtx);
       if (extracted) {
         variants.push(extracted);
       }
@@ -1167,14 +1617,25 @@ export const extractFilters = <TTable extends Table>(
     return variants.length ? (variants.length > 1 ? or(...variants) : variants[0]) : undefined;
   }
 
+  const columns = getColumns(table);
+  const relations = relationCtx?.relationMap[relationCtx.tableKey];
+
   const variants = [] as SQL[];
-  for (const [columnName, operators] of entries) {
-    if (operators === null) {
+  for (const [fieldName, operators] of entries) {
+    if (operators === null || operators === undefined) {
       continue;
     }
 
-    const column = getColumns(table)[columnName]!;
-    variants.push(extractFiltersColumn(column, columnName, operators)!);
+    const column = columns[fieldName];
+    const extracted = column
+      ? extractFiltersColumn(column, fieldName, operators)
+      : relations?.[fieldName] && relationCtx
+        ? extractRelationFilter(table, fieldName, relations[fieldName]!, operators as any, relationCtx)
+        : undefined;
+
+    if (extracted) {
+      variants.push(extracted);
+    }
   }
 
   return variants.length ? (variants.length > 1 ? and(...variants) : variants[0]) : undefined;
@@ -1188,6 +1649,7 @@ const extractRelationsParamsInner = (
   originField: ResolveTree,
   typeNameMapper?: TypeNameMapper,
   _isInitial: boolean = false,
+  filterCtx?: RelationFilterBase,
 ) => {
   const relationsForTable = relationMap[tableName];
   if (!relationsForTable) {
@@ -1221,7 +1683,11 @@ const extractRelationsParamsInner = (
       continue;
     }
 
-    const columns = extractSelectedColumnsFromTree(relFieldSelection, tables[targetTableName]!);
+    const columns = extractSelectedColumnsFromTree(relFieldSelection, tables[targetTableName]!, {
+      tableName: targetTableName,
+      relationMap,
+      tables,
+    });
 
     const thisRecord: Partial<ProcessedTableSelectArgs> = {};
     thisRecord.columns = columns;
@@ -1238,7 +1704,10 @@ const extractRelationsParamsInner = (
     // original unaliased table name.
     const relWhere = relationArgs?.where;
     thisRecord.where = relWhere
-      ? { RAW: (aliasedTable: Table) => extractFilters(aliasedTable, relName, relWhere) }
+      ? {
+          RAW: (aliasedTable: Table) =>
+            extractFilters(aliasedTable, relName, relWhere, relationFilterCtx(filterCtx, targetTableName)),
+        }
       : undefined;
     // When a relation is paginated (limit/offset) but unordered, default to the target's
     // primary key so the per-parent slice is deterministic. Drizzle's RQB calls orderBy
@@ -1255,7 +1724,16 @@ const extractRelationsParamsInner = (
     thisRecord.limit = limit;
 
     const relWith = relationField
-      ? extractRelationsParamsInner(relationMap, tables, targetTableName, relTypeName, relationField, typeNameMapper)
+      ? extractRelationsParamsInner(
+          relationMap,
+          tables,
+          targetTableName,
+          relTypeName,
+          relationField,
+          typeNameMapper,
+          false,
+          filterCtx,
+        )
       : undefined;
     thisRecord.with = relWith;
 
@@ -1272,12 +1750,13 @@ export const extractRelationsParams = (
   info: ResolveTree | undefined,
   typeName: string,
   typeNameMapper?: TypeNameMapper,
+  filterCtx?: RelationFilterBase,
 ): Record<string, Partial<ProcessedTableSelectArgs>> | undefined => {
   if (!info) {
     return undefined;
   }
 
-  return extractRelationsParamsInner(relationMap, tables, tableName, typeName, info, typeNameMapper, true);
+  return extractRelationsParamsInner(relationMap, tables, tableName, typeName, info, typeNameMapper, true, filterCtx);
 };
 
 /**
@@ -1386,6 +1865,404 @@ export const primaryKeyOrderExprs = (table: Table, pkNames: readonly string[]): 
 };
 
 /**
+ * Every set of columns that uniquely identifies a row of `table`: the primary key first,
+ * then each unique constraint and unique index, then each column declared `.unique()`
+ * inline. Sets are property names (what GraphQL inputs use), not database column names.
+ *
+ * `getTableConfig` is the dialect's own — the three dialects expose the same
+ * `{ primaryKeys, uniqueConstraints, indexes }` shape but from different modules, so the
+ * caller passes theirs in, as `getPrimaryKeyPropNamesFromConfig` does.
+ *
+ * Index entries whose columns are SQL expressions rather than plain columns are skipped:
+ * an expression index is a valid conflict target in the database but cannot be named by a
+ * column enum. Deduplicated, order-insensitive — a column that is both the primary key and
+ * a unique constraint yields one set.
+ */
+export const getUniqueColumnSets = (
+  table: Table,
+  getTableConfig: (table: Table) => {
+    primaryKeys: { columns: { name: string }[] }[];
+    uniqueConstraints?: { columns: { name: string }[] }[];
+    indexes?: { config: { unique?: boolean; columns: any[] } }[];
+  },
+): string[][] => {
+  const cols = getColumns(table);
+  const propNameByColumnName = new Map(Object.entries(cols).map(([propName, col]) => [(col as any).name, propName]));
+  // A set is usable only if every one of its columns maps back to a property on the table.
+  const toPropNames = (columnNames: (string | undefined)[]): string[] | undefined => {
+    const propNames: string[] = [];
+    for (const columnName of columnNames) {
+      const propName = columnName === undefined ? undefined : propNameByColumnName.get(columnName);
+      if (!propName) {
+        return undefined;
+      }
+      propNames.push(propName);
+    }
+    return propNames.length ? propNames : undefined;
+  };
+
+  const config = getTableConfig(table);
+  const candidates: (string[] | undefined)[] = [
+    // Inline `.primaryKey()` columns, then table-level `primaryKey({ columns })`.
+    Object.entries(cols)
+      .filter(([, col]) => (col as any).primary)
+      .map(([propName]) => propName),
+    ...config.primaryKeys.map((pk) => toPropNames(pk.columns.map((c) => c.name))),
+    ...(config.uniqueConstraints ?? []).map((uc) => toPropNames(uc.columns.map((c) => c.name))),
+    ...(config.indexes ?? [])
+      .filter((index) => index.config.unique)
+      .map((index) => toPropNames(index.config.columns.map((c) => (c as any)?.name))),
+    ...Object.entries(cols)
+      .filter(([, col]) => (col as any).isUnique)
+      .map(([propName]) => [propName]),
+  ];
+
+  const seen = new Set<string>();
+  const sets: string[][] = [];
+  for (const set of candidates) {
+    if (!set?.length) {
+      continue;
+    }
+    const key = [...set].sort().join(',');
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    sets.push(set);
+  }
+  return sets;
+};
+
+/** Alias of the row-number helper column in the `distinct` pass. Namespaced against real columns. */
+const DISTINCT_RN = '__drizzle_graphql_distinct_rn';
+
+const columnEnumCache = new WeakMap<object, Map<string, GraphQLEnumType>>();
+
+/**
+ * An enum of a table's column property names, under `enumName`. Cached per (table, enum
+ * name), like the order/filter inputs, so repeated builds reuse one instance and two enums
+ * over the same table never collide.
+ *
+ * Returns `undefined` when no column qualifies — the caller then omits the argument or
+ * input field the enum would have typed, rather than emitting an empty enum, which is
+ * invalid GraphQL.
+ */
+export const generateColumnEnum = (
+  table: Table,
+  enumName: string,
+  description: string,
+  predicate: (column: Column, columnName: string) => boolean = () => true,
+): GraphQLEnumType | undefined => {
+  let tableCache = columnEnumCache.get(table);
+  const cached = tableCache?.get(enumName);
+  if (cached) {
+    return cached;
+  }
+
+  const columnNames = Object.entries(getColumns(table))
+    .filter(([columnName, column]) => predicate(column as Column, columnName))
+    .map(([columnName]) => columnName);
+  if (!columnNames.length) {
+    return undefined;
+  }
+
+  const enumType = new GraphQLEnumType({
+    name: enumName,
+    description,
+    values: Object.fromEntries(columnNames.map((columnName) => [columnName, { value: columnName }])),
+  });
+
+  if (!tableCache) {
+    tableCache = new Map();
+    columnEnumCache.set(table, tableCache);
+  }
+  tableCache.set(enumName, enumType);
+  return enumType;
+};
+
+/** `${typeName}DistinctColumn` — the enum of columns a list query may be made distinct on. */
+export const generateDistinctEnum = (table: Table, typeName: string): GraphQLEnumType | undefined =>
+  generateColumnEnum(table, `${typeName}DistinctColumn`, `Columns of ${typeName} that a query can be made distinct on`);
+
+// ── upsert / conflict handling ────────────────────────────────────────────────
+
+/** Shared by every table's `${typeName}OnConflict` input, so it is created once. */
+export const conflictActionEnum = new GraphQLEnumType({
+  name: 'ConflictAction',
+  description: 'What an upsert does when a row with the same unique key already exists',
+  values: {
+    UPDATE: { value: 'UPDATE', description: 'Overwrite the conflicting row with the supplied values' },
+    NOTHING: { value: 'NOTHING', description: 'Keep the existing row and insert nothing' },
+  },
+});
+
+/**
+ * The `${typeName}OnConflict` input that types an upsert's `onConflict` argument.
+ *
+ * `target` and `where` only exist when the dialect can express them: MySQL's
+ * `ON DUPLICATE KEY UPDATE` fires on any unique key and takes no predicate, so offering
+ * either there would mean silently ignoring it.
+ *
+ * Returns `undefined` when the table has nothing to conflict on (`withTarget` dialects
+ * only) — the caller then generates no upsert mutations for that table at all, rather than
+ * an operation whose every call is a database error.
+ */
+export const generateOnConflictInput = (params: {
+  table: Table;
+  typeName: string;
+  uniqueSets: string[][];
+  tableFilters: GraphQLInputObjectType;
+  withTarget: boolean;
+}): GraphQLInputObjectType | undefined => {
+  const { table, typeName, uniqueSets, tableFilters, withTarget } = params;
+
+  const updateEnum = generateColumnEnum(
+    table,
+    `${typeName}UpdateColumn`,
+    `Columns of ${typeName} that an upsert can overwrite`,
+  );
+  if (!updateEnum) {
+    return undefined;
+  }
+
+  const fields: Record<string, any> = {
+    action: {
+      type: conflictActionEnum,
+      defaultValue: 'UPDATE',
+      description: 'Whether a conflicting row is overwritten or left alone. Defaults to UPDATE.',
+    },
+    update: {
+      type: new GraphQLList(new GraphQLNonNull(updateEnum)),
+      description:
+        'Columns to overwrite on conflict. Defaults to every column the request supplied, minus the conflict target. Columns the request did not supply cannot be listed here — there would be no value to write.',
+    },
+  };
+
+  if (withTarget) {
+    const uniqueColumns = new Set(uniqueSets.flat());
+    const targetEnum = generateColumnEnum(
+      table,
+      `${typeName}ConflictTarget`,
+      `Columns of ${typeName} that carry a unique constraint, and so can be conflicted on`,
+      (_column, columnName) => uniqueColumns.has(columnName),
+    );
+    if (!targetEnum) {
+      return undefined;
+    }
+
+    fields['target'] = {
+      type: new GraphQLList(new GraphQLNonNull(targetEnum)),
+      description:
+        'The unique column set a conflict is detected on. Must match one of the table’s unique constraints exactly. Defaults to the primary key.',
+    };
+    fields['where'] = {
+      type: tableFilters,
+      description: 'Only overwrite conflicting rows that match this filter. Others are left alone.',
+    };
+  }
+
+  return new GraphQLInputObjectType({
+    name: `${typeName}OnConflict`,
+    description: `Conflict handling for an upsert of ${typeName}`,
+    fields,
+  });
+};
+
+/** The `onConflict` argument as it arrives from GraphQL. */
+export type OnConflictArg = {
+  action?: 'UPDATE' | 'NOTHING';
+  target?: string[];
+  update?: string[];
+  where?: any;
+};
+
+/** What a dialect needs to turn an insert into an upsert. */
+export type ConflictPlan = {
+  action: 'UPDATE' | 'NOTHING';
+  /** Columns to conflict on, or `undefined` on dialects that take no conflict target. */
+  target: Column[] | undefined;
+  /** `column -> value to write`, in Drizzle's `set` shape. Empty when the action is NOTHING. */
+  set: Record<string, SQL>;
+  setWhere: SQL | undefined;
+};
+
+/**
+ * Turns the request's `onConflict` argument and the rows it is inserting into the clause a
+ * dialect should attach.
+ *
+ * `excludedRef` names the row that failed to insert in the dialect's own terms
+ * (`excluded.col` on PostgreSQL and SQLite, `values(col)` on MySQL), which is what makes a
+ * batch upsert update each row with its own values instead of the last row's.
+ *
+ * An UPDATE with nothing left to write degrades to NOTHING: `DO UPDATE SET` with an empty
+ * body is not valid SQL, and doing nothing is what the request asked for anyway.
+ */
+export const resolveConflictPlan = (params: {
+  table: Table;
+  values: Record<string, any>[];
+  onConflict: OnConflictArg | undefined;
+  pkNames: readonly string[];
+  uniqueSets: string[][];
+  excludedRef: (columnName: string) => SQL;
+  withTarget: boolean;
+  buildWhere?: (where: any) => SQL | undefined;
+}): ConflictPlan => {
+  const { table, values, onConflict, pkNames, uniqueSets, excludedRef, withTarget, buildWhere } = params;
+  const columns = getColumns(table) as Record<string, Column>;
+
+  let target: Column[] | undefined;
+  if (withTarget) {
+    const targetNames = onConflict?.target?.length ? onConflict.target : [...pkNames];
+    if (!targetNames.length) {
+      throw new GraphQLError(
+        'Unable to upsert: no conflict target was given and this table has no primary key. Pass onConflict.target.',
+      );
+    }
+    // A target that is not itself a unique constraint is a database error, and a confusing
+    // one ("there is no unique or exclusion constraint matching the ON CONFLICT
+    // specification"), so reject it here where we can say which sets are valid.
+    const requested = [...targetNames].sort().join(',');
+    if (!uniqueSets.some((set) => [...set].sort().join(',') === requested)) {
+      throw new GraphQLError(
+        `Unable to upsert: [${targetNames.join(', ')}] is not a unique constraint on this table. Valid conflict targets: ${uniqueSets
+          .map((set) => `[${set.join(', ')}]`)
+          .join(', ')}.`,
+      );
+    }
+    target = targetNames.map((name) => columns[name]!);
+  }
+
+  if ((onConflict?.action ?? 'UPDATE') === 'NOTHING') {
+    return { action: 'NOTHING', target, set: {}, setWhere: undefined };
+  }
+
+  // Only columns the request actually supplied have a value to copy over; anything else
+  // would write the column's default (usually null) onto the row that already exists.
+  const supplied = new Set(values.flatMap((row) => Object.keys(row)));
+  const targetNames = new Set(withTarget ? (onConflict?.target?.length ? onConflict.target : pkNames) : []);
+
+  let updateNames: string[];
+  if (onConflict?.update?.length) {
+    const unsupplied = onConflict.update.filter((name) => !supplied.has(name));
+    if (unsupplied.length) {
+      throw new GraphQLError(
+        `Unable to upsert: onConflict.update lists ${unsupplied.join(', ')}, which the values do not supply.`,
+      );
+    }
+    updateNames = onConflict.update;
+  } else {
+    updateNames = [...supplied].filter((name) => !targetNames.has(name));
+  }
+
+  if (!updateNames.length) {
+    return { action: 'NOTHING', target, set: {}, setWhere: undefined };
+  }
+
+  const set = Object.fromEntries(updateNames.map((name) => [name, excludedRef(columns[name]!.name)]));
+  const setWhere = onConflict?.where && buildWhere ? buildWhere(onConflict.where) : undefined;
+
+  return { action: 'UPDATE', target, set, setWhere };
+};
+
+/** `excluded.<column>` — PostgreSQL and SQLite name the rejected row this way. */
+export const excludedColumnRef = (columnName: string): SQL => sql`excluded.${sql.identifier(columnName)}`;
+
+/** `values(<column>)` — MySQL's equivalent inside ON DUPLICATE KEY UPDATE. */
+export const mysqlValuesColumnRef = (columnName: string): SQL => sql`values(${sql.identifier(columnName)})`;
+
+/**
+ * Keeps the first row of each distinct combination of the requested columns, following the
+ * query's own ordering, then applies `limit`/`offset` to what survives — and returns the
+ * surviving rows' primary key values in that order.
+ *
+ * The relational query builder has no `distinct` support, so this runs as its own
+ * `row_number() over (partition by … order by …)` pass and the main query is narrowed to the
+ * keys it returns. `orderExprs` is the full ordering (the request's `orderBy` plus the primary
+ * key tiebreak); the caller applies the same ordering to the main query, so the two agree.
+ */
+export const selectDistinctKeys = async (params: {
+  db: any;
+  table: Table;
+  tableName: string;
+  distinct: string[];
+  pkNames: readonly string[];
+  where: SQL | undefined;
+  orderBy: Record<string, any> | undefined;
+  limit?: number;
+  offset?: number;
+}): Promise<Record<string, any>[]> => {
+  const { db, table, tableName, distinct, pkNames, where, orderBy, limit, offset } = params;
+  const cols = getColumns(table);
+
+  if (!pkNames.length) {
+    throw new GraphQLError(`Table ${tableName} has no primary key, so 'distinct' cannot be applied to it.`);
+  }
+
+  const partitionCols = distinct.map((name) => cols[name]).filter(Boolean);
+  if (!partitionCols.length) {
+    throw new GraphQLError(`No known columns were given to 'distinct' on ${tableName}.`);
+  }
+
+  const orderEntries = orderBy ? orderByEntries(orderBy) : [];
+  // Both orderings must agree, so build each from the same entries — once against the table
+  // (inside the window) and once against the subquery's fields (for the outer row order).
+  const windowOrder = [
+    ...orderEntries.map(([column, direction]) => (direction === 'asc' ? asc(cols[column]!) : desc(cols[column]!))),
+    ...primaryKeyOrderExprs(table, pkNames),
+  ];
+
+  const rowNumber = sql`row_number() over (partition by ${sql.join(partitionCols, sql`, `)} order by ${sql.join(
+    windowOrder,
+    sql`, `,
+  )})`.as(DISTINCT_RN);
+
+  const sub = db
+    .select({ ...cols, [DISTINCT_RN]: rowNumber })
+    .from(table)
+    .where(where)
+    .as('__dgql_distinct');
+
+  const outerOrder = [
+    ...orderEntries.map(([column, direction]) => (direction === 'asc' ? asc(sub[column]) : desc(sub[column]))),
+    ...pkNames.filter((name) => sub[name]).map((name) => asc(sub[name])),
+  ];
+
+  let query = db
+    .select(Object.fromEntries(pkNames.map((name) => [name, sub[name]])))
+    .from(sub)
+    .where(eq(sub[DISTINCT_RN], 1))
+    .orderBy(...outerOrder);
+
+  if (offset) {
+    query = query.offset(offset);
+  }
+  if (limit != null) {
+    query = query.limit(limit);
+  }
+
+  return await query;
+};
+
+/**
+ * Condition matching exactly the rows identified by `keys` — an `IN (…)` for a single-column
+ * primary key, an `OR` of per-row equality for a composite one. `table` may be the aliased
+ * RQB proxy.
+ */
+export const primaryKeyRestriction = (table: Table, pkNames: readonly string[], keys: Record<string, any>[]): SQL => {
+  const cols = getColumns(table);
+
+  if (pkNames.length === 1) {
+    const name = pkNames[0]!;
+    return inArray(
+      cols[name]!,
+      keys.map((key) => key[name]),
+    );
+  }
+
+  return or(...keys.map((key) => and(...pkNames.map((name) => eq(cols[name]!, key[name])))))!;
+};
+
+/**
  * Computes the RETURNING columns and relation selection for a mutation resolver: extracts
  * the selected scalar columns, determines whether any relations were selected, and only
  * then forces the primary key into the column set (so the post-mutation eager-load can
@@ -1410,13 +2287,101 @@ export const prepareMutationRelationColumns = (params: {
     ? extractRelationsParams(relationMap, tables, tableName, parsedInfo, typeName, typeNameMapper)
     : undefined;
   const hasRelations = !!(withParams && Object.keys(withParams).length);
-  const baseColumns = extractSelectedColumnsFromTreeSQLFormat(parsedInfo.fieldsByTypeName[typeName]!, table);
+  const baseColumns = extractSelectedColumnsFromTreeSQLFormat(parsedInfo.fieldsByTypeName[typeName]!, table, {
+    tableName,
+    relationMap,
+    tables,
+  });
   const columns = hasRelations ? withPrimaryKeyColumns(baseColumns, table, pkNames) : baseColumns;
   return { columns, hasRelations, withParams };
 };
 
 /** Wraps a thrown Error as a (message-only) GraphQLError; passes non-Errors through unchanged. */
-export const toGraphQLError = (e: unknown): unknown => (e instanceof Error ? new GraphQLError(e.message) : e);
+/**
+ * Normalizes whatever a driver threw into a `GraphQLError`. Errors drizzle-graphql raised
+ * itself pass straight through; anything else keeps the thrown value on `originalError`,
+ * which is how {@link defaultErrorMapper} later tells the two apart.
+ */
+export const toGraphQLError = (e: unknown): unknown => {
+  if (e instanceof GraphQLError) {
+    return e;
+  }
+  return e instanceof Error ? new GraphQLError(e.message, { originalError: e }) : e;
+};
+
+/**
+ * Default for `config.onError`: keeps drizzle-graphql's own errors, which are written for
+ * the client, and replaces driver/database errors with a generic message. Their text names
+ * tables, columns, constraints and offending values, none of which belongs in a response.
+ * The original is preserved on `originalError` for server-side logging.
+ */
+export const defaultErrorMapper = (error: unknown): unknown => {
+  if (error instanceof GraphQLError && !error.originalError) {
+    return error;
+  }
+
+  return new GraphQLError('Internal server error', {
+    originalError:
+      error instanceof GraphQLError ? (error.originalError ?? error) : error instanceof Error ? error : null,
+    extensions: { code: 'INTERNAL_SERVER_ERROR' },
+  });
+};
+
+/**
+ * Wraps every resolver reachable from a generated entity set so that its errors pass through
+ * `mapError` first. Done here rather than at each `throw` site so that the hook also covers
+ * relation field resolvers and anything that throws outside a builder's own try/catch.
+ */
+export const applyErrorMapper = (
+  entities: {
+    queries: Record<string, { resolve?: (...args: any[]) => any }>;
+    mutations: Record<string, { resolve?: (...args: any[]) => any }>;
+    types: Record<string, { getFields?: () => Record<string, { resolve?: (...args: any[]) => any }> }>;
+    fieldResolvers?: Record<string, Record<string, (...args: any[]) => any>>;
+  },
+  mapError: (error: unknown) => unknown,
+): void => {
+  const wrap =
+    (resolve: (...args: any[]) => any) =>
+    (...args: any[]) => {
+      try {
+        const result = resolve(...args);
+        if (result && typeof result.then === 'function') {
+          return result.then(undefined, (e: unknown) => {
+            throw mapError(e);
+          });
+        }
+        return result;
+      } catch (e) {
+        throw mapError(e);
+      }
+    };
+
+  for (const field of [...Object.values(entities.queries), ...Object.values(entities.mutations)]) {
+    if (field?.resolve) {
+      field.resolve = wrap(field.resolve);
+    }
+  }
+
+  // Relation and aggregate fields live on the object types, not in the query/mutation maps.
+  for (const type of Object.values(entities.types)) {
+    if (typeof type?.getFields !== 'function') {
+      continue;
+    }
+    for (const field of Object.values(type.getFields())) {
+      if (field?.resolve) {
+        field.resolve = wrap(field.resolve);
+      }
+    }
+  }
+
+  // Standalone relation resolvers, handed out for use in hand-written schemas.
+  for (const tableResolvers of Object.values(entities.fieldResolvers ?? {})) {
+    for (const [relationName, resolve] of Object.entries(tableResolvers)) {
+      tableResolvers[relationName] = wrap(resolve);
+    }
+  }
+};
 
 /**
  * Derives the generated query/mutation field names for a table from the naming config
@@ -1425,14 +2390,17 @@ export const toGraphQLError = (e: unknown): unknown => (e instanceof Error ? new
 export const computeResolverFieldNames = (
   tableName: string,
   typeNameMapper: TypeNameMapper | undefined,
-  prefixes: { insert: string; update: string; delete: string },
+  prefixes: { insert: string; update: string; delete: string; upsert?: string },
   suffixes: { list: string; single: string },
 ): {
   typeName: string;
   listFieldName: string;
   singleFieldName: string;
+  aggregateFieldName: string;
   createArrayFieldName: string;
   createSingleFieldName: string;
+  upsertArrayFieldName: string;
+  upsertSingleFieldName: string;
   updateFieldName: string;
   deleteFieldName: string;
 } => {
@@ -1440,18 +2408,27 @@ export const computeResolverFieldNames = (
   const typeName = mapped ? capitalize(mapped.singular) : capitalize(tableName);
   const listFieldName = (mapped?.plural ?? uncapitalize(tableName)) + suffixes.list;
   const singleFieldName = mapped?.singular ?? uncapitalize(tableName) + suffixes.single;
+  const aggregateFieldName = `${mapped?.plural ?? uncapitalize(tableName)}Aggregate`;
   const createArrayFieldName = `${prefixes.insert}${mapped ? capitalize(mapped.plural) : capitalize(tableName)}`;
   const createSingleFieldName = mapped
     ? `${prefixes.insert}${capitalize(mapped.singular)}`
     : `${prefixes.insert}${capitalize(tableName)}${suffixes.single}`;
+  const upsertPrefix = prefixes.upsert ?? 'upsert';
+  const upsertArrayFieldName = `${upsertPrefix}${mapped ? capitalize(mapped.plural) : capitalize(tableName)}`;
+  const upsertSingleFieldName = mapped
+    ? `${upsertPrefix}${capitalize(mapped.singular)}`
+    : `${upsertPrefix}${capitalize(tableName)}${suffixes.single}`;
   const updateFieldName = `${prefixes.update}${mapped ? capitalize(mapped.singular) : capitalize(tableName)}`;
   const deleteFieldName = `${prefixes.delete}${mapped ? capitalize(mapped.singular) : capitalize(tableName)}`;
   return {
     typeName,
     listFieldName,
     singleFieldName,
+    aggregateFieldName,
     createArrayFieldName,
     createSingleFieldName,
+    upsertArrayFieldName,
+    upsertSingleFieldName,
     updateFieldName,
     deleteFieldName,
   };
@@ -1461,11 +2438,13 @@ export const computeResolverFieldNames = (
 export const selectArrayArgs = (
   orderArgs: GraphQLInputObjectType,
   filterArgs: GraphQLInputObjectType,
+  distinctEnum?: GraphQLEnumType,
 ): Record<string, { type: any }> => ({
   offset: { type: GraphQLInt },
   limit: { type: GraphQLInt },
   orderBy: { type: orderArgs },
   where: { type: filterArgs },
+  ...(distinctEnum ? { distinct: { type: new GraphQLList(new GraphQLNonNull(distinctEnum)) } } : {}),
 });
 
 /** GraphQL argument map for a single-row select field (no `limit`). */
@@ -1499,6 +2478,10 @@ export const runRelationalSelect = async (opts: {
   orderBy?: any;
   where?: any;
   single: boolean;
+  filterCtx?: RelationFilterBase;
+  pkNames?: readonly string[];
+  db?: any;
+  distinct?: string[];
 }): Promise<any> => {
   const {
     queryBase,
@@ -1513,16 +2496,67 @@ export const runRelationalSelect = async (opts: {
     orderBy,
     where,
     single,
+    filterCtx,
+    pkNames,
   } = opts;
+  const distinct = opts.distinct?.length ? opts.distinct : undefined;
+  // Taking a slice of an unordered result lets the database return any rows it likes, so
+  // `limit`/`offset` pages can overlap or skip rows between requests, and a single query
+  // can return a different row each time. Default to the primary key whenever the query is
+  // narrowed to a subset, mirroring the relation-level default in extractRelationsParamsInner.
+  const needsDefaultOrder = single || offset != null || opts.limit != null;
+
+  // `distinct` runs as its own pass — the relational query builder cannot express it — and
+  // the main query is then narrowed to the primary keys it picked, with the same ordering
+  // and without re-applying limit/offset.
+  let distinctKeys: Record<string, any>[] | undefined;
+  if (distinct) {
+    distinctKeys = await selectDistinctKeys({
+      db: opts.db,
+      table,
+      tableName,
+      distinct,
+      pkNames: pkNames ?? [],
+      where: where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
+      orderBy,
+      limit: single ? 1 : opts.limit,
+      offset,
+    });
+
+    if (!distinctKeys.length) {
+      return single ? undefined : [];
+    }
+  }
+
   const params: any = {
-    columns: extractSelectedColumnsFromTree(parsedInfo.fieldsByTypeName[typeName]!, table),
-    offset,
+    columns: extractSelectedColumnsFromTree(parsedInfo.fieldsByTypeName[typeName]!, table, {
+      tableName,
+      relationMap,
+      tables,
+    }),
+    offset: distinctKeys ? undefined : offset,
     // drizzle-orm v1 RQB calls orderBy/where with the aliased table proxy — use it
     // directly so column refs match the CTE alias.
-    orderBy: orderBy ? (aliasedTable: Table) => extractOrderBy(aliasedTable, orderBy) : undefined,
-    where: where ? { RAW: (aliasedTable: Table) => extractFilters(aliasedTable, tableName, where) } : undefined,
+    orderBy: distinctKeys
+      ? (aliasedTable: Table) => [
+          ...(orderBy ? extractOrderBy(aliasedTable, orderBy) : []),
+          ...primaryKeyOrderExprs(aliasedTable, pkNames!),
+        ]
+      : orderBy
+        ? (aliasedTable: Table) => extractOrderBy(aliasedTable, orderBy)
+        : needsDefaultOrder && pkNames?.length
+          ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
+          : undefined,
+    where: distinctKeys
+      ? { RAW: (aliasedTable: Table) => primaryKeyRestriction(aliasedTable, pkNames!, distinctKeys!) }
+      : where
+        ? {
+            RAW: (aliasedTable: Table) =>
+              extractFilters(aliasedTable, tableName, where, relationFilterCtx(filterCtx, tableName)),
+          }
+        : undefined,
     with: relationMap[tableName]
-      ? extractRelationsParams(relationMap, tables, tableName, parsedInfo, typeName, typeNameMapper)
+      ? extractRelationsParams(relationMap, tables, tableName, parsedInfo, typeName, typeNameMapper, filterCtx)
       : undefined,
   };
 
@@ -1531,7 +2565,7 @@ export const runRelationalSelect = async (opts: {
     return result ? remapToGraphQLSingleOutput(result, tableName, table, relationMap) : undefined;
   }
 
-  params.limit = opts.limit;
+  params.limit = distinctKeys ? undefined : opts.limit;
   const result = await queryBase.findMany(params);
   return remapToGraphQLArrayOutput(result, tableName, table, relationMap);
 };

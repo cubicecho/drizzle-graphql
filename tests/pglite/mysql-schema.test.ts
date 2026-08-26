@@ -29,7 +29,40 @@ const tableSchema = { Users: schema.Users, Customers: schema.Customers, Posts: s
 const prefixes = { insert: 'create', delete: 'delete', update: 'update' };
 const suffixes = { list: '', single: 'Single' };
 
-const entities = generateMySQL(mockDb, tableSchema, schema.relations, undefined, prefixes, suffixes) as any;
+const entities = generateMySQL(mockDb, tableSchema, schema.relations, {
+  relationsDepthLimit: undefined,
+  prefixes,
+  suffixes,
+  conflictDoNothing: false,
+  shouldEagerLoad: () => true,
+  features: {
+    aggregates: true,
+    relationAggregates: true,
+    distinct: true,
+    insert: true,
+    update: true,
+    delete: true,
+    upsert: false,
+  },
+}) as any;
+
+// Upsert is opt-in, so a second generation is needed to inspect its shape.
+const upsertEntities = generateMySQL(mockDb, tableSchema, schema.relations, {
+  relationsDepthLimit: undefined,
+  prefixes: { ...prefixes, upsert: 'upsert' },
+  suffixes,
+  conflictDoNothing: false,
+  shouldEagerLoad: () => true,
+  features: {
+    aggregates: true,
+    relationAggregates: true,
+    distinct: true,
+    insert: true,
+    update: true,
+    delete: true,
+    upsert: true,
+  },
+}) as any;
 
 // ── query structure ───────────────────────────────────────────────────────────
 
@@ -52,6 +85,18 @@ describe('MySQL generated queries', () => {
   it('query types are non-null list of the table type (not MutationReturn)', () => {
     const usersQuery = entities.queries['users'];
     expect(usersQuery.type).toBeInstanceOf(GraphQLNonNull);
+  });
+
+  it('list queries take a distinct arg listing the table columns', () => {
+    const distinctArg = entities.queries['posts'].args['distinct'];
+    expect(distinctArg).toBeDefined();
+    expect(distinctArg.type.ofType.ofType.name).toBe('PostsDistinctColumn');
+    expect(distinctArg.type.ofType.ofType.getValues().map((value: { name: string }) => value.name)).toEqual([
+      'id',
+      'content',
+      'authorId',
+    ]);
+    expect(entities.queries['postsSingle'].args['distinct']).toBeUndefined();
   });
 });
 
@@ -80,6 +125,23 @@ describe('MySQL mutations are returnless', () => {
     expect(entities.mutations['deletePosts'].type).toBe(entities.types['MutationReturn']);
   });
 
+  it('generates no upsert mutations unless the feature is on', () => {
+    expect(entities.mutations['upsertUsers']).toBeUndefined();
+    expect(entities.types['UsersOnConflict']).toBeUndefined();
+  });
+
+  it('upsert mutations return MutationReturn like every other MySQL mutation', () => {
+    expect(upsertEntities.mutations['upsertUsers'].type).toBe(upsertEntities.types['MutationReturn']);
+    expect(upsertEntities.mutations['upsertUsersSingle'].type).toBe(upsertEntities.types['MutationReturn']);
+  });
+
+  it('omits target and where from the conflict input, which MySQL cannot express', () => {
+    const onConflict = upsertEntities.inputs['UsersOnConflict'];
+    expect(Object.keys(onConflict.getFields()).sort()).toEqual(['action', 'update']);
+    // Every table is upsertable on MySQL — a conflict needs no declared target.
+    expect(upsertEntities.mutations['upsertPosts']).toBeDefined();
+  });
+
   it('all 6 mutations exist per table (array+single insert, update, delete)', () => {
     const mutationKeys = Object.keys(entities.mutations);
     // Users
@@ -90,6 +152,53 @@ describe('MySQL mutations are returnless', () => {
     // Posts
     expect(mutationKeys).toContain('createPosts');
     expect(mutationKeys).toContain('deletePosts');
+  });
+});
+
+// ── aggregates ────────────────────────────────────────────────────────────────
+
+describe('MySQL generated aggregate queries', () => {
+  it('generates an aggregate query per table', () => {
+    const queryKeys = Object.keys(entities.queries);
+    expect(queryKeys).toContain('usersAggregate');
+    expect(queryKeys).toContain('customersAggregate');
+    expect(queryKeys).toContain('postsAggregate');
+  });
+
+  it('aggregate query returns a non-null aggregate type and takes only a where arg', () => {
+    const query = entities.queries['usersAggregate'];
+    expect(query.type).toBeInstanceOf(GraphQLNonNull);
+    expect(query.type.ofType).toBe(entities.types['UsersAggregate']);
+    expect(Object.keys(query.args)).toEqual(['where']);
+    expect(query.args['where'].type).toBe(entities.inputs['UsersFilters']);
+  });
+
+  it('aggregate type exposes count plus the aggregation groups', () => {
+    const fields = entities.types['UsersAggregate'].getFields();
+    expect(Object.keys(fields)).toEqual(['count', 'avg', 'sum', 'min', 'max', 'countNonNull', 'countDistinct']);
+    expect(fields['count'].type).toBeInstanceOf(GraphQLNonNull);
+  });
+
+  it('avg/sum only cover numeric columns', () => {
+    const fields = entities.types['UsersAggregate'].getFields();
+    expect(Object.keys(fields['avg'].type.getFields())).toEqual(['id']);
+    expect(Object.keys(fields['sum'].type.getFields())).toEqual(['id']);
+  });
+
+  it('min/max cover orderable columns, including dates, enums, and bigints', () => {
+    const fields = entities.types['UsersAggregate'].getFields();
+    const minFields = Object.keys(fields['min'].type.getFields());
+
+    expect(minFields).toContain('id');
+    expect(minFields).toContain('name');
+    expect(minFields).toContain('bigint');
+    expect(minFields).toContain('birthdayString');
+    expect(minFields).toContain('birthdayDate');
+    expect(minFields).toContain('createdAt');
+    expect(minFields).toContain('role');
+    // Booleans have no useful ordering.
+    expect(minFields).not.toContain('isConfirmed');
+    expect(Object.keys(fields['max'].type.getFields())).toEqual(minFields);
   });
 });
 

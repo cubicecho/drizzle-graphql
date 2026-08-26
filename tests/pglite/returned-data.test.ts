@@ -1,4 +1,11 @@
-import { GraphQLInputObjectType, GraphQLNonNull, GraphQLObjectType, GraphQLScalarType, GraphQLSchema } from 'graphql';
+import {
+  GraphQLInputObjectType,
+  GraphQLList,
+  GraphQLNonNull,
+  GraphQLObjectType,
+  GraphQLScalarType,
+  GraphQLSchema,
+} from 'graphql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import z from 'zod';
 import { createMinimalCtx, type MinimalContext, setupMinimal, teardownMinimal } from './common';
@@ -48,6 +55,11 @@ describe.sequential('Returned data tests', () => {
                     where: z
                       .object({
                         type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
                       })
                       .strict(),
                   })
@@ -105,6 +117,11 @@ describe.sequential('Returned data tests', () => {
                         type: z.instanceof(GraphQLInputObjectType),
                       })
                       .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
+                      })
+                      .strict(),
                   })
                   .strict(),
                 resolve: z.function(),
@@ -158,6 +175,11 @@ describe.sequential('Returned data tests', () => {
                     where: z
                       .object({
                         type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
                       })
                       .strict(),
                   })
@@ -215,6 +237,11 @@ describe.sequential('Returned data tests', () => {
                         type: z.instanceof(GraphQLInputObjectType),
                       })
                       .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
+                      })
+                      .strict(),
                   })
                   .strict(),
                 resolve: z.function(),
@@ -244,6 +271,66 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
+            usersAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            postsAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            customersAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            tagsAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
           })
@@ -522,6 +609,10 @@ describe.sequential('Returned data tests', () => {
             Customer: z.instanceof(GraphQLObjectType),
             Tag: z.instanceof(GraphQLObjectType),
             Tag: z.instanceof(GraphQLObjectType),
+            UserAggregate: z.instanceof(GraphQLObjectType),
+            PostAggregate: z.instanceof(GraphQLObjectType),
+            CustomerAggregate: z.instanceof(GraphQLObjectType),
+            TagAggregate: z.instanceof(GraphQLObjectType),
           })
           .strict(),
         inputs: z

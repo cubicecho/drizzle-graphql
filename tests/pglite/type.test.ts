@@ -1,5 +1,6 @@
 import type { Relations } from 'drizzle-orm';
 import type {
+  GraphQLEnumType,
   GraphQLInputObjectType,
   GraphQLList,
   GraphQLNonNull,
@@ -9,6 +10,7 @@ import type {
 } from 'graphql';
 import { afterAll, beforeAll, describe, expectTypeOf, it } from 'vitest';
 import {
+  type AggregateResolver,
   buildSchema,
   type DeleteResolver,
   type ExtractTables,
@@ -49,6 +51,7 @@ describe.sequential('Type tests', () => {
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
             where: { type: GraphQLInputObjectType };
+            distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
           resolve: SelectResolver<
             typeof schema.Customers,
@@ -63,6 +66,7 @@ describe.sequential('Type tests', () => {
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
             where: { type: GraphQLInputObjectType };
+            distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
           resolve: SelectResolver<
             typeof schema.Posts,
@@ -77,6 +81,7 @@ describe.sequential('Type tests', () => {
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
             where: { type: GraphQLInputObjectType };
+            distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
           resolve: SelectResolver<typeof schema.Tags, ExtractTables<typeof schema>, never>;
         };
@@ -87,6 +92,7 @@ describe.sequential('Type tests', () => {
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
             where: { type: GraphQLInputObjectType };
+            distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
           resolve: SelectResolver<
             typeof schema.Users,
@@ -142,6 +148,35 @@ describe.sequential('Type tests', () => {
             ExtractTables<typeof schema>,
             typeof schema.usersRelations extends Relations<any, infer RelConf> ? RelConf : never
           >;
+        };
+      } & {
+        readonly customersAggregate: {
+          type: GraphQLNonNull<GraphQLObjectType>;
+          args: {
+            where: { type: GraphQLInputObjectType };
+          };
+          resolve: AggregateResolver<typeof schema.Customers>;
+        };
+        readonly postsAggregate: {
+          type: GraphQLNonNull<GraphQLObjectType>;
+          args: {
+            where: { type: GraphQLInputObjectType };
+          };
+          resolve: AggregateResolver<typeof schema.Posts>;
+        };
+        readonly tagsAggregate: {
+          type: GraphQLNonNull<GraphQLObjectType>;
+          args: {
+            where: { type: GraphQLInputObjectType };
+          };
+          resolve: AggregateResolver<typeof schema.Tags>;
+        };
+        readonly usersAggregate: {
+          type: GraphQLNonNull<GraphQLObjectType>;
+          args: {
+            where: { type: GraphQLInputObjectType };
+          };
+          resolve: AggregateResolver<typeof schema.Users>;
         };
       }
     >();
@@ -309,6 +344,11 @@ describe.sequential('Type tests', () => {
         readonly Posts: GraphQLObjectType;
         readonly Tags: GraphQLObjectType;
         readonly Users: GraphQLObjectType;
+      } & {
+        readonly CustomersAggregate: GraphQLObjectType;
+        readonly PostsAggregate: GraphQLObjectType;
+        readonly TagsAggregate: GraphQLObjectType;
+        readonly UsersAggregate: GraphQLObjectType;
       }
     >();
   });

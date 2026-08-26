@@ -5,11 +5,12 @@ import { drizzle, type MySql2Database } from 'drizzle-orm/mysql2';
 import getPort from 'get-port';
 import {
   GraphQLInputObjectType,
-  type GraphQLList,
+  GraphQLList,
   GraphQLNonNull,
   GraphQLObjectType,
   GraphQLScalarType,
   GraphQLSchema,
+  graphql,
 } from 'graphql';
 import { createYoga } from 'graphql-yoga';
 import * as mysql from 'mysql2/promise';
@@ -36,6 +37,7 @@ interface Context {
   db: MySql2Database<typeof schema>;
   client: mysql.Connection;
   schema: GraphQLSchema;
+  upsertSchema: GraphQLSchema;
   entities: GeneratedEntities<MySql2Database<typeof schema>>;
   server: Server;
   gql: GraphQLClient;
@@ -106,6 +108,8 @@ beforeAll(async (_t) => {
   });
 
   const { schema: gqlSchema, entities } = buildSchema(ctx.db);
+  // Upsert is opt-in, so it needs a schema of its own.
+  ctx.upsertSchema = buildSchema(ctx.db, { features: { upsert: true } }).schema;
   const yoga = createYoga({
     schema: gqlSchema,
   });
@@ -2766,6 +2770,11 @@ describe.sequential('Returned data tests', () => {
                         type: z.instanceof(GraphQLInputObjectType),
                       })
                       .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
+                      })
+                      .strict(),
                   })
                   .strict(),
                 resolve: z.function(),
@@ -2819,6 +2828,11 @@ describe.sequential('Returned data tests', () => {
                     where: z
                       .object({
                         type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
                       })
                       .strict(),
                   })
@@ -2876,6 +2890,11 @@ describe.sequential('Returned data tests', () => {
                         type: z.instanceof(GraphQLInputObjectType),
                       })
                       .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
+                      })
+                      .strict(),
                   })
                   .strict(),
                 resolve: z.function(),
@@ -2905,6 +2924,51 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
+            usersAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            customersAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            postsAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
           })
@@ -3114,6 +3178,9 @@ describe.sequential('Returned data tests', () => {
             Posts: z.instanceof(GraphQLObjectType),
             Customers: z.instanceof(GraphQLObjectType),
             MutationReturn: z.instanceof(GraphQLObjectType),
+            UsersAggregate: z.instanceof(GraphQLObjectType),
+            CustomersAggregate: z.instanceof(GraphQLObjectType),
+            PostsAggregate: z.instanceof(GraphQLObjectType),
           })
           .strict(),
         inputs: z
@@ -4602,5 +4669,76 @@ describe.sequential('__typename with data tests', async () => {
     const data = await ctx.db.select().from(schema.Customers);
 
     expect(data).toStrictEqual([]);
+  });
+});
+
+describe.sequential('Upsert tests', () => {
+  const upsert = (source: string) => graphql({ schema: ctx.upsertSchema, source, contextValue: {} });
+  const users = () => ctx.db.select().from(schema.Users).orderBy(schema.Users.id);
+
+  it('inserts a row that does not conflict', async () => {
+    const result = await upsert(`mutation { upsertUsersSingle(values: { id: 100, name: "NewUser" }) { isSuccess } }`);
+
+    expect(result.errors).toBeUndefined();
+    expect(result.data?.['upsertUsersSingle']).toMatchObject({ isSuccess: true });
+    expect((await users()).find((u) => u.id === 100)?.name).toBe('NewUser');
+  });
+
+  it('overwrites the conflicting row', async () => {
+    const result = await upsert(
+      `mutation { upsertUsersSingle(values: { id: 1, name: "Replaced", profession: "Upserted" }) { isSuccess } }`,
+    );
+
+    expect(result.errors).toBeUndefined();
+    const first = (await users()).find((u) => u.id === 1)!;
+    expect(first.name).toBe('Replaced');
+    expect(first.profession).toBe('Upserted');
+  });
+
+  it('leaves the existing row alone when the action is NOTHING', async () => {
+    const result = await upsert(`mutation {
+      upsertUsersSingle(values: { id: 1, name: "Ignored" }, onConflict: { action: NOTHING }) { isSuccess }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    expect((await users()).find((u) => u.id === 1)?.name).toBe('FirstUser');
+  });
+
+  it('updates each row of a batch with its own values', async () => {
+    const result = await upsert(`mutation {
+      upsertUsers(values: [
+        { id: 1, name: "OneUpserted" },
+        { id: 2, name: "TwoUpserted" },
+        { id: 300, name: "Inserted" }
+      ]) { isSuccess }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    const rows = await users();
+    expect(rows.find((u) => u.id === 1)?.name).toBe('OneUpserted');
+    expect(rows.find((u) => u.id === 2)?.name).toBe('TwoUpserted');
+    expect(rows.find((u) => u.id === 300)?.name).toBe('Inserted');
+  });
+
+  it('overwrites only the listed columns', async () => {
+    const result = await upsert(`mutation {
+      upsertUsersSingle(
+        values: { id: 1, name: "Fresh", profession: "Fresher" }
+        onConflict: { update: [profession] }
+      ) { isSuccess }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    const first = (await users()).find((u) => u.id === 1)!;
+    expect(first.name).toBe('FirstUser');
+    expect(first.profession).toBe('Fresher');
+  });
+
+  it('rejects an update column the values do not supply', async () => {
+    const result = await upsert(`mutation {
+      upsertUsersSingle(values: { id: 1, name: "Fresh" }, onConflict: { update: [profession] }) { isSuccess }
+    }`);
+
+    expect(result.errors?.[0]?.message).toContain('which the values do not supply');
   });
 });

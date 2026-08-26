@@ -14,6 +14,7 @@ import type { RelationalQueryBuilder as PgQuery } from 'drizzle-orm/pg-core/quer
 import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
 import type { RelationalQueryBuilder as SQLiteQuery } from 'drizzle-orm/sqlite-core/query-builders/query';
 import type {
+  GraphQLEnumType,
   GraphQLInputObjectType,
   GraphQLList,
   GraphQLNonNull,
@@ -97,6 +98,24 @@ export type UpdateArgs<TTable extends Table> = Partial<{
   set: GetRemappedTableUpdateDataType<TTable>;
   where?: Filters<TTable>;
 }>;
+
+/**
+ * The `onConflict` argument of the generated upsert mutations.
+ *
+ * `target` and `where` exist on PostgreSQL and SQLite only: MySQL's
+ * `ON DUPLICATE KEY UPDATE` fires on whichever unique key was violated and takes no
+ * predicate, so neither field is generated there.
+ */
+export type UpsertConflictArgs<TTable extends Table> = {
+  action?: 'UPDATE' | 'NOTHING';
+  target?: string[];
+  update?: string[];
+  where?: Filters<TTable>;
+};
+
+export type UpsertArgs<TTable extends Table, isSingle extends boolean> = InsertArgs<TTable, isSingle> & {
+  onConflict?: UpsertConflictArgs<TTable>;
+};
 
 export type DeleteArgs<TTable extends Table> = {
   where?: Filters<TTable>;
@@ -188,6 +207,34 @@ export type UpdateResolver<TTable extends Table, IsReturnless extends boolean> =
   info: GraphQLResolveInfo,
 ) => Promise<IsReturnless extends false ? GetRemappedTableDataType<TTable> | undefined : MutationReturnlessResult>;
 
+/** Resolver for `upsert<Table>Single`. */
+export type UpsertResolver<TTable extends Table, IsReturnless extends boolean> = (
+  source: any,
+  args: Partial<UpsertArgs<TTable, true>>,
+  context: any,
+  info: GraphQLResolveInfo,
+) => Promise<IsReturnless extends false ? GetRemappedTableDataType<TTable> | undefined : MutationReturnlessResult>;
+
+/** Resolver for `upsert<Table>`. */
+export type UpsertArrResolver<TTable extends Table, IsReturnless extends boolean> = (
+  source: any,
+  args: Partial<UpsertArgs<TTable, false>>,
+  context: any,
+  info: GraphQLResolveInfo,
+) => Promise<IsReturnless extends false ? Array<GetRemappedTableDataType<TTable>> : MutationReturnlessResult>;
+
+/**
+ * Resolver for a table's generated aggregate query (`<plural>Aggregate`).
+ * Returns only the requested aggregations: `count` plus per-column `avg` / `sum`
+ * (numeric columns, as Float) and `min` / `max` (orderable columns, as the column's type).
+ */
+export type AggregateResolver<TTable extends Table> = (
+  source: any,
+  args: { where?: Filters<TTable> },
+  context: any,
+  info: GraphQLResolveInfo,
+) => Promise<Record<string, any>>;
+
 export type DeleteResolver<TTable extends Table, IsReturnless extends boolean> = (
   source: any,
   args: DeleteArgs<TTable>,
@@ -221,6 +268,9 @@ export type QueriesCore<
               ? TInputs[`${Capitalize<TName>}Filters`]
               : never;
           };
+          distinct: {
+            type: GraphQLList<GraphQLNonNull<GraphQLEnumType>>;
+          };
         };
         resolve: SelectResolver<
           TSchemaTables[TName],
@@ -253,6 +303,26 @@ export type QueriesCore<
           TSchemaTables,
           ExtractTableRelations<TSchemaTables[TName], TSchemaRelations> extends infer R ? R[keyof R] : never
         >;
+      }
+    : never;
+} & {
+  [TName in keyof TSchemaTables as TName extends string
+    ? `${Uncapitalize<TName>}Aggregate`
+    : never]: TName extends string
+    ? {
+        type: GraphQLNonNull<
+          TOutputs[`${Capitalize<TName>}Aggregate`] extends GraphQLObjectType
+            ? TOutputs[`${Capitalize<TName>}Aggregate`]
+            : GraphQLObjectType
+        >;
+        args: {
+          where: {
+            type: TInputs[`${Capitalize<TName>}Filters`] extends GraphQLInputObjectType
+              ? TInputs[`${Capitalize<TName>}Filters`]
+              : never;
+          };
+        };
+        resolve: AggregateResolver<TSchemaTables[TName]>;
       }
     : never;
 };
@@ -295,6 +365,48 @@ export type MutationsCore<
           };
         };
         resolve: InsertResolver<TSchemaTables[TName], IsReturnless>;
+      }
+    : never;
+} & {
+  // Optional, because upsert is the one feature that is off unless asked for — and on
+  // PostgreSQL and SQLite a table with nothing unique to conflict on never gets one.
+  [TName in keyof TSchemaTables as TName extends string ? `upsert${Capitalize<TName>}` : never]?: TName extends string
+    ? {
+        type: IsReturnless extends true
+          ? TOutputs['MutationReturn'] extends GraphQLObjectType
+            ? TOutputs['MutationReturn']
+            : never
+          : GraphQLNonNull<GraphQLList<GraphQLNonNull<TOutputs[`${Capitalize<TName>}Item`]>>>;
+        args: {
+          values: {
+            type: GraphQLNonNull<GraphQLList<GraphQLNonNull<TInputs[`${Capitalize<TName>}InsertInput`]>>>;
+          };
+          onConflict: {
+            type: GraphQLInputObjectType;
+          };
+        };
+        resolve: UpsertArrResolver<TSchemaTables[TName], IsReturnless>;
+      }
+    : never;
+} & {
+  [TName in keyof TSchemaTables as TName extends string
+    ? `upsert${Capitalize<TName>}Single`
+    : never]?: TName extends string
+    ? {
+        type: IsReturnless extends true
+          ? TOutputs['MutationReturn'] extends GraphQLObjectType
+            ? TOutputs['MutationReturn']
+            : never
+          : TOutputs[`${Capitalize<TName>}Item`];
+        args: {
+          values: {
+            type: GraphQLNonNull<TInputs[`${Capitalize<TName>}InsertInput`]>;
+          };
+          onConflict: {
+            type: GraphQLInputObjectType;
+          };
+        };
+        resolve: UpsertResolver<TSchemaTables[TName], IsReturnless>;
       }
     : never;
 } & {
@@ -350,13 +462,15 @@ export type GeneratedInputs<TSchema extends Record<string, Table>> = {
 
 export type GeneratedOutputs<TSchema extends Record<string, Table>, IsReturnless extends boolean> = {
   [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}SelectItem` : never]: GraphQLObjectType;
+} & {
+  [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}Aggregate` : never]: GraphQLObjectType;
 } & (IsReturnless extends true
-  ? {
-      MutationReturn: GraphQLObjectType;
-    }
-  : {
-      [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}Item` : never]: GraphQLObjectType;
-    });
+    ? {
+        MutationReturn: GraphQLObjectType;
+      }
+    : {
+        [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}Item` : never]: GraphQLObjectType;
+      });
 
 export type GeneratedEntities<
   TDatabase extends AnyDrizzleDB<TSchema>,
@@ -397,6 +511,33 @@ export type GeneratedData<TDatabase extends AnyDrizzleDB<any>> = {
   entities: GeneratedEntities<TDatabase>;
 };
 
+/**
+ * Per-feature switches for what `buildSchema` generates. Every flag defaults to `true`.
+ * See {@link BuildSchemaConfig.features}.
+ */
+export type SchemaFeatures = {
+  /** `<plural>Aggregate` root queries and the aggregate output types. @default true */
+  aggregates?: boolean;
+  /** `<relation>Aggregate` fields on object types, for to-many relations. @default true */
+  relationAggregates?: boolean;
+  /** The `distinct` argument on list queries. @default true */
+  distinct?: boolean;
+  /** `create<Table>` / `create<Table>Single` mutations. @default true */
+  insert?: boolean;
+  /** `update<Table>` mutations. @default true */
+  update?: boolean;
+  /** `delete<Table>` mutations. @default true */
+  delete?: boolean;
+  /**
+   * `upsert<Table>` / `upsert<Table>Single` mutations — insert, or update the row that
+   * already holds the same unique key. Off unless asked for, so an existing schema does
+   * not grow new mutations on upgrade.
+   *
+   * @default false
+   */
+  upsert?: boolean;
+};
+
 export type BuildSchemaConfig = {
   /**
    * Determines whether generated mutations will be passed to returned schema.
@@ -429,7 +570,7 @@ export type BuildSchemaConfig = {
   /**
    * Customizes query name prefixes for generated GraphQL operations.
    *
-   * @default { insert: 'create', delete: 'delete', update: 'update' }
+   * @default { insert: 'create', delete: 'delete', update: 'update', upsert: 'upsert' }
    */
   prefixes?: {
     /** Prefix for insert mutations (e.g., 'users' -> 'createUsers') */
@@ -438,6 +579,8 @@ export type BuildSchemaConfig = {
     delete?: string;
     /** Prefix for update mutations (e.g., 'users' -> 'updateUsers') */
     update?: string;
+    /** Prefix for upsert mutations (e.g., 'users' -> 'upsertUsers') */
+    upsert?: string;
   };
 
   /**
@@ -454,8 +597,40 @@ export type BuildSchemaConfig = {
   /**
    * When true, insert mutations will use onConflictDoNothing() to silently
    * ignore duplicate key violations. Defaults to false (conflicts throw errors).
+   *
+   * PostgreSQL and SQLite only — MySQL's insert builder has no equivalent, so the flag is
+   * ignored there and conflicts keep throwing.
+   *
+   * @deprecated Build-wide and unconditional: a request cannot opt out of it, and a
+   * swallowed insert returns `null` with no indication why. Turn on `features.upsert` and
+   * pass `onConflict: { action: NOTHING }` per request instead. This flag keeps working
+   * until the next major.
    */
   conflictDoNothing?: boolean;
+  /**
+   * Turns individual generated features off.
+   *
+   * Every flag defaults to `true` except `upsert`, which is opt-in: a build with no
+   * `features` block generates exactly what it generated before this option existed.
+   * Turning one off removes both the schema surface it adds and the work behind it.
+   *
+   * ```ts
+   * buildSchema(db, {
+   *   features: {
+   *     aggregates: false,         // no `<plural>Aggregate` root queries
+   *     relationAggregates: false, // no `<relation>Aggregate` fields on object types
+   *     distinct: false,           // no `distinct` argument on list queries
+   *     delete: false,             // no delete mutations
+   *     upsert: true,              // opt in to `upsert<Table>` mutations
+   *   },
+   * });
+   * ```
+   *
+   * Turning off every mutation feature omits the `Mutation` type entirely, exactly as
+   * `mutations: false` does. Query-side features can all be off — the list and single
+   * queries are always generated, so `Query` is never empty.
+   */
+  features?: SchemaFeatures;
   /**
    * Optional mapper from table key to singular/plural name pair.
    * When provided for a table, overrides the default (table key) naming for GraphQL type names,
@@ -500,4 +675,28 @@ export type BuildSchemaConfig = {
    * @default true
    */
   eagerLoadRelations?: boolean | ((tableName: string, relationName: string) => boolean);
+  /**
+   * Called for every error thrown by a generated resolver, before it reaches the client.
+   *
+   * Return an error to surface that one instead. Return nothing to fall through to the
+   * default handling, which makes this a pure logging hook:
+   *
+   * ```ts
+   * buildSchema(db, { onError: (error) => { logger.error(error) } })
+   * ```
+   *
+   * The default passes through errors drizzle-graphql raises itself (bad filter, missing
+   * values, invalid date, …) and replaces everything else — driver and database errors —
+   * with a generic `Internal server error`, keeping the original on `originalError` so it
+   * is still available to server-side logging. Database messages routinely name tables,
+   * columns, constraints and the values that violated them, which is not something a
+   * public API should hand back.
+   *
+   * To surface raw database errors instead (useful in development):
+   *
+   * ```ts
+   * buildSchema(db, { onError: (error) => error as Error })
+   * ```
+   */
+  onError?: (error: unknown) => unknown;
 };

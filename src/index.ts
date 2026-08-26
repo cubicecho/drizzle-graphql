@@ -10,9 +10,12 @@ import {
   type GraphQLSchemaConfig,
 } from 'graphql';
 import type { AnyDrizzleDB, BuildSchemaConfig, GeneratedData } from './types.ts';
+import { applyErrorMapper, defaultErrorMapper } from './util/builders/common.ts';
 import { generateMySQL, generatePG, generateSQLite } from './util/builders/index.ts';
+import type { SchemaGeneratorOptions } from './util/builders/types.ts';
 
 export type {
+  AggregateResolver,
   AnyDrizzleDB,
   BuildSchemaConfig,
   DeleteResolver,
@@ -29,18 +32,32 @@ export type {
   MutationReturnlessResult,
   MutationsCore,
   QueriesCore,
+  SchemaFeatures,
   SelectResolver,
   SelectSingleResolver,
   UpdateResolver,
+  UpsertArgs,
+  UpsertArrResolver,
+  UpsertConflictArgs,
+  UpsertResolver,
 } from './types.ts';
 export type { RelationResolverFactory } from './util/builders/common.ts';
 export {
   createRelationResolverFactory,
+  defaultErrorMapper,
+  drizzleExecutorKey,
   extractFilters,
   extractOrderBy,
   extractRelationJoinColumns,
 } from './util/builders/common.ts';
 export type { TableNamedRelations } from './util/builders/types.ts';
+export {
+  GraphQLBigIntString,
+  GraphQLDate,
+  GraphQLDateTime,
+  GraphQLJSON,
+  GraphQLUUID,
+} from './util/scalars/index.ts';
 
 type ObjMap<T> = Record<string, T>;
 
@@ -70,6 +87,7 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     insert: config?.prefixes?.insert ?? 'create',
     delete: config?.prefixes?.delete ?? 'delete',
     update: config?.prefixes?.update ?? 'update',
+    upsert: config?.prefixes?.upsert ?? 'upsert',
   };
 
   const suffixes = {
@@ -78,6 +96,19 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
   };
 
   const typeNameMapper = config?.typeNameMapper;
+
+  // Every feature is on unless the caller says otherwise, so a build without a `features`
+  // block generates what it always did — except upsert, which is new surface and so has to
+  // be asked for.
+  const features = {
+    aggregates: config?.features?.aggregates ?? true,
+    relationAggregates: config?.features?.relationAggregates ?? true,
+    distinct: config?.features?.distinct ?? true,
+    insert: config?.features?.insert ?? true,
+    update: config?.features?.update ?? true,
+    delete: config?.features?.delete ?? true,
+    upsert: config?.features?.upsert ?? false,
+  };
 
   // Normalize eagerLoadRelations (boolean | predicate | undefined) into a predicate.
   const eagerOpt = config?.eagerLoadRelations;
@@ -106,44 +137,34 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     }
   }
 
+  const generatorOptions: SchemaGeneratorOptions = {
+    relationsDepthLimit: config?.relationsDepthLimit,
+    prefixes,
+    suffixes,
+    conflictDoNothing: config?.conflictDoNothing ?? false,
+    typeNameMapper,
+    shouldEagerLoad,
+    features,
+  };
+
   let generatorOutput;
   if (is(db, MySqlDatabase)) {
-    generatorOutput = generateMySQL(
-      db,
-      schema,
-      relations,
-      config?.relationsDepthLimit,
-      prefixes,
-      suffixes,
-      typeNameMapper,
-      shouldEagerLoad,
-    );
+    generatorOutput = generateMySQL(db, schema, relations, generatorOptions);
   } else if (is(db, PgAsyncDatabase)) {
-    generatorOutput = generatePG(
-      db,
-      schema,
-      relations,
-      config?.relationsDepthLimit,
-      prefixes,
-      suffixes,
-      config?.conflictDoNothing ?? false,
-      typeNameMapper,
-      shouldEagerLoad,
-    );
+    generatorOutput = generatePG(db, schema, relations, generatorOptions);
   } else if (is(db, BaseSQLiteDatabase)) {
-    generatorOutput = generateSQLite(
-      db,
-      schema,
-      relations,
-      config?.relationsDepthLimit,
-      prefixes,
-      suffixes,
-      typeNameMapper,
-      shouldEagerLoad,
-    );
+    generatorOutput = generateSQLite(db, schema, relations, generatorOptions);
   } else {
     throw new Error('Drizzle-GraphQL Error: Unknown database instance type');
   }
+
+  // Wrap resolvers before the schema is assembled, so the generated schema and the returned
+  // entities share the same handling.
+  const onError = config?.onError;
+  applyErrorMapper(
+    generatorOutput as any,
+    onError ? (error) => onError(error) ?? defaultErrorMapper(error) : defaultErrorMapper,
+  );
 
   const { queries, mutations, inputs, types } = generatorOutput;
 
@@ -155,7 +176,9 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     }),
   };
 
-  if (config?.mutations !== false) {
+  // An empty Mutation type is invalid GraphQL, so turning off every mutation feature
+  // omits the type the same way `mutations: false` does.
+  if (config?.mutations !== false && Object.keys(mutations).length) {
     const mutation = new GraphQLObjectType({
       name: 'Mutation',
       fields: mutations as ObjMap<GraphQLFieldConfig<any, any, any>>,

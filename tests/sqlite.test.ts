@@ -5,8 +5,9 @@ import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/libsql';
 import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
 import {
+  type GraphQLEnumType,
   GraphQLInputObjectType,
-  type GraphQLList,
+  GraphQLList,
   GraphQLNonNull,
   GraphQLObjectType,
   GraphQLScalarType,
@@ -16,6 +17,7 @@ import { createYoga } from 'graphql-yoga';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it } from 'vitest';
 import z from 'zod';
 import {
+  type AggregateResolver,
   buildSchema,
   type DeleteResolver,
   type ExtractTables,
@@ -242,7 +244,7 @@ describe.sequential('Query tests', async () => {
           id: 1,
           name: 'FirstUser',
           email: 'userOne@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -294,7 +296,7 @@ describe.sequential('Query tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -419,7 +421,7 @@ describe.sequential('Query tests', async () => {
           id: 1,
           name: 'FirstUser',
           email: 'userOne@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -460,7 +462,7 @@ describe.sequential('Query tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             // RQB can't handle blobs in JSON, for now
             // blobBigInt: '10',
             numeric: '250.2',
@@ -527,7 +529,7 @@ describe.sequential('Query tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -610,7 +612,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -630,7 +632,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -650,7 +652,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -710,7 +712,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -767,7 +769,7 @@ describe.sequential('Query tests', async () => {
           id: 1,
           name: 'FirstUser',
           email: 'userOne@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -827,7 +829,7 @@ describe.sequential('Query tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -960,7 +962,7 @@ describe.sequential('Query tests', async () => {
           id: 1,
           name: 'FirstUser',
           email: 'userOne@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -1001,7 +1003,7 @@ describe.sequential('Query tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             // RQB can't handle blobs in JSON, for now
             // blobBigInt: '10',
             numeric: '250.2',
@@ -1076,7 +1078,7 @@ describe.sequential('Query tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -1159,7 +1161,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -1179,7 +1181,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -1199,7 +1201,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -1259,7 +1261,7 @@ describe.sequential('Query tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -1284,7 +1286,7 @@ describe.sequential('Query tests', async () => {
 						id: 3
 						name: "ThirdUser"
 						email: "userThree@notmail.com"
-						textJson: "{ \\"field\\": \\"value\\" }"
+						textJson: { field: "value" }
 						blobBigInt: "10"
 						numeric: "250.2"
 						createdAt: "2024-04-02T06:44:41.785Z"
@@ -1317,7 +1319,7 @@ describe.sequential('Query tests', async () => {
           id: 3,
           name: 'ThirdUser',
           email: 'userThree@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -1340,7 +1342,7 @@ describe.sequential('Query tests', async () => {
 							id: 3
 							name: "ThirdUser"
 							email: "userThree@notmail.com"
-							textJson: "{ \\"field\\": \\"value\\" }"
+							textJson: { field: "value" }
 							blobBigInt: "10"
 							numeric: "250.2"
 							createdAt: "2024-04-02T06:44:41.785Z"
@@ -1354,7 +1356,7 @@ describe.sequential('Query tests', async () => {
 							id: 4
 							name: "FourthUser"
 							email: "userFour@notmail.com"
-							textJson: "{ \\"field\\": \\"value\\" }"
+							textJson: { field: "value" }
 							blobBigInt: "10"
 							numeric: "250.2"
 							createdAt: "2024-04-02T06:44:41.785Z"
@@ -1389,7 +1391,7 @@ describe.sequential('Query tests', async () => {
             id: 3,
             name: 'ThirdUser',
             email: 'userThree@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -1403,7 +1405,7 @@ describe.sequential('Query tests', async () => {
             id: 4,
             name: 'FourthUser',
             email: 'userFour@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -1942,6 +1944,528 @@ describe.sequential('Arguments tests', async () => {
   });
 });
 
+describe.sequential('Aggregate query tests', () => {
+  it(`Count`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				usersAggregate {
+					count
+				}
+
+				postsAggregate {
+					count
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        usersAggregate: { count: 3 },
+        postsAggregate: { count: 6 },
+      },
+    });
+  });
+
+  it(`Per-column counts`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				postsAggregate {
+					countNonNull {
+						content
+					}
+					countDistinct {
+						authorId
+						content
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        postsAggregate: {
+          countNonNull: { content: 6 },
+          countDistinct: { authorId: 2, content: 4 },
+        },
+      },
+    });
+  });
+
+  it(`Numeric aggregates`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				postsAggregate {
+					count
+					avg {
+						id
+					}
+					sum {
+						id
+					}
+					min {
+						id
+					}
+					max {
+						id
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        postsAggregate: {
+          count: 6,
+          avg: { id: 3.5 },
+          sum: { id: 21 },
+          min: { id: 1 },
+          max: { id: 6 },
+        },
+      },
+    });
+  });
+
+  it(`Aggregates with where filter`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				postsAggregate(where: { authorId: { eq: 5 } }) {
+					count
+					sum {
+						id
+					}
+					min {
+						id
+					}
+					max {
+						id
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        postsAggregate: {
+          count: 2,
+          sum: { id: 9 },
+          min: { id: 4 },
+          max: { id: 5 },
+        },
+      },
+    });
+  });
+
+  it(`Min and max on text and timestamp columns`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				usersAggregate {
+					min {
+						name
+						createdAt
+						createdAtMs
+					}
+					max {
+						name
+					}
+				}
+
+				customersAggregate {
+					min {
+						registrationDate
+					}
+					max {
+						registrationDate
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        usersAggregate: {
+          min: {
+            name: 'FifthUser',
+            createdAt: '2024-04-02T06:44:41.000Z',
+            createdAtMs: '2024-04-02T06:44:41.785Z',
+          },
+          max: {
+            name: 'SecondUser',
+          },
+        },
+        customersAggregate: {
+          min: { registrationDate: '2024-03-27T03:54:45.235Z' },
+          max: { registrationDate: '2024-03-27T03:55:42.358Z' },
+        },
+      },
+    });
+  });
+
+  it(`Aggregates over an empty result set`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				usersAggregate(where: { name: { eq: "Nobody" } }) {
+					count
+					avg {
+						id
+					}
+					min {
+						name
+					}
+					max {
+						createdAt
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        usersAggregate: {
+          count: 0,
+          avg: { id: null },
+          min: { name: null },
+          max: { createdAt: null },
+        },
+      },
+    });
+  });
+});
+
+describe.sequential('Relation aggregate tests', () => {
+  it(`Counts related rows per parent`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				users(orderBy: { id: { direction: asc, priority: 1 } }) {
+					id
+					postsAggregate {
+						count
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        users: [
+          { id: 1, postsAggregate: { count: 4 } },
+          { id: 2, postsAggregate: { count: 0 } },
+          { id: 5, postsAggregate: { count: 2 } },
+        ],
+      },
+    });
+  });
+
+  it(`Full aggregate set per parent, filtered and unfiltered`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				usersSingle(where: { id: { eq: 1 } }) {
+					all: postsAggregate {
+						count
+						avg {
+							id
+						}
+						sum {
+							id
+						}
+						min {
+							content
+						}
+						max {
+							content
+						}
+					}
+					filtered: postsAggregate(where: { content: { eq: "1MESSAGE" } }) {
+						count
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        usersSingle: {
+          all: {
+            count: 4,
+            avg: { id: 3 },
+            sum: { id: 12 },
+            min: { content: '1MESSAGE' },
+            max: { content: '4MESSAGE' },
+          },
+          filtered: { count: 1 },
+        },
+      },
+    });
+  });
+
+  it(`Empty relations aggregate to count 0 and nulls`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				usersSingle(where: { id: { eq: 2 } }) {
+					postsAggregate {
+						count
+						avg {
+							id
+						}
+						min {
+							content
+						}
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        usersSingle: {
+          postsAggregate: {
+            count: 0,
+            avg: { id: null },
+            min: { content: null },
+          },
+        },
+      },
+    });
+  });
+});
+
+describe.sequential('Default pagination order tests', () => {
+  it(`Unordered paginated query falls back to primary key order`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(limit: 3) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({ data: { posts: [{ id: 1 }, { id: 2 }, { id: 3 }] } });
+  });
+
+  it(`Unordered single query falls back to primary key order`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				postsSingle {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({ data: { postsSingle: { id: 1 } } });
+  });
+
+  it(`Explicit orderBy wins over the primary key default`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(limit: 3, orderBy: { id: { direction: desc, priority: 1 } }) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({ data: { posts: [{ id: 6 }, { id: 5 }, { id: 4 }] } });
+  });
+});
+
+describe.sequential('Distinct tests', () => {
+  it(`Keeps the first row of each distinct value`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(distinct: [content]) {
+					id
+					content
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        posts: [
+          { id: 1, content: '1MESSAGE' },
+          { id: 2, content: '2MESSAGE' },
+          { id: 3, content: '3MESSAGE' },
+          { id: 6, content: '4MESSAGE' },
+        ],
+      },
+    });
+  });
+
+  it(`Picks the first row according to the requested order`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(distinct: [content], orderBy: { id: { direction: desc, priority: 1 } }) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({ data: { posts: [{ id: 6 }, { id: 5 }, { id: 4 }, { id: 3 }] } });
+  });
+
+  it(`Applies limit and offset after the rows are made distinct`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(distinct: [content], limit: 2, offset: 1) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({ data: { posts: [{ id: 2 }, { id: 3 }] } });
+  });
+
+  it(`Filters before making rows distinct`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(where: { authorId: { eq: 5 } }, distinct: [content]) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({ data: { posts: [{ id: 4 }, { id: 5 }] } });
+  });
+});
+
+describe.sequential('Relation filter tests', () => {
+  it(`Filter by a to-many relation`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				some: users(where: { posts: { some: { content: { eq: "3MESSAGE" } } } }) {
+					id
+				}
+
+				none: users(where: { posts: { none: {} } }) {
+					id
+				}
+
+				every: users(where: { posts: { every: { content: { eq: "1MESSAGE" } } } }) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        some: [{ id: 1 }],
+        none: [{ id: 2 }],
+        // Users 1 and 5 both own a non-matching post; user 2 owns none, so it matches vacuously.
+        every: [{ id: 2 }],
+      },
+    });
+  });
+
+  it(`Filter by a to-one relation`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(where: { author: { name: { eq: "FifthUser" } } }, orderBy: { id: { direction: asc, priority: 1 } }) {
+					id
+				}
+
+				usersSingle(where: { customer: { address: { eq: "AdTwo" } } }) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        posts: [{ id: 4 }, { id: 5 }],
+        usersSingle: { id: 2 },
+      },
+    });
+  });
+
+  it(`Nested relation filters, combined with column filters`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				nested: users(where: { posts: { some: { author: { name: { eq: "FirstUser" } } } } }) {
+					id
+				}
+
+				withColumns: users(
+					where: { name: { like: "F%" }, posts: { some: { content: { eq: "2MESSAGE" } } } }
+					orderBy: { id: { direction: asc, priority: 1 } }
+				) {
+					id
+				}
+
+				withOr: users(
+					where: { OR: [{ name: { eq: "SecondUser" } }, { posts: { some: { content: { eq: "3MESSAGE" } } } }] }
+					orderBy: { id: { direction: asc, priority: 1 } }
+				) {
+					id
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        nested: [{ id: 1 }],
+        withColumns: [{ id: 1 }, { id: 5 }],
+        withOr: [{ id: 1 }, { id: 2 }],
+      },
+    });
+  });
+
+  it(`Relation filters on aggregates and relation fields`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				usersAggregate(where: { posts: { some: {} } }) {
+					count
+				}
+
+				usersSingle(where: { id: { eq: 1 } }) {
+					id
+					posts(where: { author: { name: { eq: "SecondUser" } } }) {
+						id
+					}
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        usersAggregate: { count: 2 },
+        usersSingle: { id: 1, posts: [] },
+      },
+    });
+  });
+
+  it(`Relation filters on mutations`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			mutation {
+				updatePosts(set: { content: "UPDATED" }, where: { author: { name: { eq: "FifthUser" } } }) {
+					id
+					content
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        updatePosts: [
+          { id: 4, content: 'UPDATED' },
+          { id: 5, content: 'UPDATED' },
+        ],
+      },
+    });
+
+    const deleted = await ctx.gql.queryGql(/* GraphQL */ `
+			mutation {
+				deletePosts(where: { author: { name: { eq: "FifthUser" } } }) {
+					id
+				}
+			}
+		`);
+
+    expect(deleted).toStrictEqual({
+      data: {
+        deletePosts: [{ id: 4 }, { id: 5 }],
+      },
+    });
+  });
+});
+
 describe.sequential('Returned data tests', () => {
   it('Schema', () => {
     expect(ctx.schema instanceof GraphQLSchema).toBe(true);
@@ -1975,6 +2499,11 @@ describe.sequential('Returned data tests', () => {
                     where: z
                       .object({
                         type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
                       })
                       .strict(),
                   })
@@ -2032,6 +2561,11 @@ describe.sequential('Returned data tests', () => {
                         type: z.instanceof(GraphQLInputObjectType),
                       })
                       .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
+                      })
+                      .strict(),
                   })
                   .strict(),
                 resolve: z.function(),
@@ -2087,6 +2621,11 @@ describe.sequential('Returned data tests', () => {
                         type: z.instanceof(GraphQLInputObjectType),
                       })
                       .strict(),
+                    distinct: z
+                      .object({
+                        type: z.instanceof(GraphQLList),
+                      })
+                      .strict(),
                   })
                   .strict(),
                 resolve: z.function(),
@@ -2116,6 +2655,51 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
+            usersAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            postsAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            customersAggregate: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
           })
@@ -2324,6 +2908,9 @@ describe.sequential('Returned data tests', () => {
             Users: z.instanceof(GraphQLObjectType),
             Posts: z.instanceof(GraphQLObjectType),
             Customers: z.instanceof(GraphQLObjectType),
+            UsersAggregate: z.instanceof(GraphQLObjectType),
+            PostsAggregate: z.instanceof(GraphQLObjectType),
+            CustomersAggregate: z.instanceof(GraphQLObjectType),
           })
           .strict(),
         inputs: z
@@ -2371,6 +2958,7 @@ describe.sequential('Type tests', () => {
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
             where: { type: GraphQLInputObjectType };
+            distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
           resolve: SelectResolver<
             typeof schema.Customers,
@@ -2385,6 +2973,7 @@ describe.sequential('Type tests', () => {
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
             where: { type: GraphQLInputObjectType };
+            distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
           resolve: SelectResolver<
             typeof schema.Posts,
@@ -2399,6 +2988,7 @@ describe.sequential('Type tests', () => {
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
             where: { type: GraphQLInputObjectType };
+            distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
           resolve: SelectResolver<
             typeof schema.Users,
@@ -2445,6 +3035,28 @@ describe.sequential('Type tests', () => {
             ExtractTables<typeof schema>,
             typeof schema.usersRelations extends Relations<any, infer RelConf> ? RelConf : never
           >;
+        };
+      } & {
+        readonly customersAggregate: {
+          type: GraphQLNonNull<GraphQLObjectType>;
+          args: {
+            where: { type: GraphQLInputObjectType };
+          };
+          resolve: AggregateResolver<typeof schema.Customers>;
+        };
+        readonly postsAggregate: {
+          type: GraphQLNonNull<GraphQLObjectType>;
+          args: {
+            where: { type: GraphQLInputObjectType };
+          };
+          resolve: AggregateResolver<typeof schema.Posts>;
+        };
+        readonly usersAggregate: {
+          type: GraphQLNonNull<GraphQLObjectType>;
+          args: {
+            where: { type: GraphQLInputObjectType };
+          };
+          resolve: AggregateResolver<typeof schema.Users>;
         };
       }
     >();
@@ -2575,6 +3187,10 @@ describe.sequential('Type tests', () => {
         readonly Customers: GraphQLObjectType;
         readonly Posts: GraphQLObjectType;
         readonly Users: GraphQLObjectType;
+      } & {
+        readonly CustomersAggregate: GraphQLObjectType;
+        readonly PostsAggregate: GraphQLObjectType;
+        readonly UsersAggregate: GraphQLObjectType;
       }
     >();
   });
@@ -2831,7 +3447,7 @@ describe.sequential('__typename only tests', () => {
 						id: 3
 						name: "ThirdUser"
 						email: "userThree@notmail.com"
-						textJson: "{ \\"field\\": \\"value\\" }"
+						textJson: { field: "value" }
 						blobBigInt: "10"
 						numeric: "250.2"
 						createdAt: "2024-04-02T06:44:41.785Z"
@@ -2865,7 +3481,7 @@ describe.sequential('__typename only tests', () => {
 							id: 3
 							name: "ThirdUser"
 							email: "userThree@notmail.com"
-							textJson: "{ \\"field\\": \\"value\\" }"
+							textJson: { field: "value" }
 							blobBigInt: "10"
 							numeric: "250.2"
 							createdAt: "2024-04-02T06:44:41.785Z"
@@ -2879,7 +3495,7 @@ describe.sequential('__typename only tests', () => {
 							id: 4
 							name: "FourthUser"
 							email: "userFour@notmail.com"
-							textJson: "{ \\"field\\": \\"value\\" }"
+							textJson: { field: "value" }
 							blobBigInt: "10"
 							numeric: "250.2"
 							createdAt: "2024-04-02T06:44:41.785Z"
@@ -2992,7 +3608,7 @@ describe.sequential('__typename with data tests', async () => {
           id: 1,
           name: 'FirstUser',
           email: 'userOne@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -3048,7 +3664,7 @@ describe.sequential('__typename with data tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -3186,7 +3802,7 @@ describe.sequential('__typename with data tests', async () => {
           id: 1,
           name: 'FirstUser',
           email: 'userOne@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -3233,7 +3849,7 @@ describe.sequential('__typename with data tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             // RQB can't handle blobs in JSON, for now
             // blobBigInt: '10',
             numeric: '250.2',
@@ -3305,7 +3921,7 @@ describe.sequential('__typename with data tests', async () => {
             id: 1,
             name: 'FirstUser',
             email: 'userOne@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -3398,7 +4014,7 @@ describe.sequential('__typename with data tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -3420,7 +4036,7 @@ describe.sequential('__typename with data tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -3442,7 +4058,7 @@ describe.sequential('__typename with data tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -3508,7 +4124,7 @@ describe.sequential('__typename with data tests', async () => {
               id: 1,
               name: 'FirstUser',
               email: 'userOne@notmail.com',
-              textJson: '{"field":"value"}',
+              textJson: { field: 'value' },
               // RQB can't handle blobs in JSON, for now
               // blobBigInt: '10',
               numeric: '250.2',
@@ -3534,7 +4150,7 @@ describe.sequential('__typename with data tests', async () => {
 						id: 3
 						name: "ThirdUser"
 						email: "userThree@notmail.com"
-						textJson: "{ \\"field\\": \\"value\\" }"
+						textJson: { field: "value" }
 						blobBigInt: "10"
 						numeric: "250.2"
 						createdAt: "2024-04-02T06:44:41.785Z"
@@ -3568,7 +4184,7 @@ describe.sequential('__typename with data tests', async () => {
           id: 3,
           name: 'ThirdUser',
           email: 'userThree@notmail.com',
-          textJson: '{"field":"value"}',
+          textJson: { field: 'value' },
           blobBigInt: '10',
           numeric: '250.2',
           createdAt: '2024-04-02T06:44:41.000Z',
@@ -3592,7 +4208,7 @@ describe.sequential('__typename with data tests', async () => {
 							id: 3
 							name: "ThirdUser"
 							email: "userThree@notmail.com"
-							textJson: "{ \\"field\\": \\"value\\" }"
+							textJson: { field: "value" }
 							blobBigInt: "10"
 							numeric: "250.2"
 							createdAt: "2024-04-02T06:44:41.785Z"
@@ -3606,7 +4222,7 @@ describe.sequential('__typename with data tests', async () => {
 							id: 4
 							name: "FourthUser"
 							email: "userFour@notmail.com"
-							textJson: "{ \\"field\\": \\"value\\" }"
+							textJson: { field: "value" }
 							blobBigInt: "10"
 							numeric: "250.2"
 							createdAt: "2024-04-02T06:44:41.785Z"
@@ -3642,7 +4258,7 @@ describe.sequential('__typename with data tests', async () => {
             id: 3,
             name: 'ThirdUser',
             email: 'userThree@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',
@@ -3657,7 +4273,7 @@ describe.sequential('__typename with data tests', async () => {
             id: 4,
             name: 'FourthUser',
             email: 'userFour@notmail.com',
-            textJson: '{"field":"value"}',
+            textJson: { field: 'value' },
             blobBigInt: '10',
             numeric: '250.2',
             createdAt: '2024-04-02T06:44:41.000Z',

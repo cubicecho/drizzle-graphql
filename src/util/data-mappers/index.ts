@@ -3,6 +3,11 @@ import { type Column, getTableColumns, is, One, type Table } from 'drizzle-orm';
 import { GraphQLError } from 'graphql';
 import type { TableNamedRelations } from '../builders/index.ts';
 
+// drizzle-orm v1 uses compound dataType strings (e.g. "object json"), so inclusion rather
+// than equality. PgGeometryObject is stored as json but has its own object type.
+const isJsonColumn = (column: Column): boolean =>
+  ((column as any).dataType ?? '').includes('json') && (column as any).columnType !== 'PgGeometryObject';
+
 export const remapToGraphQLCore = (
   key: string,
   value: any,
@@ -41,6 +46,13 @@ export const remapToGraphQLCore = (
 
   // For non-relation fields, require a column definition.
   if (!column) {
+    return value;
+  }
+
+  // JSON columns are carried by the `JSON` scalar, which transports the parsed value as-is.
+  // This has to come before the array/object branches below, which would otherwise walk into
+  // the value and remap its contents as if they were column values.
+  if (isJsonColumn(column)) {
     return value;
   }
 
@@ -174,19 +186,12 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
     }
   }
 
-  // JSON columns (SQLite: "object json", PG: "json").
+  // JSON columns (SQLite: "object json", PG: "json"). The `JSON` scalar has already parsed
+  // the literal, so the value goes to the driver untouched — parsing it again here would
+  // wrongly reject a JSON value that happens to be a string, like `"hello"`.
   // PgGeometryObject is already handled by the switch case below.
   if (dataType.includes('json') && (column as any).columnType !== 'PgGeometryObject') {
-    if (typeof value !== 'string') {
-      return value;
-    }
-    try {
-      return JSON.parse(value);
-    } catch (e) {
-      throw new GraphQLError(
-        `Invalid JSON in field '${columnName}':\n${e instanceof Error ? e.message : 'Unknown error'}`,
-      );
-    }
+    return value;
   }
 
   switch (dataType) {

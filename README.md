@@ -85,6 +85,396 @@ Automatically create GraphQL schema or customizable schema config fields from Dr
     })
     ```
 
+## Choosing what gets generated
+
+Every generated operation is on by default. `features` turns individual ones off, which
+keeps them out of the schema, out of `entities`, and out of the type map — a schema for a
+read-only API, or one that never exposes aggregates, does not pay for types nobody can
+reach:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    features: {
+        aggregates: false,        // <plural>Aggregate root queries
+        relationAggregates: false, // <relation>Aggregate fields on object types
+        distinct: false,          // the `distinct` argument on list queries
+        insert: false,            // create<Table> / create<Table>Single mutations
+        update: false,            // update<Table> mutations
+        delete: false,            // delete<Table> mutations
+        upsert: true,             // upsert<Table> / upsert<Table>Single mutations (off by default)
+    },
+})
+```
+
+-   Any flag left out keeps its default of `true`, so `{ features: { delete: false } }`
+    changes nothing else
+-   `upsert` is the exception: it defaults to `false`, so the upsert mutations and their
+    conflict input only exist if you ask for them
+-   Turning off `insert` or `update` also drops the input type that only that mutation
+    used (`Create<Type>Input` / `Update<Type>Input`)
+-   Turning off all three mutation features omits the `Mutation` type entirely, the same as
+    `mutations: false`
+-   List and single queries are always generated, so `Query` is never empty
+
+## Scalars
+
+Columns whose values don't fit a built-in GraphQL scalar get a named custom scalar, so the
+generated SDL says what a field actually holds instead of falling back to `String`:
+
+| Drizzle column                             | GraphQL type | Transported as                       |
+| ------------------------------------------ | ------------ | ------------------------------------ |
+| `json` / `jsonb` (and `mode: 'json'`)       | `JSON`       | the parsed value                     |
+| `bigint` (and `mode: 'bigint'`)             | `BigInt`     | a decimal string                     |
+| `uuid`                                      | `UUID`       | a validated UUID string              |
+| `timestamp` / `datetime`                    | `DateTime`   | an ISO-8601 string                   |
+| `date`                                      | `Date`       | a `YYYY-MM-DD` string                |
+
+```graphql
+mutation {
+    createDocumentSingle(values: { id: "11111111-1111-4111-8111-111111111111", payload: { tags: ["a"], views: 3 }, counter: "9007199254740993" }) {
+        payload
+        counter
+    }
+}
+```
+
+-   **`JSON`** carries the value itself — objects, arrays, numbers, strings, `true`/`false`.
+    Reads return the parsed value, not a stringified one, and writes take a literal or a
+    variable rather than a string of JSON
+-   **`BigInt`** is always a decimal string in both directions, so values past
+    `Number.MAX_SAFE_INTEGER` survive the round-trip. Integer literals are accepted on input;
+    floats and non-numeric strings are rejected
+-   **`UUID`** validates the format on the way in, including inside `where` filters
+
+The scalars are exported if you need them in a hand-written schema:
+
+```Typescript
+import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQLUUID } from 'drizzle-graphql'
+```
+
+`GraphQLBigIntString` is the `BigInt` scalar — named for what it does rather than what it is
+called in SDL, to avoid clashing with the language's own `BigInt`.
+
+## Relation filters
+
+A table's `where` input also exposes its relations, so you can filter rows by what they're
+related to instead of pulling everything and filtering client-side.
+
+A **to-one** relation takes the target table's filter input directly:
+
+```graphql
+{
+    posts(where: { author: { name: { eq: "FifthUser" } } }) {
+        id
+    }
+}
+```
+
+A **to-many** relation takes a `some` / `none` / `every` wrapper
+(`<Target>ListRelationFilter`):
+
+```graphql
+{
+    # users who wrote at least one post containing "drizzle"
+    users(where: { posts: { some: { content: { like: "%drizzle%" } } } }) {
+        id
+    }
+
+    # users with no posts at all
+    users(where: { posts: { none: {} } }) {
+        id
+    }
+
+    # users all of whose posts are published (users with no posts match vacuously)
+    users(where: { posts: { every: { isPublished: { eq: true } } } }) {
+        id
+    }
+}
+```
+
+-   Relation filters compile to correlated `EXISTS` subqueries — the related rows are never
+    fetched, and no join duplicates the parent rows
+-   They nest arbitrarily (`users(where: { posts: { some: { author: { … } } } })`) and combine
+    freely with column filters (implicit `AND`) and with `OR`
+-   They're accepted anywhere a filter is — list and single queries, aggregate queries,
+    `update`/`delete` mutations, and the `where` argument on a relation field
+-   `some: {}` means "at least one related row exists"; `none: {}` means "none exist"
+-   Several modes may be given at once and are `AND`ed together
+-   A relation whose name collides with a column name is skipped — the column keeps the field
+-   Many-to-many relations declared with `.through()` are not filterable yet and are left out
+    of the filter input
+
+## Aggregate queries
+
+Every table also gets an aggregate query field — `<tableName>Aggregate` (e.g. `usersAggregate`),
+following the same naming rules as the other generated queries:
+
+```graphql
+{
+    postsAggregate(where: { authorId: { eq: 1 } }) {
+        count
+        avg {
+            views
+        }
+        sum {
+            views
+        }
+        min {
+            createdAt
+        }
+        max {
+            createdAt
+            title
+        }
+        countNonNull {
+            publishedAt
+        }
+        countDistinct {
+            authorId
+        }
+    }
+}
+```
+
+-   `count` — number of matching rows (`Int!`)
+-   `avg` / `sum` — one nullable `Float` field per numeric column
+-   `min` / `max` — one field per orderable column (numbers, strings, enums, dates, bigints),
+    typed exactly like that column is in the table's own type
+-   `countNonNull` — `Int!` per column: how many matching rows have a non-null value there.
+    Every column qualifies, since `count(col)` is valid whatever the type
+-   `countDistinct` — `Int!` per column: how many distinct non-null values there are. Limited to
+    the same columns as `min` / `max`, because counting distinct values needs an equality operator
+
+Columns that have no meaningful ordering — booleans, arrays, JSON, buffers, and geometry —
+are left out of these types, and the `avg` / `sum` / `min` / `max` fields themselves are
+omitted when no column qualifies.
+
+The optional `where` argument takes the same filter input as the table's list query, and is
+applied to every aggregate in the selection. All requested aggregates are computed in a
+single `SELECT`, and on an empty result set `count` is `0` while the other values are `null`.
+
+Grouping (`groupBy`) is not supported yet.
+
+## Relation aggregates
+
+Every to-many relation also gets an `<relationName>Aggregate` field on the parent type, so you
+can count or summarise related rows without fetching them:
+
+```graphql
+{
+    users {
+        id
+        postsAggregate {
+            count
+        }
+        publishedPosts: postsAggregate(where: { published: { eq: true } }) {
+            count
+            max {
+                createdAt
+            }
+        }
+    }
+}
+```
+
+-   The field returns the target table's own `<Type>Aggregate` type — the same one the root
+    `<tableName>Aggregate` query returns, so `count` / `avg` / `sum` / `min` / `max` behave
+    identically
+-   `where` takes the target table's filter input, including [relation filters](#relation-filters),
+    and applies only to the related rows
+-   A parent with no related rows gets `count: 0` and `null` for every other aggregate
+-   To-one relations get no aggregate field — there is nothing to aggregate over
+-   The field is skipped if its name would collide with a column or another relation
+
+All parents in a selection are aggregated with a single
+`SELECT <fk>, … WHERE <fk> IN (…) GROUP BY <fk>` per request, so `postsAggregate` on a list of
+users is one extra query, not one per user. Differently-aliased selections with different
+`where` arguments are batched separately.
+
+## Distinct
+
+List queries take a `distinct` argument — a list of columns from the `<Type>DistinctColumn`
+enum. Rows sharing the same combination of those columns collapse to one:
+
+```graphql
+{
+    # the first post of each author
+    posts(distinct: [authorId], orderBy: { createdAt: { direction: asc, priority: 1 } }) {
+        id
+        authorId
+        createdAt
+    }
+}
+```
+
+-   Which row survives each group is decided by `orderBy` — the first one wins. With no
+    `orderBy`, that's the lowest primary key
+-   `where` is applied **before** rows are collapsed; `limit` and `offset` are applied
+    **after**, so `limit: 10` returns ten distinct rows
+-   Several columns are treated as one combined key, not as independent ones
+-   `distinct` is available on list queries only — a single query returns one row either way
+
+It runs as an extra `row_number() over (partition by …)` query that picks the surviving
+rows' primary keys, after which the main query is narrowed to them — so it needs the same
+window-function support as per-parent paginated relations (**PostgreSQL**, **MySQL 8.0+**,
+or **SQLite 3.25+**), and a table with no primary key cannot use it.
+
+## Pagination ordering
+
+SQL gives no ordering guarantee for a query that has no `ORDER BY`, so paging through an
+unordered result can return the same row twice or skip one entirely. To keep pages stable,
+a query that returns only part of a table is ordered by its primary key when the request
+supplies no `orderBy`:
+
+-   list queries with `limit` and/or `offset`
+-   `<tableName>Single` queries, which are an implicit `limit 1`
+-   to-many relation fields with `limit` and/or `offset` (as a tiebreak appended to any
+    `orderBy` you do supply, so per-parent slices are deterministic)
+
+An explicit `orderBy` always takes precedence, composite primary keys are ordered by every
+key column, and an unpaginated list query is left unordered so no sort is paid for.
+
+## Upsert
+
+`features.upsert` adds a pair of mutations per table that insert rows, or update the ones
+that already exist:
+
+```graphql
+mutation {
+    upsertUsersSingle(values: { id: 1, name: "Dan", email: "dan@example.com" }) {
+        id
+        name
+    }
+}
+```
+
+With no `onConflict`, a conflict on the **primary key** overwrites every column the request
+supplied. `onConflict` changes that:
+
+```graphql
+mutation {
+    upsertUsers(
+        values: [
+            { email: "dan@example.com", name: "Dan", visits: 1 }
+            { email: "sam@example.com", name: "Sam", visits: 1 }
+        ]
+        onConflict: {
+            target: [email] # must be a unique constraint; defaults to the primary key
+            action: UPDATE # or NOTHING, to keep the existing row
+            update: [name] # columns to overwrite; defaults to every supplied column
+            where: { isConfirmed: { eq: true } } # only overwrite rows that match
+        }
+    ) {
+        id
+        name
+    }
+}
+```
+
+-   A batch upsert updates each row with **its own** values (`excluded.<column>`), not with
+    the last row's
+-   Columns the request did not supply are never overwritten — a partial upsert does not null
+    out the rest of the row. Listing an unsupplied column in `update` is an error rather than
+    a silent no-op
+-   `target` must match one of the table's unique constraints exactly; anything else is
+    rejected with the list of valid targets, instead of the database's opaque "no unique or
+    exclusion constraint matching" error
+-   `action: NOTHING` inserts nothing and returns nothing for the conflicting row. An `UPDATE`
+    with no columns left to write degrades to the same thing
+-   `values` is the same `Create<Type>Input` the insert mutations take, so turning `insert`
+    off does not remove it
+
+Dialect differences:
+
+-   **PostgreSQL** and **SQLite** — the full surface above. A table with no primary key and no
+    unique constraint has nothing to conflict on, so it gets no upsert mutations at all
+-   **MySQL** — `ON DUPLICATE KEY UPDATE` fires on whichever unique key was violated and takes
+    no predicate, so `<Type>OnConflict` there has only `action` and `update`. `action: NOTHING`
+    becomes `INSERT IGNORE`, and the mutations return `MutationReturn` like every other MySQL
+    mutation
+
+The build-wide `conflictDoNothing` option is deprecated in favour of this: it applies to every
+`create*` mutation with no way for a request to opt out. `onConflict: { action: NOTHING }` is
+the per-request replacement.
+
+## Error handling
+
+Database drivers put a lot into an error message. Drizzle rethrows them with the full SQL
+statement and its bound parameters attached, and Postgres itself names the table, the column
+and the constraint that was violated. None of that belongs in a GraphQL response, so by
+default every error a generated resolver throws is passed through a sanitizer:
+
+-   errors drizzle-graphql raises itself (`Unable to update with no values specified!`,
+    `Field 'x' is not a valid date!`, filter misuse, …) are written for the client and pass
+    through unchanged
+-   anything else becomes `Internal server error` with `extensions.code:
+    "INTERNAL_SERVER_ERROR"`, and the original is kept on the error's `originalError` so a
+    server-side logger can still see it
+
+`onError` overrides this. Return an error to surface that one, or return nothing to let the
+default apply — which makes it a pure logging hook:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    onError: (error) => {
+        logger.error({ err: error }, 'drizzle-graphql resolver failed')
+        // no return value — the default sanitizing still applies
+    },
+})
+```
+
+```Typescript
+// Surface raw database errors, e.g. in development
+buildSchema(db, { onError: (error) => error as Error })
+
+// Or map them yourself
+buildSchema(db, {
+    onError: (error) =>
+        isUniqueViolation(error)
+            ? new GraphQLError('That record already exists', { extensions: { code: 'CONFLICT' } })
+            : undefined,
+})
+```
+
+The hook covers root queries and mutations, relation and aggregate fields, and the
+standalone `entities.fieldResolvers`. The default is exported as `defaultErrorMapper` if you
+want to fall back to it explicitly.
+
+## Transactions
+
+Each resolver runs its statements on the database the schema was built from. A request that
+fires several mutations therefore commits each one separately, and a failure halfway leaves
+the earlier ones in place. To run a whole request as one unit, open a transaction yourself
+and put it on the GraphQL context under the exported `drizzleExecutorKey`:
+
+```Typescript
+import { buildSchema, drizzleExecutorKey } from 'drizzle-graphql'
+
+const { schema } = buildSchema(db)
+
+await db.transaction(async (tx) => {
+    const result = await graphql({
+        schema,
+        source: request.query,
+        variableValues: request.variables,
+        contextValue: { [drizzleExecutorKey]: tx },
+    })
+
+    if (result.errors?.length) throw new Error('rolling back')
+    return result
+})
+```
+
+Every generated resolver reads the key at resolve time, so queries, mutations, aggregates
+and relation field resolvers all run on the executor you supply and see its uncommitted
+rows. With no key on the context, everything falls back to the build-time database, which
+is what an ordinary request does.
+
+The value does not have to be a transaction — any object with the same interface works, for
+example a pooled connection bound to a tenant, or a logging proxy around `db`. Because the
+key is created with `Symbol.for`, the ESM and CJS builds of this package agree on it when
+both end up loaded in one process.
+
 ## Relations & N+1 handling
 
 Generated schemas resolve nested relations without N+1 query explosions:
