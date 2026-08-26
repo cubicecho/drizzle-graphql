@@ -6,6 +6,7 @@ import type { GraphQLFieldConfig, GraphQLFieldConfigArgumentMap, GraphQLResolveI
 import {
   GraphQLError,
   type GraphQLInputObjectType,
+  GraphQLInt,
   GraphQLList,
   GraphQLNonNull,
   type GraphQLObjectType,
@@ -32,6 +33,7 @@ import {
   generateOnConflictInput,
   generateTableTypes,
   generateUpdateManyInput,
+  generateWriteCount,
   getPrimaryKeyPropNamesFromConfig,
   getUniqueColumnSets,
   listFieldComplexity,
@@ -71,6 +73,7 @@ import {
   generateGroupByType,
   generateHavingInput,
 } from './aggregates.ts';
+import { remapUpdateInput } from './field-updates.ts';
 import {
   buildNestedWritePlans,
   createNestedWriteRuntime,
@@ -373,6 +376,11 @@ const generateInsertSingle = (
             : await runInsert(executor, input);
 
           if (!result[0]) {
+            // Only reachable under `conflictDoNothing`, which is why the field is nullable
+            // there and non-null everywhere else.
+            if (!conflictDoNothing) {
+              throw new GraphQLError(`${fieldName}: the insert returned no row.`);
+            }
             return undefined;
           }
 
@@ -573,7 +581,7 @@ const generateUpdate = (
 
           const entry = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
           const nestedOps = entry && nested!.hasOps(entry.ops) ? entry.ops : undefined;
-          const input = remapFromGraphQLSingleInput(entry ? entry.columns : set, table);
+          const input = remapUpdateInput(entry ? entry.columns : set, table, tableName);
           // A `set` that carries only nested operations is a legitimate update — of the
           // relation rather than of the row — so it is only empty when neither is present.
           if (!Object.keys(input).length && !nestedOps) {
@@ -710,7 +718,7 @@ const generateUpdateMany = (
           const entries = updates.map(({ where, set }) => {
             const split = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
             const ops = split && nested!.hasOps(split.ops) ? split.ops : undefined;
-            const input = remapFromGraphQLSingleInput(split ? split.columns : set, table);
+            const input = remapUpdateInput(split ? split.columns : set, table, tableName);
             // An entry that only writes through a relation still has work to do.
             if (!Object.keys(input).length && !ops) {
               throw new GraphQLError('Unable to update with no values specified!');
@@ -955,7 +963,12 @@ export const generateSchemaData = <
 
   const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations };
 
-  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(db, tables, filterCtx);
+  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(
+    db,
+    tables,
+    'nulls-smallest',
+    filterCtx,
+  );
 
   // Fresh cache per generateSchemaData call — prevents type name collisions
   // when buildSchema() is called multiple times.
@@ -973,6 +986,7 @@ export const generateSchemaData = <
     aggregateTypeCache: new Map(),
     complexity,
     docs: options.docs ?? {},
+    features,
   };
 
   // A nested write interleaves reads and writes inside one transaction, which a synchronous
@@ -1061,8 +1075,10 @@ export const generateSchemaData = <
       updateFieldName,
       updateManyFieldName,
       updateSingleFieldName,
+      updateCountFieldName,
       deleteFieldName,
       deleteSingleFieldName,
+      deleteCountFieldName,
     } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
 
     const selectArrGenerated = generateSelectArray(
@@ -1261,6 +1277,38 @@ export const generateSchemaData = <
           mutationTxCtx,
         )
       : undefined;
+    // The count variants are the plural write with its payload left off, so each follows the
+    // same feature switch as the write it mirrors.
+    const updateCountGenerated =
+      features.update && features.countMutations
+        ? generateWriteCount({
+            db,
+            tableName,
+            table: schema[tableName] as SQLiteTable,
+            kind: 'update',
+            setArgs: updateInput,
+            filterArgs: tableFilters,
+            fieldName: updateCountFieldName,
+            requireWhere: features.requireWhere,
+            filterCtx,
+            txCtx: mutationTxCtx,
+            nested: nestedRuntime,
+          })
+        : undefined;
+    const deleteCountGenerated =
+      features.delete && features.countMutations
+        ? generateWriteCount({
+            db,
+            tableName,
+            table: schema[tableName] as SQLiteTable,
+            kind: 'delete',
+            filterArgs: tableFilters,
+            fieldName: deleteCountFieldName,
+            requireWhere: features.requireWhere,
+            filterCtx,
+            txCtx: mutationTxCtx,
+          })
+        : undefined;
     const aggregateType = features.aggregates
       ? generateAggregateTypes(schema[tableName] as SQLiteTable, tableName, typeName, cacheCtx)
       : undefined;
@@ -1338,7 +1386,9 @@ export const generateSchemaData = <
     }
     if (insertSingleGenerated) {
       mutations[insertSingleGenerated.name] = {
-        type: singleTableItemOutput,
+        // An insert either returns the row it inserted or throws — the one path to `null` is
+        // `conflictDoNothing` swallowing the insert, so the field is nullable only there.
+        type: conflictDoNothing ? singleTableItemOutput : new GraphQLNonNull(singleTableItemOutput),
         args: insertSingleGenerated.args,
         resolve: insertSingleGenerated.resolver,
       };
@@ -1366,10 +1416,14 @@ export const generateSchemaData = <
     }
     if (updateManyGenerated) {
       mutations[updateManyGenerated.name] = {
-        // Nullable items: a no-match entry yields `null` in its slot.
         type: new GraphQLNonNull(new GraphQLList(singleTableItemOutput)),
         args: updateManyGenerated.args,
         resolve: updateManyGenerated.resolver,
+        // The nullable element is deliberate, and the reason this mutation's return type
+        // differs from every sibling's: the result is aligned with the input, one slot per
+        // entry, so an entry that matched nothing has to be able to say so.
+        description:
+          "Each entry's updated rows, in entry order. An entry whose `where` matched no rows contributes `null` in its slot; an entry that matched several contributes each of its rows.",
       };
     }
     if (updateSingleGenerated) {
@@ -1391,6 +1445,24 @@ export const generateSchemaData = <
         type: singleTableItemOutput,
         args: deleteSingleGenerated.args,
         resolve: deleteSingleGenerated.resolver,
+      };
+    }
+    if (updateCountGenerated) {
+      mutations[updateCountGenerated.name] = {
+        type: new GraphQLNonNull(GraphQLInt),
+        args: updateCountGenerated.args,
+        resolve: updateCountGenerated.resolver,
+        description:
+          'How many rows the update touched. The rows themselves are not read back, which is the point of this mutation.',
+      };
+    }
+    if (deleteCountGenerated) {
+      mutations[deleteCountGenerated.name] = {
+        type: new GraphQLNonNull(GraphQLInt),
+        args: deleteCountGenerated.args,
+        resolve: deleteCountGenerated.resolver,
+        description:
+          'How many rows the delete removed. The rows themselves are not read back, which is the point of this mutation.',
       };
     }
     // The insert/update inputs are still built (they type the mutations that survive) but
