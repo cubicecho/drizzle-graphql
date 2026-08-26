@@ -103,6 +103,20 @@ const columnToGraphQLCore = (
         return isInput ? { type: GraphQLString, description: 'Date' } : { type: GraphQLDate, description: 'Date' };
       }
 
+      {
+        // text().array() columns keep dataType='string' but gain a `dimensions` property,
+        // just like the numeric arrays handled in the 'number' branch below. The 'array'
+        // case (baseColumn recursion) still covers drizzle versions that report
+        // dataType='array'; this is a fallback beside it, not a replacement.
+        const dims = (column as any).dimensions as number | undefined;
+        if (dims !== undefined && dims > 0) {
+          return {
+            type: new GraphQLList(new GraphQLNonNull(GraphQLString)),
+            description: 'Array<String>',
+          };
+        }
+      }
+
       return { type: GraphQLString, description: 'String' };
     case 'bigint':
       return { type: GraphQLBigIntString, description: 'BigInt' };
