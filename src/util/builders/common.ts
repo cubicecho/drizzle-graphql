@@ -3382,6 +3382,7 @@ export const computeResolverFieldNames = (
   upsertArrayFieldName: string;
   upsertSingleFieldName: string;
   updateFieldName: string;
+  updateManyFieldName: string;
   updateSingleFieldName: string;
   deleteFieldName: string;
   deleteSingleFieldName: string;
@@ -3402,6 +3403,9 @@ export const computeResolverFieldNames = (
     ? `${upsertPrefix}${capitalize(mapped.singular)}`
     : `${upsertPrefix}${capitalize(tableName)}${suffixes.single}`;
   const updateFieldName = `${prefixes.update}${mapped ? capitalize(mapped.singular) : capitalize(tableName)}`;
+  // The batch variant is plural like the array insert/upsert, with an explicit `Many`
+  // suffix so it never collides with the single-set update.
+  const updateManyFieldName = `${prefixes.update}${mapped ? capitalize(mapped.plural) : capitalize(tableName)}Many`;
   const deleteFieldName = `${prefixes.delete}${mapped ? capitalize(mapped.singular) : capitalize(tableName)}`;
   // The plural update/delete mutations already use the singular noun when a mapper is
   // present, so — unlike create — the Single variants can't rely on singular vs plural to
@@ -3421,10 +3425,37 @@ export const computeResolverFieldNames = (
     upsertArrayFieldName,
     upsertSingleFieldName,
     updateFieldName,
+    updateManyFieldName,
     updateSingleFieldName,
     deleteFieldName,
     deleteSingleFieldName,
   };
+};
+
+/**
+ * The per-entry input of `update<Table>Many`: `{ where, set }`, reusing the table's
+ * update `set` input and filter input. Shared by all three dialect builders.
+ */
+export const generateUpdateManyInput = (params: {
+  typeName: string;
+  updatePrefix: string;
+  updateInput: GraphQLInputObjectType;
+  tableFilters: GraphQLInputObjectType;
+}): GraphQLInputObjectType => {
+  const { typeName, updatePrefix, updateInput, tableFilters } = params;
+  return new GraphQLInputObjectType({
+    name: `${capitalize(updatePrefix)}${typeName}ManyInput`,
+    description: `One entry of a batch update of ${typeName}: the rows \`where\` matches get this entry's \`set\` applied.`,
+    fields: {
+      where: {
+        type: tableFilters,
+        description: 'Rows this entry updates. An omitted filter updates every row.',
+      },
+      set: {
+        type: new GraphQLNonNull(updateInput),
+      },
+    },
+  });
 };
 
 /**

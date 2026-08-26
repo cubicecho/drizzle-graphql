@@ -76,6 +76,7 @@ beforeAll(async () => {
         deleteFromCustomPosts: entities.mutations.deletePosts,
         deleteFromCustomPostsSingle: entities.mutations.deletePostsSingle,
         updateCustomUsers: entities.mutations.updateUsers,
+        updateCustomUsersMany: entities.mutations.updateUsersMany,
         updateCustomCustomers: entities.mutations.updateCustomers,
         updateCustomPosts: entities.mutations.updatePosts,
         updateCustomPostsSingle: entities.mutations.updatePostsSingle,
@@ -1468,6 +1469,32 @@ describe.sequential('Query tests', async () => {
         ],
       },
     });
+  });
+
+  it(`Update many`, async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			mutation {
+				updateCustomUsersMany(
+					updates: [
+						{ where: { id: { eq: 2 } }, set: { name: "SecondEdited" } }
+						{ where: { id: { eq: 999 } }, set: { name: "Nobody" } }
+						{ where: { id: { eq: 5 } }, set: { name: "FifthEdited" } }
+					]
+				) {
+					id
+					name
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        updateCustomUsersMany: [{ id: 2, name: 'SecondEdited' }, null, { id: 5, name: 'FifthEdited' }],
+      },
+    });
+
+    const untouched = await ctx.db.query.Users.findFirst({ where: { id: 1 } });
+    expect(untouched?.name).toBe('FirstUser');
   });
 
   it(`Delete`, async () => {
