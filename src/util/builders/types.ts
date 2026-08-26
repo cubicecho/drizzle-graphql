@@ -266,7 +266,9 @@ export type FilterColumnOperators<
   TColumn extends Column,
   TOperators extends FilterColumnOperatorsCore<TColumn> = FilterColumnOperatorsCore<TColumn>,
 > = TOperators & {
-  OR?: TOperators[];
+  OR?: FilterColumnOperators<TColumn, TOperators>[];
+  AND?: FilterColumnOperators<TColumn, TOperators>[];
+  NOT?: FilterColumnOperators<TColumn, TOperators>;
 };
 
 export type FiltersCore<TTable extends Table> = Partial<{
@@ -274,7 +276,9 @@ export type FiltersCore<TTable extends Table> = Partial<{
 }>;
 
 export type Filters<TTable extends Table, TFilterType = FiltersCore<TTable>> = TFilterType & {
-  OR?: TFilterType[];
+  OR?: Filters<TTable, TFilterType>[];
+  AND?: Filters<TTable, TFilterType>[];
+  NOT?: Filters<TTable, TFilterType>;
 };
 
 export type OrderByArgs<TTable extends Table> = {

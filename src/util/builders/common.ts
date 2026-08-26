@@ -466,8 +466,8 @@ export const createRelationResolverFactory =
 
 /** Per-call cache context — created fresh on each generateSchemaData call to avoid type name collisions. */
 export interface TypeCacheCtx {
-  /** Cache of generic filter type pairs, keyed by generic name (e.g. "String", "DateTime"). */
-  genericFilterCache: Map<string, { main: GraphQLInputObjectType; or: GraphQLInputObjectType }>;
+  /** Cache of generic filter types, keyed by generic name (e.g. "String", "DateTime"). */
+  genericFilterCache: Map<string, GraphQLInputObjectType>;
   /**
    * Cache of shared select object types, keyed by table name.
    * Value: the ${capitalize(tableName)} type (columns + relation fields).
@@ -768,7 +768,7 @@ const generateColumnFilterValues = (
   const genericName = resolveGenericFilterName(column, columnName, columnGraphQLType);
   const cached = cacheCtx.genericFilterCache.get(genericName);
   if (cached) {
-    return cached.main;
+    return cached;
   }
 
   const colType = columnGraphQLType.type;
@@ -799,22 +799,28 @@ const generateColumnFilterValues = (
     isNotNull: { type: GraphQLBoolean },
   };
 
-  const orType = new GraphQLInputObjectType({
-    name: `${genericName}FilterOr`,
-    fields: { ...baseFields },
-  });
-
-  const mainType = new GraphQLInputObjectType({
+  // The boolean branches are recursive — each branch is this filter type itself — so the
+  // fields are thunked and reference the type being constructed.
+  const mainType: GraphQLInputObjectType = new GraphQLInputObjectType({
     name: `${genericName}Filter`,
-    fields: {
+    fields: () => ({
       ...baseFields,
       OR: {
-        type: new GraphQLList(new GraphQLNonNull(orType)),
+        type: new GraphQLList(new GraphQLNonNull(mainType)),
+        description: 'At least one branch matches; ANDed with any sibling operators',
       },
-    },
+      AND: {
+        type: new GraphQLList(new GraphQLNonNull(mainType)),
+        description: 'Every branch matches',
+      },
+      NOT: {
+        type: mainType,
+        description: 'Negates the nested operators',
+      },
+    }),
   });
 
-  cacheCtx.genericFilterCache.set(genericName, { main: mainType, or: orType });
+  cacheCtx.genericFilterCache.set(genericName, mainType);
   return mainType;
 };
 
@@ -1034,17 +1040,24 @@ const generateTableFilterTypeCached = (
     };
   };
 
-  const orFilters = new GraphQLInputObjectType({
-    name: `${resolveTypeName(tableName, typeNameMapper)}FiltersOr`,
-    fields: buildFields,
-  });
-
-  const filters = new GraphQLInputObjectType({
+  // The boolean branches (OR / AND / NOT) are recursive — each branch is this filter type
+  // itself — so the thunk references the type being constructed. Siblings and branches
+  // compose: sibling fields are implicitly ANDed with the OR / AND / NOT groups.
+  const filters: GraphQLInputObjectType = new GraphQLInputObjectType({
     name: `${resolveTypeName(tableName, typeNameMapper)}Filters`,
     fields: () => ({
       ...buildFields(),
       OR: {
-        type: new GraphQLList(new GraphQLNonNull(orFilters)),
+        type: new GraphQLList(new GraphQLNonNull(filters)),
+        description: 'At least one branch matches; ANDed with any sibling fields',
+      },
+      AND: {
+        type: new GraphQLList(new GraphQLNonNull(filters)),
+        description: 'Every branch matches',
+      },
+      NOT: {
+        type: filters,
+        description: 'Negates the nested filters',
       },
     }),
   });
@@ -1440,29 +1453,11 @@ export const extractFiltersColumn = <TColumn extends Column>(
   columnName: string,
   operators: FilterColumnOperators<TColumn>,
 ): SQL | undefined => {
-  if (!operators.OR?.length) {
-    delete operators.OR;
-  }
+  // Boolean branches compose with sibling operators: siblings and the AND list are ANDed
+  // together, NOT negates its whole branch, and the OR group is ANDed with the rest.
+  const { OR, AND, NOT, ...restOperators } = operators;
 
-  const entries = Object.entries(operators as FilterColumnOperatorsCore<TColumn>);
-
-  if (operators.OR) {
-    if (entries.length > 1) {
-      throw new GraphQLError(`WHERE ${columnName}: Cannot specify both fields and 'OR' in column operators!`);
-    }
-
-    const variants = [] as SQL[];
-
-    for (const variant of operators.OR) {
-      const extracted = extractFiltersColumn(column, columnName, variant);
-
-      if (extracted) {
-        variants.push(extracted);
-      }
-    }
-
-    return variants.length ? (variants.length > 1 ? or(...variants) : variants[0]) : undefined;
-  }
+  const entries = Object.entries(restOperators as FilterColumnOperatorsCore<TColumn>);
 
   const singleValueOps: Record<string, (...args: any[]) => SQL> = { eq, ne, gt, gte, lt, lte };
   const stringValueOps: Record<string, (...args: any[]) => SQL> = { like, notLike, ilike, notIlike };
@@ -1494,6 +1489,36 @@ export const extractFiltersColumn = <TColumn extends Column>(
       // `contains`, `mode`) can pass input validation, and silently dropping them could
       // turn a constrained where into an unbounded one.
       throw new GraphQLError(`WHERE ${columnName}: Unknown operator: ${operatorName}`);
+    }
+  }
+
+  if (AND?.length) {
+    for (const variant of AND) {
+      const extracted = extractFiltersColumn(column, columnName, variant);
+      if (extracted) {
+        variants.push(extracted);
+      }
+    }
+  }
+
+  if (NOT) {
+    const extracted = extractFiltersColumn(column, columnName, NOT);
+    if (extracted) {
+      variants.push(not(extracted));
+    }
+  }
+
+  if (OR?.length) {
+    const orVariants = [] as SQL[];
+    for (const variant of OR) {
+      const extracted = extractFiltersColumn(column, columnName, variant);
+      if (extracted) {
+        orVariants.push(extracted);
+      }
+    }
+
+    if (orVariants.length) {
+      variants.push(orVariants.length > 1 ? or(...orVariants)! : orVariants[0]!);
     }
   }
 
@@ -1672,31 +1697,13 @@ export const extractFilters = <TTable extends Table>(
   filters: Filters<TTable>,
   relationCtx?: RelationFilterContext,
 ): SQL | undefined => {
-  if (!filters.OR?.length) {
-    delete filters.OR;
-  }
+  // Boolean branches compose with sibling fields: siblings and the AND list are ANDed
+  // together, NOT negates its whole branch, and the OR group is ANDed with the rest —
+  // `{ a: …, OR: [{ b: … }, { c: … }] }` reads as `a AND (b OR c)`. Every branch is the
+  // filter type itself, so the tree nests arbitrarily.
+  const { OR, AND, NOT, ...fieldFilters } = filters;
 
-  const entries = Object.entries(filters as FiltersCore<TTable>);
-  if (!entries.length) {
-    return;
-  }
-
-  if (filters.OR) {
-    if (entries.length > 1) {
-      throw new GraphQLError(`WHERE ${tableName}: Cannot specify both fields and 'OR' in table filters!`);
-    }
-
-    const variants = [] as SQL[];
-
-    for (const variant of filters.OR) {
-      const extracted = extractFilters(table, tableName, variant, relationCtx);
-      if (extracted) {
-        variants.push(extracted);
-      }
-    }
-
-    return variants.length ? (variants.length > 1 ? or(...variants) : variants[0]) : undefined;
-  }
+  const entries = Object.entries(fieldFilters as FiltersCore<TTable>);
 
   const columns = getColumns(table);
   const relations = relationCtx?.relationMap[relationCtx.tableKey];
@@ -1723,6 +1730,36 @@ export const extractFilters = <TTable extends Table>(
 
     if (extracted) {
       variants.push(extracted);
+    }
+  }
+
+  if (AND?.length) {
+    for (const variant of AND) {
+      const extracted = extractFilters(table, tableName, variant, relationCtx);
+      if (extracted) {
+        variants.push(extracted);
+      }
+    }
+  }
+
+  if (NOT) {
+    const extracted = extractFilters(table, tableName, NOT, relationCtx);
+    if (extracted) {
+      variants.push(not(extracted));
+    }
+  }
+
+  if (OR?.length) {
+    const orVariants = [] as SQL[];
+    for (const variant of OR) {
+      const extracted = extractFilters(table, tableName, variant, relationCtx);
+      if (extracted) {
+        orVariants.push(extracted);
+      }
+    }
+
+    if (orVariants.length) {
+      variants.push(orVariants.length > 1 ? or(...orVariants)! : orVariants[0]!);
     }
   }
 
