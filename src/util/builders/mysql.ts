@@ -17,6 +17,7 @@ import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import type { GeneratedEntities } from '../../types.ts';
 import {
   aggregateFieldComplexity,
+  applyLimitPolicy,
   assertSingleMatch,
   attachTargetPrimaryKeys,
   buildNamedRelations,
@@ -30,6 +31,7 @@ import {
   generateTableTypes,
   generateUpdateManyInput,
   getPrimaryKeyPropNamesFromConfig,
+  type LimitPolicyFor,
   listFieldComplexity,
   type MutationTxCtx,
   mysqlValuesColumnRef,
@@ -81,6 +83,7 @@ const generateSelectArray = (
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
   distinctEnabled: boolean = true,
+  limits?: LimitPolicyFor,
 ): CreatedResolver => {
   const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
     | RelationalQueryBuilder<any, any, any>
@@ -92,6 +95,7 @@ const generateSelectArray = (
   }
 
   const table = tables[tableName]!;
+  const limitPolicy = limits?.(tableName);
   const pkNames = mysqlPrimaryKeyPropNames(table as MySqlTable);
   const queryArgs = selectArrayArgs(
     orderArgs,
@@ -115,8 +119,10 @@ const generateSelectArray = (
           typeNameMapper,
           parsedInfo,
           ...args,
+          limit: applyLimitPolicy(args.limit, limitPolicy, fieldName),
           single: false,
           filterCtx,
+          limits,
           pkNames,
           db: executor,
           // MySQL sorts NULLs as the smallest values (first in ASC).
@@ -141,6 +147,7 @@ const generateSelectSingle = (
   typeName: string,
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
+  limits?: LimitPolicyFor,
 ): CreatedResolver => {
   const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
     | RelationalQueryBuilder<any, any, any>
@@ -174,6 +181,7 @@ const generateSelectSingle = (
           ...args,
           single: true,
           filterCtx,
+          limits,
           pkNames,
           db: executor,
         });
@@ -526,7 +534,8 @@ export const generateSchemaData = <
   relations: TablesRelationalConfig,
   options: SchemaGeneratorOptions,
 ): GeneratedEntities<TDrizzleInstance, TSchema> => {
-  const { relationsDepthLimit, prefixes, suffixes, typeNameMapper, shouldEagerLoad, features, complexity } = options;
+  const { relationsDepthLimit, prefixes, suffixes, typeNameMapper, shouldEagerLoad, features, complexity, limits } =
+    options;
   const rawSchema = schema;
   const schemaEntries = Object.entries(rawSchema);
 
@@ -564,7 +573,7 @@ export const generateSchemaData = <
 
   const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations };
 
-  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(db, tables, filterCtx);
+  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(db, tables, filterCtx, limits);
 
   // Fresh cache per generateSchemaData call — prevents type name collisions
   // when buildSchema() is called multiple times.
@@ -581,6 +590,7 @@ export const generateSchemaData = <
     listRelationFilterCache: new Map(),
     aggregateTypeCache: new Map(),
     complexity,
+    limits,
     docs: options.docs ?? {},
   };
 
@@ -665,6 +675,7 @@ export const generateSchemaData = <
       typeNameMapper,
       filterCtx,
       features.distinct,
+      limits,
     );
     const selectSingleGenerated = generateSelectSingle(
       db,
@@ -677,6 +688,7 @@ export const generateSchemaData = <
       typeName,
       typeNameMapper,
       filterCtx,
+      limits,
     );
     const insertArrGenerated = features.insert
       ? generateInsertArray(
@@ -846,7 +858,7 @@ export const generateSchemaData = <
       type: selectArrOutput,
       args: selectArrGenerated.args,
       resolve: selectArrGenerated.resolver,
-      ...(complexity ? { extensions: { complexity: listFieldComplexity(complexity) } } : {}),
+      ...(complexity ? { extensions: { complexity: listFieldComplexity(complexity, limits?.(tableName)) } } : {}),
     };
     queries[selectSingleGenerated.name] = {
       type: selectSingleOutput,

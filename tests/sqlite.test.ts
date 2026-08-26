@@ -12,6 +12,7 @@ import {
   GraphQLObjectType,
   GraphQLScalarType,
   GraphQLSchema,
+  graphql,
 } from 'graphql';
 import { createYoga } from 'graphql-yoga';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it } from 'vitest';
@@ -4942,4 +4943,42 @@ describe.sequential('Relation orderBy and nulls tests', () => {
       { id: 5, email: null },
     ]);
   });
+});
+
+// The limit policy lives in the shared builder, so the pglite suite carries the detailed
+// coverage; this checks the SQLite dialect is wired to it on both relation paths.
+describe.sequential('limit policy', () => {
+  const buildLimited = (eagerLoadRelations: boolean) =>
+    buildSchema(ctx.db, {
+      limits: { defaultLimit: 2, tables: { Users: { maxLimit: 2 } } },
+      eagerLoadRelations,
+    }).schema;
+
+  it('rejects a root limit above the table maximum', async () => {
+    const res = await graphql({
+      schema: buildLimited(true),
+      source: `{ users(limit: 3) { id } }`,
+      contextValue: {},
+    });
+
+    expect(res.errors?.[0]?.message).toBe("users: 'limit' of 3 exceeds the maximum of 2.");
+  });
+
+  for (const [label, eager] of [
+    ['eagerly loaded', true],
+    ['lazily resolved', false],
+  ] as const) {
+    it(`defaults an unlimited list and its relations when ${label}`, async () => {
+      const res = await graphql({
+        schema: buildLimited(eager),
+        source: `{ posts { id } users(orderBy: { id: { direction: asc, priority: 1 } }) { id posts { id } } }`,
+        contextValue: {},
+      });
+
+      expect(res.errors).toBeUndefined();
+      expect((res.data as any).posts).toHaveLength(2);
+      expect((res.data as any).users).toHaveLength(2);
+      expect((res.data as any).users[0].posts).toHaveLength(2); // user 1 has four
+    });
+  }
 });

@@ -16,6 +16,7 @@ import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import type { GeneratedEntities } from '../../types.ts';
 import {
   aggregateFieldComplexity,
+  applyLimitPolicy,
   assertSingleMatch,
   attachTargetPrimaryKeys,
   buildNamedRelations,
@@ -34,6 +35,7 @@ import {
   generateUpdateManyInput,
   getPrimaryKeyPropNamesFromConfig,
   getUniqueColumnSets,
+  type LimitPolicyFor,
   listFieldComplexity,
   type MutationTxCtx,
   type OnConflictArg,
@@ -100,6 +102,7 @@ const generateSelectArray = (
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
   distinctEnabled: boolean = true,
+  limits?: LimitPolicyFor,
 ): CreatedResolver => {
   const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
     | RelationalQueryBuilder<any, any, any>
@@ -111,6 +114,7 @@ const generateSelectArray = (
   }
 
   const table = tables[tableName]!;
+  const limitPolicy = limits?.(tableName);
   const pkNames = sqlitePrimaryKeyPropNames(table as SQLiteTable);
   const queryArgs = selectArrayArgs(
     orderArgs,
@@ -134,8 +138,10 @@ const generateSelectArray = (
           typeNameMapper,
           parsedInfo,
           ...args,
+          limit: applyLimitPolicy(args.limit, limitPolicy, fieldName),
           single: false,
           filterCtx,
+          limits,
           pkNames,
           db: executor,
           // SQLite sorts NULLs as the smallest values (first in ASC).
@@ -160,6 +166,7 @@ const generateSelectSingle = (
   typeName: string,
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
+  limits?: LimitPolicyFor,
 ): CreatedResolver => {
   const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
     | RelationalQueryBuilder<any, any, any>
@@ -193,6 +200,7 @@ const generateSelectSingle = (
           ...args,
           single: true,
           filterCtx,
+          limits,
           pkNames,
           db: executor,
         });
@@ -221,6 +229,7 @@ const generateInsertArray = (
   conflictDoNothing: boolean = false,
   txCtx?: MutationTxCtx,
   nested?: NestedWriteRuntime,
+  limits?: LimitPolicyFor,
 ): CreatedResolver => {
   const queryArgs: GraphQLFieldConfigArgumentMap = {
     values: {
@@ -264,6 +273,7 @@ const generateInsertArray = (
             table,
             pkNames,
             parsedInfo,
+            limits,
           });
 
           const returning = nestedEntries
@@ -316,6 +326,7 @@ const generateInsertSingle = (
   conflictDoNothing: boolean = false,
   txCtx?: MutationTxCtx,
   nested?: NestedWriteRuntime,
+  limits?: LimitPolicyFor,
 ): CreatedResolver => {
   const queryArgs: GraphQLFieldConfigArgumentMap = {
     values: {
@@ -348,6 +359,7 @@ const generateInsertSingle = (
             table,
             pkNames,
             parsedInfo,
+            limits,
           });
           const returning = nestedEntry
             ? nested!.withJoinColumns(tableName, nestedEntry.ops, { ...columns }, table)
@@ -412,6 +424,7 @@ const generateUpsert = (
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
   nested?: NestedWriteRuntime,
+  limits?: LimitPolicyFor,
 ): CreatedResolver => {
   const queryArgs: GraphQLFieldConfigArgumentMap = {
     values: {
@@ -459,6 +472,7 @@ const generateUpsert = (
             table,
             pkNames,
             parsedInfo,
+            limits,
           });
 
           const returning = nestedEntries
@@ -536,6 +550,7 @@ const generateUpdate = (
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
   nested?: NestedWriteRuntime,
+  limits?: LimitPolicyFor,
 ): CreatedResolver => {
   const queryArgs = {
     set: {
@@ -569,6 +584,7 @@ const generateUpdate = (
             table,
             pkNames,
             parsedInfo,
+            limits,
           });
 
           const entry = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
@@ -665,6 +681,7 @@ const generateUpdateMany = (
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
   nested?: NestedWriteRuntime,
+  limits?: LimitPolicyFor,
 ): CreatedResolver => {
   const queryArgs = {
     updates: {
@@ -703,6 +720,7 @@ const generateUpdateMany = (
             table,
             pkNames,
             parsedInfo,
+            limits,
           });
 
           // Remap and validate every entry before the transaction opens, so a malformed
@@ -925,6 +943,7 @@ export const generateSchemaData = <
     shouldEagerLoad,
     features,
     complexity,
+    limits,
   } = options;
   const rawSchema = schema;
   const schemaEntries = Object.entries(rawSchema);
@@ -955,7 +974,7 @@ export const generateSchemaData = <
 
   const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations };
 
-  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(db, tables, filterCtx);
+  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(db, tables, filterCtx, limits);
 
   // Fresh cache per generateSchemaData call — prevents type name collisions
   // when buildSchema() is called multiple times.
@@ -972,6 +991,7 @@ export const generateSchemaData = <
     listRelationFilterCache: new Map(),
     aggregateTypeCache: new Map(),
     complexity,
+    limits,
     docs: options.docs ?? {},
   };
 
@@ -1077,6 +1097,7 @@ export const generateSchemaData = <
       typeNameMapper,
       filterCtx,
       features.distinct,
+      limits,
     );
     const selectSingleGenerated = generateSelectSingle(
       db,
@@ -1089,6 +1110,7 @@ export const generateSchemaData = <
       typeName,
       typeNameMapper,
       filterCtx,
+      limits,
     );
     const insertArrGenerated = features.insert
       ? generateInsertArray(
@@ -1104,6 +1126,7 @@ export const generateSchemaData = <
           conflictDoNothing,
           mutationTxCtx,
           nestedRuntime,
+          limits,
         )
       : undefined;
     const insertSingleGenerated = features.insert
@@ -1120,6 +1143,7 @@ export const generateSchemaData = <
           conflictDoNothing,
           mutationTxCtx,
           nestedRuntime,
+          limits,
         )
       : undefined;
     // An upsert needs something to conflict on, so a table with no primary key and no
@@ -1151,6 +1175,7 @@ export const generateSchemaData = <
           filterCtx,
           mutationTxCtx,
           nestedRuntime,
+          limits,
         )
       : undefined;
     const upsertSingleGenerated = onConflictInput
@@ -1170,6 +1195,7 @@ export const generateSchemaData = <
           filterCtx,
           mutationTxCtx,
           nestedRuntime,
+          limits,
         )
       : undefined;
     const updateGenerated = features.update
@@ -1189,6 +1215,7 @@ export const generateSchemaData = <
           filterCtx,
           mutationTxCtx,
           nestedRuntime,
+          limits,
         )
       : undefined;
     const updateSingleGenerated = features.update
@@ -1208,6 +1235,7 @@ export const generateSchemaData = <
           filterCtx,
           mutationTxCtx,
           nestedRuntime,
+          limits,
         )
       : undefined;
     // The batch update reuses the update `set` input, so it needs `update` on too.
@@ -1229,6 +1257,7 @@ export const generateSchemaData = <
           filterCtx,
           mutationTxCtx,
           nestedRuntime,
+          limits,
         )
       : undefined;
     const deleteGenerated = features.delete
@@ -1306,7 +1335,7 @@ export const generateSchemaData = <
       type: selectArrOutput,
       args: selectArrGenerated.args,
       resolve: selectArrGenerated.resolver,
-      ...(complexity ? { extensions: { complexity: listFieldComplexity(complexity) } } : {}),
+      ...(complexity ? { extensions: { complexity: listFieldComplexity(complexity, limits?.(tableName)) } } : {}),
     };
     queries[selectSingleGenerated.name] = {
       type: selectSingleOutput,

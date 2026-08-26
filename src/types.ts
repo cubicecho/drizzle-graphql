@@ -758,6 +758,31 @@ export type ComplexityConfig = {
   aggregateCost?: number;
 };
 
+/**
+ * A limit policy: what a request without `limit` gets, and how large a `limit` may be.
+ * Every field is optional — an empty policy is the default unbounded behavior.
+ */
+export type TableLimitPolicy = {
+  /** Applied when the client passes no `limit`. Capped by `maxLimit` when both are set. */
+  defaultLimit?: number;
+  /**
+   * The largest `limit` a client may ask for. Also bounds a request that passes no `limit` at
+   * all, since that means every row.
+   */
+  maxLimit?: number;
+  /**
+   * `false` (default) rejects a `limit` above `maxLimit` with a GraphQL error; `true` reduces
+   * it to `maxLimit` instead.
+   */
+  clampToMax?: boolean;
+};
+
+/** {@link BuildSchemaConfig.limits} — a global policy plus per-table overrides. */
+export type LimitsConfig = TableLimitPolicy & {
+  /** Per-table overrides, keyed by the table's key in the Drizzle schema. */
+  tables?: Record<string, TableLimitPolicy>;
+};
+
 export type BuildSchemaConfig = {
   /**
    * Determines whether generated mutations will be passed to returned schema.
@@ -907,6 +932,43 @@ export type BuildSchemaConfig = {
    * @default 'none'
    */
   transactions?: 'auto' | 'none' | { mode: 'auto'; timeoutMs?: number };
+  /**
+   * Bounds on the `limit` argument of list queries and to-many relation fields.
+   *
+   * Both knobs are off by default: without them a client can omit `limit` and pull a whole
+   * table, or pass `limit: 1000000` and do the same thing politely. Turning either on changes
+   * observable behavior for existing consumers, so nothing is applied unless asked for.
+   *
+   * ```ts
+   * buildSchema(db, {
+   *   limits: {
+   *     defaultLimit: 50,  // used when the client passes no `limit`
+   *     maxLimit: 500,     // anything above is rejected
+   *     tables: {
+   *       auditLog: { defaultLimit: 20, maxLimit: 100 },
+   *     },
+   *   },
+   * });
+   * ```
+   *
+   * - Applies to root list queries **and** to to-many relation fields — an unbounded relation
+   *   inside a bounded root is the same scan one level down. A relation field takes the policy
+   *   of the table it *targets*, so a table is bounded wherever it is reached from. Single-row
+   *   queries and aggregates take no `limit` and are unaffected.
+   * - A `limit` above `maxLimit` is rejected with a GraphQL error. Set `clampToMax: true` to
+   *   silently reduce it instead — honest paginating clients prefer the error, since a clamped
+   *   page looks like the end of the results.
+   * - `maxLimit` on its own also bounds the *omitted* case: no `limit` means every row, which
+   *   is above any maximum. `defaultLimit` is what a request without `limit` gets, capped by
+   *   `maxLimit` if both are set.
+   * - `tables` overrides per table, keyed by the Drizzle schema key. A table's entry replaces
+   *   the top-level value for whichever keys it sets.
+   * - Cursor pagination inherits the same policy — a keyset page needs a limit to be
+   *   meaningful, and `defaultLimit` is what makes `after`-only pagination well-formed.
+   * - The complexity hints price the *effective* limit, so cost estimation and enforcement
+   *   agree.
+   */
+  limits?: LimitsConfig;
   /**
    * Optional mapper from table key to singular/plural name pair.
    * When provided for a table, overrides the default (table key) naming for GraphQL type names,

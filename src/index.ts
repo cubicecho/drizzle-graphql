@@ -9,8 +9,14 @@ import {
   GraphQLSchema,
   type GraphQLSchemaConfig,
 } from 'graphql';
-import type { AnyDrizzleDB, BuildSchemaConfig, GeneratedData } from './types.ts';
-import { applyErrorMapper, defaultErrorMapper } from './util/builders/common.ts';
+import type { AnyDrizzleDB, BuildSchemaConfig, GeneratedData, TableLimitPolicy } from './types.ts';
+import {
+  applyErrorMapper,
+  defaultErrorMapper,
+  type LimitPolicyFor,
+  type ResolvedLimitPolicy,
+  resolveLimitPolicy,
+} from './util/builders/common.ts';
 import { generateMySQL, generatePG, generateSQLite } from './util/builders/index.ts';
 import type { SchemaGeneratorOptions } from './util/builders/types.ts';
 
@@ -31,12 +37,14 @@ export type {
   GeneratedOutputs,
   InsertArrResolver,
   InsertResolver,
+  LimitsConfig,
   MutationReturnlessResult,
   MutationsCore,
   QueriesCore,
   SchemaFeatures,
   SelectResolver,
   SelectSingleResolver,
+  TableLimitPolicy,
   UpdateManyArgs,
   UpdateManyEntry,
   UpdateManyResolver,
@@ -154,6 +162,40 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
       ? undefined
       : { timeoutMs: (transactionsOpt === 'auto' ? undefined : transactionsOpt.timeoutMs) ?? 30_000 };
 
+  // A limit policy is only built when the caller configured one; otherwise `limits` stays
+  // undefined and every list keeps its unbounded behavior. Policies are resolved once per
+  // table and memoized, since the lookup runs on every relation field build and every list
+  // resolve.
+  const limitsConfig = config?.limits;
+  if (limitsConfig) {
+    const check = (policy: TableLimitPolicy, where: string) => {
+      for (const key of ['defaultLimit', 'maxLimit'] as const) {
+        const value = policy[key];
+        if (value === undefined) {
+          continue;
+        }
+        if (!Number.isInteger(value) || value < 1) {
+          throw new Error(`Drizzle-GraphQL Error: config.limits${where}.${key} must be a positive integer.`);
+        }
+      }
+    };
+    check(limitsConfig, '');
+    for (const [tableName, policy] of Object.entries(limitsConfig.tables ?? {})) {
+      check(policy, `.tables.${tableName}`);
+    }
+  }
+  const limitPolicyCache = new Map<string, ResolvedLimitPolicy | undefined>();
+  const limits: LimitPolicyFor | undefined = limitsConfig
+    ? (tableName: string) => {
+        if (limitPolicyCache.has(tableName)) {
+          return limitPolicyCache.get(tableName);
+        }
+        const resolved = resolveLimitPolicy(limitsConfig, limitsConfig.tables?.[tableName]);
+        limitPolicyCache.set(tableName, resolved);
+        return resolved;
+      }
+    : undefined;
+
   // Normalize eagerLoadRelations (boolean | predicate | undefined) into a predicate.
   const eagerOpt = config?.eagerLoadRelations;
   const shouldEagerLoad: (tableName: string, relationName: string) => boolean =
@@ -194,6 +236,7 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     mapColumnType: config?.mapColumnType,
     enumNameMapper: config?.enumNameMapper,
     transactions,
+    limits,
     docs: {
       describeColumn: config?.describeColumn,
       describeTable: config?.describeTable,

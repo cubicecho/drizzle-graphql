@@ -711,7 +711,12 @@ const batchedPaginatedRelationQuery = async (
  *      into a single IN-clause query, eliminating N+1 database round-trips.
  */
 export const createRelationResolverFactory =
-  (db: any, tables: Record<string, Table>, filterCtx?: RelationFilterBase): RelationResolverFactory =>
+  (
+    db: any,
+    tables: Record<string, Table>,
+    filterCtx?: RelationFilterBase,
+    limits?: LimitPolicyFor,
+  ): RelationResolverFactory =>
   ({ tableName, relationName, relEntry, isOne }) => {
     const parentTable = tables[tableName];
     const targetTableName = relEntry.targetTableName;
@@ -727,6 +732,8 @@ export const createRelationResolverFactory =
     }
 
     const { localColPropName, foreignCol, foreignColPropName } = joinCols;
+    // A relation field is bounded by the policy of the table it reads, not the parent's.
+    const limitPolicy = isOne ? undefined : limits?.(targetTableName);
     // Resolved at build time (composite keys included) — used to tiebreak paginated batches.
     const targetPkNames = relEntry.targetPkNames ?? [];
 
@@ -741,7 +748,8 @@ export const createRelationResolverFactory =
         return isOne ? null : [];
       }
 
-      const { where: whereArg, orderBy: orderByArg, limit, offset } = (args ?? {}) as any;
+      const { where: whereArg, orderBy: orderByArg, limit: requestedLimit, offset } = (args ?? {}) as any;
+      const limit = applyLimitPolicy(requestedLimit, limitPolicy, `${tableName}.${relationName}`);
 
       // Batch path: collect all sibling calls in this tick and execute one query.
       // Pagination args are part of the loader key so siblings sharing identical
@@ -874,6 +882,12 @@ export interface TypeCacheCtx {
    * generator emits no descriptions of its own for column and relation fields.
    */
   docs: SchemaDocs;
+  /**
+   * The build's resolved limit policy, or `undefined` when the caller configured none. Read
+   * here so a to-many relation field can price its cost hint against the policy of the table
+   * it targets, the same one its resolver enforces.
+   */
+  limits: LimitPolicyFor | undefined;
 }
 
 /**
@@ -930,16 +944,88 @@ export type ResolvedComplexityOptions = {
   aggregateCost: number;
 };
 
+/** {@link BuildSchemaConfig.limits} resolved for one table. `undefined` means no policy. */
+export type ResolvedLimitPolicy = {
+  defaultLimit: number | undefined;
+  maxLimit: number | undefined;
+  clampToMax: boolean;
+};
+
+/**
+ * Looks up the limit policy for a table by its Drizzle schema key. Built once per schema by
+ * `buildSchema`; `undefined` for a table the caller left unbounded.
+ */
+export type LimitPolicyFor = (tableName: string) => ResolvedLimitPolicy | undefined;
+
+/**
+ * The `limit` a query actually runs with, given the policy for the table it reads.
+ *
+ * A request that passes no `limit` falls back to `defaultLimit`, or to `maxLimit` when only
+ * that is configured — an absent limit means every row, which is above any maximum. A limit
+ * the client did ask for is rejected when it exceeds `maxLimit`, since silently truncating a
+ * page tells a paginating client it has reached the end when it has not; `clampToMax` opts
+ * into the truncation instead. A limit the *policy* supplied is capped rather than rejected —
+ * a misconfigured `defaultLimit` above `maxLimit` is the operator's problem, not something to
+ * fail a client's query over.
+ */
+export const applyLimitPolicy = (
+  limit: number | null | undefined,
+  policy: ResolvedLimitPolicy | undefined,
+  fieldName: string,
+): number | undefined => {
+  if (!policy) {
+    return limit ?? undefined;
+  }
+  const { defaultLimit, maxLimit, clampToMax } = policy;
+
+  if (limit == null) {
+    const fallback = defaultLimit ?? maxLimit;
+    if (fallback === undefined) {
+      return undefined;
+    }
+    return maxLimit === undefined ? fallback : Math.min(fallback, maxLimit);
+  }
+
+  if (maxLimit !== undefined && limit > maxLimit) {
+    if (clampToMax) {
+      return maxLimit;
+    }
+    throw new GraphQLError(`${fieldName}: 'limit' of ${limit} exceeds the maximum of ${maxLimit}.`);
+  }
+  return limit;
+};
+
+/** Merges a per-table override over the global policy, or `undefined` when neither bounds anything. */
+export const resolveLimitPolicy = (
+  global: { defaultLimit?: number; maxLimit?: number; clampToMax?: boolean } | undefined,
+  table: { defaultLimit?: number; maxLimit?: number; clampToMax?: boolean } | undefined,
+): ResolvedLimitPolicy | undefined => {
+  const defaultLimit = table?.defaultLimit ?? global?.defaultLimit;
+  const maxLimit = table?.maxLimit ?? global?.maxLimit;
+  if (defaultLimit === undefined && maxLimit === undefined) {
+    return undefined;
+  }
+  return { defaultLimit, maxLimit, clampToMax: table?.clampToMax ?? global?.clampToMax ?? false };
+};
+
 /**
  * A paginated field costs its page size times whatever one row of it costs, so `users(limit: 100)
  * { posts(limit: 10) { id } }` is charged for the thousand rows it can return rather than the two
  * fields it mentions. `childComplexity` floors at 1 so a row is never free.
+ *
+ * The page size is the *effective* one: a request without `limit` is priced at the policy's
+ * `defaultLimit` rather than the estimator's guess, and no request is priced above `maxLimit`,
+ * so the cost a query is charged matches the rows it can actually pull.
  */
 export const listFieldComplexity =
-  (options: ResolvedComplexityOptions): ComplexityEstimator =>
+  (options: ResolvedComplexityOptions, policy?: ResolvedLimitPolicy): ComplexityEstimator =>
   ({ args, childComplexity }) => {
     const limit = args['limit'];
-    const rows = typeof limit === 'number' && limit > 0 ? limit : options.defaultListSize;
+    const requested = typeof limit === 'number' && limit > 0 ? limit : undefined;
+    let rows = requested ?? policy?.defaultLimit ?? options.defaultListSize;
+    if (policy?.maxLimit !== undefined) {
+      rows = Math.min(rows, policy.maxLimit);
+    }
     return rows * Math.max(childComplexity, 1);
   };
 
@@ -1985,7 +2071,13 @@ const generateSelectFields = <TWithOrder extends boolean>(
           },
           resolve,
           ...relationDocs,
-          ...(cacheCtx.complexity ? { extensions: { complexity: listFieldComplexity(cacheCtx.complexity) } } : {}),
+          ...(cacheCtx.complexity
+            ? {
+                extensions: {
+                  complexity: listFieldComplexity(cacheCtx.complexity, cacheCtx.limits?.(targetTableName)),
+                },
+              }
+            : {}),
         },
       ]);
 
@@ -2907,6 +2999,7 @@ const extractRelationsParamsInner = (
   typeNameMapper?: TypeNameMapper,
   _isInitial: boolean = false,
   filterCtx?: RelationFilterBase,
+  limits?: LimitPolicyFor,
 ) => {
   const relationsForTable = relationMap[tableName];
   if (!relationsForTable) {
@@ -2970,7 +3063,13 @@ const extractRelationsParamsInner = (
     const relationArgs: Partial<TableSelectArgs> | undefined = relationField?.args;
 
     const offset = relationArgs?.offset ?? undefined;
-    const limit = relationArgs?.limit ?? undefined;
+    // The eager path reads its arguments off the AST rather than through the relation field's
+    // resolver, so the policy has to be applied here too — otherwise an eagerly loaded
+    // relation would be the one way around it. A to-one relation takes no `limit` and is a
+    // single row by definition, so it is left alone.
+    const limit = is(relEntry.relation, One)
+      ? (relationArgs?.limit ?? undefined)
+      : applyLimitPolicy(relationArgs?.limit, limits?.(targetTableName), `${tableName}.${relName}`);
 
     // drizzle-orm v1 RQB calls both `where` and `orderBy` callbacks with an
     // aliased table proxy (e.g. d0, d1). Pass the proxy through so column
@@ -3008,6 +3107,7 @@ const extractRelationsParamsInner = (
           typeNameMapper,
           false,
           filterCtx,
+          limits,
         )
       : undefined;
     thisRecord.with = relWith;
@@ -3026,12 +3126,23 @@ export const extractRelationsParams = (
   typeName: string,
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
+  limits?: LimitPolicyFor,
 ): Record<string, Partial<ProcessedTableSelectArgs>> | undefined => {
   if (!info) {
     return undefined;
   }
 
-  return extractRelationsParamsInner(relationMap, tables, tableName, typeName, info, typeNameMapper, true, filterCtx);
+  return extractRelationsParamsInner(
+    relationMap,
+    tables,
+    tableName,
+    typeName,
+    info,
+    typeNameMapper,
+    true,
+    filterCtx,
+    limits,
+  );
 };
 
 /**
@@ -3795,6 +3906,7 @@ export const prepareMutationRelationColumns = (params: {
   table: Table;
   pkNames: readonly string[];
   parsedInfo: ResolveTree;
+  limits?: LimitPolicyFor;
 }): {
   columns: Record<string, Column>;
   hasRelations: boolean;
@@ -3802,7 +3914,16 @@ export const prepareMutationRelationColumns = (params: {
 } => {
   const { relationMap, tables, tableName, typeName, typeNameMapper, table, pkNames, parsedInfo } = params;
   const withParams = relationMap[tableName]
-    ? extractRelationsParams(relationMap, tables, tableName, parsedInfo, typeName, typeNameMapper)
+    ? extractRelationsParams(
+        relationMap,
+        tables,
+        tableName,
+        parsedInfo,
+        typeName,
+        typeNameMapper,
+        undefined,
+        params.limits,
+      )
     : undefined;
   const hasRelations = !!(withParams && Object.keys(withParams).length);
   const baseColumns = extractSelectedColumnsFromTreeSQLFormat(parsedInfo.fieldsByTypeName[typeName]!, table, {
@@ -4089,6 +4210,7 @@ export const runRelationalSelect = async (opts: {
   distinct?: string[];
   after?: string;
   nullOrdering?: NullOrdering;
+  limits?: LimitPolicyFor;
 }): Promise<any> => {
   const {
     queryBase,
@@ -4210,7 +4332,16 @@ export const runRelationalSelect = async (opts: {
           }
         : undefined,
     with: relationMap[tableName]
-      ? extractRelationsParams(relationMap, tables, tableName, parsedInfo, typeName, typeNameMapper, filterCtx)
+      ? extractRelationsParams(
+          relationMap,
+          tables,
+          tableName,
+          parsedInfo,
+          typeName,
+          typeNameMapper,
+          filterCtx,
+          opts.limits,
+        )
       : undefined,
   };
 
