@@ -113,6 +113,8 @@ const generateSelectArray = (
           filterCtx,
           pkNames,
           db: executor,
+          // MySQL sorts NULLs as the smallest values (first in ASC).
+          nullOrdering: 'nulls-smallest',
         });
       } catch (e) {
         throw toGraphQLError(e);

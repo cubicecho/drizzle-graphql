@@ -1,5 +1,5 @@
 // @ts-nocheck — vendored file, drizzle-orm 1.0 type compat not guaranteed
-import { is, One, type Table, type View } from 'drizzle-orm';
+import { and, asc, desc, getColumns, is, One, type Table, type View } from 'drizzle-orm';
 import type { RelationalQueryBuilder } from 'drizzle-orm/mysql-core/query-builders/query';
 import { getTableConfig, type PgAsyncDatabase, type PgColumn, PgTable } from 'drizzle-orm/pg-core';
 import type { GraphQLFieldConfig, GraphQLFieldConfigArgumentMap, ThunkObjMap } from 'graphql';
@@ -15,10 +15,15 @@ import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import type { GeneratedEntities } from '../../types.ts';
 import {
   aggregateFieldComplexity,
+  attachRowCursors,
   attachTargetPrimaryKeys,
+  buildCursorCondition,
   buildNamedRelations,
+  type CursorOrderEntry,
   computeResolverFieldNames,
   createRelationResolverFactory,
+  cursorOrderingEntries,
+  decodeCursor,
   eagerLoadMutationRelations,
   excludedColumnRef,
   extractFilters,
@@ -29,6 +34,7 @@ import {
   generateTableTypes,
   getPrimaryKeyPropNamesFromConfig,
   getUniqueColumnSets,
+  isCursorFieldSelected,
   listFieldComplexity,
   type OnConflictArg,
   prepareMutationRelationColumns,
@@ -123,20 +129,53 @@ const generateSelectArray = (
             filterCtx,
             pkNames,
             db: executor,
+            // PostgreSQL sorts NULLs as the largest values (last in ASC).
+            nullOrdering: 'nulls-largest',
           });
         }
 
         // Fallback for tables without relational query builder support.
         // Use SQL column objects (not Record<string,true>) so db.select() receives valid expressions.
-        const { offset, limit, orderBy, where, distinct } = args;
+        const { offset, limit, orderBy, where, distinct, after } = args;
         const selectedColumnsSql = extractSelectedColumnsFromTreeSQLFormat<PgColumn>(
           parsedInfo.fieldsByTypeName[typeName]!,
           table,
           { tableName, relationMap, tables },
         );
-        const whereSql = where
+
+        // Keyset pagination (see runRelationalSelect, which handles the RQB path).
+        const cursorSelected = isCursorFieldSelected(parsedInfo.fieldsByTypeName[typeName], table);
+        let cursorEntries: CursorOrderEntry[] | undefined;
+        if (after != null || cursorSelected) {
+          if (after != null && distinct?.length) {
+            throw new GraphQLError("'after' cannot be combined with 'distinct'.");
+          }
+          if (!pkNames.length) {
+            if (after != null) {
+              throw new GraphQLError(
+                `Table ${tableName} has no primary key, so cursor pagination cannot be used on it.`,
+              );
+            }
+          } else {
+            cursorEntries = cursorOrderingEntries(orderBy, pkNames);
+            if (cursorSelected) {
+              // The whole ordering tuple is needed to compute each row's cursor.
+              const allColumns = getColumns(table);
+              for (const [column] of cursorEntries) {
+                selectedColumnsSql[column] ??= allColumns[column] as PgColumn;
+              }
+            }
+          }
+        }
+        const cursorCondition =
+          after != null && cursorEntries
+            ? buildCursorCondition(table, cursorEntries, decodeCursor(after, cursorEntries), 'nulls-largest')
+            : undefined;
+
+        const baseWhereSql = where
           ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))
           : undefined;
+        const whereSql = cursorCondition ? and(baseWhereSql, cursorCondition) : baseWhereSql;
 
         // `distinct` picks the surviving rows in its own pass; the main query is then narrowed
         // to those primary keys and re-orders them the same way. See runRelationalSelect.
@@ -164,7 +203,15 @@ const generateSelectArray = (
         } else if (whereSql) {
           q = q.where(whereSql) as any;
         }
-        if (orderBy) {
+        if (cursorEntries && !distinctKeys) {
+          // Cursor pagination pages over a total order: orderBy plus the PK tiebreak.
+          const allColumns = getColumns(table);
+          q = q.orderBy(
+            ...cursorEntries.map(([column, direction]) =>
+              direction === 'asc' ? asc(allColumns[column]!) : desc(allColumns[column]!),
+            ),
+          ) as any;
+        } else if (orderBy) {
           q = q.orderBy(
             ...extractOrderBy(table, orderBy),
             ...(distinctKeys ? primaryKeyOrderExprs(table, pkNames) : []),
@@ -181,7 +228,11 @@ const generateSelectArray = (
             q = q.limit(limit) as any;
           }
         }
-        return remapToGraphQLArrayOutput(await q, tableName, table, relationMap);
+        const rows = await q;
+        if (cursorEntries && cursorSelected) {
+          attachRowCursors(rows, cursorEntries);
+        }
+        return remapToGraphQLArrayOutput(rows, tableName, table, relationMap);
       } catch (e) {
         throw toGraphQLError(e);
       }

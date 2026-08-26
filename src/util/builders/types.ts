@@ -64,6 +64,8 @@ export type TableSelectArgs = {
   where: Filters<Table>;
   orderBy: OrderByArgs<Table>;
   distinct: string[];
+  /** Opaque keyset-pagination cursor — only return rows strictly after it. List queries only. */
+  after: string;
 };
 
 export type ProcessedTableSelectArgs = {
