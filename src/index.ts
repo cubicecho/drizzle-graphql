@@ -103,6 +103,7 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
   // be asked for.
   const features = {
     aggregates: config?.features?.aggregates ?? true,
+    groupBy: config?.features?.groupBy ?? true,
     relationAggregates: config?.features?.relationAggregates ?? true,
     distinct: config?.features?.distinct ?? true,
     insert: config?.features?.insert ?? true,

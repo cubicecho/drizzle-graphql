@@ -2443,6 +2443,7 @@ export const computeResolverFieldNames = (
   listFieldName: string;
   singleFieldName: string;
   aggregateFieldName: string;
+  groupByFieldName: string;
   createArrayFieldName: string;
   createSingleFieldName: string;
   upsertArrayFieldName: string;
@@ -2455,6 +2456,7 @@ export const computeResolverFieldNames = (
   const listFieldName = (mapped?.plural ?? uncapitalize(tableName)) + suffixes.list;
   const singleFieldName = mapped?.singular ?? uncapitalize(tableName) + suffixes.single;
   const aggregateFieldName = `${mapped?.plural ?? uncapitalize(tableName)}Aggregate`;
+  const groupByFieldName = `${mapped?.plural ?? uncapitalize(tableName)}GroupBy`;
   const createArrayFieldName = `${prefixes.insert}${mapped ? capitalize(mapped.plural) : capitalize(tableName)}`;
   const createSingleFieldName = mapped
     ? `${prefixes.insert}${capitalize(mapped.singular)}`
@@ -2471,6 +2473,7 @@ export const computeResolverFieldNames = (
     listFieldName,
     singleFieldName,
     aggregateFieldName,
+    groupByFieldName,
     createArrayFieldName,
     createSingleFieldName,
     upsertArrayFieldName,

@@ -5,17 +5,25 @@ import {
   type Column,
   count,
   countDistinct,
+  eq,
   extractExtendedColumnType,
   getColumns,
+  gt,
+  gte,
   inArray,
+  lt,
+  lte,
   max,
   min,
+  ne,
   sum,
   type Table,
 } from 'drizzle-orm';
 import {
+  type GraphQLEnumType,
+  GraphQLError,
   GraphQLFloat,
-  type GraphQLInputObjectType,
+  GraphQLInputObjectType,
   GraphQLInt,
   GraphQLList,
   GraphQLNonNull,
@@ -31,6 +39,7 @@ import type { ConvertedColumn } from '../type-converter/types.ts';
 import {
   extractFilters,
   extractRelationJoinColumns,
+  generateColumnEnum,
   type RelationAggregateFactory,
   type RelationFilterBase,
   relationFilterCtx,
@@ -243,9 +252,13 @@ const aggregateTarget = (table: Table, tableName: string, typeName: string): Agg
  * into one drizzle select expression per (op, column) pair. An empty `selection` means the
  * client asked for nothing runnable (`__typename` only, or empty sub-selections).
  */
-const parseAggregateRequest = (info: any, target: AggregateTarget): AggregateRequest => {
+const parseAggregateRequest = (
+  info: any,
+  target: AggregateTarget,
+  rootTypeName = `${target.typeName}Aggregate`,
+): AggregateRequest => {
   const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
-  const selectionTree = parsedInfo.fieldsByTypeName[`${target.typeName}Aggregate`] ?? {};
+  const selectionTree = parsedInfo.fieldsByTypeName[rootTypeName] ?? {};
 
   const request: AggregateRequest = {
     count: false,
@@ -465,5 +478,278 @@ export const createRelationAggregateFactory = (
     };
 
     return { type, resolve };
+  };
+};
+
+// ── group by ──────────────────────────────────────────────────────────────────
+
+/** Alias prefix for grouped columns, kept clear of the `${op}__${column}` aggregate aliases. */
+const GROUP_COL = `group${SEP}`;
+
+/** Comparison operators a `having` clause can apply to an aggregated value. */
+const HAVING_OPS = { eq, ne, gt, gte, lt, lte } as const;
+
+/**
+ * Columns a query can group on. Grouping needs an equality operator, which is the same
+ * requirement min/max has, plus booleans — orderable excludes them because a min/max over
+ * true/false says nothing, but `GROUP BY isConfirmed` is perfectly ordinary.
+ */
+const groupableColumns = (
+  table: Table,
+  tableName: string,
+): Record<string, { column: Column; converted: ConvertedColumn }> => {
+  const { orderable } = classifyAggregateColumns(table, tableName);
+  const groupable: Record<string, { column: Column; converted: ConvertedColumn }> = { ...orderable };
+
+  for (const [columnName, column] of Object.entries(getColumns(table))) {
+    if (groupable[columnName]) {
+      continue;
+    }
+    const { type: dataType } = extractExtendedColumnType(column);
+    if (dataType !== 'boolean') {
+      continue;
+    }
+    groupable[columnName] = {
+      column,
+      converted: drizzleColumnToGraphQLType(column, columnName, tableName, true, false, false),
+    };
+  }
+
+  return groupable;
+};
+
+/** The `${typeName}GroupByColumn` enum listing what a group-by query can group on. */
+export const generateGroupByEnum = (table: Table, tableName: string, typeName: string): GraphQLEnumType | undefined => {
+  const groupable = groupableColumns(table, tableName);
+
+  return generateColumnEnum(
+    table,
+    `${typeName}GroupByColumn`,
+    `Columns of ${typeName} that a query can group by`,
+    (_column, columnName) => Boolean(groupable[columnName]),
+  );
+};
+
+/** Shared by every `having` clause, so it is created once rather than per table. */
+export const aggregateNumberFilter = new GraphQLInputObjectType({
+  name: 'AggregateNumberFilter',
+  description: 'Compares an aggregated value. Several operators in one filter are ANDed together.',
+  fields: Object.fromEntries(Object.keys(HAVING_OPS).map((op) => [op, { type: GraphQLFloat }])),
+});
+
+/**
+ * The `${typeName}Having` input: one entry per aggregate the group-by query can filter on.
+ * Several entries are ANDed together, as are several operators within one entry.
+ *
+ * `min`/`max` are limited to numeric columns here even though the output type computes them
+ * for every orderable column — the comparison is numeric, so a min over a text column has
+ * nothing to compare against.
+ */
+export const generateHavingInput = (table: Table, tableName: string, typeName: string): GraphQLInputObjectType => {
+  const { numeric, orderable, all } = classifyAggregateColumns(table, tableName);
+
+  const fields: Record<string, { type: any; description?: string }> = {
+    count: { type: aggregateNumberFilter, description: 'Filters groups by how many rows they contain' },
+  };
+
+  const opColumns: Record<string, Record<string, unknown>> = {
+    avg: numeric,
+    sum: numeric,
+    min: numeric,
+    max: numeric,
+    countNonNull: all,
+    countDistinct: orderable,
+  };
+
+  for (const [op, columns] of Object.entries(opColumns)) {
+    const columnNames = Object.keys(columns);
+    if (!columnNames.length) {
+      continue;
+    }
+    fields[op] = {
+      type: new GraphQLInputObjectType({
+        name: `${typeName}${capitalize(op)}Having`,
+        fields: Object.fromEntries(columnNames.map((columnName) => [columnName, { type: aggregateNumberFilter }])),
+      }),
+    };
+  }
+
+  return new GraphQLInputObjectType({
+    name: `${typeName}Having`,
+    description: `Filters ${typeName} groups by their aggregated values`,
+    fields,
+  });
+};
+
+/**
+ * The `${typeName}GroupBy` output type: the grouped columns under `group`, alongside the same
+ * aggregate fields the `${typeName}Aggregate` type carries — the wrapper types are the very
+ * same instances, so the schema holds one `${typeName}AvgAggregate` however it is reached.
+ *
+ * The keys are nested rather than spread across the top level so a column called `count`,
+ * `avg` or `min` cannot collide with the aggregate it sits next to.
+ */
+export const generateGroupByType = (
+  table: Table,
+  tableName: string,
+  typeName: string,
+  cacheCtx?: TypeCacheCtx,
+): GraphQLObjectType | undefined => {
+  const groupable = groupableColumns(table, tableName);
+  if (!Object.keys(groupable).length) {
+    return undefined;
+  }
+
+  const keysType = new GraphQLObjectType({
+    name: `${typeName}GroupKeys`,
+    description: `The grouped column values of one ${typeName} group. A column the query did not group by is null.`,
+    fields: Object.fromEntries(
+      Object.entries(groupable).map(([columnName, { converted }]) => [
+        columnName,
+        { type: converted.type, description: converted.description },
+      ]),
+    ),
+  });
+
+  const aggregateType = generateAggregateTypes(table, tableName, typeName, cacheCtx);
+  const aggregateFields = Object.fromEntries(
+    Object.values(aggregateType.getFields()).map((field) => [
+      field.name,
+      { type: field.type, description: field.description ?? undefined },
+    ]),
+  );
+
+  return new GraphQLObjectType({
+    name: `${typeName}GroupBy`,
+    fields: { group: { type: new GraphQLNonNull(keysType) }, ...aggregateFields },
+  });
+};
+
+/** Turns one `${typeName}Having` entry into SQL conditions over the matching aggregate expression. */
+const havingComparisons = (expression: any, filter: Record<string, any>): any[] =>
+  Object.entries(filter)
+    .filter(([op, value]) => value != null && op in HAVING_OPS)
+    .map(([op, value]) => HAVING_OPS[op as keyof typeof HAVING_OPS](expression, value));
+
+const buildHavingCondition = (having: Record<string, any> | undefined, columns: Record<string, Column>) => {
+  if (!having) {
+    return undefined;
+  }
+
+  const conditions: any[] = [];
+
+  for (const [key, value] of Object.entries(having)) {
+    if (value == null) {
+      continue;
+    }
+    if (key === 'count') {
+      conditions.push(...havingComparisons(count(), value));
+      continue;
+    }
+    if (!AGGREGATE_OPS.includes(key as AggregateOp)) {
+      continue;
+    }
+    for (const [columnName, filter] of Object.entries(value as Record<string, any>)) {
+      const column = columns[columnName];
+      if (!column || filter == null) {
+        continue;
+      }
+      conditions.push(...havingComparisons(OP_FNS[key as AggregateOp](column), filter));
+    }
+  }
+
+  return conditions.length ? and(...conditions) : undefined;
+};
+
+/**
+ * Creates the resolver for a table's `<plural>GroupBy` query: the same aggregates the
+ * `<plural>Aggregate` query computes, but one row per distinct combination of the requested
+ * columns, optionally filtered on the aggregated values with `having`.
+ *
+ * Shared by all three dialects — `SELECT <keys>, <aggregates> FROM t WHERE … GROUP BY <keys>
+ * HAVING …` is the same everywhere.
+ */
+export const generateGroupBy = (
+  db: any,
+  tableName: string,
+  table: Table,
+  typeName: string,
+  fieldName: string,
+  filterArgs: GraphQLInputObjectType,
+  groupByEnum: GraphQLEnumType,
+  havingInput: GraphQLInputObjectType,
+  filterCtx?: RelationFilterBase,
+): CreatedResolver => {
+  const target = aggregateTarget(table, tableName, typeName);
+  const groupable = groupableColumns(table, tableName);
+  const columns = getColumns(table);
+  const rootTypeName = `${typeName}GroupBy`;
+
+  const queryArgs = {
+    groupBy: {
+      type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(groupByEnum))),
+      description: 'Columns to group by. One result row per distinct combination of their values.',
+    },
+    where: { type: filterArgs, description: 'Filters the rows before they are grouped.' },
+    having: { type: havingInput, description: 'Filters the groups after they are aggregated.' },
+  };
+
+  return {
+    name: fieldName,
+    resolver: async (
+      _source,
+      args: { groupBy?: string[]; where?: Filters<Table>; having?: Record<string, any> },
+      context,
+      info,
+    ) => {
+      try {
+        const requestedKeys = [...new Set(args.groupBy ?? [])];
+        if (!requestedKeys.length) {
+          throw new GraphQLError('At least one column to group by is required!');
+        }
+
+        const keyColumns = requestedKeys.map((columnName) => {
+          const groupableColumn = groupable[columnName];
+          if (!groupableColumn) {
+            throw new GraphQLError(`Cannot group ${typeName} by ${columnName}!`);
+          }
+          return [columnName, groupableColumn.column] as const;
+        });
+
+        const request = parseAggregateRequest(info, target, rootTypeName);
+        const selection = {
+          ...Object.fromEntries(keyColumns.map(([columnName, column]) => [`${GROUP_COL}${columnName}`, column])),
+          ...request.selection,
+        };
+
+        let query = resolveExecutor(db, context).select(selection).from(table);
+        if (args.where) {
+          query = query.where(extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName)));
+        }
+        query = query.groupBy(...keyColumns.map(([, column]) => column));
+
+        const havingCondition = buildHavingCondition(args.having, columns);
+        if (havingCondition) {
+          query = query.having(havingCondition);
+        }
+
+        const rows: any[] = await query;
+
+        return rows.map((row) => {
+          const group: Record<string, any> = {};
+          for (const [columnName, column] of keyColumns) {
+            const value = row[`${GROUP_COL}${columnName}`];
+            const decoded =
+              typeof value === 'string' && target.dateTimeColumns.has(columnName) ? parseDriverDateTime(value) : value;
+            group[columnName] = value == null ? null : remapToGraphQLCore(columnName, decoded, tableName, column);
+          }
+
+          return { group, ...assembleAggregateRow(row, request, target) };
+        });
+      } catch (e) {
+        throw toGraphQLError(e);
+      }
+    },
+    args: queryArgs,
   };
 };

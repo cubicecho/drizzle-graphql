@@ -17,13 +17,6 @@ Supabase's `pg_graphql`. Roughly ordered within each group; nothing here is comm
   resolve time. What is left is doing it automatically: wrapping a request that fires several
   mutations in a transaction the library opens itself, without the caller wiring up the
   context.
-- **`groupBy` / `having` on aggregates** — the aggregate queries compute one row over the
-  whole filtered set. Grouping is the obvious next step and the most-asked-for aggregate
-  feature after the ones already built.
-- **Query depth and complexity limits** — currently unbounded; a cyclic relation graph lets
-  a client ask for arbitrarily deep nesting. `graphql-depth-limit` and
-  `graphql-query-complexity` cover this from outside, but per-field complexity hints
-  (a relation with `limit: 1000` costs more than a scalar) can only come from the generator.
 - **Full-text search** — Postgres `tsvector` / `websearch_to_tsquery`, MySQL `MATCH … AGAINST`,
   SQLite FTS5. Would slot in as an operator on the filter input for qualifying columns.
 
