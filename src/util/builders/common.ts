@@ -48,6 +48,7 @@ import {
   GraphQLBoolean,
   GraphQLEnumType,
   GraphQLError,
+  GraphQLFloat,
   GraphQLInputObjectType,
   GraphQLInt,
   GraphQLList,
@@ -709,6 +710,7 @@ export const innerOrder = new GraphQLInputObjectType({
  * - the enum GraphQL type name → enum columns (still unique per enum)
  * - "IntArray"    → integer[]/serial[] array columns
  * - "FloatArray"  → float[]/numeric[] array columns
+ * - "StringArray" → text[]/varchar[] array columns
  * - "String"      → all other text/varchar columns
  */
 const resolveGenericFilterName = (
@@ -728,11 +730,23 @@ const resolveGenericFilterName = (
   if (columnGraphQLType.type instanceof GraphQLEnumType) {
     return columnGraphQLType.type.name;
   }
-  // Array columns — give them a distinct name so they never collide with StringFilter.
-  // integer().array() columns have a `dimensions` property set on them.
+  // Array columns — give them a distinct name so they never collide with StringFilter
+  // or with each other. integer().array() / text().array() columns have a `dimensions`
+  // property set on them. The description is stripped for scalar base types before we
+  // get here, so fall back to the list's inner type to tell Int/Float/String apart.
   if (columnGraphQLType.type instanceof GraphQLList) {
     const desc = (columnGraphQLType as any).description ?? '';
-    return desc.includes('Integer') ? 'IntArray' : 'FloatArray';
+    let inner: unknown = columnGraphQLType.type.ofType;
+    if (inner instanceof GraphQLNonNull) {
+      inner = inner.ofType;
+    }
+    if (desc.includes('Integer') || inner === GraphQLInt) {
+      return 'IntArray';
+    }
+    if (desc.includes('Float') || inner === GraphQLFloat) {
+      return 'FloatArray';
+    }
+    return 'StringArray';
   }
   // Date / timestamp columns (check Drizzle internal columnType string)
   const ct: string = (column as any).columnType ?? '';
