@@ -348,6 +348,12 @@ export type OrderByArgs<TTable extends Table> = {
      * emulated with an extra `IS NULL` sort key on MySQL.
      */
     nulls?: 'first' | 'last';
+    /**
+     * Sort by the column's position in the `inArray` list the same request's `where` gives
+     * it, rather than by the column's own value. Requires that `inArray` filter; cannot be
+     * combined with `after` or `distinct`.
+     */
+    matchFilterOrder?: boolean;
   };
 };
 

@@ -25,9 +25,6 @@ Supabase's `pg_graphql`. Roughly ordered within each group; nothing here is comm
 
 ## Lower priority
 
-- **Nulls ordering** — `orderBy` cannot say `NULLS FIRST` / `NULLS LAST`. The default differs
-  between Postgres (nulls last on ASC) and MySQL/SQLite (nulls first), so ordering a nullable
-  column is not portable today.
 - **Views and computed fields** — Drizzle views are not picked up, and there is no way to add
   a derived field backed by SQL. Reachable now by composing a custom schema.
 - **Relay connections** — `Node` interface, global IDs, `PageInfo`, cursor pagination. A large

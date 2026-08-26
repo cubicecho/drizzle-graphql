@@ -84,9 +84,35 @@ describe.sequential('filter input shape', () => {
       'isNotNull',
       'isNull',
       'ne',
+      'path',
     ]);
     expect(filterFieldType('JSONFilter', 'eq')).toBe('JSON');
     expect(filterFieldType('JSONFilter', 'contains')).toBe('JSON');
+    expect(filterFieldType('JSONFilter', 'path')).toBe('[JSONPathFilter!]');
+  });
+
+  it('gives JSONPathFilter a required path plus the comparison and string operators', () => {
+    expect(filterFieldNames('JSONPathFilter')).toStrictEqual([
+      'as',
+      'contains',
+      'endsWith',
+      'eq',
+      'gt',
+      'gte',
+      'iContains',
+      'iEndsWith',
+      'iStartsWith',
+      'isNotNull',
+      'isNull',
+      'lt',
+      'lte',
+      'ne',
+      'path',
+      'startsWith',
+    ]);
+    expect(filterFieldType('JSONPathFilter', 'path')).toBe('[String!]!');
+    expect(filterFieldType('JSONPathFilter', 'eq')).toBe('JSON');
+    expect(filterFieldType('JSONPathFilter', 'as')).toBe('JSONPathCast');
   });
 
   it('gives int array columns membership operators instead of scalar comparison operators', () => {
@@ -169,6 +195,115 @@ describe.sequential('JSON filters', () => {
   });
 });
 
+// Seeded documents: 1 → {tags:["a"], profile:{role:"admin", level:3}}, 2 → {profile:{role:"user"}},
+// 3 → null, 4 → {plain:true}.
+describe.sequential('JSON path filters', () => {
+  it('compares a nested string value', async () => {
+    await expect(ids(`{ meta: { path: { path: ["profile", "role"], eq: "admin" } } }`)).resolves.toStrictEqual([1]);
+    await expect(ids(`{ meta: { path: { path: ["profile", "role"], ne: "admin" } } }`)).resolves.toStrictEqual([2]);
+  });
+
+  it('compares a nested number numerically, not as text', async () => {
+    // Lexicographically "3" < "10", so a text comparison would answer differently.
+    await expect(ids(`{ meta: { path: { path: ["profile", "level"], gt: 2 } } }`)).resolves.toStrictEqual([1]);
+    await expect(ids(`{ meta: { path: { path: ["profile", "level"], gt: 10 } } }`)).resolves.toStrictEqual([]);
+    await expect(ids(`{ meta: { path: { path: ["profile", "level"], lte: 3 } } }`)).resolves.toStrictEqual([1]);
+  });
+
+  it('never matches a numeric comparison against a non-numeric value', async () => {
+    // `role` is "admin"; the guarded cast has to answer false rather than raise.
+    await expect(ids(`{ meta: { path: { path: ["profile", "role"], gt: 0 } } }`)).resolves.toStrictEqual([]);
+  });
+
+  it('reads the value as the `as` override says rather than as the operand implies', async () => {
+    await expect(ids(`{ meta: { path: { path: ["profile", "level"], as: TEXT, eq: "3" } } }`)).resolves.toStrictEqual([
+      1,
+    ]);
+    await expect(ids(`{ meta: { path: { path: ["profile", "level"], as: NUMBER, eq: "3" } } }`)).resolves.toStrictEqual(
+      [1],
+    );
+  });
+
+  it('compares a boolean value', async () => {
+    await expect(ids(`{ meta: { path: { path: ["plain"], eq: true } } }`)).resolves.toStrictEqual([4]);
+    await expect(ids(`{ meta: { path: { path: ["plain"], eq: false } } }`)).resolves.toStrictEqual([]);
+  });
+
+  it('indexes into an array with an all-digits key', async () => {
+    await expect(ids(`{ meta: { path: { path: ["tags", "0"], eq: "a" } } }`)).resolves.toStrictEqual([1]);
+  });
+
+  it('matches substrings on the extracted value', async () => {
+    await expect(ids(`{ meta: { path: { path: ["profile", "role"], startsWith: "adm" } } }`)).resolves.toStrictEqual([
+      1,
+    ]);
+    await expect(ids(`{ meta: { path: { path: ["profile", "role"], iContains: "SE" } } }`)).resolves.toStrictEqual([2]);
+    await expect(ids(`{ meta: { path: { path: ["profile", "role"], contains: "%" } } }`)).resolves.toStrictEqual([]);
+  });
+
+  it('treats a missing path and a null document alike for isNull', async () => {
+    await expect(ids(`{ meta: { path: { path: ["profile", "level"], isNotNull: true } } }`)).resolves.toStrictEqual([
+      1,
+    ]);
+    await expect(ids(`{ meta: { path: { path: ["profile", "level"], isNull: true } } }`)).resolves.toStrictEqual([
+      2, 3, 4,
+    ]);
+  });
+
+  it('ANDs several path predicates on one column', async () => {
+    await expect(
+      ids(`{ meta: { path: [
+        { path: ["profile", "role"], eq: "admin" },
+        { path: ["profile", "level"], gte: 3 }
+      ] } }`),
+    ).resolves.toStrictEqual([1]);
+    await expect(
+      ids(`{ meta: { path: [
+        { path: ["profile", "role"], eq: "admin" },
+        { path: ["profile", "level"], gt: 3 }
+      ] } }`),
+    ).resolves.toStrictEqual([]);
+  });
+
+  it('combines with the existing boolean branches', async () => {
+    await expect(
+      ids(`{ meta: { OR: [
+        { path: { path: ["profile", "role"], eq: "user" } },
+        { path: { path: ["plain"], eq: true } }
+      ] } }`),
+    ).resolves.toStrictEqual([2, 4]);
+    await expect(ids(`{ meta: { NOT: { path: { path: ["profile", "role"], eq: "admin" } } } }`)).resolves.toStrictEqual(
+      [2],
+    );
+  });
+
+  it('accepts the whole filter through a variable', async () => {
+    const res = await run(
+      `query ($where: ItemsFilters) {
+        items(where: $where, orderBy: { id: { direction: asc, priority: 1 } }) { id }
+      }`,
+      { where: { meta: { path: [{ path: ['profile', 'level'], gte: 3 }] } } },
+    );
+    expect(res.errors).toBeUndefined();
+    expect((res.data as any).items.map((row: any) => row.id)).toStrictEqual([1]);
+  });
+
+  it('rejects an empty path', async () => {
+    const res = await run(`{ items(where: { meta: { path: { path: [], eq: 1 } } }) { id } }`);
+    expect(res.errors?.[0]?.message).toMatch(/'path' must name at least one key/);
+  });
+
+  it('treats a key containing a quote or a dot as one literal key', async () => {
+    // Neither can end a path segment early — on Postgres the path is a bound `text[]`, and
+    // the MySQL/SQLite path strings escape the key (see the SQLite suite).
+    const res = await run(`query ($where: ItemsFilters) { items(where: $where) { id } }`, {
+      where: { meta: { path: [{ path: ['pro"file.role'], eq: 'admin' }] } },
+    });
+    expect(res.errors).toBeUndefined();
+    expect((res.data as any).items).toStrictEqual([]);
+  });
+});
+
 describe.sequential('array filters', () => {
   it('has matches single-element membership on int and text arrays', async () => {
     await expect(ids(`{ nums: { has: 3 } }`)).resolves.toStrictEqual([1, 2]);
@@ -206,10 +341,9 @@ describe.sequential('array filters', () => {
     await expect(ids(`{ nums: { has: 3 }, labels: { has: "green" } }`)).resolves.toStrictEqual([2]);
   });
 
-  it('rejects hasSome / hasEvery with an empty list', async () => {
-    for (const op of ['hasSome', 'hasEvery']) {
-      const res = await run(`{ items(where: { nums: { ${op}: [] } }) { id } }`);
-      expect(res.errors?.[0]?.message).toMatch(/empty array/);
-    }
+  it('answers hasSome / hasEvery with an empty list instead of erroring', async () => {
+    // Overlapping with no elements is never true; every array contains all zero of them.
+    await expect(ids(`{ nums: { hasSome: [] } }`)).resolves.toStrictEqual([]);
+    await expect(ids(`{ nums: { hasEvery: [] } }`)).resolves.toStrictEqual([1, 2, 3, 4]);
   });
 });

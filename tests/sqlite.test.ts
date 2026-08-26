@@ -5010,3 +5010,82 @@ describe.sequential('schema exclusions', () => {
     expect(res.errors?.[0]?.message).toMatch(/Cannot query field "content"/);
   });
 });
+
+describe.sequential('JSON path filters', () => {
+  // Seeded: user 1 holds `{ field: "value" }` in `textJson`; the others hold nothing.
+  const run = (source: string, variableValues?: Record<string, any>) =>
+    graphql({ schema: buildSchema(ctx.db).schema, source, variableValues, contextValue: {} });
+
+  const ids = async (where: string): Promise<number[]> => {
+    const res = await run(`{ users(where: ${where}, orderBy: { id: { direction: asc, priority: 1 } }) { id } }`);
+    expect(res.errors).toBeUndefined();
+    return (res.data as any).users.map((row: any) => row.id);
+  };
+
+  it('exposes `path` on a json-mode text column', () => {
+    const { schema: gqlSchema } = buildSchema(ctx.db);
+    const filters = (gqlSchema.getType('UsersFilters') as GraphQLInputObjectType).getFields();
+
+    expect(String(filters['textJson']!.type)).toBe('JSONFilter');
+    expect(Object.keys((gqlSchema.getType('JSONFilter') as GraphQLInputObjectType).getFields())).toContain('path');
+  });
+
+  it('compares the value at a path', async () => {
+    await expect(ids(`{ textJson: { path: { path: ["field"], eq: "value" } } }`)).resolves.toStrictEqual([1]);
+    await expect(ids(`{ textJson: { path: { path: ["field"], eq: "other" } } }`)).resolves.toStrictEqual([]);
+    await expect(ids(`{ textJson: { path: { path: ["field"], startsWith: "val" } } }`)).resolves.toStrictEqual([1]);
+  });
+
+  it('never matches a numeric comparison against a text value', async () => {
+    // Without an explicit guard SQLite would answer true here: in its type ordering every
+    // string sorts above every number.
+    await expect(ids(`{ textJson: { path: { path: ["field"], gt: 0 } } }`)).resolves.toStrictEqual([]);
+  });
+
+  it('compares numbers and booleans stored in the document', async () => {
+    await ctx.db
+      .update(schema.Users)
+      .set({ textJson: { level: 3, active: true } as any })
+      .where(sql`id = 2`);
+
+    await expect(ids(`{ textJson: { path: { path: ["level"], gt: 2 } } }`)).resolves.toStrictEqual([2]);
+    await expect(ids(`{ textJson: { path: { path: ["level"], gt: 10 } } }`)).resolves.toStrictEqual([]);
+    await expect(ids(`{ textJson: { path: { path: ["level"], as: TEXT, eq: "3" } } }`)).resolves.toStrictEqual([2]);
+    await expect(ids(`{ textJson: { path: { path: ["active"], eq: true } } }`)).resolves.toStrictEqual([2]);
+    await expect(ids(`{ textJson: { path: { path: ["active"], eq: false } } }`)).resolves.toStrictEqual([]);
+  });
+
+  it('treats a key holding a quote or a dot as one literal key', async () => {
+    // These would end a `$."a"."b"` path segment early if they were spliced in unescaped.
+    const res = await run(`query ($where: UsersFilters) { users(where: $where) { id } }`, {
+      where: { textJson: { path: [{ path: ['fie"ld.x'], eq: 'value' }] } },
+    });
+
+    expect(res.errors).toBeUndefined();
+    expect((res.data as any).users).toStrictEqual([]);
+  });
+});
+
+describe.sequential('list-order and empty-list filters', () => {
+  const run = (source: string) => graphql({ schema: buildSchema(ctx.db).schema, source, contextValue: {} });
+
+  it('orders by the position in the inArray list', async () => {
+    const res = await run(
+      `{ users(where: { id: { inArray: [5, 1, 2] } },
+               orderBy: { id: { direction: asc, priority: 1, matchFilterOrder: true } }) { id } }`,
+    );
+
+    expect(res.errors).toBeUndefined();
+    expect((res.data as any).users.map((row: any) => row.id)).toStrictEqual([5, 1, 2]);
+  });
+
+  it('answers an empty inArray / notInArray instead of erroring', async () => {
+    const none = await run(`{ users(where: { id: { inArray: [] } }) { id } }`);
+    expect(none.errors).toBeUndefined();
+    expect((none.data as any).users).toStrictEqual([]);
+
+    const all = await run(`{ users(where: { id: { notInArray: [] } }) { id } }`);
+    expect(all.errors).toBeUndefined();
+    expect((all.data as any).users).toHaveLength(3);
+  });
+});

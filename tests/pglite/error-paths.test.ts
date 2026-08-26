@@ -18,25 +18,33 @@ afterEach(async () => {
   await teardownTables(ctx);
 });
 
-describe.sequential('Filter extraction errors', () => {
-  it('inArray with empty array returns a GraphQL error', async () => {
+// An empty candidate list is a normal state for a caller building a filter from a variable,
+// so it answers the question rather than erroring. Seeded users are 1, 2 and 5.
+describe.sequential('Empty-list filter operators', () => {
+  it('inArray with an empty list matches nothing', async () => {
     const res = await ctx.gql.queryGql(`{ users(where: { id: { inArray: [] } }) { id } }`);
-    expect(res.errors).toBeDefined();
-    expect(res.errors![0]!.message).toMatch(/Unable to use operator inArray with an empty array/);
+    expect(res.errors).toBeUndefined();
+    expect(res.data.users).toStrictEqual([]);
   });
 
-  it('notInArray with empty array returns a GraphQL error', async () => {
+  it('notInArray with an empty list matches everything', async () => {
     const res = await ctx.gql.queryGql(`{ users(where: { id: { notInArray: [] } }) { id } }`);
-    expect(res.errors).toBeDefined();
-    expect(res.errors![0]!.message).toMatch(/Unable to use operator notInArray with an empty array/);
+    expect(res.errors).toBeUndefined();
+    expect(res.data.users).toHaveLength(3);
   });
 
-  it('inArray on a relation field with empty array returns a GraphQL error', async () => {
+  it('inArray with an empty list matches nothing on a relation field', async () => {
     const res = await ctx.gql.queryGql(`{
       users { id posts(where: { id: { inArray: [] } }) { id } }
     }`);
-    expect(res.errors).toBeDefined();
-    expect(res.errors![0]!.message).toMatch(/Unable to use operator inArray with an empty array/);
+    expect(res.errors).toBeUndefined();
+    expect(res.data.users.every((user: any) => user.posts.length === 0)).toBe(true);
+  });
+
+  it('still narrows when combined with a sibling operator', async () => {
+    const res = await ctx.gql.queryGql(`{ users(where: { id: { notInArray: [], eq: 1 } }) { id } }`);
+    expect(res.errors).toBeUndefined();
+    expect(res.data.users).toStrictEqual([{ id: 1 }]);
   });
 });
 

@@ -46,7 +46,7 @@ import {
   listFieldComplexity,
   type MutationTxCtx,
   type OnConflictArg,
-  orderByHasRelationEntry,
+  orderByCursorObstacle,
   prepareMutationRelationColumns,
   primaryKeyOrderExprs,
   primaryKeyRestriction,
@@ -178,13 +178,13 @@ const generateSelectArray = (
           if (after != null && distinct?.length) {
             throw new GraphQLError("'after' cannot be combined with 'distinct'.");
           }
-          if (orderByHasRelationEntry(orderBy)) {
+          const cursorObstacle = orderByCursorObstacle(orderBy);
+          if (cursorObstacle) {
             if (after != null) {
-              throw new GraphQLError(
-                "'after' cannot be combined with an orderBy that orders through a relation — a related row's value cannot be encoded into a cursor.",
-              );
+              throw new GraphQLError(cursorObstacle);
             }
-            // `cursor` selected under a relation ordering — resolves to null; ordering still applies.
+            // `cursor` selected under an ordering a cursor cannot express — resolves to null;
+            // the ordering itself still applies.
           } else if (!pkNames.length) {
             if (after != null) {
               throw new GraphQLError(
@@ -243,7 +243,7 @@ const generateSelectArray = (
           q = q.orderBy(...cursorOrderExprs(table, cursorEntries)) as any;
         } else if (orderBy) {
           q = q.orderBy(
-            ...extractOrderBy(table, orderBy, relationFilterCtx(filterCtx, tableName)),
+            ...extractOrderBy(table, orderBy, relationFilterCtx(filterCtx, tableName), where),
             ...(distinctKeys ? primaryKeyOrderExprs(table, pkNames) : []),
           ) as any;
         } else if ((distinctKeys || offset != null || limit != null) && pkNames.length) {
@@ -332,7 +332,7 @@ const generateSelectSingle = (
           q = q.where(extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))) as any;
         }
         if (orderBy) {
-          q = q.orderBy(...extractOrderBy(table, orderBy, relationFilterCtx(filterCtx, tableName))) as any;
+          q = q.orderBy(...extractOrderBy(table, orderBy, relationFilterCtx(filterCtx, tableName), where)) as any;
         } else if (pkNames.length) {
           // A single query is an implicit `limit 1` — order it so the row is deterministic.
           q = q.orderBy(...primaryKeyOrderExprs(table, pkNames)) as any;
