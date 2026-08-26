@@ -1,3 +1,23 @@
+# [6.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v5.6.0...v6.0.0) (2026-08-26)
+
+
+### Features
+
+* documentation hooks, shared enum types, and nested writes ([434849a](https://github.com/cubicecho/drizzle-graphql/commit/434849a6f49a07e4c0dcf84d9c93a1926716a8a0)), closes [#59](https://github.com/cubicecho/drizzle-graphql/issues/59) [#60](https://github.com/cubicecho/drizzle-graphql/issues/60) [#56](https://github.com/cubicecho/drizzle-graphql/issues/56) [#59](https://github.com/cubicecho/drizzle-graphql/issues/59) [#60](https://github.com/cubicecho/drizzle-graphql/issues/60) [#56](https://github.com/cubicecho/drizzle-graphql/issues/56) [#55](https://github.com/cubicecho/drizzle-graphql/issues/55)
+
+
+### BREAKING CHANGES
+
+* a column backed by a named pgEnum now takes its GraphQL enum
+type from the enum's own name rather than from the table and column, so
+UsersRoleEnum becomes RoleEnum and is shared with every other table using that
+enum. Pass enumNameMapper: (info) => info.enumName ?
+`${info.tableName}${capitalize(info.columnName)}Enum` : undefined to restore the
+previous names. Two different enums that previously produced two distinct type
+names may now collide on one; that is reported as a build-time error.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
 # [5.6.0](https://github.com/cubicecho/drizzle-graphql/compare/v5.5.0...v5.6.0) (2026-08-26)
 
 
