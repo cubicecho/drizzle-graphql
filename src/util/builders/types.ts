@@ -47,6 +47,11 @@ export type SchemaGeneratorOptions = {
   features: GeneratorFeatures;
   /** Resolved cost-hint settings, or `undefined` when the caller passed `complexity: false`. */
   complexity: ResolvedComplexityOptions | undefined;
+  /**
+   * Resolved `BuildSchemaConfig.transactions` settings, or `undefined` when automatic
+   * multi-mutation transactions are off.
+   */
+  transactions: { timeoutMs: number } | undefined;
 };
 
 export type TableNamedRelations = {

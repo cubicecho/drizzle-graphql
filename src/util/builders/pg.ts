@@ -22,6 +22,7 @@ import {
   buildNamedRelations,
   type CursorOrderEntry,
   computeResolverFieldNames,
+  createMutationTxCtx,
   createRelationResolverFactory,
   cursorOrderExprs,
   cursorOrderingEntries,
@@ -40,6 +41,7 @@ import {
   getUniqueColumnSets,
   isCursorFieldSelected,
   listFieldComplexity,
+  type MutationTxCtx,
   type OnConflictArg,
   orderByHasRelationEntry,
   prepareMutationRelationColumns,
@@ -51,8 +53,8 @@ import {
   type RelationResolverFactory,
   relationFilterCtx,
   resolveConflictPlan,
-  resolveExecutor,
   resolveQueryExecutor,
+  runMutation,
   runRelationalSelect,
   type SelectionCtx,
   selectArrayArgs,
@@ -340,6 +342,7 @@ const generateInsertArray = (
   typeName: string,
   typeNameMapper?: TypeNameMapper,
   conflictDoNothing: boolean = false,
+  txCtx?: MutationTxCtx,
 ): CreatedResolver => {
   const queryArgs: GraphQLFieldConfigArgumentMap = {
     values: {
@@ -355,38 +358,39 @@ const generateInsertArray = (
     name: fieldName,
     resolver: async (_source, args: { values: Record<string, any>[] }, context, info) => {
       try {
-        const input = remapFromGraphQLArrayInput(args.values, table);
-        if (!input.length) {
-          throw new GraphQLError('No values were provided!');
-        }
+        return await runMutation(db, context, info, txCtx, async (executor) => {
+          const input = remapFromGraphQLArrayInput(args.values, table);
+          if (!input.length) {
+            throw new GraphQLError('No values were provided!');
+          }
 
-        const parsedInfo = parseResolveInfo(info, {
-          deep: true,
-        }) as ResolveTree;
+          const parsedInfo = parseResolveInfo(info, {
+            deep: true,
+          }) as ResolveTree;
 
-        const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
-          relationMap,
-          tables,
-          tableName,
-          typeName,
-          typeNameMapper,
-          table,
-          pkNames,
-          parsedInfo,
+          const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+            relationMap,
+            tables,
+            tableName,
+            typeName,
+            typeNameMapper,
+            table,
+            pkNames,
+            parsedInfo,
+          });
+
+          let query = executor.insert(table).values(input).returning(columns);
+          if (conflictDoNothing) {
+            query = query.onConflictDoNothing() as any;
+          }
+          const result = await query;
+
+          const enriched = hasRelations
+            ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
+            : result;
+
+          return remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
         });
-
-        const executor = resolveExecutor(db, context);
-        let query = executor.insert(table).values(input).returning(columns);
-        if (conflictDoNothing) {
-          query = query.onConflictDoNothing() as any;
-        }
-        const result = await query;
-
-        const enriched = hasRelations
-          ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
-          : result;
-
-        return remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -406,6 +410,7 @@ const generateInsertSingle = (
   typeName: string,
   typeNameMapper?: TypeNameMapper,
   conflictDoNothing: boolean = false,
+  txCtx?: MutationTxCtx,
 ): CreatedResolver => {
   const queryArgs: GraphQLFieldConfigArgumentMap = {
     values: {
@@ -420,39 +425,40 @@ const generateInsertSingle = (
     name: fieldName,
     resolver: async (_source, args: { values: Record<string, any> }, context, info) => {
       try {
-        const input = remapFromGraphQLSingleInput(args.values, table);
+        return await runMutation(db, context, info, txCtx, async (executor) => {
+          const input = remapFromGraphQLSingleInput(args.values, table);
 
-        const parsedInfo = parseResolveInfo(info, {
-          deep: true,
-        }) as ResolveTree;
+          const parsedInfo = parseResolveInfo(info, {
+            deep: true,
+          }) as ResolveTree;
 
-        const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
-          relationMap,
-          tables,
-          tableName,
-          typeName,
-          typeNameMapper,
-          table,
-          pkNames,
-          parsedInfo,
+          const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+            relationMap,
+            tables,
+            tableName,
+            typeName,
+            typeNameMapper,
+            table,
+            pkNames,
+            parsedInfo,
+          });
+
+          let query = executor.insert(table).values(input).returning(columns);
+          if (conflictDoNothing) {
+            query = query.onConflictDoNothing() as any;
+          }
+          const result = await query;
+
+          if (!result[0]) {
+            return undefined;
+          }
+
+          const enriched = hasRelations
+            ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
+            : result;
+
+          return remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap);
         });
-
-        const executor = resolveExecutor(db, context);
-        let query = executor.insert(table).values(input).returning(columns);
-        if (conflictDoNothing) {
-          query = query.onConflictDoNothing() as any;
-        }
-        const result = await query;
-
-        if (!result[0]) {
-          return undefined;
-        }
-
-        const enriched = hasRelations
-          ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
-          : result;
-
-        return remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap);
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -481,6 +487,7 @@ const generateUpsert = (
   single: boolean,
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
+  txCtx?: MutationTxCtx,
 ): CreatedResolver => {
   const queryArgs: GraphQLFieldConfigArgumentMap = {
     values: {
@@ -503,57 +510,58 @@ const generateUpsert = (
       info,
     ) => {
       try {
-        const input = single
-          ? [remapFromGraphQLSingleInput(args.values as Record<string, any>, table)]
-          : remapFromGraphQLArrayInput(args.values as Record<string, any>[], table);
-        if (!input.length) {
-          throw new GraphQLError('No values were provided!');
-        }
+        return await runMutation(db, context, info, txCtx, async (executor) => {
+          const input = single
+            ? [remapFromGraphQLSingleInput(args.values as Record<string, any>, table)]
+            : remapFromGraphQLArrayInput(args.values as Record<string, any>[], table);
+          if (!input.length) {
+            throw new GraphQLError('No values were provided!');
+          }
 
-        const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
+          const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
 
-        const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
-          relationMap,
-          tables,
-          tableName,
-          typeName,
-          typeNameMapper,
-          table,
-          pkNames,
-          parsedInfo,
+          const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+            relationMap,
+            tables,
+            tableName,
+            typeName,
+            typeNameMapper,
+            table,
+            pkNames,
+            parsedInfo,
+          });
+
+          const plan = resolveConflictPlan({
+            table,
+            values: input,
+            onConflict: args.onConflict,
+            pkNames,
+            uniqueSets,
+            excludedRef: excludedColumnRef,
+            withTarget: true,
+            buildWhere: (where) => extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)),
+          });
+
+          let query = executor.insert(table).values(input).returning(columns);
+          query =
+            plan.action === 'NOTHING'
+              ? (query.onConflictDoNothing(plan.target ? { target: plan.target } : undefined) as any)
+              : (query.onConflictDoUpdate({ target: plan.target!, set: plan.set, setWhere: plan.setWhere }) as any);
+
+          const result = await query;
+
+          if (single && !result[0]) {
+            return undefined;
+          }
+
+          const enriched = hasRelations
+            ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
+            : result;
+
+          return single
+            ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
+            : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
         });
-
-        const plan = resolveConflictPlan({
-          table,
-          values: input,
-          onConflict: args.onConflict,
-          pkNames,
-          uniqueSets,
-          excludedRef: excludedColumnRef,
-          withTarget: true,
-          buildWhere: (where) => extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)),
-        });
-
-        const executor = resolveExecutor(db, context);
-        let query = executor.insert(table).values(input).returning(columns);
-        query =
-          plan.action === 'NOTHING'
-            ? (query.onConflictDoNothing(plan.target ? { target: plan.target } : undefined) as any)
-            : (query.onConflictDoUpdate({ target: plan.target!, set: plan.set, setWhere: plan.setWhere }) as any);
-
-        const result = await query;
-
-        if (single && !result[0]) {
-          return undefined;
-        }
-
-        const enriched = hasRelations
-          ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
-          : result;
-
-        return single
-          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
-          : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -576,6 +584,7 @@ const generateUpdate = (
   requireWhere: boolean,
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
+  txCtx?: MutationTxCtx,
 ): CreatedResolver => {
   const queryArgs = {
     set: {
@@ -593,66 +602,67 @@ const generateUpdate = (
     name: fieldName,
     resolver: async (_source, args: { where?: Filters<Table>; set: Record<string, any> }, context, info) => {
       try {
-        const { where, set } = args;
+        return await runMutation(db, context, info, txCtx, async (executor) => {
+          const { where, set } = args;
 
-        const parsedInfo = parseResolveInfo(info, {
-          deep: true,
-        }) as ResolveTree;
+          const parsedInfo = parseResolveInfo(info, {
+            deep: true,
+          }) as ResolveTree;
 
-        const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
-          relationMap,
-          tables,
-          tableName,
-          typeName,
-          typeNameMapper,
-          table,
-          pkNames,
-          parsedInfo,
+          const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+            relationMap,
+            tables,
+            tableName,
+            typeName,
+            typeNameMapper,
+            table,
+            pkNames,
+            parsedInfo,
+          });
+
+          const input = remapFromGraphQLSingleInput(set, table);
+          if (!Object.keys(input).length) {
+            throw new GraphQLError('Unable to update with no values specified!');
+          }
+
+          const relationCtx = relationFilterCtx(filterCtx, tableName);
+          const filters =
+            single || requireWhere
+              ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+              : where
+                ? extractFilters(table, tableName, where, relationCtx)
+                : undefined;
+
+          if (single) {
+            await assertSingleMatch(executor, table, filters!, fieldName);
+          }
+
+          let query = executor.update(table).set(input);
+          if (filters) {
+            query = query.where(filters) as any;
+          }
+
+          query = query.returning(columns) as any;
+
+          const result = await query;
+
+          if (single && result.length > 1) {
+            // A row started matching between the pre-check and the write.
+            throw new GraphQLError(`${fieldName}: 'where' matched more than one row!`);
+          }
+
+          if (single && !result[0]) {
+            return undefined;
+          }
+
+          const enriched = hasRelations
+            ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
+            : result;
+
+          return single
+            ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
+            : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
         });
-
-        const input = remapFromGraphQLSingleInput(set, table);
-        if (!Object.keys(input).length) {
-          throw new GraphQLError('Unable to update with no values specified!');
-        }
-
-        const relationCtx = relationFilterCtx(filterCtx, tableName);
-        const filters =
-          single || requireWhere
-            ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
-            : where
-              ? extractFilters(table, tableName, where, relationCtx)
-              : undefined;
-
-        const executor = resolveExecutor(db, context);
-        if (single) {
-          await assertSingleMatch(executor, table, filters!, fieldName);
-        }
-
-        let query = executor.update(table).set(input);
-        if (filters) {
-          query = query.where(filters) as any;
-        }
-
-        query = query.returning(columns) as any;
-
-        const result = await query;
-
-        if (single && result.length > 1) {
-          // A row started matching between the pre-check and the write.
-          throw new GraphQLError(`${fieldName}: 'where' matched more than one row!`);
-        }
-
-        if (single && !result[0]) {
-          return undefined;
-        }
-
-        const enriched = hasRelations
-          ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
-          : result;
-
-        return single
-          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
-          : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -682,6 +692,7 @@ const generateUpdateMany = (
   typeName: string,
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
+  txCtx?: MutationTxCtx,
 ): CreatedResolver => {
   const queryArgs = {
     updates: {
@@ -701,76 +712,78 @@ const generateUpdateMany = (
       info,
     ) => {
       try {
-        const { updates } = args;
-        if (!updates.length) {
-          throw new GraphQLError('No updates were provided!');
-        }
-
-        const parsedInfo = parseResolveInfo(info, {
-          deep: true,
-        }) as ResolveTree;
-
-        const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
-          relationMap,
-          tables,
-          tableName,
-          typeName,
-          typeNameMapper,
-          table,
-          pkNames,
-          parsedInfo,
-        });
-
-        // Remap and validate every entry before the transaction opens, so a malformed
-        // entry rejects the request instead of rolling back mid-batch.
-        const entries = updates.map(({ where, set }) => {
-          const input = remapFromGraphQLSingleInput(set, table);
-          if (!Object.keys(input).length) {
-            throw new GraphQLError('Unable to update with no values specified!');
+        return await runMutation(db, context, info, txCtx, async (executor) => {
+          const { updates } = args;
+          if (!updates.length) {
+            throw new GraphQLError('No updates were provided!');
           }
-          return {
-            set: input,
-            filters: where
-              ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))
-              : undefined,
-          };
-        });
 
-        const executor = resolveExecutor(db, context);
-        // On a caller-supplied transaction this opens a savepoint, so the batch stays
-        // atomic without breaking the outer transaction.
-        const perEntry: Record<string, any>[][] = await executor.transaction(async (tx) => {
-          const results: Record<string, any>[][] = [];
-          for (const entry of entries) {
-            let query = tx.update(table).set(entry.set);
-            if (entry.filters) {
-              query = query.where(entry.filters) as any;
+          const parsedInfo = parseResolveInfo(info, {
+            deep: true,
+          }) as ResolveTree;
+
+          const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+            relationMap,
+            tables,
+            tableName,
+            typeName,
+            typeNameMapper,
+            table,
+            pkNames,
+            parsedInfo,
+          });
+
+          // Remap and validate every entry before the transaction opens, so a malformed
+          // entry rejects the request instead of rolling back mid-batch.
+          const entries = updates.map(({ where, set }) => {
+            const input = remapFromGraphQLSingleInput(set, table);
+            if (!Object.keys(input).length) {
+              throw new GraphQLError('Unable to update with no values specified!');
             }
-            results.push(await (query.returning(columns) as any));
+            return {
+              set: input,
+              filters: where
+                ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))
+                : undefined,
+            };
+          });
+
+          // On a caller-supplied transaction — or the shared multi-mutation transaction
+          // opened by `runMutation` — this opens a savepoint, so the batch stays atomic
+          // without breaking the outer transaction.
+          const perEntry: Record<string, any>[][] = await executor.transaction(async (tx: any) => {
+            const results: Record<string, any>[][] = [];
+            for (const entry of entries) {
+              let query = tx.update(table).set(entry.set);
+              if (entry.filters) {
+                query = query.where(entry.filters) as any;
+              }
+              results.push(await (query.returning(columns) as any));
+            }
+            return results;
+          });
+
+          const flatRows = perEntry.flat();
+          const enriched = hasRelations
+            ? await eagerLoadMutationRelations(executor, tableName, flatRows, pkNames, withParams)
+            : flatRows;
+
+          // Rebuild the per-entry slots: a no-match entry contributes `null`, a multi-match
+          // entry contributes each of its rows.
+          const output: (Record<string, any> | null)[] = [];
+          let offset = 0;
+          for (const rows of perEntry) {
+            if (!rows.length) {
+              output.push(null);
+              continue;
+            }
+            for (let i = 0; i < rows.length; i++) {
+              output.push(remapToGraphQLSingleOutput(enriched[offset + i], tableName, table, relationMap));
+            }
+            offset += rows.length;
           }
-          return results;
+          return output;
         });
-
-        const flatRows = perEntry.flat();
-        const enriched = hasRelations
-          ? await eagerLoadMutationRelations(executor, tableName, flatRows, pkNames, withParams)
-          : flatRows;
-
-        // Rebuild the per-entry slots: a no-match entry contributes `null`, a multi-match
-        // entry contributes each of its rows.
-        const output: (Record<string, any> | null)[] = [];
-        let offset = 0;
-        for (const rows of perEntry) {
-          if (!rows.length) {
-            output.push(null);
-            continue;
-          }
-          for (let i = 0; i < rows.length; i++) {
-            output.push(remapToGraphQLSingleOutput(enriched[offset + i], tableName, table, relationMap));
-          }
-          offset += rows.length;
-        }
-        return output;
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -790,6 +803,7 @@ const generateDelete = (
   requireWhere: boolean,
   filterCtx?: RelationFilterBase,
   selectionCtx?: SelectionCtx,
+  txCtx?: MutationTxCtx,
 ): CreatedResolver => {
   const queryArgs = {
     where: {
@@ -801,50 +815,51 @@ const generateDelete = (
     name: fieldName,
     resolver: async (_source, args: { where?: Filters<Table> }, context, info) => {
       try {
-        const { where } = args;
+        return await runMutation(db, context, info, txCtx, async (executor) => {
+          const { where } = args;
 
-        const parsedInfo = parseResolveInfo(info, {
-          deep: true,
-        }) as ResolveTree;
+          const parsedInfo = parseResolveInfo(info, {
+            deep: true,
+          }) as ResolveTree;
 
-        const columns = extractSelectedColumnsFromTreeSQLFormat<PgColumn>(
-          parsedInfo.fieldsByTypeName[typeName]!,
-          table,
-          selectionCtx,
-        );
+          const columns = extractSelectedColumnsFromTreeSQLFormat<PgColumn>(
+            parsedInfo.fieldsByTypeName[typeName]!,
+            table,
+            selectionCtx,
+          );
 
-        const relationCtx = relationFilterCtx(filterCtx, tableName);
-        const filters =
-          single || requireWhere
-            ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
-            : where
-              ? extractFilters(table, tableName, where, relationCtx)
-              : undefined;
+          const relationCtx = relationFilterCtx(filterCtx, tableName);
+          const filters =
+            single || requireWhere
+              ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+              : where
+                ? extractFilters(table, tableName, where, relationCtx)
+                : undefined;
 
-        const executor = resolveExecutor(db, context);
-        if (single) {
-          await assertSingleMatch(executor, table, filters!, fieldName);
-        }
+          if (single) {
+            await assertSingleMatch(executor, table, filters!, fieldName);
+          }
 
-        let query = executor.delete(table);
-        if (filters) {
-          query = query.where(filters) as any;
-        }
+          let query = executor.delete(table);
+          if (filters) {
+            query = query.where(filters) as any;
+          }
 
-        query = query.returning(columns) as any;
+          query = query.returning(columns) as any;
 
-        const result = await query;
+          const result = await query;
 
-        if (single && result.length > 1) {
-          // A row started matching between the pre-check and the write.
-          throw new GraphQLError(`${fieldName}: 'where' matched more than one row!`);
-        }
+          if (single && result.length > 1) {
+            // A row started matching between the pre-check and the write.
+            throw new GraphQLError(`${fieldName}: 'where' matched more than one row!`);
+          }
 
-        if (single) {
-          return result[0] ? remapToGraphQLSingleOutput(result[0], tableName, table) : undefined;
-        }
+          if (single) {
+            return result[0] ? remapToGraphQLSingleOutput(result[0], tableName, table) : undefined;
+          }
 
-        return remapToGraphQLArrayOutput(result, tableName, table);
+          return remapToGraphQLArrayOutput(result, tableName, table);
+        });
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -924,6 +939,10 @@ export function generateSchemaData<
 
   const queries: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
   const mutations: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
+
+  // Shared per-request transaction machinery for multi-mutation documents; undefined
+  // unless `transactions: 'auto'`. Its field-name set is filled once all mutations exist.
+  const mutationTxCtx = createMutationTxCtx(options.transactions);
 
   const gqlSchemaTypes = Object.fromEntries(
     Object.entries(tables).map(([tableName, _table]) => [
@@ -1006,6 +1025,7 @@ export function generateSchemaData<
           typeName,
           typeNameMapper,
           conflictDoNothing,
+          mutationTxCtx,
         )
       : undefined;
     const insertSingleGenerated = features.insert
@@ -1020,6 +1040,7 @@ export function generateSchemaData<
           typeName,
           typeNameMapper,
           conflictDoNothing,
+          mutationTxCtx,
         )
       : undefined;
     // An upsert needs something to conflict on, so a table with no primary key and no
@@ -1049,6 +1070,7 @@ export function generateSchemaData<
           false,
           typeNameMapper,
           filterCtx,
+          mutationTxCtx,
         )
       : undefined;
     const upsertSingleGenerated = onConflictInput
@@ -1066,6 +1088,7 @@ export function generateSchemaData<
           true,
           typeNameMapper,
           filterCtx,
+          mutationTxCtx,
         )
       : undefined;
     const updateGenerated = features.update
@@ -1083,6 +1106,7 @@ export function generateSchemaData<
           features.requireWhere,
           typeNameMapper,
           filterCtx,
+          mutationTxCtx,
         )
       : undefined;
     const updateSingleGenerated = features.update
@@ -1100,6 +1124,7 @@ export function generateSchemaData<
           features.requireWhere,
           typeNameMapper,
           filterCtx,
+          mutationTxCtx,
         )
       : undefined;
     // The batch update reuses the update `set` input, so it needs `update` on too.
@@ -1119,6 +1144,7 @@ export function generateSchemaData<
           typeName,
           typeNameMapper,
           filterCtx,
+          mutationTxCtx,
         )
       : undefined;
     const deleteGenerated = features.delete
@@ -1133,6 +1159,7 @@ export function generateSchemaData<
           features.requireWhere,
           filterCtx,
           { tableName, relationMap: namedRelations, tables },
+          mutationTxCtx,
         )
       : undefined;
     const deleteSingleGenerated = features.delete
@@ -1147,6 +1174,7 @@ export function generateSchemaData<
           features.requireWhere,
           filterCtx,
           { tableName, relationMap: namedRelations, tables },
+          mutationTxCtx,
         )
       : undefined;
     const aggregateType = features.aggregates
@@ -1303,6 +1331,15 @@ export function generateSchemaData<
     if (groupByType && havingInput) {
       outputs[groupByType.name] = groupByType;
       inputs[havingInput.name] = havingInput;
+    }
+  }
+
+  // Every generated mutation name is now known — the first mutation resolver of a request
+  // uses this set to count the document's root mutation fields (and to leave documents
+  // containing consumer-added mutations alone).
+  if (mutationTxCtx) {
+    for (const name of Object.keys(mutations)) {
+      mutationTxCtx.fieldNames.add(name);
     }
   }
 

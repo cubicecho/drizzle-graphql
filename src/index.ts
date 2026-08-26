@@ -131,6 +131,14 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
           aggregateCost: (complexityConfig === true ? undefined : complexityConfig.aggregateCost) ?? 10,
         };
 
+  // Off unless asked for: opening transactions the caller did not wire up themselves is a
+  // behavior change (and some drivers, e.g. neon-http, cannot open one at all).
+  const transactionsOpt = config?.transactions;
+  const transactions =
+    transactionsOpt === undefined || transactionsOpt === 'none'
+      ? undefined
+      : { timeoutMs: (transactionsOpt === 'auto' ? undefined : transactionsOpt.timeoutMs) ?? 30_000 };
+
   // Normalize eagerLoadRelations (boolean | predicate | undefined) into a predicate.
   const eagerOpt = config?.eagerLoadRelations;
   const shouldEagerLoad: (tableName: string, relationName: string) => boolean =
@@ -167,6 +175,7 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     shouldEagerLoad,
     features,
     complexity,
+    transactions,
   };
 
   let generatorOutput;
