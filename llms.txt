@@ -114,6 +114,11 @@ Second argument to `buildSchema(db, config?)`:
 - `suffixes?: { list?; single? }` — customize query name suffixes. Default `{ list: '', single: 'Single' }`. List and single suffixes cannot be identical unless a `typeNameMapper` is provided.
 - `conflictDoNothing?: boolean` — (PostgreSQL only) apply `ON CONFLICT DO NOTHING` to inserts. Default `false`.
 - `typeNameMapper?: (tableName: string) => { singular: string; plural: string } | undefined` — customize generated type/field names per table.
+- `features?: { aggregates?; groupBy?; relationAggregates?; distinct?; insert?; update?; updateMany?; delete?; upsert?; nestedWrites?; requireWhere? }` — which operations to generate. Everything defaults to `true` except `upsert`, `nestedWrites` and `requireWhere`, which default to `false`.
+- `enumNameMapper?: ({ enumName, schema, tableName, columnName, values }) => string | undefined` — name the GraphQL enum a column maps to. By default a declared database enum becomes one shared `<EnumName>Enum` across every column that uses it; an inline value list stays per-column (`<Table><Column>Enum`). Returning `undefined` keeps the default.
+- `describeColumn?: (column, { tableName, columnName }) => string | undefined` — description for a column, applied to its object-type field, create/update input fields, filter field, min/max aggregates and group keys.
+- `describeTable?: (tableName) => string | undefined` / `describeRelation?: (tableName, relationName) => string | undefined` — descriptions for the table's object type and its relation fields.
+- `deprecateColumn?: (column, { tableName, columnName }) => string | undefined` — deprecation reason for a column. Applied to output fields and optional input fields; required input fields, filters and `orderBy` are skipped.
 - `eagerLoadRelations?: boolean | ((tableName, relationName) => boolean)` — `true` (default) eager-loads all relations; `false` never does (everything resolves lazily via batched field resolvers); a predicate decides per relation.
 
 ## Public API exports

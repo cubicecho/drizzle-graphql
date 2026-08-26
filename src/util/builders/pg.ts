@@ -31,6 +31,7 @@ import {
   excludedColumnRef,
   extractFilters,
   extractOrderBy,
+  extractRelationJoinColumns,
   extractRequiredFilters,
   extractSelectedColumnsFromTreeSQLFormat,
   generateDistinctEnum,
@@ -71,7 +72,7 @@ import {
   remapToGraphQLArrayOutput,
   remapToGraphQLSingleOutput,
 } from '../data-mappers/index.ts';
-import { registerScalarOverrides } from '../type-converter/index.ts';
+import { registerEnumConfig, registerScalarOverrides } from '../type-converter/index.ts';
 import {
   createRelationAggregateFactory,
   generateAggregate,
@@ -81,6 +82,15 @@ import {
   generateGroupByType,
   generateHavingInput,
 } from './aggregates.ts';
+import {
+  buildNestedWritePlans,
+  createNestedWriteRuntime,
+  createNestedWriteTypes,
+  mergedOps,
+  type NestedWriteRuntime,
+  updateWithNestedOps,
+  writeWithNestedOps,
+} from './nested-writes.ts';
 import type {
   CreatedResolver,
   Filters,
@@ -344,6 +354,7 @@ const generateInsertArray = (
   typeNameMapper?: TypeNameMapper,
   conflictDoNothing: boolean = false,
   txCtx?: MutationTxCtx,
+  nested?: NestedWriteRuntime,
 ): CreatedResolver => {
   const queryArgs: GraphQLFieldConfigArgumentMap = {
     values: {
@@ -360,10 +371,19 @@ const generateInsertArray = (
     resolver: async (_source, args: { values: Record<string, any>[] }, context, info) => {
       try {
         return await runMutation(db, context, info, txCtx, async (executor) => {
-          const input = remapFromGraphQLArrayInput(args.values, table);
-          if (!input.length) {
+          if (!args.values.length) {
             throw new GraphQLError('No values were provided!');
           }
+
+          // Split each row's relation fields off its columns. Only when something is actually
+          // nested does the write leave the single multi-row statement below.
+          const entries = nested?.enabled(tableName)
+            ? args.values.map((values) => nested.split(tableName, values))
+            : undefined;
+          const nestedEntries = entries?.some((entry) => nested!.hasOps(entry.ops)) ? entries : undefined;
+          const input = nestedEntries
+            ? []
+            : remapFromGraphQLArrayInput(entries ? entries.map((entry) => entry.columns) : args.values, table);
 
           const parsedInfo = parseResolveInfo(info, {
             deep: true,
@@ -380,11 +400,28 @@ const generateInsertArray = (
             parsedInfo,
           });
 
-          let query = executor.insert(table).values(input).returning(columns);
-          if (conflictDoNothing) {
-            query = query.onConflictDoNothing() as any;
-          }
-          const result = await query;
+          const returning = nestedEntries
+            ? nested!.withJoinColumns(tableName, mergedOps(nestedEntries), { ...columns }, table)
+            : columns;
+
+          const runInsert = async (target: any, values: Record<string, any>[]) => {
+            let query = target.insert(table).values(values).returning(returning);
+            if (conflictDoNothing) {
+              query = query.onConflictDoNothing() as any;
+            }
+            return (await query) as Record<string, any>[];
+          };
+
+          const result = nestedEntries
+            ? await writeWithNestedOps({
+                executor,
+                runtime: nested!,
+                tableName,
+                entries: nestedEntries,
+                remapValues: (values) => remapFromGraphQLSingleInput(values, table),
+                write: (tx, values) => runInsert(tx, [values]),
+              })
+            : await runInsert(executor, input);
 
           const enriched = hasRelations
             ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
@@ -412,6 +449,7 @@ const generateInsertSingle = (
   typeNameMapper?: TypeNameMapper,
   conflictDoNothing: boolean = false,
   txCtx?: MutationTxCtx,
+  nested?: NestedWriteRuntime,
 ): CreatedResolver => {
   const queryArgs: GraphQLFieldConfigArgumentMap = {
     values: {
@@ -427,7 +465,9 @@ const generateInsertSingle = (
     resolver: async (_source, args: { values: Record<string, any> }, context, info) => {
       try {
         return await runMutation(db, context, info, txCtx, async (executor) => {
-          const input = remapFromGraphQLSingleInput(args.values, table);
+          const entry = nested?.enabled(tableName) ? nested.split(tableName, args.values) : undefined;
+          const nestedEntry = entry && nested!.hasOps(entry.ops) ? entry : undefined;
+          const input = nestedEntry ? {} : remapFromGraphQLSingleInput(entry ? entry.columns : args.values, table);
 
           const parsedInfo = parseResolveInfo(info, {
             deep: true,
@@ -444,11 +484,28 @@ const generateInsertSingle = (
             parsedInfo,
           });
 
-          let query = executor.insert(table).values(input).returning(columns);
-          if (conflictDoNothing) {
-            query = query.onConflictDoNothing() as any;
-          }
-          const result = await query;
+          const returning = nestedEntry
+            ? nested!.withJoinColumns(tableName, nestedEntry.ops, { ...columns }, table)
+            : columns;
+
+          const runInsert = async (target: any, values: Record<string, any>) => {
+            let query = target.insert(table).values(values).returning(returning);
+            if (conflictDoNothing) {
+              query = query.onConflictDoNothing() as any;
+            }
+            return (await query) as Record<string, any>[];
+          };
+
+          const result = nestedEntry
+            ? await writeWithNestedOps({
+                executor,
+                runtime: nested!,
+                tableName,
+                entries: [nestedEntry],
+                remapValues: (values) => remapFromGraphQLSingleInput(values, table),
+                write: runInsert,
+              })
+            : await runInsert(executor, input);
 
           if (!result[0]) {
             return undefined;
@@ -489,6 +546,7 @@ const generateUpsert = (
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
+  nested?: NestedWriteRuntime,
 ): CreatedResolver => {
   const queryArgs: GraphQLFieldConfigArgumentMap = {
     values: {
@@ -512,12 +570,18 @@ const generateUpsert = (
     ) => {
       try {
         return await runMutation(db, context, info, txCtx, async (executor) => {
-          const input = single
-            ? [remapFromGraphQLSingleInput(args.values as Record<string, any>, table)]
-            : remapFromGraphQLArrayInput(args.values as Record<string, any>[], table);
-          if (!input.length) {
+          const supplied = single ? [args.values as Record<string, any>] : (args.values as Record<string, any>[]);
+          if (!supplied.length) {
             throw new GraphQLError('No values were provided!');
           }
+
+          const entries = nested?.enabled(tableName)
+            ? supplied.map((values) => nested.split(tableName, values))
+            : undefined;
+          const nestedEntries = entries?.some((entry) => nested!.hasOps(entry.ops)) ? entries : undefined;
+          const input = nestedEntries
+            ? []
+            : remapFromGraphQLArrayInput(entries ? entries.map((entry) => entry.columns) : supplied, table);
 
           const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
 
@@ -532,24 +596,44 @@ const generateUpsert = (
             parsedInfo,
           });
 
-          const plan = resolveConflictPlan({
-            table,
-            values: input,
-            onConflict: args.onConflict,
-            pkNames,
-            uniqueSets,
-            excludedRef: excludedColumnRef,
-            withTarget: true,
-            buildWhere: (where) => extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)),
-          });
+          const returning = nestedEntries
+            ? nested!.withJoinColumns(tableName, mergedOps(nestedEntries), { ...columns }, table)
+            : columns;
 
-          let query = executor.insert(table).values(input).returning(columns);
-          query =
-            plan.action === 'NOTHING'
-              ? (query.onConflictDoNothing(plan.target ? { target: plan.target } : undefined) as any)
-              : (query.onConflictDoUpdate({ target: plan.target!, set: plan.set, setWhere: plan.setWhere }) as any);
+          // The conflict plan reads the columns the write actually supplies, so a nested write
+          // — whose rows go in one at a time, each already carrying whatever its parent-side
+          // operations produced — resolves its plan per row rather than once for the batch.
+          const runUpsert = async (target: any, values: Record<string, any>[]) => {
+            const plan = resolveConflictPlan({
+              table,
+              values,
+              onConflict: args.onConflict,
+              pkNames,
+              uniqueSets,
+              excludedRef: excludedColumnRef,
+              withTarget: true,
+              buildWhere: (where) => extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)),
+            });
 
-          const result = await query;
+            let query = target.insert(table).values(values).returning(returning);
+            query =
+              plan.action === 'NOTHING'
+                ? (query.onConflictDoNothing(plan.target ? { target: plan.target } : undefined) as any)
+                : (query.onConflictDoUpdate({ target: plan.target!, set: plan.set, setWhere: plan.setWhere }) as any);
+
+            return (await query) as Record<string, any>[];
+          };
+
+          const result = nestedEntries
+            ? await writeWithNestedOps({
+                executor,
+                runtime: nested!,
+                tableName,
+                entries: nestedEntries,
+                remapValues: (values) => remapFromGraphQLSingleInput(values, table),
+                write: (tx, values) => runUpsert(tx, [values]),
+              })
+            : await runUpsert(executor, input);
 
           if (single && !result[0]) {
             return undefined;
@@ -586,6 +670,7 @@ const generateUpdate = (
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
+  nested?: NestedWriteRuntime,
 ): CreatedResolver => {
   const queryArgs = {
     set: {
@@ -621,8 +706,12 @@ const generateUpdate = (
             parsedInfo,
           });
 
-          const input = remapFromGraphQLSingleInput(set, table);
-          if (!Object.keys(input).length) {
+          const entry = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
+          const nestedOps = entry && nested!.hasOps(entry.ops) ? entry.ops : undefined;
+          const input = remapFromGraphQLSingleInput(entry ? entry.columns : set, table);
+          // A `set` that carries only nested operations is a legitimate update — of the
+          // relation rather than of the row — so it is only empty when neither is present.
+          if (!Object.keys(input).length && !nestedOps) {
             throw new GraphQLError('Unable to update with no values specified!');
           }
 
@@ -638,14 +727,30 @@ const generateUpdate = (
             await assertSingleMatch(executor, table, filters!, fieldName);
           }
 
-          let query = executor.update(table).set(input);
-          if (filters) {
-            query = query.where(filters) as any;
-          }
+          const returning = nestedOps ? nested!.withJoinColumns(tableName, nestedOps, { ...columns }, table) : columns;
 
-          query = query.returning(columns) as any;
+          const runUpdate = async (target: any, values: Record<string, any>) => {
+            // Nothing to write to the row itself: the operations attach to whatever the
+            // `where` matched, so the rows are read rather than rewritten.
+            const writes = Object.keys(values).length > 0;
+            let query = writes ? target.update(table).set(values) : target.select(returning).from(table);
+            if (filters) {
+              query = query.where(filters) as any;
+            }
+            return (await (writes ? (query.returning(returning) as any) : query)) as Record<string, any>[];
+          };
 
-          const result = await query;
+          const result = nestedOps
+            ? await updateWithNestedOps({
+                executor,
+                runtime: nested!,
+                tableName,
+                columns: input,
+                ops: nestedOps,
+                remapValues: (values) => values,
+                write: runUpdate,
+              })
+            : await runUpdate(executor, input);
 
           if (single && result.length > 1) {
             // A row started matching between the pre-check and the write.
@@ -694,6 +799,7 @@ const generateUpdateMany = (
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
+  nested?: NestedWriteRuntime,
 ): CreatedResolver => {
   const queryArgs = {
     updates: {
@@ -737,17 +843,32 @@ const generateUpdateMany = (
           // Remap and validate every entry before the transaction opens, so a malformed
           // entry rejects the request instead of rolling back mid-batch.
           const entries = updates.map(({ where, set }) => {
-            const input = remapFromGraphQLSingleInput(set, table);
-            if (!Object.keys(input).length) {
+            const split = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
+            const ops = split && nested!.hasOps(split.ops) ? split.ops : undefined;
+            const input = remapFromGraphQLSingleInput(split ? split.columns : set, table);
+            // An entry that only writes through a relation still has work to do.
+            if (!Object.keys(input).length && !ops) {
               throw new GraphQLError('Unable to update with no values specified!');
             }
             return {
               set: input,
+              ops,
               filters: where
                 ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))
                 : undefined,
             };
           });
+
+          const returning = entries.some((entry) => entry.ops)
+            ? nested!.withJoinColumns(
+                tableName,
+                mergedOps(entries.map((entry) => ({ ops: entry.ops ?? {} }))),
+                {
+                  ...columns,
+                },
+                table,
+              )
+            : columns;
 
           // On a caller-supplied transaction — or the shared multi-mutation transaction
           // opened by `runMutation` — this opens a savepoint, so the batch stays atomic
@@ -755,11 +876,23 @@ const generateUpdateMany = (
           const perEntry: Record<string, any>[][] = await executor.transaction(async (tx: any) => {
             const results: Record<string, any>[][] = [];
             for (const entry of entries) {
-              let query = tx.update(table).set(entry.set);
+              const values = entry.ops
+                ? { ...entry.set, ...(await nested!.applyParentSide(tx, tableName, entry.ops)) }
+                : entry.set;
+
+              // Same as the single update: an entry with no column values reads the rows its
+              // `where` matched so the nested operations have something to attach to.
+              const writes = Object.keys(values).length > 0;
+              let query = writes ? tx.update(table).set(values) : tx.select(returning).from(table);
               if (entry.filters) {
                 query = query.where(entry.filters) as any;
               }
-              results.push(await (query.returning(columns) as any));
+              const rows = (await (writes ? (query.returning(returning) as any) : query)) as Record<string, any>[];
+
+              if (entry.ops) {
+                await nested!.applyChildSide(tx, tableName, entry.ops, rows);
+              }
+              results.push(rows);
             }
             return results;
           });
@@ -904,6 +1037,9 @@ export function generateSchemaData<
   // Resolve scalar overrides into the type-converter's registry before any type generation —
   // every subsequent column→GraphQL type decision and runtime value remap consults it.
   registerScalarOverrides(tables, options);
+  // Same lifecycle: the enum registry is per-build, so a second build never reuses the first
+  // build's enum types (and with them its naming decisions).
+  registerEnumConfig(options);
 
   // Flatten drizzle-orm v1 TablesRelationalConfig into the canonical shape
   // used throughout common.ts: Record<tableName, Record<relName, TableNamedRelations>>
@@ -936,7 +1072,25 @@ export function generateSchemaData<
     listRelationFilterCache: new Map(),
     aggregateTypeCache: new Map(),
     complexity,
+    docs: options.docs ?? {},
   };
+
+  // Nested writes: the plans decide which relations are writable at all, the types add their
+  // fields to the create/update inputs, and the runtime executes them. All three are left
+  // undefined when the feature is off, so the inputs and the resolvers stay as they were.
+  const nestedPlans = features.nestedWrites
+    ? buildNestedWritePlans(
+        tables,
+        namedRelations,
+        (target) => getUniqueColumnSets(target as PgTable, getTableConfig),
+        (target) => pgPrimaryKeyPropNames(target as PgTable),
+        extractRelationJoinColumns,
+      )
+    : undefined;
+  const nestedTypes = nestedPlans
+    ? createNestedWriteTypes({ plans: nestedPlans, cacheCtx, typeNameMapper, insertPrefix: prefixes.insert })
+    : undefined;
+  const nestedRuntime = nestedPlans ? createNestedWriteRuntime({ plans: nestedPlans, filterCtx }) : undefined;
 
   // Left undefined when the feature is off — generateTableTypes then emits no
   // `${relation}Aggregate` fields at all.
@@ -966,6 +1120,7 @@ export function generateSchemaData<
         prefixes.update,
         resolverFactory,
         relationAggregateFactory,
+        nestedTypes,
       ),
     ]),
   );
@@ -1033,6 +1188,7 @@ export function generateSchemaData<
           typeNameMapper,
           conflictDoNothing,
           mutationTxCtx,
+          nestedRuntime,
         )
       : undefined;
     const insertSingleGenerated = features.insert
@@ -1048,6 +1204,7 @@ export function generateSchemaData<
           typeNameMapper,
           conflictDoNothing,
           mutationTxCtx,
+          nestedRuntime,
         )
       : undefined;
     // An upsert needs something to conflict on, so a table with no primary key and no
@@ -1078,6 +1235,7 @@ export function generateSchemaData<
           typeNameMapper,
           filterCtx,
           mutationTxCtx,
+          nestedRuntime,
         )
       : undefined;
     const upsertSingleGenerated = onConflictInput
@@ -1096,6 +1254,7 @@ export function generateSchemaData<
           typeNameMapper,
           filterCtx,
           mutationTxCtx,
+          nestedRuntime,
         )
       : undefined;
     const updateGenerated = features.update
@@ -1114,6 +1273,7 @@ export function generateSchemaData<
           typeNameMapper,
           filterCtx,
           mutationTxCtx,
+          nestedRuntime,
         )
       : undefined;
     const updateSingleGenerated = features.update
@@ -1132,6 +1292,7 @@ export function generateSchemaData<
           typeNameMapper,
           filterCtx,
           mutationTxCtx,
+          nestedRuntime,
         )
       : undefined;
     // The batch update reuses the update `set` input, so it needs `update` on too.
@@ -1152,6 +1313,7 @@ export function generateSchemaData<
           typeNameMapper,
           filterCtx,
           mutationTxCtx,
+          nestedRuntime,
         )
       : undefined;
     const deleteGenerated = features.delete

@@ -5,10 +5,13 @@ Supabase's `pg_graphql`. Roughly ordered within each group; nothing here is comm
 
 ## Planned
 
-- **Nested writes** — designed in
-  [docs/plans/upsert-and-nested-writes.md](docs/plans/upsert-and-nested-writes.md). Upsert
-  (step 3) and the shared groundwork (steps 1, 2 and 4) have landed; nested `create` /
-  `connect` on the insert inputs has not.
+- **Nested writes on MySQL and on synchronous SQLite drivers** — `features.nestedWrites` has
+  landed for PostgreSQL and for SQLite on an async driver. MySQL needs a way to read back the
+  key of the row it just inserted without `RETURNING`; a synchronous SQLite driver needs the
+  whole write path rewritten without `await` so it can run inside the driver's transaction
+  callback. Both are rejected at build time today.
+- **Deeper nested writes** — nesting is one level: the row a nested `create` inserts takes
+  columns only. Arbitrary depth needs the plans to recurse and the input types to be cycle-safe.
 
 ## Medium priority
 
@@ -32,10 +35,11 @@ Supabase's `pg_graphql`. Roughly ordered within each group; nothing here is comm
   framework demands it.
 - **Subscriptions / live queries** — needs a change-feed (`LISTEN`/`NOTIFY`, binlog, polling)
   that this library does not have and cannot fake cheaply.
-- **Descriptions and deprecations from the database** — carry column and table comments into
-  GraphQL descriptions, and mark deprecated columns with `@deprecated`. Also `affected_rows`
-  on mutation payloads, which Hasura exposes and MySQL's returnless mutations would benefit
-  from.
+- **`affected_rows` on mutation payloads** — Hasura exposes it, and MySQL's returnless
+  mutations would benefit most. (Descriptions and deprecations themselves have landed as the
+  `describeColumn` / `describeTable` / `describeRelation` / `deprecateColumn` hooks; reading
+  them out of database comments automatically is still open, and needs a catalogue query
+  drizzle does not expose.)
 - **Many-to-many relation filters** — relations declared with `.through()` are currently left
   out of the filter input entirely. Same gap exists for relation aggregates.
 

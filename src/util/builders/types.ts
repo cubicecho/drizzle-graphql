@@ -13,7 +13,9 @@ import type {
   ColumnTypeMapper,
   ConvertedColumn,
   ConvertedRelationColumnWithArgs,
+  EnumNameMapper,
   ScalarOverridesConfig,
+  SchemaDocs,
 } from '../type-converter/types.ts';
 import type { ResolvedComplexityOptions } from './common.ts';
 // import type {
@@ -35,6 +37,7 @@ export type GeneratorFeatures = {
   updateMany: boolean;
   delete: boolean;
   upsert: boolean;
+  nestedWrites: boolean;
   requireWhere: boolean;
 };
 
@@ -56,6 +59,13 @@ export type SchemaGeneratorOptions = {
   scalars?: ScalarOverridesConfig;
   /** Rule-based scalar mapping. See `BuildSchemaConfig.mapColumnType`. */
   mapColumnType?: ColumnTypeMapper;
+  /** Names the generated enum types. See `BuildSchemaConfig.enumNameMapper`. */
+  enumNameMapper?: EnumNameMapper;
+  /**
+   * Resolved documentation hooks. `buildSchema` always supplies this; it stays optional so a
+   * consumer calling a dialect generator directly need not pass an empty object.
+   */
+  docs?: SchemaDocs;
   /**
    * Resolved `BuildSchemaConfig.transactions` settings, or `undefined` when automatic
    * multi-mutation transactions are off.

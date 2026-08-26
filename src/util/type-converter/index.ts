@@ -26,20 +26,104 @@ import {
   GraphQLJSON,
   GraphQLUUID,
 } from '../scalars/index.ts';
-import type { ColumnTypeMapper, ConvertedColumn, ScalarOverride, ScalarOverridesConfig } from './types.ts';
+import type {
+  ColumnTypeMapper,
+  ConvertedColumn,
+  EnumNameMapper,
+  ScalarOverride,
+  ScalarOverridesConfig,
+} from './types.ts';
 
 const allowedNameChars = /^[a-zA-Z0-9_]+$/;
 
-const enumMap = new WeakMap<object, GraphQLEnumType>();
+/**
+ * The enum type a column was declared with, when it is a *named* one — `pgEnum('status', …)`
+ * shared by however many tables reference it. An inline value list (`text({ enum: [...] })`,
+ * `mysqlEnum('role', [...])`) has no such object: the values belong to that one column.
+ */
+const declaredEnum = (column: Column): { enumName: string; schema: string | undefined } | undefined => {
+  const declared = (column as any).enum as { enumName?: unknown; schema?: unknown } | undefined;
+  return typeof declared?.enumName === 'string'
+    ? { enumName: declared.enumName, schema: typeof declared.schema === 'string' ? declared.schema : undefined }
+    : undefined;
+};
+
+/** `user_status` / `user-status` / `user status` → `UserStatus`; an already-PascalCase name is left alone. */
+const pascalize = (input: string): string =>
+  input
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map((part) => capitalize(part))
+    .join('');
+
+/**
+ * Identity of the values a GraphQL enum was built from, so a name claimed twice can be told
+ * apart from the same enum reached twice.
+ */
+const enumValuesKey = (values: readonly string[]): string => JSON.stringify(values);
+
+/**
+ * Every GraphQL enum name this build has handed out. Two columns that resolve to the same
+ * name share one type — that is how the columns of one `pgEnum` end up on a single type —
+ * so the values are kept alongside it to tell a genuine collision from a re-use.
+ */
+let enumNamesInUse = new Map<string, { type: GraphQLEnumType; valuesKey: string }>();
+let enumNameMapper: EnumNameMapper | undefined;
+
+/**
+ * Resets the enum registry for a fresh schema build and installs that build's
+ * `enumNameMapper`. Called once per `generateSchemaData`, alongside
+ * {@link registerScalarOverrides} — without the reset a second build would reuse the first
+ * build's enum types, and so its naming decisions.
+ */
+export const registerEnumConfig = (config: { enumNameMapper?: EnumNameMapper }): void => {
+  enumNameMapper = config.enumNameMapper;
+  enumNamesInUse = new Map();
+};
+
+/**
+ * The GraphQL enum for a column's value list.
+ *
+ * The name decides the sharing: a column declared with a named `pgEnum` is named for the
+ * enum, so every column declared with that same `pgEnum` lands on one GraphQL type — the
+ * database column is literally the same type, and a client variable typed `StatusEnum!`
+ * should be passable to any of them. A column with an inline value list is named for the
+ * table and column instead, and so keeps a type of its own; its values are not shared with
+ * anything.
+ *
+ * `enumNameMapper` is consulted for every column and overrides that name either way, which
+ * makes it both the way to unify inline enums that were declared separately but mean the
+ * same thing, and the way to split apart columns of one `pgEnum` that should not share.
+ * Sending two *different* value lists to one name is a build-time error rather than an
+ * invalid schema.
+ */
 const generateEnumCached = (column: Column, columnName: string, tableName: string): GraphQLEnumType => {
-  if (enumMap.has(column)) {
-    return enumMap.get(column)!;
+  const declared = declaredEnum(column);
+  const values = column.enumValues!;
+  const name =
+    enumNameMapper?.({
+      enumName: declared?.enumName,
+      schema: declared?.schema,
+      tableName,
+      columnName,
+      values,
+    }) ?? (declared ? `${pascalize(declared.enumName)}Enum` : `${capitalize(tableName)}${capitalize(columnName)}Enum`);
+
+  const valuesKey = enumValuesKey(values);
+  const claimed = enumNamesInUse.get(name);
+  if (claimed) {
+    if (claimed.valuesKey !== valuesKey) {
+      throw new Error(
+        `Drizzle-GraphQL Error: Two different enums both map to the GraphQL type name '${name}' (most recently '${tableName}.${columnName}'). Give one of them a different name via config.enumNameMapper.`,
+      );
+    }
+    return claimed.type;
   }
 
   const gqlEnum = new GraphQLEnumType({
-    name: `${capitalize(tableName)}${capitalize(columnName)}Enum`,
+    name,
     values: Object.fromEntries(
-      column.enumValues!.map((e, index) => [
+      values.map((e, index) => [
         allowedNameChars.test(e) ? e : `Option${index}`,
         {
           value: e,
@@ -49,7 +133,7 @@ const generateEnumCached = (column: Column, columnName: string, tableName: strin
     ),
   });
 
-  enumMap.set(column, gqlEnum);
+  enumNamesInUse.set(name, { type: gqlEnum, valuesKey });
 
   return gqlEnum;
 };
@@ -83,16 +167,16 @@ const columnToGraphQLCore = (
   const dimensions = (column as any).dimensions as number | undefined;
   if (dimensions !== undefined && dimensions > 0) {
     const inner = columnBaseToGraphQLCore(column, columnName, tableName, isInput);
-    const innerDesc = inner.description ?? (inner.type as GraphQLScalarType).name;
+    const innerLabel = inner.typeLabel ?? (inner.type as GraphQLScalarType).name;
 
     let type: ConvertedColumn<boolean>['type'] = inner.type;
-    let description = innerDesc;
+    let typeLabel = innerLabel;
     for (let i = 0; i < dimensions; i++) {
       type = new GraphQLList(new GraphQLNonNull(type as GraphQLScalarType));
-      description = `Array<${description}>`;
+      typeLabel = `Array<${typeLabel}>`;
     }
 
-    return { type, description };
+    return { type, typeLabel };
   }
 
   return columnBaseToGraphQLCore(column, columnName, tableName, isInput);
@@ -107,22 +191,22 @@ const columnBaseToGraphQLCore = (
   const { type: baseType, constraint } = extractExtendedColumnType(column);
   switch (baseType) {
     case 'boolean':
-      return { type: GraphQLBoolean, description: 'Boolean' };
+      return { type: GraphQLBoolean, typeLabel: 'Boolean' };
     case 'object':
       if (column instanceof PgTimestamp || column instanceof PgDate) {
-        return { type: GraphQLDateTime, description: 'DateTime' };
+        return { type: GraphQLDateTime, typeLabel: 'DateTime' };
       }
       return column.columnType === 'PgGeometryObject'
         ? {
             type: isInput ? geoXyInputType : geoXyType,
-            description: 'Geometry points XY',
+            typeLabel: 'Geometry points XY',
           }
         : column.columnType === 'PgBytea'
           ? {
               type: new GraphQLList(new GraphQLNonNull(GraphQLInt)),
-              description: 'Buffer',
+              typeLabel: 'Buffer',
             }
-          : { type: GraphQLJSON, description: 'JSON' };
+          : { type: GraphQLJSON, typeLabel: 'JSON' };
     case 'string':
       if (column.enumValues?.length) {
         return { type: generateEnumCached(column, columnName, tableName) };
@@ -133,45 +217,45 @@ const columnBaseToGraphQLCore = (
       // so and non-numeric input is rejected. Array-typed numeric columns (dimensions > 0)
       // keep their existing mapping.
       if (constraint === 'numeric' && !(column as any).dimensions) {
-        return { type: GraphQLDecimalString, description: 'Decimal' };
+        return { type: GraphQLDecimalString, typeLabel: 'Decimal' };
       }
 
       if (column instanceof PgTimestamp || column instanceof PgTimestampString) {
-        return { type: GraphQLDateTime, description: 'DateTime' };
+        return { type: GraphQLDateTime, typeLabel: 'DateTime' };
       }
       if (column instanceof PgUUID) {
-        return { type: GraphQLUUID, description: 'UUID' };
+        return { type: GraphQLUUID, typeLabel: 'UUID' };
       }
       if (column instanceof PgDateString) {
         // For input, accept any string (drivers truncate ISO timestamps to date on write).
         // For output, keep the strict GraphQLDate scalar so the returned value is validated.
-        return isInput ? { type: GraphQLString, description: 'Date' } : { type: GraphQLDate, description: 'Date' };
+        return isInput ? { type: GraphQLString, typeLabel: 'Date' } : { type: GraphQLDate, typeLabel: 'Date' };
       }
 
-      return { type: GraphQLString, description: 'String' };
+      return { type: GraphQLString, typeLabel: 'String' };
     case 'bigint':
-      return { type: GraphQLBigIntString, description: 'BigInt' };
+      return { type: GraphQLBigIntString, typeLabel: 'BigInt' };
     case 'number': {
       return is(column, PgInteger) ||
         is(column, PgSerial) ||
         is(column, MySqlInt) ||
         is(column, MySqlSerial) ||
         is(column, SQLiteInteger)
-        ? { type: GraphQLInt, description: 'Integer' }
-        : { type: GraphQLFloat, description: 'Float' };
+        ? { type: GraphQLInt, typeLabel: 'Integer' }
+        : { type: GraphQLFloat, typeLabel: 'Float' };
     }
     case 'array': {
       if (column.columnType === 'PgVector') {
         return {
           type: new GraphQLList(new GraphQLNonNull(GraphQLFloat)),
-          description: 'Array<Float>',
+          typeLabel: 'Array<Float>',
         };
       }
 
       if (column.columnType === 'PgGeometry') {
         return {
           type: new GraphQLList(new GraphQLNonNull(GraphQLFloat)),
-          description: 'Tuple<[Float, Float]>',
+          typeLabel: 'Tuple<[Float, Float]>',
         };
       }
 
@@ -184,7 +268,7 @@ const columnBaseToGraphQLCore = (
 
       return {
         type: new GraphQLList(new GraphQLNonNull(innerType.type as GraphQLScalarType)),
-        description: `Array<${innerType.description}>`,
+        typeLabel: `Array<${innerType.typeLabel}>`,
       };
     }
     default:
@@ -289,19 +373,11 @@ export const drizzleColumnToGraphQLType = <TColumn extends Column, TIsInput exte
   isInput: TIsInput = false as TIsInput,
 ): ConvertedColumn<TIsInput> => {
   const override = getColumnScalarOverride(column, isInput);
-  let typeDesc: ConvertedColumn<boolean>;
-  if (override) {
-    // The override replaces built-in detection entirely; the description mirrors the
-    // pattern used for the built-in named scalars (BigInt, DateTime, JSON, …).
-    typeDesc = { type: override, description: override.name };
-  } else {
-    typeDesc = columnToGraphQLCore(column, columnName, tableName, isInput);
-    const noDesc = ['string', 'boolean', 'number'];
-    const { type: baseType } = extractExtendedColumnType(column);
-    if (noDesc.find((e) => e === baseType)) {
-      delete typeDesc.description;
-    }
-  }
+  // An override replaces built-in detection entirely, so the label is the scalar's own name:
+  // nothing downstream should treat an overridden column as the type it would have had.
+  const typeDesc: ConvertedColumn<boolean> = override
+    ? { type: override, typeLabel: override.name }
+    : columnToGraphQLCore(column, columnName, tableName, isInput);
 
   if (forceNullable) {
     return typeDesc as ConvertedColumn<TIsInput>;
@@ -309,7 +385,7 @@ export const drizzleColumnToGraphQLType = <TColumn extends Column, TIsInput exte
   if (column.notNull && !(defaultIsNullable && (column.hasDefault || column.defaultFn))) {
     return {
       type: new GraphQLNonNull(typeDesc.type),
-      description: typeDesc.description,
+      typeLabel: typeDesc.typeLabel,
     } as ConvertedColumn<TIsInput>;
   }
 
