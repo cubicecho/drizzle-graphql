@@ -75,22 +75,35 @@ afterAll(async () => {
 
 describe.sequential('filter input shape', () => {
   it('gives json columns a JSONFilter with eq/ne/contains and no scalar string ops', () => {
-    expect(filterFieldNames('JSONFilter')).toStrictEqual(['OR', 'contains', 'eq', 'isNotNull', 'isNull', 'ne']);
+    expect(filterFieldNames('JSONFilter')).toStrictEqual([
+      'AND',
+      'NOT',
+      'OR',
+      'contains',
+      'eq',
+      'isNotNull',
+      'isNull',
+      'ne',
+    ]);
     expect(filterFieldType('JSONFilter', 'eq')).toBe('JSON');
     expect(filterFieldType('JSONFilter', 'contains')).toBe('JSON');
   });
 
-  it('gives int array columns membership operators instead of scalar operators', () => {
+  it('gives int array columns membership operators instead of scalar comparison operators', () => {
     expect(filterFieldNames('IntArrayFilter')).toStrictEqual([
+      'AND',
+      'NOT',
       'OR',
       'eq',
       'has',
       'hasEvery',
       'hasSome',
+      'inArray',
       'isEmpty',
       'isNotNull',
       'isNull',
       'ne',
+      'notInArray',
     ]);
     expect(filterFieldType('IntArrayFilter', 'eq')).toBe('[Int!]');
     expect(filterFieldType('IntArrayFilter', 'has')).toBe('Int');
@@ -110,7 +123,9 @@ describe.sequential('filter input shape', () => {
   });
 
   it('rejects the removed type-confused operators on json and array columns', async () => {
-    for (const where of ['{ meta: { like: "x" } }', '{ nums: { inArray: [1] } }', '{ nums: { lt: [1] } }']) {
+    // `inArray` stays available on array columns — it is well-typed as `[[Element!]!]`
+    // (whole-array IN) and covered by the string-array regression tests for issue #15.
+    for (const where of ['{ meta: { like: "x" } }', '{ nums: { lt: [1] } }']) {
       const res = await run(`{ items(where: ${where}) { id } }`);
       expect(res.errors?.[0]?.message).toMatch(/is not defined by type/);
     }

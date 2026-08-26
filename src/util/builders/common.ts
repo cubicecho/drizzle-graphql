@@ -2,8 +2,10 @@
 // LOCAL MODIFICATION — diverges from upstream drizzle-graphql
 //
 // 1. generateColumnFilterValues() rewritten to produce generic shared filter
-//    types (IdFilter, StringFilter, DateTimeFilter, BooleanFilter, per-enum)
-//    instead of one type per (table, column) pair.
+//    types (IdFilter, StringFilter, IntFilter, FloatFilter, BigIntFilter,
+//    DecimalFilter, DateTimeFilter, BooleanFilter, per-enum, per-array) instead
+//    of one type per (table, column) pair. The filter is picked by column data
+//    type, not name.
 //
 // 2. Type naming:
 //    - Select types: ${capitalize(tableName)} (e.g. Users)
@@ -50,6 +52,7 @@ import {
   GraphQLBoolean,
   GraphQLEnumType,
   GraphQLError,
+  GraphQLFloat,
   GraphQLInputObjectType,
   GraphQLInt,
   GraphQLList,
@@ -61,7 +64,7 @@ import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { getOrCreateLoader } from '../batch-loader/index.ts';
 import { capitalize, uncapitalize } from '../case-ops/index.ts';
 import { remapFromGraphQLCore, remapToGraphQLArrayOutput, remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
-import { GraphQLJSON } from '../scalars/index.ts';
+import { GraphQLBigIntString, GraphQLDecimalString, GraphQLJSON, GraphQLUUID } from '../scalars/index.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type {
   ConvertedColumn,
@@ -317,6 +320,7 @@ const batchedPaginatedRelationQuery = async (
   limit: number | null,
   offset: number | null,
   pkNames: readonly string[],
+  orderCtx?: RelationFilterContext,
 ): Promise<any[]> => {
   const cols = getColumns(targetTable);
 
@@ -324,7 +328,7 @@ const batchedPaginatedRelationQuery = async (
   // slices are deterministic even when the client supplies no (or a non-unique) orderBy.
   // pkNames is resolved at build time and includes composite keys.
   const orderExprs = [
-    ...(orderByArg ? extractOrderBy(targetTable, orderByArg) : []),
+    ...(orderByArg ? extractOrderBy(targetTable, orderByArg, orderCtx) : []),
     ...primaryKeyOrderExprs(targetTable, pkNames),
   ];
   const orderClause = orderExprs.length ? sql` order by ${sql.join(orderExprs, sql`, `)}` : sql``;
@@ -436,13 +440,14 @@ export const createRelationResolverFactory =
             limit ?? null,
             offset ?? null,
             targetPkNames,
+            relationFilterCtx(filterCtx, targetTableName),
           );
         } else {
           // Use plain db.select() so column refs are never aliased — avoids drizzle-orm v1
           // RQB aliasing requirements that would require referencing via aliasedTable proxy.
           let q = executor.select().from(targetTable).where(whereCondition) as any;
           if (orderByArg) {
-            q = q.orderBy(...extractOrderBy(targetTable, orderByArg));
+            q = q.orderBy(...extractOrderBy(targetTable, orderByArg, relationFilterCtx(filterCtx, targetTableName)));
           }
           rows = await q;
         }
@@ -468,8 +473,8 @@ export const createRelationResolverFactory =
 
 /** Per-call cache context — created fresh on each generateSchemaData call to avoid type name collisions. */
 export interface TypeCacheCtx {
-  /** Cache of generic filter type pairs, keyed by generic name (e.g. "String", "DateTime"). */
-  genericFilterCache: Map<string, { main: GraphQLInputObjectType; or: GraphQLInputObjectType }>;
+  /** Cache of generic filter types, keyed by generic name (e.g. "String", "DateTime"). */
+  genericFilterCache: Map<string, GraphQLInputObjectType>;
   /**
    * Cache of shared select object types, keyed by table name.
    * Value: the ${capitalize(tableName)} type (columns + relation fields).
@@ -676,6 +681,27 @@ export const extractSelectedColumnsFromTreeSQLFormat = <TColType extends Column 
   return Object.fromEntries(selectedColumns) as Record<string, TColType>;
 };
 
+/**
+ * Where NULL values sort relative to non-NULL values. Compiled to native
+ * `NULLS FIRST` / `NULLS LAST` on PostgreSQL and SQLite (3.30+); MySQL has no such
+ * clause, so there it is emulated with an extra `<expr> IS NULL` sort key ahead of
+ * the column itself.
+ */
+export const orderNulls = new GraphQLEnumType({
+  name: 'OrderNulls',
+  description: 'Where NULL values sort relative to non-NULL values',
+  values: {
+    first: {
+      value: 'first',
+      description: 'NULL values sort before all non-NULL values',
+    },
+    last: {
+      value: 'last',
+      description: 'NULL values sort after all non-NULL values',
+    },
+  },
+});
+
 export const innerOrder = new GraphQLInputObjectType({
   name: 'InnerOrder' as const,
   fields: {
@@ -700,6 +726,11 @@ export const innerOrder = new GraphQLInputObjectType({
     priority: {
       type: new GraphQLNonNull(GraphQLInt),
       description: 'Priority of current field',
+    },
+    nulls: {
+      type: orderNulls,
+      description:
+        "Where NULL values sort. Defaults to the database's own rule (PostgreSQL: last on asc, first on desc; MySQL/SQLite: first on asc, last on desc)",
     },
   } as const,
 });
@@ -727,26 +758,34 @@ interface GenericFilterDescriptor {
 
 /**
  * Maps a Drizzle column to the generic filter type to use.
- * - "JSON"           → json/jsonb columns (eq/ne + containment, no scalar comparison ops)
- * - `${Element}Array` → array columns, keyed per element type (IntArray, StringArray, …) so
- *                      arrays with different element types never share one filter input
- * - "Id"             → uuid PK/FK columns (no like/ilike operators)
- * - "DateTime"       → timestamp and date columns
- * - "Boolean"        → boolean columns
+ *
+ * Selection is keyed on the column's data type, never its name: a text column named
+ * `userId` gets the full String filter (string operators included), while a uuid column
+ * gets the lean Id filter whatever it is called.
+ * - "JSON"            → json/jsonb columns (eq/ne + containment, no scalar comparison ops)
+ * - `${Element}Array` → array columns, keyed per element type (IntArray, FloatArray,
+ *                       StringArray, …) so arrays with different element types never share
+ *                       one filter input; membership operators instead of scalar comparisons
+ * - "Id"          → uuid-typed columns (no string pattern operators)
+ * - "Boolean"     → boolean columns
+ * - "BigInt"      → bigint columns (BigInt-scalar-typed operators, no string pattern operators)
+ * - "Decimal"     → numeric/decimal columns (Decimal-scalar-typed operators, no string pattern operators)
  * - the enum GraphQL type name → enum columns (still unique per enum)
- * - "String"         → all other text/varchar columns
+ * - "DateTime"    → timestamp and date columns
+ * - "Int"         → integer/serial columns (no string pattern operators)
+ * - "Float"       → real/double columns (no string pattern operators)
+ * - "String"      → all other text/varchar columns
  */
 const resolveGenericFilterDescriptor = (
   column: Column,
-  columnName: string,
   columnGraphQLType: ReturnType<typeof drizzleColumnToGraphQLType>,
 ): GenericFilterDescriptor => {
-  // JSON / JSONB columns — structural, so they must win over the name-based Id check.
+  // JSON / JSONB columns — structural values with their own operator set.
   if (columnGraphQLType.type === GraphQLJSON) {
     return { name: 'JSON', kind: 'json' };
   }
   // Array columns — keyed per element type so an int[] and a text[] column never share
-  // one cached filter input (they previously all collapsed into IntArray/FloatArray).
+  // one cached filter input.
   if (columnGraphQLType.type instanceof GraphQLList) {
     let element = columnGraphQLType.type.ofType;
     if (element instanceof GraphQLNonNull) {
@@ -754,8 +793,8 @@ const resolveGenericFilterDescriptor = (
     }
     return { name: `${element.name}Array`, kind: 'array' };
   }
-  // ID / foreign-key columns
-  if (columnName === 'id' || columnName.endsWith('Id')) {
+  // Opaque uuid keys — keyed on the column type, not on an `id`/`*Id` naming convention.
+  if (columnGraphQLType.type === GraphQLUUID) {
     return { name: 'Id', kind: 'scalar' };
   }
   // Boolean scalar
@@ -766,10 +805,27 @@ const resolveGenericFilterDescriptor = (
   if (columnGraphQLType.type instanceof GraphQLEnumType) {
     return { name: columnGraphQLType.type.name, kind: 'scalar' };
   }
+  // Named numeric-string scalars — give them their own filters so the operators
+  // are typed with the scalar (and validated by it) instead of a shared StringFilter.
+  if (columnGraphQLType.type === GraphQLBigIntString) {
+    return { name: 'BigInt', kind: 'scalar' };
+  }
+  if (columnGraphQLType.type === GraphQLDecimalString) {
+    return { name: 'Decimal', kind: 'scalar' };
+  }
   // Date / timestamp columns (check Drizzle internal columnType string)
   const ct: string = (column as any).columnType ?? '';
   if (ct === 'PgTimestamp' || ct === 'PgTimestampString' || ct === 'PgDate') {
     return { name: 'DateTime', kind: 'scalar' };
+  }
+  // Numeric scalars — distinct names so an int/float column never shares (and never
+  // mistypes) the StringFilter, and integer ids keep a filter without string operators.
+  // (BigInt/Decimal columns are handled above via their named scalars.)
+  if (columnGraphQLType.type === GraphQLInt) {
+    return { name: 'Int', kind: 'scalar' };
+  }
+  if (columnGraphQLType.type === GraphQLFloat) {
+    return { name: 'Float', kind: 'scalar' };
   }
   // Default: plain text/varchar
   return { name: 'String', kind: 'scalar' };
@@ -801,13 +857,13 @@ const jsonFilterFields = (column: Column, colType: ReturnType<typeof drizzleColu
 
 /**
  * Filter fields for an array column (Postgres-only in drizzle). Membership operators replace
- * the scalar comparison set: `has` checks a single element (`@>` with a one-element array),
- * `hasSome` is overlap (`&&`), `hasEvery` is containment (`@>`), `isEmpty` matches arrays with
- * no elements. `eq`/`ne` still compare the whole array. The scalar filter's `inArray` operator
- * (SQL `IN` against a list of whole-array values) was type-confused on array columns and is
- * intentionally dropped.
+ * the scalar comparison and string pattern sets: `has` checks a single element (`@>` with a
+ * one-element array), `hasSome` is overlap (`&&`), `hasEvery` is containment (`@>`), `isEmpty`
+ * matches arrays with no elements. `eq`/`ne` still compare the whole array, and
+ * `inArray`/`notInArray` still match the whole array against a list of candidate arrays
+ * (SQL `IN`, typed `[[Element!]!]`).
  */
-const arrayFilterFields = (colType: GraphQLList<any>, colDesc: string | undefined) => {
+const arrayFilterFields = (colType: GraphQLList<any>, colArr: GraphQLList<any>, colDesc: string | undefined) => {
   let element = colType.ofType;
   if (element instanceof GraphQLNonNull) {
     element = element.ofType;
@@ -821,10 +877,20 @@ const arrayFilterFields = (colType: GraphQLList<any>, colDesc: string | undefine
     hasSome: { type: elementList, description: 'Array contains at least one of these elements (overlap, `&&`)' },
     hasEvery: { type: elementList, description: 'Array contains every one of these elements (containment, `@>`)' },
     isEmpty: { type: GraphQLBoolean, description: 'When true, matches arrays with no elements' },
+    inArray: { type: colArr, description: `Array<${colDesc}>` },
+    notInArray: { type: colArr, description: `Array<${colDesc}>` },
     isNull: { type: GraphQLBoolean },
     isNotNull: { type: GraphQLBoolean },
   };
 };
+
+/**
+ * Filters whose fields omit the string pattern operators (like/notLike/ilike/notIlike/
+ * startsWith/contains/…): they are nonsensical on opaque uuids and invalid SQL on numeric
+ * columns. Keyed on the generic filter name (i.e. on column type) — a string-typed column
+ * keeps the string operators whatever it is called.
+ */
+const FILTERS_WITHOUT_STRING_OPS = new Set(['Id', 'Int', 'Float', 'BigInt', 'Decimal']);
 
 const generateColumnFilterValues = (
   column: Column,
@@ -834,24 +900,25 @@ const generateColumnFilterValues = (
 ): GraphQLInputObjectType => {
   const columnGraphQLType = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, true);
 
-  const { name: genericName, kind } = resolveGenericFilterDescriptor(column, columnName, columnGraphQLType);
+  const { name: genericName, kind } = resolveGenericFilterDescriptor(column, columnGraphQLType);
   const cached = cacheCtx.genericFilterCache.get(genericName);
   if (cached) {
-    return cached.main;
+    return cached;
   }
 
   const colType = columnGraphQLType.type;
   const colDesc = columnGraphQLType.description;
   const colArr = new GraphQLList(new GraphQLNonNull(colType));
 
-  // IdFilter omits like/notLike/ilike/notIlike — they are nonsensical on UUIDs.
-  const isId = genericName === 'Id';
+  // Uuid and numeric filters omit the string pattern operators
+  // (like/ilike/startsWith/contains/…) — decided by column type, never by column name.
+  const omitStringOps = FILTERS_WITHOUT_STRING_OPS.has(genericName);
 
   const baseFields =
     kind === 'json'
       ? jsonFilterFields(column, colType)
       : kind === 'array'
-        ? arrayFilterFields(colType as GraphQLList<any>, colDesc)
+        ? arrayFilterFields(colType as GraphQLList<any>, colArr, colDesc)
         : {
             eq: { type: colType, description: colDesc },
             ne: { type: colType, description: colDesc },
@@ -859,13 +926,39 @@ const generateColumnFilterValues = (
             lte: { type: colType, description: colDesc },
             gt: { type: colType, description: colDesc },
             gte: { type: colType, description: colDesc },
-            ...(isId
+            ...(omitStringOps
               ? {}
               : {
                   like: { type: GraphQLString },
                   notLike: { type: GraphQLString },
                   ilike: { type: GraphQLString },
                   notIlike: { type: GraphQLString },
+                  startsWith: {
+                    type: GraphQLString,
+                    description:
+                      'Matches values starting with the given string. `%`, `_` and `\\` are matched literally.',
+                  },
+                  endsWith: {
+                    type: GraphQLString,
+                    description:
+                      'Matches values ending with the given string. `%`, `_` and `\\` are matched literally.',
+                  },
+                  contains: {
+                    type: GraphQLString,
+                    description: 'Matches values containing the given string. `%`, `_` and `\\` are matched literally.',
+                  },
+                  iStartsWith: {
+                    type: GraphQLString,
+                    description: 'Case-insensitive `startsWith`.',
+                  },
+                  iEndsWith: {
+                    type: GraphQLString,
+                    description: 'Case-insensitive `endsWith`.',
+                  },
+                  iContains: {
+                    type: GraphQLString,
+                    description: 'Case-insensitive `contains`.',
+                  },
                 }),
             inArray: { type: colArr, description: `Array<${colDesc}>` },
             notInArray: { type: colArr, description: `Array<${colDesc}>` },
@@ -873,22 +966,28 @@ const generateColumnFilterValues = (
             isNotNull: { type: GraphQLBoolean },
           };
 
-  const orType = new GraphQLInputObjectType({
-    name: `${genericName}FilterOr`,
-    fields: { ...baseFields },
-  });
-
-  const mainType = new GraphQLInputObjectType({
+  // The boolean branches are recursive — each branch is this filter type itself — so the
+  // fields are thunked and reference the type being constructed.
+  const mainType: GraphQLInputObjectType = new GraphQLInputObjectType({
     name: `${genericName}Filter`,
-    fields: {
+    fields: () => ({
       ...baseFields,
       OR: {
-        type: new GraphQLList(new GraphQLNonNull(orType)),
+        type: new GraphQLList(new GraphQLNonNull(mainType)),
+        description: 'At least one branch matches; ANDed with any sibling operators',
       },
-    },
+      AND: {
+        type: new GraphQLList(new GraphQLNonNull(mainType)),
+        description: 'Every branch matches',
+      },
+      NOT: {
+        type: mainType,
+        description: 'Negates the nested operators',
+      },
+    }),
   });
 
-  cacheCtx.genericFilterCache.set(genericName, { main: mainType, or: orType });
+  cacheCtx.genericFilterCache.set(genericName, mainType);
   return mainType;
 };
 
@@ -956,34 +1055,91 @@ const generateTableSelectTypeFieldsCached = (table: Table, tableName: string): R
   return remapped;
 };
 
+/**
+ * Whether a to-one relation can back a relation orderBy hop. `.through()` (junction)
+ * relations are excluded — the ordering subquery only joins the direct target, never the
+ * junction table. (Relation *filters* do support `.through()` — this guard is orderBy-only.)
+ */
+const isFilterableRelation = (relation: Relation<string>): boolean => !(relation as any).through;
+
+/**
+ * Order fields for a table's to-one relations: each takes the target table's own OrderBy
+ * input, so a list can be sorted by a related row's column (compiled as a correlated
+ * subquery in the ORDER BY — see `extractOrderBy`). To-many relations are left out: "order
+ * a parent by its many children" has no single defined value to sort on. A relation whose
+ * name collides with a column is skipped — the column keeps the field.
+ */
+const generateRelationOrderFields = (
+  tableName: string,
+  cacheCtx: TypeCacheCtx,
+  typeNameMapper: TypeNameMapper | undefined,
+  columnFields: Record<string, ConvertedInputColumn>,
+  relationMap?: Record<string, Record<string, TableNamedRelations>>,
+  tables?: Record<string, Table>,
+): Record<string, { type: GraphQLInputObjectType; description?: string }> => {
+  const relations = relationMap?.[tableName];
+  if (!relations || !tables) {
+    return {};
+  }
+
+  const fields: Record<string, { type: GraphQLInputObjectType; description?: string }> = {};
+
+  for (const [relationName, relEntry] of Object.entries(relations)) {
+    if (relationName in columnFields) {
+      continue;
+    }
+
+    const targetTable = tables[relEntry.targetTableName];
+    const relation = (relEntry as any).relation ?? relEntry;
+    if (!targetTable || !is(relation, One) || !isFilterableRelation(relation)) {
+      continue;
+    }
+
+    fields[relationName] = {
+      type: generateTableOrderTypeCached(
+        targetTable,
+        relEntry.targetTableName,
+        typeNameMapper,
+        cacheCtx,
+        relationMap,
+        tables,
+      ),
+      description: `Order by columns of the related ${relationName} row`,
+    };
+  }
+
+  return fields;
+};
+
 const generateTableOrderTypeCached = (
   table: Table,
   tableName: string,
   typeNameMapper: TypeNameMapper | undefined,
   cacheCtx: TypeCacheCtx,
+  relationMap?: Record<string, Record<string, TableNamedRelations>>,
+  tables?: Record<string, Table>,
 ) => {
   if (cacheCtx.orderTypeCache.has(table)) {
     return cacheCtx.orderTypeCache.get(table)!;
   }
 
-  const orderColumns = generateTableOrderCached(table);
+  // Fields are thunked so that relation order fields, which reference other tables' order
+  // inputs (and eventually this one again), are only resolved after this type is cached.
   const order = new GraphQLInputObjectType({
     name: `${resolveTypeName(tableName, typeNameMapper)}OrderBy`,
-    fields: orderColumns,
+    fields: () => {
+      const orderColumns = generateTableOrderCached(table);
+      return {
+        ...orderColumns,
+        ...generateRelationOrderFields(tableName, cacheCtx, typeNameMapper, orderColumns, relationMap, tables),
+      };
+    },
   });
 
   cacheCtx.orderTypeCache.set(table, order);
 
   return order;
 };
-
-/**
- * Relations that can be expressed as a correlated `EXISTS` subquery. Many-to-many relations
- * declared with `.through()` need a junction join that the filter builder doesn't emit yet,
- * so they're left out of the filter input entirely — a missing field is a clean GraphQL
- * validation error, whereas a silently ignored filter would return too many rows.
- */
-const isFilterableRelation = (relation: Relation<string>): boolean => !(relation as any).through;
 
 /**
  * `${Target}ListRelationFilter` — the Prisma-style some/every/none wrapper for a to-many
@@ -1055,7 +1211,7 @@ const generateRelationFilterFields = (
 
     const targetTable = tables[relEntry.targetTableName];
     const relation = (relEntry as any).relation ?? relEntry;
-    if (!targetTable || !isFilterableRelation(relation)) {
+    if (!targetTable) {
       continue;
     }
 
@@ -1108,17 +1264,24 @@ const generateTableFilterTypeCached = (
     };
   };
 
-  const orFilters = new GraphQLInputObjectType({
-    name: `${resolveTypeName(tableName, typeNameMapper)}FiltersOr`,
-    fields: buildFields,
-  });
-
-  const filters = new GraphQLInputObjectType({
+  // The boolean branches (OR / AND / NOT) are recursive — each branch is this filter type
+  // itself — so the thunk references the type being constructed. Siblings and branches
+  // compose: sibling fields are implicitly ANDed with the OR / AND / NOT groups.
+  const filters: GraphQLInputObjectType = new GraphQLInputObjectType({
     name: `${resolveTypeName(tableName, typeNameMapper)}Filters`,
     fields: () => ({
       ...buildFields(),
       OR: {
-        type: new GraphQLList(new GraphQLNonNull(orFilters)),
+        type: new GraphQLList(new GraphQLNonNull(filters)),
+        description: 'At least one branch matches; ANDed with any sibling fields',
+      },
+      AND: {
+        type: new GraphQLList(new GraphQLNonNull(filters)),
+        description: 'Every branch matches',
+      },
+      NOT: {
+        type: filters,
+        description: 'Negates the nested filters',
       },
     }),
   });
@@ -1155,7 +1318,9 @@ const generateSelectFields = <TWithOrder extends boolean>(
   relationAggregateFactory?: RelationAggregateFactory,
 ): SelectData<TWithOrder> => {
   const table = tables[tableName]!;
-  const order = withOrder ? generateTableOrderTypeCached(table, tableName, typeNameMapper, cacheCtx) : undefined;
+  const order = withOrder
+    ? generateTableOrderTypeCached(table, tableName, typeNameMapper, cacheCtx, relationMap, tables)
+    : undefined;
   const filters = generateTableFilterTypeCached(table, tableName, cacheCtx, typeNameMapper, relationMap, tables);
   const tableFields = generateTableSelectTypeFieldsCached(table, tableName);
 
@@ -1284,10 +1449,17 @@ const generateSelectFields = <TWithOrder extends boolean>(
       const resolve = resolverFactory?.({ tableName, relationName, relEntry: relEntry as TableNamedRelations, isOne });
 
       if (isOne) {
+        // Honor the relation's declared optionality: `r.one.Target({ ..., optional: false })`
+        // asserts the related row always exists (a NOT NULL foreign key), so the field is
+        // emitted as `Target!`. The default (`optional: true` / omitted) stays nullable.
+        // Column nullability alone is NOT used to infer this — a notNull `from` column does
+        // not guarantee a related row exists when the FK constraint lives on the other side
+        // (e.g. `Users.customer` joins the notNull `Users.id` to `Customers.userId`).
+        const isRequired = (relation as One<any, any>).optional === false;
         rawRelationFields.push([
           relationName,
           {
-            type: relType,
+            type: isRequired ? new GraphQLNonNull(relType) : relType,
             args: {
               where: { type: relSelectData.filters },
             },
@@ -1483,24 +1655,247 @@ export const generateTableTypes = <WithReturning extends boolean>(
   };
 };
 
+/** How NULLs are placed relative to non-NULL values in an ordered column. */
+export type OrderNullsOption = 'first' | 'last';
+
 /**
- * Column name / direction pairs from an `orderBy` argument, highest priority first. Split out
- * of `extractOrderBy` so the same ordering can be rebuilt against a subquery's fields, where
- * there is no `Table` to read columns from.
+ * Column name / direction / nulls triples from an `orderBy` argument, highest priority
+ * first. Split out of `extractOrderBy` so the same ordering can be rebuilt against a
+ * subquery's fields, where there is no `Table` to read columns from. Because there is no
+ * table, ordering through a relation cannot be compiled here — a relation-shaped entry
+ * (an object without a `direction`) is rejected with a clear error instead of being
+ * silently dropped.
  */
-export const orderByEntries = (orderArgs: Record<string, any>): [string, 'asc' | 'desc'][] =>
+export const orderByEntries = (
+  orderArgs: Record<string, any>,
+): [string, 'asc' | 'desc', OrderNullsOption | undefined][] =>
   Object.entries(orderArgs)
     .sort((a, b) => (b[1]?.priority ?? 0) - (a[1]?.priority ?? 0))
     .filter(([, config]) => config)
-    .map(([column, config]) => [column, config.direction]);
+    .map(([column, config]) => {
+      if (typeof config === 'object' && config.direction === undefined) {
+        throw new GraphQLError(`ORDER BY ${column}: ordering through a relation is not supported in this query`);
+      }
+      return [column, config.direction, config.nulls ?? undefined];
+    });
 
+/**
+ * The ORDER BY expression(s) for one ordered value. Without a `nulls` option this is the
+ * plain `asc`/`desc` of the expression. With one:
+ * - PostgreSQL and SQLite (3.30+) support `NULLS FIRST` / `NULLS LAST` natively, so the
+ *   clause is emitted as-is.
+ * - MySQL has no such clause, so it is emulated with an extra `<expr> IS NULL` sort key
+ *   ahead of the expression itself (`IS NULL DESC` puts nulls first, `ASC` puts them
+ *   last). The same GraphQL surface is kept on all three dialects.
+ *
+ * `dialectColumn` is the real table column the expression derives from — used only to
+ * detect the dialect (its `columnType` is prefixed `Pg` / `MySql` / `SQLite`), so `expr`
+ * may be the column itself, a subquery field, or a correlated subquery.
+ */
+export const orderExpressions = (
+  expr: Column | SQL | SQL.Aliased | any,
+  direction: 'asc' | 'desc',
+  nulls: OrderNullsOption | undefined,
+  dialectColumn: Column,
+): SQL[] => {
+  const directed = direction === 'asc' ? asc(expr) : desc(expr);
+
+  if (!nulls) {
+    return [directed];
+  }
+
+  const isMySql = (((dialectColumn as any).columnType as string) ?? '').startsWith('MySql');
+  if (isMySql) {
+    const nullsKey = nulls === 'first' ? desc(sql`(${expr} is null)`) : asc(sql`(${expr} is null)`);
+    return [nullsKey, directed];
+  }
+
+  return [nulls === 'first' ? sql`${directed} nulls first` : sql`${directed} nulls last`];
+};
+
+/**
+ * One ordering term, flattened out of a (possibly relation-nested) `orderBy` argument.
+ * `expression` is what the ORDER BY sorts on — the column itself, or a correlated
+ * subquery reaching it through one or more to-one relations. `column` is the leaf table
+ * column, kept for dialect detection.
+ */
+interface FlatOrderEntry {
+  expression: Column | SQL;
+  column: Column;
+  direction: 'asc' | 'desc';
+  nulls: OrderNullsOption | undefined;
+  priority: number;
+}
+
+/**
+ * The chain of aliased to-one hops a relation-ordered column is reached through. Rendered
+ * as a single correlated scalar subquery: every hop's target sits in the FROM list and
+ * its join condition (plus the relation's own `where`, when it declares one) in the WHERE.
+ */
+interface RelationOrderChain {
+  fromParts: SQL[];
+  conditions: SQL[];
+  /** The aliased target of the last hop — the table the next hop or leaf column resolves from. */
+  table: Table;
+}
+
+/** Extends the chain (or starts one from `parentTable`) with one to-one hop. */
+const extendRelationOrderChain = (
+  parentTable: Table,
+  relationName: string,
+  relEntry: TableNamedRelations,
+  ctx: RelationFilterContext,
+  chain: RelationOrderChain | undefined,
+): RelationOrderChain => {
+  const targetTable = ctx.tables[relEntry.targetTableName];
+  const relation = ((relEntry as any).relation ?? relEntry) as Relation<string>;
+
+  if (!targetTable || !is(relation, One) || !isFilterableRelation(relation)) {
+    throw new GraphQLError(`ORDER BY ${relationName}: Relation cannot be used for ordering`);
+  }
+
+  ctx.aliases ??= { n: 0 };
+  const aliasedTarget = aliasedTable(targetTable, `dgql_ord_${ctx.aliases.n++}`);
+
+  const joinCondition = buildRelationJoinCondition(parentTable, relation, aliasedTarget, relationName);
+  // A relation declared with its own `where` only ever exposes the rows it selects, so the
+  // ordering subquery has to honour it too — mirroring the relation-filter subqueries.
+  const relationWhere = (relation as any).where
+    ? relationsFilterToSQL((relation as any).isReversed ? parentTable : aliasedTarget, (relation as any).where)
+    : undefined;
+
+  return {
+    fromParts: [...(chain?.fromParts ?? []), getTableAsAliasSQL(aliasedTarget)],
+    conditions: [
+      ...(chain?.conditions ?? []),
+      ...(joinCondition ? [joinCondition] : []),
+      ...(relationWhere ? [relationWhere] : []),
+    ],
+    table: aliasedTarget,
+  };
+};
+
+/**
+ * Flattens one level of an `orderBy` argument into `out`. A column key becomes an entry
+ * directly (wrapped in a correlated subquery when reached through a relation chain); a
+ * to-one relation key recurses with the chain extended by that hop. Priorities live in one
+ * global space, so a relation's column can interleave with the parent's own columns.
+ */
+const collectOrderEntries = (
+  table: Table,
+  tableKey: string,
+  orderArgs: Record<string, any>,
+  ctx: RelationFilterContext | undefined,
+  chain: RelationOrderChain | undefined,
+  out: FlatOrderEntry[],
+): void => {
+  const columns = getColumns(table);
+  const relations = ctx?.relationMap[tableKey];
+
+  for (const [key, config] of Object.entries(orderArgs)) {
+    if (config === null || config === undefined) {
+      continue;
+    }
+
+    const column = columns[key];
+    if (column) {
+      out.push({
+        expression: chain
+          ? sql`(select ${column} from ${sql.join(chain.fromParts, sql`, `)} where ${and(...chain.conditions)})`
+          : column,
+        column,
+        direction: config.direction,
+        nulls: config.nulls ?? undefined,
+        priority: config.priority ?? 0,
+      });
+      continue;
+    }
+
+    const relEntry = relations?.[key];
+    if (!relEntry || !ctx) {
+      throw new GraphQLError(`ORDER BY ${key}: Unknown column or relation`);
+    }
+
+    const nextChain = extendRelationOrderChain(chain?.table ?? table, key, relEntry, ctx, chain);
+    collectOrderEntries(nextChain.table, relEntry.targetTableName, config, ctx, nextChain, out);
+  }
+};
+
+/**
+ * Compiles an `orderBy` argument into ORDER BY expressions, highest priority first.
+ *
+ * A key naming one of the table's columns orders by that column. A key naming a to-one
+ * relation takes the target table's own OrderBy input and orders by the related row's
+ * column(s), compiled as a correlated scalar subquery — reusing the aliased-join machinery
+ * the relation filters are built on — so it works identically on all three dialects and
+ * inside the relational query builder's aliased CTEs. Priorities share one global space
+ * across relation boundaries. Each entry may also carry `nulls: first | last`
+ * (see {@link orderExpressions} for how MySQL emulates it).
+ *
+ * `ctx` supplies the tables and relation map that relation ordering needs; callers whose
+ * inputs cannot contain relation keys may omit it.
+ */
 export const extractOrderBy = <TTable extends Table, TArgs extends OrderByArgs<any> = OrderByArgs<TTable>>(
   table: TTable,
   orderArgs: TArgs,
-): SQL[] =>
-  orderByEntries(orderArgs).map(([column, direction]) =>
-    direction === 'asc' ? asc(getColumns(table)[column]!) : desc(getColumns(table)[column]!),
-  );
+  ctx?: RelationFilterContext,
+): SQL[] => {
+  const entries: FlatOrderEntry[] = [];
+  collectOrderEntries(table, ctx?.tableKey ?? '', orderArgs, ctx, undefined, entries);
+
+  return entries
+    .sort((a, b) => b.priority - a.priority)
+    .flatMap((entry) => orderExpressions(entry.expression, entry.direction, entry.nulls, entry.column));
+};
+
+/**
+ * Escape character pinned via `ESCAPE` on every generated safe-LIKE predicate. Bound as a
+ * query parameter (never spliced into the SQL text), so no dialect-specific string-literal
+ * escaping rules apply to it.
+ */
+const LIKE_ESCAPE_CHAR = '\\';
+
+/**
+ * Escapes the LIKE wildcards (`%`, `_`) and the escape character itself (`\`) in a literal
+ * search term, so the term only ever matches literally inside a LIKE pattern.
+ */
+const escapeLikeValue = (value: string): string => value.replace(/[\\%_]/g, (char) => `\\${char}`);
+
+/**
+ * The injection-safe string operators: the caller passes a literal search term, the library
+ * builds the LIKE pattern with the term's `%` / `_` / `\` escaped and the `ESCAPE` clause pinned.
+ * The `i`-prefixed variants match case-insensitively.
+ */
+const safeLikeOps: Record<string, { buildPattern: (value: string) => string; insensitive: boolean }> = {
+  startsWith: { buildPattern: (value) => `${escapeLikeValue(value)}%`, insensitive: false },
+  endsWith: { buildPattern: (value) => `%${escapeLikeValue(value)}`, insensitive: false },
+  contains: { buildPattern: (value) => `%${escapeLikeValue(value)}%`, insensitive: false },
+  iStartsWith: { buildPattern: (value) => `${escapeLikeValue(value)}%`, insensitive: true },
+  iEndsWith: { buildPattern: (value) => `%${escapeLikeValue(value)}`, insensitive: true },
+  iContains: { buildPattern: (value) => `%${escapeLikeValue(value)}%`, insensitive: true },
+};
+
+/**
+ * `LIKE <pattern> ESCAPE '\'` for a safe string operator. Case-insensitive variants use
+ * Postgres's native `ILIKE`; MySQL and SQLite have no `ILIKE`, so they compare `lower()`
+ * on both sides instead (mirroring how the raw `ilike` operator is Postgres-only).
+ */
+const safeLikeCondition = (column: Column, pattern: string, insensitive: boolean): SQL => {
+  if (!insensitive) {
+    return sql`${column} like ${pattern} escape ${LIKE_ESCAPE_CHAR}`;
+  }
+
+  const isPg = (((column as any).columnType ?? '') as string).startsWith('Pg');
+  return isPg
+    ? sql`${column} ilike ${pattern} escape ${LIKE_ESCAPE_CHAR}`
+    : sql`lower(${column}) like ${pattern.toLowerCase()} escape ${LIKE_ESCAPE_CHAR}`;
+};
+
+/**
+ * Whether the column stores JSON — its `contains` operator is structural containment,
+ * not the safe substring operator string columns get.
+ */
+const isJsonColumn = (column: Column): boolean => (((column as any).columnType ?? '') as string).includes('Json');
 
 /**
  * Structural JSON containment for the `contains` operator on json/jsonb columns.
@@ -1531,29 +1926,11 @@ export const extractFiltersColumn = <TColumn extends Column>(
   columnName: string,
   operators: FilterColumnOperators<TColumn>,
 ): SQL | undefined => {
-  if (!operators.OR?.length) {
-    delete operators.OR;
-  }
+  // Boolean branches compose with sibling operators: siblings and the AND list are ANDed
+  // together, NOT negates its whole branch, and the OR group is ANDed with the rest.
+  const { OR, AND, NOT, ...restOperators } = operators;
 
-  const entries = Object.entries(operators as FilterColumnOperatorsCore<TColumn>);
-
-  if (operators.OR) {
-    if (entries.length > 1) {
-      throw new GraphQLError(`WHERE ${columnName}: Cannot specify both fields and 'OR' in column operators!`);
-    }
-
-    const variants = [] as SQL[];
-
-    for (const variant of operators.OR) {
-      const extracted = extractFiltersColumn(column, columnName, variant);
-
-      if (extracted) {
-        variants.push(extracted);
-      }
-    }
-
-    return variants.length ? (variants.length > 1 ? or(...variants) : variants[0]) : undefined;
-  }
+  const entries = Object.entries(restOperators as FilterColumnOperatorsCore<TColumn>);
 
   const singleValueOps: Record<string, (...args: any[]) => SQL> = { eq, ne, gt, gte, lt, lte };
   const stringValueOps: Record<string, (...args: any[]) => SQL> = { like, notLike, ilike, notIlike };
@@ -1576,6 +1953,13 @@ export const extractFiltersColumn = <TColumn extends Column>(
       variants.push(singleValueOps[operatorName]!(column, singleValue));
     } else if (operatorName in stringValueOps) {
       variants.push(stringValueOps[operatorName]!(column, operatorValue as string));
+    } else if (operatorName === 'contains' && isJsonColumn(column)) {
+      // `contains` is JSON containment on json/jsonb columns; on string columns it is the
+      // safe substring operator handled by safeLikeOps below.
+      variants.push(jsonContains(column, columnName, operatorValue));
+    } else if (operatorName in safeLikeOps) {
+      const { buildPattern, insensitive } = safeLikeOps[operatorName]!;
+      variants.push(safeLikeCondition(column, buildPattern(operatorValue as string), insensitive));
     } else if (operatorName in arrayValueOps) {
       if (!(operatorValue as any[]).length) {
         throw new GraphQLError(`WHERE ${columnName}: Unable to use operator ${operatorName} with an empty array!`);
@@ -1592,10 +1976,44 @@ export const extractFiltersColumn = <TColumn extends Column>(
       variants.push(arrayMembershipOps[operatorName]!(column, operatorValue as any[]));
     } else if (operatorName === 'isEmpty') {
       variants.push(sql`cardinality(${column}) = 0`);
-    } else if (operatorName === 'contains') {
-      variants.push(jsonContains(column, columnName, operatorValue));
     } else if (operatorName in nullableOps) {
       variants.push(nullableOps[operatorName]!(column));
+    } else {
+      // An unrecognized operator must throw rather than be dropped: when the generated
+      // schema is stitched/merged with another schema, foreign operators (e.g. `equals`,
+      // `contains`, `mode`) can pass input validation, and silently dropping them could
+      // turn a constrained where into an unbounded one.
+      throw new GraphQLError(`WHERE ${columnName}: Unknown operator: ${operatorName}`);
+    }
+  }
+
+  if (AND?.length) {
+    for (const variant of AND) {
+      const extracted = extractFiltersColumn(column, columnName, variant);
+      if (extracted) {
+        variants.push(extracted);
+      }
+    }
+  }
+
+  if (NOT) {
+    const extracted = extractFiltersColumn(column, columnName, NOT);
+    if (extracted) {
+      variants.push(not(extracted));
+    }
+  }
+
+  if (OR?.length) {
+    const orVariants = [] as SQL[];
+    for (const variant of OR) {
+      const extracted = extractFiltersColumn(column, columnName, variant);
+      if (extracted) {
+        orVariants.push(extracted);
+      }
+    }
+
+    if (orVariants.length) {
+      variants.push(orVariants.length > 1 ? or(...orVariants)! : orVariants[0]!);
     }
   }
 
@@ -1673,7 +2091,90 @@ const buildRelationJoinCondition = (
 };
 
 /**
+ * Resolves one side of a `.through()` junction pair to the corresponding column on the
+ * aliased junction table. Drizzle stores the junction column as a RelationsBuilderColumn
+ * (`_.column` is the Column, `_.key` its property name), so look up by property name first
+ * and fall back to matching by SQL name.
+ */
+const resolveJunctionColumn = (aliasedThrough: Table, junctionRef: any, relationName: string): Column => {
+  const throughColumns = getColumns(aliasedThrough);
+
+  const key: string | undefined = junctionRef?._?.key;
+  const byKey = key ? throughColumns[key] : undefined;
+  if (byKey) {
+    return byKey;
+  }
+
+  const columnName: string | undefined = junctionRef?._?.column?.name;
+  const byName = columnName ? Object.values(throughColumns).find((c) => c.name === columnName) : undefined;
+  if (!byName) {
+    throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+  }
+
+  return byName;
+};
+
+/**
+ * Join conditions for a `.through()` (many-to-many) relation, split into the two legs of the
+ * junction: `correlation` ties the parent row to the aliased junction table on the relation's
+ * source keys, `junctionJoin` ties the aliased junction table to the aliased target on the
+ * target keys. Column matching mirrors {@link buildRelationJoinCondition} — by SQL name on the
+ * parent/target so aliased proxies work — while junction columns come from the relation's own
+ * `through` metadata.
+ */
+const buildThroughJoinConditions = (
+  parentTable: Table,
+  relation: Relation<string>,
+  aliasedThrough: Table,
+  aliasedTarget: Table,
+  relationName: string,
+): { correlation: SQL | undefined; junctionJoin: SQL | undefined } => {
+  const sourceColumns = (relation as any).sourceColumns as Column[] | undefined;
+  const targetColumns = (relation as any).targetColumns as Column[] | undefined;
+  const through = (relation as any).through as { source: any[]; target: any[] } | undefined;
+
+  if (
+    !sourceColumns?.length ||
+    !targetColumns?.length ||
+    through?.source.length !== sourceColumns.length ||
+    through.target.length !== targetColumns.length
+  ) {
+    throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+  }
+
+  const parentColumns = Object.values(getColumns(parentTable));
+  const targetTableColumns = Object.values(getColumns(aliasedTarget));
+
+  const correlationConditions: SQL[] = [];
+  for (let i = 0; i < sourceColumns.length; i++) {
+    const localColumn = parentColumns.find((c) => c.name === sourceColumns[i]!.name);
+    if (!localColumn) {
+      throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+    }
+    correlationConditions.push(eq(localColumn, resolveJunctionColumn(aliasedThrough, through.source[i], relationName)));
+  }
+
+  const junctionJoinConditions: SQL[] = [];
+  for (let i = 0; i < targetColumns.length; i++) {
+    const foreignColumn = targetTableColumns.find((c) => c.name === targetColumns[i]!.name);
+    if (!foreignColumn) {
+      throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+    }
+    junctionJoinConditions.push(
+      eq(resolveJunctionColumn(aliasedThrough, through.target[i], relationName), foreignColumn),
+    );
+  }
+
+  return {
+    correlation: correlationConditions.length > 1 ? and(...correlationConditions) : correlationConditions[0],
+    junctionJoin: junctionJoinConditions.length > 1 ? and(...junctionJoinConditions) : junctionJoinConditions[0],
+  };
+};
+
+/**
  * Builds one `[NOT] EXISTS (SELECT 1 FROM target alias WHERE …)` for a relation filter.
+ * A `.through()` (many-to-many) relation adds an `INNER JOIN` on the aliased junction table
+ * inside the subquery, correlated to the parent on the relation's source keys.
  *
  * `some` / the to-one shorthand match when a related row satisfies the inner filters, `none`
  * when none does, and `every` is expressed as "no related row fails the inner filters".
@@ -1692,7 +2193,7 @@ const buildRelationExists = (
   const targetTable = ctx.tables[targetTableName];
   const relation = ((relEntry as any).relation ?? relEntry) as Relation<string>;
 
-  if (!targetTable || !isFilterableRelation(relation)) {
+  if (!targetTable) {
     throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
   }
 
@@ -1700,7 +2201,28 @@ const buildRelationExists = (
   const aliases = ctx.aliases;
   const aliasedTarget = aliasedTable(targetTable, `dgql_rel_${aliases.n++}`);
 
-  const joinCondition = buildRelationJoinCondition(parentTable, relation, aliasedTarget, relationName);
+  // A `.through()` relation reaches the target via a junction table: the subquery joins the
+  // aliased junction to the aliased target and correlates the junction to the parent, so
+  // `some` / `none` / `every` compile exactly like the direct case with a longer FROM clause.
+  const throughTable = (relation as any).throughTable as Table | undefined;
+  let fromClause: SQL;
+  let joinCondition: SQL | undefined;
+  if (throughTable) {
+    const aliasedThrough = aliasedTable(throughTable, `dgql_rel_${aliases.n++}`);
+    const { correlation, junctionJoin } = buildThroughJoinConditions(
+      parentTable,
+      relation,
+      aliasedThrough,
+      aliasedTarget,
+      relationName,
+    );
+    fromClause = sql`${getTableAsAliasSQL(aliasedTarget)} inner join ${getTableAsAliasSQL(aliasedThrough)} on ${junctionJoin}`;
+    joinCondition = correlation;
+  } else {
+    fromClause = getTableAsAliasSQL(aliasedTarget);
+    joinCondition = buildRelationJoinCondition(parentTable, relation, aliasedTarget, relationName);
+  }
+
   // A relation declared with its own `where` only ever exposes the rows it selects, so the
   // subquery has to honour it too — otherwise a filter could match a row the relation hides.
   const relationWhere = (relation as any).where
@@ -1717,14 +2239,14 @@ const buildRelationExists = (
       return undefined;
     }
 
-    return sql`not exists (select 1 from ${getTableAsAliasSQL(aliasedTarget)} where ${and(joinCondition, relationWhere, not(inner))})`;
+    return sql`not exists (select 1 from ${fromClause} where ${and(joinCondition, relationWhere, not(inner))})`;
   }
 
   const condition = and(joinCondition, relationWhere, inner);
 
   return mode === 'none'
-    ? sql`not exists (select 1 from ${getTableAsAliasSQL(aliasedTarget)} where ${condition})`
-    : sql`exists (select 1 from ${getTableAsAliasSQL(aliasedTarget)} where ${condition})`;
+    ? sql`not exists (select 1 from ${fromClause} where ${condition})`
+    : sql`exists (select 1 from ${fromClause} where ${condition})`;
 };
 
 /**
@@ -1744,14 +2266,22 @@ const extractRelationFilter = (
     return buildRelationExists(parentTable, relationName, relEntry, value, 'some', ctx);
   }
 
+  const relationMatchModes: readonly RelationMatchMode[] = ['some', 'none', 'every'];
+
   const variants: SQL[] = [];
-  for (const mode of ['some', 'none', 'every'] as const) {
-    const inner = value[mode];
+  for (const [mode, inner] of Object.entries(value)) {
     if (inner === undefined || inner === null) {
       continue;
     }
 
-    const extracted = buildRelationExists(parentTable, relationName, relEntry, inner, mode, ctx);
+    // Unknown keys inside the some/none/every wrapper must throw rather than be dropped —
+    // a stitched schema can contribute foreign keys here too, and dropping them all would
+    // silently turn the relation filter into no filter at all.
+    if (!relationMatchModes.includes(mode as RelationMatchMode)) {
+      throw new GraphQLError(`WHERE ${relationName}: Unknown relation filter key: ${mode}`);
+    }
+
+    const extracted = buildRelationExists(parentTable, relationName, relEntry, inner, mode as RelationMatchMode, ctx);
     if (extracted) {
       variants.push(extracted);
     }
@@ -1766,31 +2296,13 @@ export const extractFilters = <TTable extends Table>(
   filters: Filters<TTable>,
   relationCtx?: RelationFilterContext,
 ): SQL | undefined => {
-  if (!filters.OR?.length) {
-    delete filters.OR;
-  }
+  // Boolean branches compose with sibling fields: siblings and the AND list are ANDed
+  // together, NOT negates its whole branch, and the OR group is ANDed with the rest —
+  // `{ a: …, OR: [{ b: … }, { c: … }] }` reads as `a AND (b OR c)`. Every branch is the
+  // filter type itself, so the tree nests arbitrarily.
+  const { OR, AND, NOT, ...fieldFilters } = filters;
 
-  const entries = Object.entries(filters as FiltersCore<TTable>);
-  if (!entries.length) {
-    return;
-  }
-
-  if (filters.OR) {
-    if (entries.length > 1) {
-      throw new GraphQLError(`WHERE ${tableName}: Cannot specify both fields and 'OR' in table filters!`);
-    }
-
-    const variants = [] as SQL[];
-
-    for (const variant of filters.OR) {
-      const extracted = extractFilters(table, tableName, variant, relationCtx);
-      if (extracted) {
-        variants.push(extracted);
-      }
-    }
-
-    return variants.length ? (variants.length > 1 ? or(...variants) : variants[0]) : undefined;
-  }
+  const entries = Object.entries(fieldFilters as FiltersCore<TTable>);
 
   const columns = getColumns(table);
   const relations = relationCtx?.relationMap[relationCtx.tableKey];
@@ -1802,14 +2314,51 @@ export const extractFilters = <TTable extends Table>(
     }
 
     const column = columns[fieldName];
+
+    // A key that is neither a column nor a filterable relation must throw rather than be
+    // dropped: when the generated schema is stitched/merged with another schema, same-named
+    // inputs can contribute foreign keys that pass input validation, and a where that loses
+    // all of its keys silently becomes an unbounded select/update/delete.
+    if (!column && !(relations?.[fieldName] && relationCtx)) {
+      throw new GraphQLError(`WHERE ${tableName}: Unknown filter key: ${fieldName}`);
+    }
+
     const extracted = column
       ? extractFiltersColumn(column, fieldName, operators)
-      : relations?.[fieldName] && relationCtx
-        ? extractRelationFilter(table, fieldName, relations[fieldName]!, operators as any, relationCtx)
-        : undefined;
+      : extractRelationFilter(table, fieldName, relations![fieldName]!, operators as any, relationCtx!);
 
     if (extracted) {
       variants.push(extracted);
+    }
+  }
+
+  if (AND?.length) {
+    for (const variant of AND) {
+      const extracted = extractFilters(table, tableName, variant, relationCtx);
+      if (extracted) {
+        variants.push(extracted);
+      }
+    }
+  }
+
+  if (NOT) {
+    const extracted = extractFilters(table, tableName, NOT, relationCtx);
+    if (extracted) {
+      variants.push(not(extracted));
+    }
+  }
+
+  if (OR?.length) {
+    const orVariants = [] as SQL[];
+    for (const variant of OR) {
+      const extracted = extractFilters(table, tableName, variant, relationCtx);
+      if (extracted) {
+        orVariants.push(extracted);
+      }
+    }
+
+    if (orVariants.length) {
+      variants.push(orVariants.length > 1 ? or(...orVariants)! : orVariants[0]!);
     }
   }
 
@@ -1891,7 +2440,8 @@ const extractRelationsParamsInner = (
     const hasPagination = offset != null || limit != null;
     const pkNames = targetPkNames ?? [];
     thisRecord.orderBy = relationArgs?.orderBy
-      ? (aliasedTable: Table) => extractOrderBy(aliasedTable, relationArgs.orderBy!)
+      ? (aliasedTable: Table) =>
+          extractOrderBy(aliasedTable, relationArgs.orderBy!, relationFilterCtx(filterCtx, targetTableName))
       : hasPagination && pkNames.length
         ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
         : undefined;
@@ -2382,7 +2932,9 @@ export const selectDistinctKeys = async (params: {
   // Both orderings must agree, so build each from the same entries — once against the table
   // (inside the window) and once against the subquery's fields (for the outer row order).
   const windowOrder = [
-    ...orderEntries.map(([column, direction]) => (direction === 'asc' ? asc(cols[column]!) : desc(cols[column]!))),
+    ...orderEntries.flatMap(([column, direction, nulls]) =>
+      orderExpressions(cols[column]!, direction, nulls, cols[column]!),
+    ),
     ...primaryKeyOrderExprs(table, pkNames),
   ];
 
@@ -2398,7 +2950,9 @@ export const selectDistinctKeys = async (params: {
     .as('__dgql_distinct');
 
   const outerOrder = [
-    ...orderEntries.map(([column, direction]) => (direction === 'asc' ? asc(sub[column]) : desc(sub[column]))),
+    ...orderEntries.flatMap(([column, direction, nulls]) =>
+      orderExpressions(sub[column], direction, nulls, cols[column]!),
+    ),
     ...pkNames.filter((name) => sub[name]).map((name) => asc(sub[name])),
   ];
 
@@ -2578,7 +3132,9 @@ export const computeResolverFieldNames = (
   upsertArrayFieldName: string;
   upsertSingleFieldName: string;
   updateFieldName: string;
+  updateSingleFieldName: string;
   deleteFieldName: string;
+  deleteSingleFieldName: string;
 } => {
   const mapped = typeNameMapper?.(tableName);
   const typeName = mapped ? capitalize(mapped.singular) : capitalize(tableName);
@@ -2597,6 +3153,13 @@ export const computeResolverFieldNames = (
     : `${upsertPrefix}${capitalize(tableName)}${suffixes.single}`;
   const updateFieldName = `${prefixes.update}${mapped ? capitalize(mapped.singular) : capitalize(tableName)}`;
   const deleteFieldName = `${prefixes.delete}${mapped ? capitalize(mapped.singular) : capitalize(tableName)}`;
+  // The plural update/delete mutations already use the singular noun when a mapper is
+  // present, so — unlike create — the Single variants can't rely on singular vs plural to
+  // stay distinct. They always carry a suffix, falling back to 'Single' when the configured
+  // suffix is empty (a mapper config may set it to '' for the query side).
+  const writeSingleSuffix = suffixes.single === '' ? 'Single' : suffixes.single;
+  const updateSingleFieldName = `${updateFieldName}${writeSingleSuffix}`;
+  const deleteSingleFieldName = `${deleteFieldName}${writeSingleSuffix}`;
   return {
     typeName,
     listFieldName,
@@ -2608,8 +3171,47 @@ export const computeResolverFieldNames = (
     upsertArrayFieldName,
     upsertSingleFieldName,
     updateFieldName,
+    updateSingleFieldName,
     deleteFieldName,
+    deleteSingleFieldName,
   };
+};
+
+/**
+ * Extracts a `where` argument that a mutation refuses to run without: missing, or present
+ * but matching every row (e.g. `where: {}` or filters that all collapse to nothing), both
+ * throw instead of becoming an unbounded write. Used by the `Single` write variants always
+ * and by the plural update/delete mutations when `features.requireWhere` is on.
+ */
+export const extractRequiredFilters = <TTable extends Table>(
+  table: TTable,
+  tableName: string,
+  where: Filters<TTable> | undefined,
+  fieldName: string,
+  relationCtx?: RelationFilterContext,
+): SQL => {
+  const filters = where ? extractFilters(table, tableName, where, relationCtx) : undefined;
+  if (!filters) {
+    throw new GraphQLError(`${fieldName} requires a 'where' argument with at least one filter!`);
+  }
+  return filters;
+};
+
+/**
+ * Guard for the `Single` write variants: throws before anything is written when `where`
+ * matches more than one row, so a multi-row update/delete never executes. Probed with a
+ * `LIMIT 2` select rather than a count so the check stays cheap on large matches.
+ */
+export const assertSingleMatch = async (
+  executor: any,
+  table: Table,
+  filters: SQL,
+  fieldName: string,
+): Promise<void> => {
+  const matched = await executor.select({ found: sql`1` }).from(table).where(filters).limit(2);
+  if (matched.length > 1) {
+    throw new GraphQLError(`${fieldName}: 'where' matched more than one row — nothing was written!`);
+  }
 };
 
 /** GraphQL argument map for a list/array select field. */
@@ -2717,11 +3319,11 @@ export const runRelationalSelect = async (opts: {
     // directly so column refs match the CTE alias.
     orderBy: distinctKeys
       ? (aliasedTable: Table) => [
-          ...(orderBy ? extractOrderBy(aliasedTable, orderBy) : []),
+          ...(orderBy ? extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName)) : []),
           ...primaryKeyOrderExprs(aliasedTable, pkNames!),
         ]
       : orderBy
-        ? (aliasedTable: Table) => extractOrderBy(aliasedTable, orderBy)
+        ? (aliasedTable: Table) => extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName))
         : needsDefaultOrder && pkNames?.length
           ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
           : undefined,

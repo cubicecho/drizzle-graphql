@@ -29,6 +29,7 @@ export type GeneratorFeatures = {
   update: boolean;
   delete: boolean;
   upsert: boolean;
+  requireWhere: boolean;
 };
 
 /**
@@ -256,10 +257,18 @@ export type FilterColumnOperatorsCore<TColumn extends Column, TColType = GetColu
   notLike: string;
   ilike: string;
   notIlike: string;
+  startsWith: string;
+  endsWith: string;
+  /**
+   * String columns: safe substring match (`%`, `_` and `\` matched literally).
+   * JSON columns: structural containment (Postgres `@>` / MySQL JSON_CONTAINS).
+   */
+  contains: string | TColType;
+  iStartsWith: string;
+  iEndsWith: string;
+  iContains: string;
   inArray: Array<TColType>;
   notInArray: Array<TColType>;
-  /** JSON columns only: structural containment (Postgres `@>` / MySQL JSON_CONTAINS). */
-  contains: TColType;
   /** Array columns only: the array contains this element. */
   has: TColType extends Array<infer TElement> ? TElement : never;
   /** Array columns only: the array overlaps these elements (`&&`). */
@@ -276,7 +285,9 @@ export type FilterColumnOperators<
   TColumn extends Column,
   TOperators extends FilterColumnOperatorsCore<TColumn> = FilterColumnOperatorsCore<TColumn>,
 > = TOperators & {
-  OR?: TOperators[];
+  OR?: FilterColumnOperators<TColumn, TOperators>[];
+  AND?: FilterColumnOperators<TColumn, TOperators>[];
+  NOT?: FilterColumnOperators<TColumn, TOperators>;
 };
 
 export type FiltersCore<TTable extends Table> = Partial<{
@@ -284,13 +295,20 @@ export type FiltersCore<TTable extends Table> = Partial<{
 }>;
 
 export type Filters<TTable extends Table, TFilterType = FiltersCore<TTable>> = TFilterType & {
-  OR?: TFilterType[];
+  OR?: Filters<TTable, TFilterType>[];
+  AND?: Filters<TTable, TFilterType>[];
+  NOT?: Filters<TTable, TFilterType>;
 };
 
 export type OrderByArgs<TTable extends Table> = {
   [Key in keyof TTable['_']['columns']]?: {
     direction: 'asc' | 'desc';
     priority: number;
+    /**
+     * Where NULL values sort. Native NULLS FIRST/LAST on PostgreSQL and SQLite;
+     * emulated with an extra `IS NULL` sort key on MySQL.
+     */
+    nulls?: 'first' | 'last';
   };
 };
 

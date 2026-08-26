@@ -31,22 +31,6 @@ describe.sequential('Filter extraction errors', () => {
     expect(res.errors![0]!.message).toMatch(/Unable to use operator notInArray with an empty array/);
   });
 
-  it('column-level OR mixed with other operators returns a GraphQL error', async () => {
-    const res = await ctx.gql.queryGql(`{
-      users(where: { id: { eq: 1, OR: [{ eq: 2 }] } }) { id }
-    }`);
-    expect(res.errors).toBeDefined();
-    expect(res.errors![0]!.message).toMatch(/Cannot specify both fields and 'OR' in column operators/);
-  });
-
-  it('table-level OR mixed with column filter returns a GraphQL error', async () => {
-    const res = await ctx.gql.queryGql(`{
-      users(where: { id: { eq: 1 }, OR: [{ id: { eq: 2 } }] }) { id }
-    }`);
-    expect(res.errors).toBeDefined();
-    expect(res.errors![0]!.message).toMatch(/Cannot specify both fields and 'OR' in table filters/);
-  });
-
   it('inArray on a relation field with empty array returns a GraphQL error', async () => {
     const res = await ctx.gql.queryGql(`{
       users { id posts(where: { id: { inArray: [] } }) { id } }
