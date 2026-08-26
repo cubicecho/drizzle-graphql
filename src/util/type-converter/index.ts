@@ -18,7 +18,14 @@ import {
   GraphQLString,
 } from 'graphql';
 import { capitalize } from '../case-ops/index.ts';
-import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQLUUID } from '../scalars/index.ts';
+import {
+  GraphQLBigIntString,
+  GraphQLDate,
+  GraphQLDateTime,
+  GraphQLDecimalString,
+  GraphQLJSON,
+  GraphQLUUID,
+} from '../scalars/index.ts';
 import type { ColumnTypeMapper, ConvertedColumn, ScalarOverride, ScalarOverridesConfig } from './types.ts';
 
 const allowedNameChars = /^[a-zA-Z0-9_]+$/;
@@ -69,7 +76,35 @@ const columnToGraphQLCore = (
   tableName: string,
   isInput: boolean,
 ): ConvertedColumn<boolean> => {
-  const { type: baseType } = extractExtendedColumnType(column);
+  // drizzle-orm v1 models `.array()` columns as their base column plus a `dimensions` count
+  // (e.g. text().array() keeps columnType=PgText with dimensions=1), so the element type is
+  // whatever the base column maps to. PgVector/PgGeometry report dimensions of 0 and keep
+  // their dedicated handling below.
+  const dimensions = (column as any).dimensions as number | undefined;
+  if (dimensions !== undefined && dimensions > 0) {
+    const inner = columnBaseToGraphQLCore(column, columnName, tableName, isInput);
+    const innerDesc = inner.description ?? (inner.type as GraphQLScalarType).name;
+
+    let type: ConvertedColumn<boolean>['type'] = inner.type;
+    let description = innerDesc;
+    for (let i = 0; i < dimensions; i++) {
+      type = new GraphQLList(new GraphQLNonNull(type as GraphQLScalarType));
+      description = `Array<${description}>`;
+    }
+
+    return { type, description };
+  }
+
+  return columnBaseToGraphQLCore(column, columnName, tableName, isInput);
+};
+
+const columnBaseToGraphQLCore = (
+  column: Column,
+  columnName: string,
+  tableName: string,
+  isInput: boolean,
+): ConvertedColumn<boolean> => {
+  const { type: baseType, constraint } = extractExtendedColumnType(column);
   switch (baseType) {
     case 'boolean':
       return { type: GraphQLBoolean, description: 'Boolean' };
@@ -93,6 +128,14 @@ const columnToGraphQLCore = (
         return { type: generateEnumCached(column, columnName, tableName) };
       }
 
+      // numeric/decimal columns (pg numeric, mysql decimal, sqlite numeric) transport as
+      // strings, but they are numbers — give them the named Decimal scalar so the SDL says
+      // so and non-numeric input is rejected. Array-typed numeric columns (dimensions > 0)
+      // keep their existing mapping.
+      if (constraint === 'numeric' && !(column as any).dimensions) {
+        return { type: GraphQLDecimalString, description: 'Decimal' };
+      }
+
       if (column instanceof PgTimestamp || column instanceof PgTimestampString) {
         return { type: GraphQLDateTime, description: 'DateTime' };
       }
@@ -109,18 +152,6 @@ const columnToGraphQLCore = (
     case 'bigint':
       return { type: GraphQLBigIntString, description: 'BigInt' };
     case 'number': {
-      // integer().array() columns keep columnType=PgInteger but gain a `dimensions` property.
-      // drizzle-orm's extractExtendedColumnType still returns 'number' for them, so we
-      // detect the array wrapper here and recurse with a synthetic base-int scalar.
-      const dims = (column as any).dimensions as number | undefined;
-      if (dims !== undefined && dims > 0) {
-        const baseDesc = is(column, PgInteger) || is(column, PgSerial) ? 'Integer' : 'Float';
-        const baseType = baseDesc === 'Integer' ? GraphQLInt : GraphQLFloat;
-        return {
-          type: new GraphQLList(new GraphQLNonNull(baseType)),
-          description: `Array<${baseDesc}>`,
-        };
-      }
       return is(column, PgInteger) ||
         is(column, PgSerial) ||
         is(column, MySqlInt) ||

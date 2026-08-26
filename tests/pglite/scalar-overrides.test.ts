@@ -179,14 +179,17 @@ describe.sequential('schema shape', () => {
     expect(String(productFilters.getFields()['priceCents']!.type)).toBe('MoneyFilter');
   });
 
-  it('keeps string-pattern operators when the underlying column is string-typed', () => {
-    // balance is a numeric column, which Postgres drivers transport as a string.
+  it('an override to a library scalar shares the built-in filter, string ops and all', () => {
+    // balance is a numeric column overridden to the exposed BigInt scalar, so it uses the
+    // same BigIntFilter a natural bigint column gets — which omits like/ilike (pattern
+    // matching is invalid SQL on numeric columns, and the shared type's shape must not
+    // depend on which column built it first).
     const filter = gqlSchema.getType('BigIntFilter') as GraphQLInputObjectType;
     expect(filter).toBeDefined();
     const fields = filter.getFields();
     expect(String(fields['eq']!.type)).toBe('BigInt');
-    expect(fields['like']).toBeDefined();
-    expect(fields['ilike']).toBeDefined();
+    expect(fields['like']).toBeUndefined();
+    expect(fields['ilike']).toBeUndefined();
   });
 
   it('overrides aggregate min/max fields', () => {
@@ -278,7 +281,8 @@ describe.sequential('rebuilds', () => {
     const rebuilt = buildSchema(db);
     const products = rebuilt.entities.types['Products'] as GraphQLObjectType;
     expect(String(products.getFields()['priceCents']!.type)).toBe('Int!');
-    expect(String(products.getFields()['balance']!.type)).toBe('String');
+    // Built-in detection maps numeric columns to the named Decimal scalar.
+    expect(String(products.getFields()['balance']!.type)).toBe('Decimal');
     expect(rebuilt.schema.getType('MoneyFilter')).toBeUndefined();
 
     const res = await graphql({

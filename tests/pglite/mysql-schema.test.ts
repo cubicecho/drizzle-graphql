@@ -3,8 +3,11 @@
 // It calls generateSchemaData (generateMySQL) directly with a minimal mock db whose resolver
 // closures are never invoked — only the schema structure is inspected.
 
+import { sql } from 'drizzle-orm';
+import { MySqlDialect } from 'drizzle-orm/mysql-core';
 import { GraphQLNonNull, GraphQLObjectType } from 'graphql';
 import { describe, expect, it } from 'vitest';
+import { extractOrderBy } from '@/index';
 import { generateMySQL } from '@/util/builders';
 import * as schema from '../schema/mysql';
 
@@ -126,6 +129,16 @@ describe('MySQL mutations are returnless', () => {
     expect(entities.mutations['deletePosts'].type).toBe(entities.types['MutationReturn']);
   });
 
+  it('single update/delete variants return MutationReturn and require where', () => {
+    expect(entities.mutations['updateUsersSingle'].type).toBe(entities.types['MutationReturn']);
+    expect(entities.mutations['deleteUsersSingle'].type).toBe(entities.types['MutationReturn']);
+    expect(entities.mutations['updateUsersSingle'].args['where'].type).toBeInstanceOf(GraphQLNonNull);
+    expect(entities.mutations['deleteUsersSingle'].args['where'].type).toBeInstanceOf(GraphQLNonNull);
+    // Plural where stays nullable by default.
+    expect(entities.mutations['updateUsers'].args['where'].type).not.toBeInstanceOf(GraphQLNonNull);
+    expect(entities.mutations['deleteUsers'].args['where'].type).not.toBeInstanceOf(GraphQLNonNull);
+  });
+
   it('generates no upsert mutations unless the feature is on', () => {
     expect(entities.mutations['upsertUsers']).toBeUndefined();
     expect(entities.types['UsersOnConflict']).toBeUndefined();
@@ -143,16 +156,20 @@ describe('MySQL mutations are returnless', () => {
     expect(upsertEntities.mutations['upsertPosts']).toBeDefined();
   });
 
-  it('all 6 mutations exist per table (array+single insert, update, delete)', () => {
+  it('all mutations exist per table (array+single insert, update, delete, and their single variants)', () => {
     const mutationKeys = Object.keys(entities.mutations);
     // Users
     expect(mutationKeys).toContain('createUsers');
     expect(mutationKeys).toContain('createUsersSingle');
     expect(mutationKeys).toContain('updateUsers');
+    expect(mutationKeys).toContain('updateUsersSingle');
     expect(mutationKeys).toContain('deleteUsers');
+    expect(mutationKeys).toContain('deleteUsersSingle');
     // Posts
     expect(mutationKeys).toContain('createPosts');
     expect(mutationKeys).toContain('deletePosts');
+    expect(mutationKeys).toContain('updatePostsSingle');
+    expect(mutationKeys).toContain('deletePostsSingle');
   });
 });
 
@@ -231,6 +248,46 @@ describe('MySQL generated types and inputs', () => {
     expect(entities.inputs['UsersOrderBy']).toBeDefined();
     expect(entities.inputs['CreateUsersInput']).toBeDefined();
     expect(entities.inputs['UpdateUsersInput']).toBeDefined();
+  });
+
+  it('OrderBy inputs expose to-one relation fields and the nulls option', () => {
+    const userOrderFields = entities.inputs['UsersOrderBy'].getFields();
+    // To-one relation gets the target's own OrderBy input; the to-many `posts` does not.
+    expect(userOrderFields['customer']).toBeDefined();
+    expect(userOrderFields['customer'].type.toString()).toBe('CustomersOrderBy');
+    expect(userOrderFields['posts']).toBeUndefined();
+
+    // MySQL keeps the same surface as the other dialects — `nulls` is emulated, not omitted.
+    const innerOrderFields = userOrderFields['email'].type.getFields();
+    expect(innerOrderFields['nulls']).toBeDefined();
+    expect(innerOrderFields['nulls'].type.toString()).toBe('OrderNulls');
+  });
+});
+
+// ── nulls emulation ───────────────────────────────────────────────────────────
+
+describe('MySQL nulls first/last emulation', () => {
+  const dialect = new MySqlDialect();
+  const render = (exprs: any[]) => dialect.sqlToQuery(sql.join(exprs, sql`, `)).sql.toLowerCase();
+
+  it('compiles nulls: first to an IS NULL sort key instead of NULLS FIRST', () => {
+    const exprs = extractOrderBy(schema.Users, { email: { direction: 'asc', priority: 1, nulls: 'first' } });
+    expect(exprs).toHaveLength(2);
+
+    const rendered = render(exprs);
+    expect(rendered).toContain('is null');
+    expect(rendered).not.toContain('nulls first');
+    // Nulls-first means the IS NULL key sorts descending (true before false).
+    expect(rendered).toMatch(/is null\) desc/);
+  });
+
+  it('compiles nulls: last to an ascending IS NULL sort key', () => {
+    const exprs = extractOrderBy(schema.Users, { email: { direction: 'desc', priority: 1, nulls: 'last' } });
+    expect(exprs).toHaveLength(2);
+
+    const rendered = render(exprs);
+    expect(rendered).not.toContain('nulls last');
+    expect(rendered).toMatch(/is null\) asc/);
   });
 });
 
