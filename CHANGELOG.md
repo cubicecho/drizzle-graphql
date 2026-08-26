@@ -1,3 +1,49 @@
+# [5.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v5.0.0...v5.1.0) (2026-08-26)
+
+
+### Features
+
+* **schema:** pick column filters by data type instead of column name ([3ec61ac](https://github.com/cubicecho/drizzle-graphql/commit/3ec61ac7c85382cceeb5e47b00508a603faa0d5c)), closes [#22](https://github.com/cubicecho/drizzle-graphql/issues/22)
+
+# [5.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v4.2.0...v5.0.0) (2026-08-26)
+
+
+* feat!: support recursive AND, NOT and OR boolean filter tree ([974ad87](https://github.com/cubicecho/drizzle-graphql/commit/974ad878c3cb0e0f4bc79864bd4260ae82ec6dcf))
+
+
+### Bug Fixes
+
+* **builders:** restore isFilterableRelation lost in through-relation merge ([9a36177](https://github.com/cubicecho/drizzle-graphql/commit/9a361778c22b50460d3137fc272397b6fa8a503c)), closes [throu#relation](https://github.com/throu/issues/relation) [#52](https://github.com/cubicecho/drizzle-graphql/issues/52) [#47](https://github.com/cubicecho/drizzle-graphql/issues/47)
+* type string-array columns as [String!] and give them a String-typed filter ([30bebe3](https://github.com/cubicecho/drizzle-graphql/commit/30bebe35e78f19bd854963bb0d23e6c3b2a920fe)), closes [#15](https://github.com/cubicecho/drizzle-graphql/issues/15)
+
+
+### Features
+
+* add named Decimal scalar for numeric/decimal columns ([c5a4386](https://github.com/cubicecho/drizzle-graphql/commit/c5a4386168f8d041fa2e87298fcf405c7f9923cd)), closes [#17](https://github.com/cubicecho/drizzle-graphql/issues/17)
+* **mutations:** add updateSingle/deleteSingle variants and requireWhere option ([ce2235a](https://github.com/cubicecho/drizzle-graphql/commit/ce2235a6b440065a8e6ee46fc9c5cac4352137c4)), closes [#24](https://github.com/cubicecho/drizzle-graphql/issues/24)
+* orderBy through to-one relations and nulls first/last ([7f32433](https://github.com/cubicecho/drizzle-graphql/commit/7f32433b8e364c37bca1ac7ba4b7a965463b94a9))
+* **query:** add injection-safe startsWith/endsWith/contains string operators ([df433de](https://github.com/cubicecho/drizzle-graphql/commit/df433de53b964be75b1969b7431ec35b3226b8c2))
+* **query:** support relation filters for .through() many-to-many relations ([636e612](https://github.com/cubicecho/drizzle-graphql/commit/636e6122cf4afe2e7906619f1968d191ddbfa9da)), closes [#19](https://github.com/cubicecho/drizzle-graphql/issues/19)
+* **schema:** emit non-null to-one relation fields for optional: false relations ([c5c94c2](https://github.com/cubicecho/drizzle-graphql/commit/c5c94c2dc54a7d521180418ce1e12972ac5b1eb7)), closes [#16](https://github.com/cubicecho/drizzle-graphql/issues/16)
+* throw on unknown filter keys and operators instead of silently dropping them ([e80369e](https://github.com/cubicecho/drizzle-graphql/commit/e80369e4a3a30401cd577a42498b18137fae4e91)), closes [#18](https://github.com/cubicecho/drizzle-graphql/issues/18)
+
+
+### BREAKING CHANGES
+
+* the generated `${Table}FiltersOr` and `${Type}FilterOr`
+input types no longer exist — `OR` branches now take the filter input
+type itself. Operations that referenced those type names in variable
+definitions must use the corresponding `${Table}Filters` /
+`${Type}Filter` types instead. The "Cannot specify both fields and 'OR'"
+errors are gone; siblings and `OR` now compose with an implicit AND.
+
+# [4.2.0](https://github.com/cubicecho/drizzle-graphql/compare/v4.1.0...v4.2.0) (2026-08-26)
+
+
+### Features
+
+* **query:** add groupBy and having to aggregate queries ([#28](https://github.com/cubicecho/drizzle-graphql/issues/28)) ([c0308a9](https://github.com/cubicecho/drizzle-graphql/commit/c0308a9639bc215d5c08da103b6e68590754e235)), closes [#10](https://github.com/cubicecho/drizzle-graphql/issues/10)
+
 # [4.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v4.0.0...v4.1.0) (2026-08-26)
 
 

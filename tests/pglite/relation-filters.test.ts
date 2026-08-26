@@ -196,14 +196,14 @@ describe.sequential('relation filters', () => {
     it('leaves relation fields off tables that have no relations', () => {
       const fields = input('TagFilters').getFields();
 
-      expect(Object.keys(fields).sort()).toEqual(['OR', 'description', 'id', 'name']);
+      expect(Object.keys(fields).sort()).toEqual(['AND', 'NOT', 'OR', 'description', 'id', 'name']);
     });
 
-    it('offers relation filters in the OR variant too', () => {
+    it('offers relation filters in the OR branches too (recursive filter type)', () => {
       const orField = input('UserFilters').getFields()['OR']!;
       const orType = (orField.type as any).ofType.ofType as GraphQLInputObjectType;
 
-      expect(orType.name).toBe('UserFiltersOr');
+      expect(orType).toBe(input('UserFilters'));
       expect(orType.getFields()['posts']).toBeDefined();
     });
   });

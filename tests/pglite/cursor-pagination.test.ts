@@ -215,6 +215,80 @@ describe.sequential('Cursor (keyset) pagination', () => {
     expect(pages.map((page) => page.map((row) => row.id))).toStrictEqual([[2], [5], [1]]);
   });
 
+  it('pages under a nulls: last override, crossing from non-NULL into the NULL group', async () => {
+    // PostgreSQL DESC natively puts NULLs first; the override flips them to the end, so the
+    // keyset predicate has to agree with the overridden placement or rows repeat/vanish.
+    const pages = await collectPages(
+      (afterArg) => /* GraphQL */ `
+			{
+				users(${afterArg}limit: 1, orderBy: { email: { priority: 1, direction: desc, nulls: last } }) {
+					id
+					email
+					cursor
+				}
+			}
+		`,
+    );
+
+    expect(pages.map((page) => page.map((row) => row.id))).toStrictEqual([[1], [2], [5]]);
+  });
+
+  it('rejects a cursor issued under a different nulls placement', async () => {
+    const firstPage = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				users(limit: 1, orderBy: { email: { priority: 1, direction: desc } }) {
+					id
+					cursor
+				}
+			}
+		`);
+    expect(firstPage.errors).toBeUndefined();
+    const after = firstPage.data.users[0].cursor;
+
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				users(after: "${after}", limit: 1, orderBy: { email: { priority: 1, direction: desc, nulls: last } }) {
+					id
+				}
+			}
+		`);
+
+    expect(res.data ?? undefined).toBeUndefined();
+    expect(res.errors?.[0]?.message).toContain('different ordering');
+  });
+
+  it('rejects after combined with an orderBy through a relation', async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(after: "anything", limit: 2, orderBy: { author: { name: { direction: asc, priority: 1 } } }) {
+					id
+				}
+			}
+		`);
+
+    expect(res.data ?? undefined).toBeUndefined();
+    expect(res.errors?.[0]?.message).toContain('orders through a relation');
+  });
+
+  it('resolves cursor to null under a relation orderBy while the ordering still applies', async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				posts(orderBy: {
+					author: { name: { direction: asc, priority: 2 } }
+					id: { direction: asc, priority: 1 }
+				}) {
+					id
+					cursor
+				}
+			}
+		`);
+
+    expect(res.errors).toBeUndefined();
+    // Same ordering as the plain relation-orderBy case: FifthUser's posts first.
+    expect(res.data?.posts.map((row: any) => row.id)).toStrictEqual([4, 5, 1, 2, 3, 6]);
+    expect(res.data?.posts.every((row: any) => row.cursor === null)).toBe(true);
+  });
+
   it('rejects a malformed cursor with a GraphQL error', async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			{

@@ -100,9 +100,10 @@ const { schema } = buildSchema(db, {
         relationAggregates: false, // <relation>Aggregate fields on object types
         distinct: false,          // the `distinct` argument on list queries
         insert: false,            // create<Table> / create<Table>Single mutations
-        update: false,            // update<Table> mutations
-        delete: false,            // delete<Table> mutations
+        update: false,            // update<Table> / update<Table>Single mutations
+        delete: false,            // delete<Table> / delete<Table>Single mutations
         upsert: true,             // upsert<Table> / upsert<Table>Single mutations (off by default)
+        requireWhere: true,       // make `where` non-null on plural update/delete (off by default)
     },
 })
 ```
@@ -204,8 +205,10 @@ A **to-many** relation takes a `some` / `none` / `every` wrapper
 -   `some: {}` means "at least one related row exists"; `none: {}` means "none exist"
 -   Several modes may be given at once and are `AND`ed together
 -   A relation whose name collides with a column name is skipped — the column keeps the field
--   Many-to-many relations declared with `.through()` are not filterable yet and are left out
-    of the filter input
+-   Many-to-many relations declared with `.through()` are filterable too: the `EXISTS`
+    subquery joins the junction table to the target, so
+    `users(where: { roles: { some: { name: { eq: "admin" } } } })` works the same as a direct
+    to-many relation
 
 ## Aggregate queries
 
@@ -512,6 +515,37 @@ The build-wide `conflictDoNothing` option is deprecated in favour of this: it ap
 `create*` mutation with no way for a request to opt out. `onConflict: { action: NOTHING }` is
 the per-request replacement.
 
+## Single-row update & delete
+
+Alongside the plural `update<Table>` / `delete<Table>` mutations, every table gets an
+`update<Table>Single` / `delete<Table>Single` variant that targets exactly one row:
+
+```graphql
+mutation {
+    updateUsersSingle(where: { id: { eq: 1 } }, set: { name: "Dan" }) {
+        id
+        name
+    }
+}
+```
+
+-   `where` is **non-null** and must contain at least one filter — `where: {}` is rejected at
+    resolve time, so a Single write can never become an unbounded one
+-   The return type is the single (nullable) row type, not a list: the affected row comes back
+    directly, and **no match returns `null`** instead of an empty list
+-   If `where` matches **more than one row**, the mutation throws a `GraphQLError` and writes
+    nothing — the match is checked (`LIMIT 2`) before the write runs
+-   **MySQL** cannot return the affected row (no `RETURNING`), so its Single variants keep the
+    single-match and non-empty-`where` guarantees but return `MutationReturn` like every other
+    MySQL mutation
+-   The variants are generated under `features.update` / `features.delete`, share the plural
+    mutations' input types, and appear in `entities.mutations` for custom schemas
+
+The plural mutations still accept a missing `where` (a full-table write) by default. To rule
+that out at the type level, `features: { requireWhere: true }` makes `where` non-null on
+`update<Table>` / `delete<Table>` and rejects a `where` with no filters, exactly like the
+Single variants. It defaults to `false` for backwards compatibility.
+
 ## Query cost
 
 Generated fields carry a `complexity` hint in their GraphQL extensions, ready for
@@ -669,6 +703,28 @@ Generated schemas resolve nested relations without N+1 query explosions:
 > rely on SQL window functions. These require **PostgreSQL**, **MySQL 8.0+**, or
 > **SQLite 3.25+**. Relations without pagination, and all other query/mutation paths,
 > have no such requirement.
+
+### Relation nullability
+
+A **to-many** relation field is always `[Target!]!`. A **to-one** relation field is
+nullable by default, but honors the relation's declared optionality: declaring
+`optional: false` on a Drizzle `one` relation — the assertion that the related row always
+exists, i.e. a `NOT NULL` foreign key — emits the field as `Target!`:
+
+```Typescript
+const relations = buildRelations({ Users, Posts }, {
+    Posts: {
+        // posts.author_id is NOT NULL → author: Users!
+        author: r.one.Users({ from: r.Posts.authorId, to: r.Users.id, optional: false }),
+    },
+})
+```
+
+Only the explicit `optional: false` declaration is honored — required-ness is never
+inferred from column nullability, since a `NOT NULL` `from` column does not guarantee a
+related row exists when the constraint lives on the other side of the join. Note that on a
+required relation, a `where` argument that filters out the related row (or a dangling
+foreign key) resolves to `null` and therefore surfaces as a GraphQL non-null error.
 
 ### Overriding a relation's resolver without overfetching
 
