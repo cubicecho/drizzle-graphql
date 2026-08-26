@@ -4544,3 +4544,44 @@ describe.sequential('Mutation relation eager-load tests', () => {
     expect(posts.find((p) => p.content === 'B')?.author?.id).toBe(5);
   });
 });
+
+describe.sequential('Relation orderBy and nulls tests', () => {
+  it('orders a list by a to-one relation column', async () => {
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+      {
+        posts(orderBy: {
+          author: { name: { direction: asc, priority: 2 } }
+          id: { direction: asc, priority: 1 }
+        }) {
+          id
+        }
+      }
+    `);
+
+    expect(res.errors).toBeUndefined();
+    // FifthUser (posts 4, 5) sorts before FirstUser (posts 1, 2, 3, 6).
+    expect(res.data?.posts).toStrictEqual([{ id: 4 }, { id: 5 }, { id: 1 }, { id: 2 }, { id: 3 }, { id: 6 }]);
+  });
+
+  it('emits NULLS LAST on an ascending optional column', async () => {
+    // SQLite defaults to nulls FIRST on asc — this only passes if NULLS LAST is emitted.
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+      {
+        users(orderBy: {
+          email: { direction: asc, priority: 2, nulls: last }
+          id: { direction: asc, priority: 1 }
+        }) {
+          id
+          email
+        }
+      }
+    `);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.users).toStrictEqual([
+      { id: 1, email: 'userOne@notmail.com' },
+      { id: 2, email: null },
+      { id: 5, email: null },
+    ]);
+  });
+});

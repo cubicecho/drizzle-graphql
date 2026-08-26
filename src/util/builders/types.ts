@@ -281,6 +281,11 @@ export type OrderByArgs<TTable extends Table> = {
   [Key in keyof TTable['_']['columns']]?: {
     direction: 'asc' | 'desc';
     priority: number;
+    /**
+     * Where NULL values sort. Native NULLS FIRST/LAST on PostgreSQL and SQLite;
+     * emulated with an extra `IS NULL` sort key on MySQL.
+     */
+    nulls?: 'first' | 'last';
   };
 };
 
