@@ -315,6 +315,7 @@ const batchedPaginatedRelationQuery = async (
   limit: number | null,
   offset: number | null,
   pkNames: readonly string[],
+  orderCtx?: RelationFilterContext,
 ): Promise<any[]> => {
   const cols = getColumns(targetTable);
 
@@ -322,7 +323,7 @@ const batchedPaginatedRelationQuery = async (
   // slices are deterministic even when the client supplies no (or a non-unique) orderBy.
   // pkNames is resolved at build time and includes composite keys.
   const orderExprs = [
-    ...(orderByArg ? extractOrderBy(targetTable, orderByArg) : []),
+    ...(orderByArg ? extractOrderBy(targetTable, orderByArg, orderCtx) : []),
     ...primaryKeyOrderExprs(targetTable, pkNames),
   ];
   const orderClause = orderExprs.length ? sql` order by ${sql.join(orderExprs, sql`, `)}` : sql``;
@@ -434,13 +435,14 @@ export const createRelationResolverFactory =
             limit ?? null,
             offset ?? null,
             targetPkNames,
+            relationFilterCtx(filterCtx, targetTableName),
           );
         } else {
           // Use plain db.select() so column refs are never aliased — avoids drizzle-orm v1
           // RQB aliasing requirements that would require referencing via aliasedTable proxy.
           let q = executor.select().from(targetTable).where(whereCondition) as any;
           if (orderByArg) {
-            q = q.orderBy(...extractOrderBy(targetTable, orderByArg));
+            q = q.orderBy(...extractOrderBy(targetTable, orderByArg, relationFilterCtx(filterCtx, targetTableName)));
           }
           rows = await q;
         }
@@ -674,6 +676,27 @@ export const extractSelectedColumnsFromTreeSQLFormat = <TColType extends Column 
   return Object.fromEntries(selectedColumns) as Record<string, TColType>;
 };
 
+/**
+ * Where NULL values sort relative to non-NULL values. Compiled to native
+ * `NULLS FIRST` / `NULLS LAST` on PostgreSQL and SQLite (3.30+); MySQL has no such
+ * clause, so there it is emulated with an extra `<expr> IS NULL` sort key ahead of
+ * the column itself.
+ */
+export const orderNulls = new GraphQLEnumType({
+  name: 'OrderNulls',
+  description: 'Where NULL values sort relative to non-NULL values',
+  values: {
+    first: {
+      value: 'first',
+      description: 'NULL values sort before all non-NULL values',
+    },
+    last: {
+      value: 'last',
+      description: 'NULL values sort after all non-NULL values',
+    },
+  },
+});
+
 export const innerOrder = new GraphQLInputObjectType({
   name: 'InnerOrder' as const,
   fields: {
@@ -698,6 +721,11 @@ export const innerOrder = new GraphQLInputObjectType({
     priority: {
       type: new GraphQLNonNull(GraphQLInt),
       description: 'Priority of current field',
+    },
+    nulls: {
+      type: orderNulls,
+      description:
+        "Where NULL values sort. Defaults to the database's own rule (PostgreSQL: last on asc, first on desc; MySQL/SQLite: first on asc, last on desc)",
     },
   } as const,
 });
@@ -912,20 +940,78 @@ const generateTableSelectTypeFieldsCached = (table: Table, tableName: string): R
   return remapped;
 };
 
+/**
+ * Order fields for a table's to-one relations: each takes the target table's own OrderBy
+ * input, so a list can be sorted by a related row's column (compiled as a correlated
+ * subquery in the ORDER BY — see `extractOrderBy`). To-many relations are left out: "order
+ * a parent by its many children" has no single defined value to sort on. A relation whose
+ * name collides with a column is skipped — the column keeps the field.
+ */
+const generateRelationOrderFields = (
+  tableName: string,
+  cacheCtx: TypeCacheCtx,
+  typeNameMapper: TypeNameMapper | undefined,
+  columnFields: Record<string, ConvertedInputColumn>,
+  relationMap?: Record<string, Record<string, TableNamedRelations>>,
+  tables?: Record<string, Table>,
+): Record<string, { type: GraphQLInputObjectType; description?: string }> => {
+  const relations = relationMap?.[tableName];
+  if (!relations || !tables) {
+    return {};
+  }
+
+  const fields: Record<string, { type: GraphQLInputObjectType; description?: string }> = {};
+
+  for (const [relationName, relEntry] of Object.entries(relations)) {
+    if (relationName in columnFields) {
+      continue;
+    }
+
+    const targetTable = tables[relEntry.targetTableName];
+    const relation = (relEntry as any).relation ?? relEntry;
+    if (!targetTable || !is(relation, One) || !isFilterableRelation(relation)) {
+      continue;
+    }
+
+    fields[relationName] = {
+      type: generateTableOrderTypeCached(
+        targetTable,
+        relEntry.targetTableName,
+        typeNameMapper,
+        cacheCtx,
+        relationMap,
+        tables,
+      ),
+      description: `Order by columns of the related ${relationName} row`,
+    };
+  }
+
+  return fields;
+};
+
 const generateTableOrderTypeCached = (
   table: Table,
   tableName: string,
   typeNameMapper: TypeNameMapper | undefined,
   cacheCtx: TypeCacheCtx,
+  relationMap?: Record<string, Record<string, TableNamedRelations>>,
+  tables?: Record<string, Table>,
 ) => {
   if (cacheCtx.orderTypeCache.has(table)) {
     return cacheCtx.orderTypeCache.get(table)!;
   }
 
-  const orderColumns = generateTableOrderCached(table);
+  // Fields are thunked so that relation order fields, which reference other tables' order
+  // inputs (and eventually this one again), are only resolved after this type is cached.
   const order = new GraphQLInputObjectType({
     name: `${resolveTypeName(tableName, typeNameMapper)}OrderBy`,
-    fields: orderColumns,
+    fields: () => {
+      const orderColumns = generateTableOrderCached(table);
+      return {
+        ...orderColumns,
+        ...generateRelationOrderFields(tableName, cacheCtx, typeNameMapper, orderColumns, relationMap, tables),
+      };
+    },
   });
 
   cacheCtx.orderTypeCache.set(table, order);
@@ -1118,7 +1204,9 @@ const generateSelectFields = <TWithOrder extends boolean>(
   relationAggregateFactory?: RelationAggregateFactory,
 ): SelectData<TWithOrder> => {
   const table = tables[tableName]!;
-  const order = withOrder ? generateTableOrderTypeCached(table, tableName, typeNameMapper, cacheCtx) : undefined;
+  const order = withOrder
+    ? generateTableOrderTypeCached(table, tableName, typeNameMapper, cacheCtx, relationMap, tables)
+    : undefined;
   const filters = generateTableFilterTypeCached(table, tableName, cacheCtx, typeNameMapper, relationMap, tables);
   const tableFields = generateTableSelectTypeFieldsCached(table, tableName);
 
@@ -1453,24 +1541,198 @@ export const generateTableTypes = <WithReturning extends boolean>(
   };
 };
 
+/** How NULLs are placed relative to non-NULL values in an ordered column. */
+export type OrderNullsOption = 'first' | 'last';
+
 /**
- * Column name / direction pairs from an `orderBy` argument, highest priority first. Split out
- * of `extractOrderBy` so the same ordering can be rebuilt against a subquery's fields, where
- * there is no `Table` to read columns from.
+ * Column name / direction / nulls triples from an `orderBy` argument, highest priority
+ * first. Split out of `extractOrderBy` so the same ordering can be rebuilt against a
+ * subquery's fields, where there is no `Table` to read columns from. Because there is no
+ * table, ordering through a relation cannot be compiled here — a relation-shaped entry
+ * (an object without a `direction`) is rejected with a clear error instead of being
+ * silently dropped.
  */
-export const orderByEntries = (orderArgs: Record<string, any>): [string, 'asc' | 'desc'][] =>
+export const orderByEntries = (
+  orderArgs: Record<string, any>,
+): [string, 'asc' | 'desc', OrderNullsOption | undefined][] =>
   Object.entries(orderArgs)
     .sort((a, b) => (b[1]?.priority ?? 0) - (a[1]?.priority ?? 0))
     .filter(([, config]) => config)
-    .map(([column, config]) => [column, config.direction]);
+    .map(([column, config]) => {
+      if (typeof config === 'object' && config.direction === undefined) {
+        throw new GraphQLError(`ORDER BY ${column}: ordering through a relation is not supported in this query`);
+      }
+      return [column, config.direction, config.nulls ?? undefined];
+    });
 
+/**
+ * The ORDER BY expression(s) for one ordered value. Without a `nulls` option this is the
+ * plain `asc`/`desc` of the expression. With one:
+ * - PostgreSQL and SQLite (3.30+) support `NULLS FIRST` / `NULLS LAST` natively, so the
+ *   clause is emitted as-is.
+ * - MySQL has no such clause, so it is emulated with an extra `<expr> IS NULL` sort key
+ *   ahead of the expression itself (`IS NULL DESC` puts nulls first, `ASC` puts them
+ *   last). The same GraphQL surface is kept on all three dialects.
+ *
+ * `dialectColumn` is the real table column the expression derives from — used only to
+ * detect the dialect (its `columnType` is prefixed `Pg` / `MySql` / `SQLite`), so `expr`
+ * may be the column itself, a subquery field, or a correlated subquery.
+ */
+export const orderExpressions = (
+  expr: Column | SQL | SQL.Aliased | any,
+  direction: 'asc' | 'desc',
+  nulls: OrderNullsOption | undefined,
+  dialectColumn: Column,
+): SQL[] => {
+  const directed = direction === 'asc' ? asc(expr) : desc(expr);
+
+  if (!nulls) {
+    return [directed];
+  }
+
+  const isMySql = (((dialectColumn as any).columnType as string) ?? '').startsWith('MySql');
+  if (isMySql) {
+    const nullsKey = nulls === 'first' ? desc(sql`(${expr} is null)`) : asc(sql`(${expr} is null)`);
+    return [nullsKey, directed];
+  }
+
+  return [nulls === 'first' ? sql`${directed} nulls first` : sql`${directed} nulls last`];
+};
+
+/**
+ * One ordering term, flattened out of a (possibly relation-nested) `orderBy` argument.
+ * `expression` is what the ORDER BY sorts on — the column itself, or a correlated
+ * subquery reaching it through one or more to-one relations. `column` is the leaf table
+ * column, kept for dialect detection.
+ */
+interface FlatOrderEntry {
+  expression: Column | SQL;
+  column: Column;
+  direction: 'asc' | 'desc';
+  nulls: OrderNullsOption | undefined;
+  priority: number;
+}
+
+/**
+ * The chain of aliased to-one hops a relation-ordered column is reached through. Rendered
+ * as a single correlated scalar subquery: every hop's target sits in the FROM list and
+ * its join condition (plus the relation's own `where`, when it declares one) in the WHERE.
+ */
+interface RelationOrderChain {
+  fromParts: SQL[];
+  conditions: SQL[];
+  /** The aliased target of the last hop — the table the next hop or leaf column resolves from. */
+  table: Table;
+}
+
+/** Extends the chain (or starts one from `parentTable`) with one to-one hop. */
+const extendRelationOrderChain = (
+  parentTable: Table,
+  relationName: string,
+  relEntry: TableNamedRelations,
+  ctx: RelationFilterContext,
+  chain: RelationOrderChain | undefined,
+): RelationOrderChain => {
+  const targetTable = ctx.tables[relEntry.targetTableName];
+  const relation = ((relEntry as any).relation ?? relEntry) as Relation<string>;
+
+  if (!targetTable || !is(relation, One) || !isFilterableRelation(relation)) {
+    throw new GraphQLError(`ORDER BY ${relationName}: Relation cannot be used for ordering`);
+  }
+
+  ctx.aliases ??= { n: 0 };
+  const aliasedTarget = aliasedTable(targetTable, `dgql_ord_${ctx.aliases.n++}`);
+
+  const joinCondition = buildRelationJoinCondition(parentTable, relation, aliasedTarget, relationName);
+  // A relation declared with its own `where` only ever exposes the rows it selects, so the
+  // ordering subquery has to honour it too — mirroring the relation-filter subqueries.
+  const relationWhere = (relation as any).where
+    ? relationsFilterToSQL((relation as any).isReversed ? parentTable : aliasedTarget, (relation as any).where)
+    : undefined;
+
+  return {
+    fromParts: [...(chain?.fromParts ?? []), getTableAsAliasSQL(aliasedTarget)],
+    conditions: [
+      ...(chain?.conditions ?? []),
+      ...(joinCondition ? [joinCondition] : []),
+      ...(relationWhere ? [relationWhere] : []),
+    ],
+    table: aliasedTarget,
+  };
+};
+
+/**
+ * Flattens one level of an `orderBy` argument into `out`. A column key becomes an entry
+ * directly (wrapped in a correlated subquery when reached through a relation chain); a
+ * to-one relation key recurses with the chain extended by that hop. Priorities live in one
+ * global space, so a relation's column can interleave with the parent's own columns.
+ */
+const collectOrderEntries = (
+  table: Table,
+  tableKey: string,
+  orderArgs: Record<string, any>,
+  ctx: RelationFilterContext | undefined,
+  chain: RelationOrderChain | undefined,
+  out: FlatOrderEntry[],
+): void => {
+  const columns = getColumns(table);
+  const relations = ctx?.relationMap[tableKey];
+
+  for (const [key, config] of Object.entries(orderArgs)) {
+    if (config === null || config === undefined) {
+      continue;
+    }
+
+    const column = columns[key];
+    if (column) {
+      out.push({
+        expression: chain
+          ? sql`(select ${column} from ${sql.join(chain.fromParts, sql`, `)} where ${and(...chain.conditions)})`
+          : column,
+        column,
+        direction: config.direction,
+        nulls: config.nulls ?? undefined,
+        priority: config.priority ?? 0,
+      });
+      continue;
+    }
+
+    const relEntry = relations?.[key];
+    if (!relEntry || !ctx) {
+      throw new GraphQLError(`ORDER BY ${key}: Unknown column or relation`);
+    }
+
+    const nextChain = extendRelationOrderChain(chain?.table ?? table, key, relEntry, ctx, chain);
+    collectOrderEntries(nextChain.table, relEntry.targetTableName, config, ctx, nextChain, out);
+  }
+};
+
+/**
+ * Compiles an `orderBy` argument into ORDER BY expressions, highest priority first.
+ *
+ * A key naming one of the table's columns orders by that column. A key naming a to-one
+ * relation takes the target table's own OrderBy input and orders by the related row's
+ * column(s), compiled as a correlated scalar subquery — reusing the aliased-join machinery
+ * the relation filters are built on — so it works identically on all three dialects and
+ * inside the relational query builder's aliased CTEs. Priorities share one global space
+ * across relation boundaries. Each entry may also carry `nulls: first | last`
+ * (see {@link orderExpressions} for how MySQL emulates it).
+ *
+ * `ctx` supplies the tables and relation map that relation ordering needs; callers whose
+ * inputs cannot contain relation keys may omit it.
+ */
 export const extractOrderBy = <TTable extends Table, TArgs extends OrderByArgs<any> = OrderByArgs<TTable>>(
   table: TTable,
   orderArgs: TArgs,
-): SQL[] =>
-  orderByEntries(orderArgs).map(([column, direction]) =>
-    direction === 'asc' ? asc(getColumns(table)[column]!) : desc(getColumns(table)[column]!),
-  );
+  ctx?: RelationFilterContext,
+): SQL[] => {
+  const entries: FlatOrderEntry[] = [];
+  collectOrderEntries(table, ctx?.tableKey ?? '', orderArgs, ctx, undefined, entries);
+
+  return entries
+    .sort((a, b) => b.priority - a.priority)
+    .flatMap((entry) => orderExpressions(entry.expression, entry.direction, entry.nulls, entry.column));
+};
 
 /**
  * Escape character pinned via `ESCAPE` on every generated safe-LIKE predicate. Bound as a
@@ -1911,7 +2173,8 @@ const extractRelationsParamsInner = (
     const hasPagination = offset != null || limit != null;
     const pkNames = targetPkNames ?? [];
     thisRecord.orderBy = relationArgs?.orderBy
-      ? (aliasedTable: Table) => extractOrderBy(aliasedTable, relationArgs.orderBy!)
+      ? (aliasedTable: Table) =>
+          extractOrderBy(aliasedTable, relationArgs.orderBy!, relationFilterCtx(filterCtx, targetTableName))
       : hasPagination && pkNames.length
         ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
         : undefined;
@@ -2402,7 +2665,9 @@ export const selectDistinctKeys = async (params: {
   // Both orderings must agree, so build each from the same entries — once against the table
   // (inside the window) and once against the subquery's fields (for the outer row order).
   const windowOrder = [
-    ...orderEntries.map(([column, direction]) => (direction === 'asc' ? asc(cols[column]!) : desc(cols[column]!))),
+    ...orderEntries.flatMap(([column, direction, nulls]) =>
+      orderExpressions(cols[column]!, direction, nulls, cols[column]!),
+    ),
     ...primaryKeyOrderExprs(table, pkNames),
   ];
 
@@ -2418,7 +2683,9 @@ export const selectDistinctKeys = async (params: {
     .as('__dgql_distinct');
 
   const outerOrder = [
-    ...orderEntries.map(([column, direction]) => (direction === 'asc' ? asc(sub[column]) : desc(sub[column]))),
+    ...orderEntries.flatMap(([column, direction, nulls]) =>
+      orderExpressions(sub[column], direction, nulls, cols[column]!),
+    ),
     ...pkNames.filter((name) => sub[name]).map((name) => asc(sub[name])),
   ];
 
@@ -2737,11 +3004,11 @@ export const runRelationalSelect = async (opts: {
     // directly so column refs match the CTE alias.
     orderBy: distinctKeys
       ? (aliasedTable: Table) => [
-          ...(orderBy ? extractOrderBy(aliasedTable, orderBy) : []),
+          ...(orderBy ? extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName)) : []),
           ...primaryKeyOrderExprs(aliasedTable, pkNames!),
         ]
       : orderBy
-        ? (aliasedTable: Table) => extractOrderBy(aliasedTable, orderBy)
+        ? (aliasedTable: Table) => extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName))
         : needsDefaultOrder && pkNames?.length
           ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
           : undefined,

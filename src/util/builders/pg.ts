@@ -166,7 +166,7 @@ const generateSelectArray = (
         }
         if (orderBy) {
           q = q.orderBy(
-            ...extractOrderBy(table, orderBy),
+            ...extractOrderBy(table, orderBy, relationFilterCtx(filterCtx, tableName)),
             ...(distinctKeys ? primaryKeyOrderExprs(table, pkNames) : []),
           ) as any;
         } else if ((distinctKeys || offset != null || limit != null) && pkNames.length) {
@@ -249,7 +249,7 @@ const generateSelectSingle = (
           q = q.where(extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))) as any;
         }
         if (orderBy) {
-          q = q.orderBy(...extractOrderBy(table, orderBy)) as any;
+          q = q.orderBy(...extractOrderBy(table, orderBy, relationFilterCtx(filterCtx, tableName))) as any;
         } else if (pkNames.length) {
           // A single query is an implicit `limit 1` — order it so the row is deterministic.
           q = q.orderBy(...primaryKeyOrderExprs(table, pkNames)) as any;

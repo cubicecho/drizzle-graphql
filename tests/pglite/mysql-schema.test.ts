@@ -3,8 +3,11 @@
 // It calls generateSchemaData (generateMySQL) directly with a minimal mock db whose resolver
 // closures are never invoked — only the schema structure is inspected.
 
+import { sql } from 'drizzle-orm';
+import { MySqlDialect } from 'drizzle-orm/mysql-core';
 import { GraphQLNonNull, GraphQLObjectType } from 'graphql';
 import { describe, expect, it } from 'vitest';
+import { extractOrderBy } from '@/index';
 import { generateMySQL } from '@/util/builders';
 import * as schema from '../schema/mysql';
 
@@ -231,6 +234,46 @@ describe('MySQL generated types and inputs', () => {
     expect(entities.inputs['UsersOrderBy']).toBeDefined();
     expect(entities.inputs['CreateUsersInput']).toBeDefined();
     expect(entities.inputs['UpdateUsersInput']).toBeDefined();
+  });
+
+  it('OrderBy inputs expose to-one relation fields and the nulls option', () => {
+    const userOrderFields = entities.inputs['UsersOrderBy'].getFields();
+    // To-one relation gets the target's own OrderBy input; the to-many `posts` does not.
+    expect(userOrderFields['customer']).toBeDefined();
+    expect(userOrderFields['customer'].type.toString()).toBe('CustomersOrderBy');
+    expect(userOrderFields['posts']).toBeUndefined();
+
+    // MySQL keeps the same surface as the other dialects — `nulls` is emulated, not omitted.
+    const innerOrderFields = userOrderFields['email'].type.getFields();
+    expect(innerOrderFields['nulls']).toBeDefined();
+    expect(innerOrderFields['nulls'].type.toString()).toBe('OrderNulls');
+  });
+});
+
+// ── nulls emulation ───────────────────────────────────────────────────────────
+
+describe('MySQL nulls first/last emulation', () => {
+  const dialect = new MySqlDialect();
+  const render = (exprs: any[]) => dialect.sqlToQuery(sql.join(exprs, sql`, `)).sql.toLowerCase();
+
+  it('compiles nulls: first to an IS NULL sort key instead of NULLS FIRST', () => {
+    const exprs = extractOrderBy(schema.Users, { email: { direction: 'asc', priority: 1, nulls: 'first' } });
+    expect(exprs).toHaveLength(2);
+
+    const rendered = render(exprs);
+    expect(rendered).toContain('is null');
+    expect(rendered).not.toContain('nulls first');
+    // Nulls-first means the IS NULL key sorts descending (true before false).
+    expect(rendered).toMatch(/is null\) desc/);
+  });
+
+  it('compiles nulls: last to an ascending IS NULL sort key', () => {
+    const exprs = extractOrderBy(schema.Users, { email: { direction: 'desc', priority: 1, nulls: 'last' } });
+    expect(exprs).toHaveLength(2);
+
+    const rendered = render(exprs);
+    expect(rendered).not.toContain('nulls last');
+    expect(rendered).toMatch(/is null\) asc/);
   });
 });
 
