@@ -65,6 +65,12 @@ export {
   GraphQLJSON,
   GraphQLUUID,
 } from './util/scalars/index.ts';
+export type {
+  ColumnTypeMapper,
+  ColumnTypeMapperInfo,
+  ScalarOverride,
+  ScalarOverridesConfig,
+} from './util/type-converter/types.ts';
 
 type ObjMap<T> = Record<string, T>;
 
@@ -175,6 +181,8 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     shouldEagerLoad,
     features,
     complexity,
+    scalars: config?.scalars,
+    mapColumnType: config?.mapColumnType,
     transactions,
   };
 

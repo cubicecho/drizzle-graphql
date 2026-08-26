@@ -24,6 +24,7 @@ import {
   asc,
   desc,
   eq,
+  extractExtendedColumnType,
   getColumns,
   getTableAsAliasSQL,
   gt,
@@ -58,14 +59,22 @@ import {
   GraphQLList,
   GraphQLNonNull,
   GraphQLObjectType,
+  type GraphQLScalarType,
   GraphQLString,
 } from 'graphql';
 import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { getOrCreateLoader } from '../batch-loader/index.ts';
 import { capitalize, uncapitalize } from '../case-ops/index.ts';
 import { remapFromGraphQLCore, remapToGraphQLArrayOutput, remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
-import { GraphQLBigIntString, GraphQLDecimalString, GraphQLJSON, GraphQLUUID } from '../scalars/index.ts';
-import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
+import {
+  GraphQLBigIntString,
+  GraphQLDate,
+  GraphQLDateTime,
+  GraphQLDecimalString,
+  GraphQLJSON,
+  GraphQLUUID,
+} from '../scalars/index.ts';
+import { drizzleColumnToGraphQLType, getColumnScalarOverride } from '../type-converter/index.ts';
 import type {
   ConvertedColumn,
   ConvertedInputColumn,
@@ -826,6 +835,14 @@ export interface TypeCacheCtx {
    * @deprecated No longer used — relation fields now reference the target table's own type directly.
    */
   relationTypeCache: Map<string, GraphQLObjectType>;
+  /**
+   * Per-call cache for a table's converted select-field map, keyed by table reference.
+   * Per-call (not module-level) because scalar overrides can differ between builds that
+   * share the same table objects.
+   */
+  selectFieldCache: WeakMap<object, Record<string, ConvertedColumn>>;
+  /** Per-call cache for a table's column-filter field map, keyed by table reference. */
+  filterFieldCache: WeakMap<object, Record<string, ConvertedInputColumn>>;
   /** Per-call cache for order GraphQL input types, keyed by table reference. */
   orderTypeCache: WeakMap<object, GraphQLInputObjectType>;
   /** Per-call cache for filter GraphQL input types, keyed by table reference. */
@@ -1218,6 +1235,43 @@ const arrayFilterFields = (colType: GraphQLList<any>, colArr: GraphQLList<any>, 
  */
 const FILTERS_WITHOUT_STRING_OPS = new Set(['Id', 'Int', 'Float', 'BigInt', 'Decimal']);
 
+/**
+ * Scalars the built-in detection itself can produce. A scalar override to one of these
+ * shares the built-in filter type for that scalar, so its shape must stay exactly what a
+ * natural column of the scalar gets — whichever column builds the cached type first.
+ * Any other override scalar gets its own filter type named after the scalar.
+ */
+const BUILTIN_FILTER_SCALARS = new Set<GraphQLScalarType>([
+  GraphQLString,
+  GraphQLInt,
+  GraphQLFloat,
+  GraphQLBoolean,
+  GraphQLBigIntString,
+  GraphQLDecimalString,
+  GraphQLUUID,
+  GraphQLJSON,
+  GraphQLDate,
+  GraphQLDateTime,
+]);
+
+/**
+ * Filter descriptor for a scalar-overridden column. Overrides to the library's own
+ * structural scalars keep the corresponding built-in descriptor (JSON keeps the
+ * json-shaped filter, UUID the Id filter), so they share the name-keyed cache with
+ * natural columns safely in either build order; every other scalar — the remaining
+ * built-ins and all custom scalars — gets a scalar-shaped filter named after it
+ * (BigIntFilter, MoneyFilter, …).
+ */
+const resolveOverrideFilterDescriptor = (scalar: GraphQLScalarType): GenericFilterDescriptor => {
+  if (scalar === GraphQLJSON) {
+    return { name: 'JSON', kind: 'json' };
+  }
+  if (scalar === GraphQLUUID) {
+    return { name: 'Id', kind: 'scalar' };
+  }
+  return { name: scalar.name, kind: 'scalar' };
+};
+
 const generateColumnFilterValues = (
   column: Column,
   tableName: string,
@@ -1226,7 +1280,17 @@ const generateColumnFilterValues = (
 ): GraphQLInputObjectType => {
   const columnGraphQLType = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, true);
 
-  const { name: genericName, kind } = resolveGenericFilterDescriptor(column, columnGraphQLType);
+  // A scalar-overridden column gets its filter built from the override scalar, which
+  // `columnGraphQLType` above already resolved to. An override to one of the library's own
+  // scalars shares the built-in filter for that scalar (same descriptor a natural column of
+  // that scalar gets); any other scalar gets its own scalar-shaped filter type named after it
+  // (e.g. MoneyFilter). The cache stays keyed by name, so all columns overridden with the
+  // same scalar share one filter type.
+  const inputOverride = getColumnScalarOverride(column, true);
+
+  const { name: genericName, kind } = inputOverride
+    ? resolveOverrideFilterDescriptor(inputOverride)
+    : resolveGenericFilterDescriptor(column, columnGraphQLType);
   const cached = cacheCtx.genericFilterCache.get(genericName);
   if (cached) {
     return cached;
@@ -1238,7 +1302,16 @@ const generateColumnFilterValues = (
 
   // Uuid and numeric filters omit the string pattern operators
   // (like/ilike/startsWith/contains/…) — decided by column type, never by column name.
-  const omitStringOps = FILTERS_WITHOUT_STRING_OPS.has(genericName);
+  // A filter shared with the built-ins keeps that name-keyed rule even for an overridden
+  // column, so the shared type's shape never depends on which column built it first. A
+  // custom override scalar's own filter carries the pattern operators only when a pattern
+  // match is valid SQL on the underlying database column: string-typed, and not
+  // numeric/decimal (those transport as strings but reject LIKE).
+  const customOverrideFilter = inputOverride !== undefined && !BUILTIN_FILTER_SCALARS.has(inputOverride);
+  const underlying = extractExtendedColumnType(column);
+  const omitStringOps = customOverrideFilter
+    ? underlying.type !== 'string' || underlying.constraint === 'numeric'
+    : FILTERS_WITHOUT_STRING_OPS.has(genericName);
 
   const baseFields =
     kind === 'json'
@@ -1337,10 +1410,9 @@ const generateTableOrderCached = (table: Table) => {
   return remapped;
 };
 
-const filterMap = new WeakMap<object, Record<string, ConvertedInputColumn>>();
 const generateTableFilterValuesCached = (table: Table, tableName: string, cacheCtx: TypeCacheCtx) => {
-  if (filterMap.has(table)) {
-    return filterMap.get(table)!;
+  if (cacheCtx.filterFieldCache.has(table)) {
+    return cacheCtx.filterFieldCache.get(table)!;
   }
 
   const columns = getColumns(table);
@@ -1355,15 +1427,18 @@ const generateTableFilterValuesCached = (table: Table, tableName: string, cacheC
     ]),
   );
 
-  filterMap.set(table, remapped);
+  cacheCtx.filterFieldCache.set(table, remapped);
 
   return remapped;
 };
 
-const fieldMap = new WeakMap<object, Record<string, ConvertedColumn>>();
-const generateTableSelectTypeFieldsCached = (table: Table, tableName: string): Record<string, ConvertedColumn> => {
-  if (fieldMap.has(table)) {
-    return fieldMap.get(table)!;
+const generateTableSelectTypeFieldsCached = (
+  table: Table,
+  tableName: string,
+  cacheCtx: TypeCacheCtx,
+): Record<string, ConvertedColumn> => {
+  if (cacheCtx.selectFieldCache.has(table)) {
+    return cacheCtx.selectFieldCache.get(table)!;
   }
 
   const columns = getColumns(table);
@@ -1387,7 +1462,7 @@ const generateTableSelectTypeFieldsCached = (table: Table, tableName: string): R
     } as ConvertedColumn;
   }
 
-  fieldMap.set(table, remapped);
+  cacheCtx.selectFieldCache.set(table, remapped);
 
   return remapped;
 };
@@ -1659,7 +1734,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
     ? generateTableOrderTypeCached(table, tableName, typeNameMapper, cacheCtx, relationMap, tables)
     : undefined;
   const filters = generateTableFilterTypeCached(table, tableName, cacheCtx, typeNameMapper, relationMap, tables);
-  const tableFields = generateTableSelectTypeFieldsCached(table, tableName);
+  const tableFields = generateTableSelectTypeFieldsCached(table, tableName, cacheCtx);
 
   const relationsForTable = relationMap[tableName];
   const relationEntries: [string, TableNamedRelations][] = relationsForTable ? Object.entries(relationsForTable) : [];
@@ -1766,7 +1841,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
         //   (a) this relation field has a concrete type reference, and
         //   (b) when the target table's root call eventually runs, it reuses this same object.
         const targetTable = tables[targetTableName]!;
-        const targetTableFields = generateTableSelectTypeFieldsCached(targetTable, targetTableName);
+        const targetTableFields = generateTableSelectTypeFieldsCached(targetTable, targetTableName, cacheCtx);
         // Get or create a container for the target table's relation fields.
         let targetContainer = cacheCtx.relationFieldContainers.get(targetTableName);
         if (!targetContainer) {

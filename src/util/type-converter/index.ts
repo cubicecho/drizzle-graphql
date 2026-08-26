@@ -1,5 +1,5 @@
-import type { Column } from 'drizzle-orm';
-import { extractExtendedColumnType, is } from 'drizzle-orm';
+import type { Column, Table } from 'drizzle-orm';
+import { extractExtendedColumnType, getTableColumns, is } from 'drizzle-orm';
 import { MySqlInt, MySqlSerial } from 'drizzle-orm/mysql-core';
 import { PgDate, PgDateString, PgInteger, PgSerial, PgTimestamp, PgTimestampString, PgUUID } from 'drizzle-orm/pg-core';
 import { SQLiteInteger } from 'drizzle-orm/sqlite-core';
@@ -8,11 +8,13 @@ import {
   GraphQLEnumType,
   GraphQLFloat,
   GraphQLInputObjectType,
+  type GraphQLInputType,
   GraphQLInt,
   GraphQLList,
   GraphQLNonNull,
   GraphQLObjectType,
-  type GraphQLScalarType,
+  type GraphQLOutputType,
+  GraphQLScalarType,
   GraphQLString,
 } from 'graphql';
 import { capitalize } from '../case-ops/index.ts';
@@ -24,7 +26,7 @@ import {
   GraphQLJSON,
   GraphQLUUID,
 } from '../scalars/index.ts';
-import type { ConvertedColumn } from './types.ts';
+import type { ColumnTypeMapper, ConvertedColumn, ScalarOverride, ScalarOverridesConfig } from './types.ts';
 
 const allowedNameChars = /^[a-zA-Z0-9_]+$/;
 
@@ -190,6 +192,94 @@ const columnBaseToGraphQLCore = (
   }
 };
 
+/**
+ * Per-column scalar overrides, resolved at build time from `BuildSchemaConfig.scalars` /
+ * `BuildSchemaConfig.mapColumnType` and consulted by every column→GraphQL type decision
+ * (select fields, insert/update inputs, filter operands, aggregate min/max) as well as by
+ * the runtime data mappers, which must not re-coerce a value an override scalar owns.
+ *
+ * Keyed weakly by the column object itself so the registry never outlives the schema.
+ * `registerScalarOverrides` runs on every build and clears entries for columns that no
+ * longer have an override; when two live schemas are built from the same table objects
+ * with different scalar configs, the most recent build wins for runtime value mapping.
+ */
+const columnScalarOverrides = new WeakMap<Column, { output?: GraphQLScalarType; input?: GraphQLScalarType }>();
+
+/** The scalar overriding this column in the given direction, if one was registered. */
+export const getColumnScalarOverride = (column: Column, isInput: boolean): GraphQLScalarType | undefined => {
+  const override = columnScalarOverrides.get(column);
+  return override ? (isInput ? override.input : override.output) : undefined;
+};
+
+const normalizeScalarOverride = (
+  override: ScalarOverride,
+  tableName: string,
+  columnName: string,
+): { output?: GraphQLScalarType; input?: GraphQLScalarType } => {
+  const pair =
+    override instanceof GraphQLScalarType
+      ? { output: override, input: override }
+      : { output: override.output, input: override.input };
+
+  for (const scalar of [pair.output, pair.input]) {
+    if (scalar !== undefined && !(scalar instanceof GraphQLScalarType)) {
+      throw new Error(
+        `Drizzle-GraphQL Error: Scalar override for column '${tableName}.${columnName}' must be a GraphQLScalarType!`,
+      );
+    }
+  }
+
+  return pair;
+};
+
+/**
+ * Resolves the scalar-override config against every column of the given tables and stores
+ * the result in the override registry. Called once per schema build, before any types are
+ * generated — and always, even with no config, so a rebuild clears overrides left behind
+ * by a previous build against the same table objects.
+ *
+ * The declarative `scalars` map wins over `mapColumnType`; a mapper returning `undefined`
+ * leaves the column on built-in detection.
+ */
+export const registerScalarOverrides = (
+  tables: Record<string, Table>,
+  config: { scalars?: ScalarOverridesConfig; mapColumnType?: ColumnTypeMapper },
+): void => {
+  for (const [tableName, table] of Object.entries(tables)) {
+    for (const [columnName, column] of Object.entries(getTableColumns(table))) {
+      const declared = config.scalars?.[tableName]?.[columnName];
+
+      let resolved: { output?: GraphQLScalarType; input?: GraphQLScalarType } | undefined;
+      if (declared !== undefined) {
+        resolved = normalizeScalarOverride(declared, tableName, columnName);
+      } else if (config.mapColumnType) {
+        // Built-in detection throws for column types it has no mapping for; the mapper is
+        // exactly the tool to type such columns, so a failed default becomes `undefined`
+        // rather than an error.
+        let defaultType: GraphQLOutputType | undefined;
+        let defaultInputType: GraphQLInputType | undefined;
+        try {
+          defaultType = columnToGraphQLCore(column, columnName, tableName, false).type as GraphQLOutputType;
+        } catch {}
+        try {
+          defaultInputType = columnToGraphQLCore(column, columnName, tableName, true).type as GraphQLInputType;
+        } catch {}
+
+        const mapped = config.mapColumnType(column, { tableName, columnName, defaultType, defaultInputType });
+        if (mapped !== undefined) {
+          resolved = normalizeScalarOverride(mapped, tableName, columnName);
+        }
+      }
+
+      if (resolved && (resolved.output !== undefined || resolved.input !== undefined)) {
+        columnScalarOverrides.set(column, resolved);
+      } else {
+        columnScalarOverrides.delete(column);
+      }
+    }
+  }
+};
+
 export const drizzleColumnToGraphQLType = <TColumn extends Column, TIsInput extends boolean>(
   column: TColumn,
   columnName: string,
@@ -198,11 +288,19 @@ export const drizzleColumnToGraphQLType = <TColumn extends Column, TIsInput exte
   defaultIsNullable = false,
   isInput: TIsInput = false as TIsInput,
 ): ConvertedColumn<TIsInput> => {
-  const typeDesc = columnToGraphQLCore(column, columnName, tableName, isInput);
-  const noDesc = ['string', 'boolean', 'number'];
-  const { type: baseType } = extractExtendedColumnType(column);
-  if (noDesc.find((e) => e === baseType)) {
-    delete typeDesc.description;
+  const override = getColumnScalarOverride(column, isInput);
+  let typeDesc: ConvertedColumn<boolean>;
+  if (override) {
+    // The override replaces built-in detection entirely; the description mirrors the
+    // pattern used for the built-in named scalars (BigInt, DateTime, JSON, …).
+    typeDesc = { type: override, description: override.name };
+  } else {
+    typeDesc = columnToGraphQLCore(column, columnName, tableName, isInput);
+    const noDesc = ['string', 'boolean', 'number'];
+    const { type: baseType } = extractExtendedColumnType(column);
+    if (noDesc.find((e) => e === baseType)) {
+      delete typeDesc.description;
+    }
   }
 
   if (forceNullable) {
