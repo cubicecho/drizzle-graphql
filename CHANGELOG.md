@@ -1,3 +1,10 @@
+# [5.4.0](https://github.com/cubicecho/drizzle-graphql/compare/v5.3.0...v5.4.0) (2026-08-26)
+
+
+### Features
+
+* **mutations:** add update<Table>Many batch update with per-row values ([a2f6ca7](https://github.com/cubicecho/drizzle-graphql/commit/a2f6ca713d775b34ec51518a71f79d8c128bf1cc)), closes [#26](https://github.com/cubicecho/drizzle-graphql/issues/26)
+
 # [5.3.0](https://github.com/cubicecho/drizzle-graphql/compare/v5.2.0...v5.3.0) (2026-08-26)
 
 
