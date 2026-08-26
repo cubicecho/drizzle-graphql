@@ -20,6 +20,7 @@ import {
   type AggregateResolver,
   buildSchema,
   type DeleteResolver,
+  type DeleteSingleResolver,
   type ExtractTables,
   type GeneratedEntities,
   type InsertArrResolver,
@@ -27,6 +28,7 @@ import {
   type SelectResolver,
   type SelectSingleResolver,
   type UpdateResolver,
+  type UpdateSingleResolver,
 } from '@/index';
 import * as schema from './schema/sqlite';
 import { GraphQLClient } from './util/query';
@@ -2951,6 +2953,28 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
+            updateUsersSingle: z
+              .object({
+                args: z
+                  .object({
+                    set: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
             deleteUsers: z
               .object({
                 args: z
@@ -2966,6 +2990,23 @@ describe.sequential('Returned data tests', () => {
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
                 type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            deleteUsersSingle: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
             createPosts: z
@@ -3024,6 +3065,28 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
+            updatePostsSingle: z
+              .object({
+                args: z
+                  .object({
+                    set: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
             deletePosts: z
               .object({
                 args: z
@@ -3039,6 +3102,23 @@ describe.sequential('Returned data tests', () => {
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
                 type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            deletePostsSingle: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
             createCustomers: z
@@ -3097,6 +3177,28 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
+            updateCustomersSingle: z
+              .object({
+                args: z
+                  .object({
+                    set: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
             deleteCustomers: z
               .object({
                 args: z
@@ -3112,6 +3214,23 @@ describe.sequential('Returned data tests', () => {
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
                 type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            deleteCustomersSingle: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
           })
@@ -3371,6 +3490,37 @@ describe.sequential('Type tests', () => {
           resolve: UpdateResolver<typeof schema.Users, false>;
         };
       } & {
+        readonly updateCustomersSingle: {
+          type: GraphQLObjectType;
+          args: {
+            set: {
+              type: GraphQLNonNull<GraphQLInputObjectType>;
+            };
+            where: { type: GraphQLNonNull<GraphQLInputObjectType> };
+          };
+          resolve: UpdateSingleResolver<typeof schema.Customers, false>;
+        };
+        readonly updatePostsSingle: {
+          type: GraphQLObjectType;
+          args: {
+            set: {
+              type: GraphQLNonNull<GraphQLInputObjectType>;
+            };
+            where: { type: GraphQLNonNull<GraphQLInputObjectType> };
+          };
+          resolve: UpdateSingleResolver<typeof schema.Posts, false>;
+        };
+        readonly updateUsersSingle: {
+          type: GraphQLObjectType;
+          args: {
+            set: {
+              type: GraphQLNonNull<GraphQLInputObjectType>;
+            };
+            where: { type: GraphQLNonNull<GraphQLInputObjectType> };
+          };
+          resolve: UpdateSingleResolver<typeof schema.Users, false>;
+        };
+      } & {
         readonly deleteCustomers: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
@@ -3391,6 +3541,28 @@ describe.sequential('Type tests', () => {
             where: { type: GraphQLInputObjectType };
           };
           resolve: DeleteResolver<typeof schema.Users, false>;
+        };
+      } & {
+        readonly deleteCustomersSingle: {
+          type: GraphQLObjectType;
+          args: {
+            where: { type: GraphQLNonNull<GraphQLInputObjectType> };
+          };
+          resolve: DeleteSingleResolver<typeof schema.Customers, false>;
+        };
+        readonly deletePostsSingle: {
+          type: GraphQLObjectType;
+          args: {
+            where: { type: GraphQLNonNull<GraphQLInputObjectType> };
+          };
+          resolve: DeleteSingleResolver<typeof schema.Posts, false>;
+        };
+        readonly deleteUsersSingle: {
+          type: GraphQLObjectType;
+          args: {
+            where: { type: GraphQLNonNull<GraphQLInputObjectType> };
+          };
+          resolve: DeleteSingleResolver<typeof schema.Users, false>;
         };
       }
     >();

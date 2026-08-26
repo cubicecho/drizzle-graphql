@@ -129,6 +129,16 @@ describe('MySQL mutations are returnless', () => {
     expect(entities.mutations['deletePosts'].type).toBe(entities.types['MutationReturn']);
   });
 
+  it('single update/delete variants return MutationReturn and require where', () => {
+    expect(entities.mutations['updateUsersSingle'].type).toBe(entities.types['MutationReturn']);
+    expect(entities.mutations['deleteUsersSingle'].type).toBe(entities.types['MutationReturn']);
+    expect(entities.mutations['updateUsersSingle'].args['where'].type).toBeInstanceOf(GraphQLNonNull);
+    expect(entities.mutations['deleteUsersSingle'].args['where'].type).toBeInstanceOf(GraphQLNonNull);
+    // Plural where stays nullable by default.
+    expect(entities.mutations['updateUsers'].args['where'].type).not.toBeInstanceOf(GraphQLNonNull);
+    expect(entities.mutations['deleteUsers'].args['where'].type).not.toBeInstanceOf(GraphQLNonNull);
+  });
+
   it('generates no upsert mutations unless the feature is on', () => {
     expect(entities.mutations['upsertUsers']).toBeUndefined();
     expect(entities.types['UsersOnConflict']).toBeUndefined();
@@ -146,16 +156,20 @@ describe('MySQL mutations are returnless', () => {
     expect(upsertEntities.mutations['upsertPosts']).toBeDefined();
   });
 
-  it('all 6 mutations exist per table (array+single insert, update, delete)', () => {
+  it('all mutations exist per table (array+single insert, update, delete, and their single variants)', () => {
     const mutationKeys = Object.keys(entities.mutations);
     // Users
     expect(mutationKeys).toContain('createUsers');
     expect(mutationKeys).toContain('createUsersSingle');
     expect(mutationKeys).toContain('updateUsers');
+    expect(mutationKeys).toContain('updateUsersSingle');
     expect(mutationKeys).toContain('deleteUsers');
+    expect(mutationKeys).toContain('deleteUsersSingle');
     // Posts
     expect(mutationKeys).toContain('createPosts');
     expect(mutationKeys).toContain('deletePosts');
+    expect(mutationKeys).toContain('updatePostsSingle');
+    expect(mutationKeys).toContain('deletePostsSingle');
   });
 });
 

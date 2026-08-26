@@ -2865,7 +2865,9 @@ export const computeResolverFieldNames = (
   upsertArrayFieldName: string;
   upsertSingleFieldName: string;
   updateFieldName: string;
+  updateSingleFieldName: string;
   deleteFieldName: string;
+  deleteSingleFieldName: string;
 } => {
   const mapped = typeNameMapper?.(tableName);
   const typeName = mapped ? capitalize(mapped.singular) : capitalize(tableName);
@@ -2884,6 +2886,13 @@ export const computeResolverFieldNames = (
     : `${upsertPrefix}${capitalize(tableName)}${suffixes.single}`;
   const updateFieldName = `${prefixes.update}${mapped ? capitalize(mapped.singular) : capitalize(tableName)}`;
   const deleteFieldName = `${prefixes.delete}${mapped ? capitalize(mapped.singular) : capitalize(tableName)}`;
+  // The plural update/delete mutations already use the singular noun when a mapper is
+  // present, so — unlike create — the Single variants can't rely on singular vs plural to
+  // stay distinct. They always carry a suffix, falling back to 'Single' when the configured
+  // suffix is empty (a mapper config may set it to '' for the query side).
+  const writeSingleSuffix = suffixes.single === '' ? 'Single' : suffixes.single;
+  const updateSingleFieldName = `${updateFieldName}${writeSingleSuffix}`;
+  const deleteSingleFieldName = `${deleteFieldName}${writeSingleSuffix}`;
   return {
     typeName,
     listFieldName,
@@ -2895,8 +2904,47 @@ export const computeResolverFieldNames = (
     upsertArrayFieldName,
     upsertSingleFieldName,
     updateFieldName,
+    updateSingleFieldName,
     deleteFieldName,
+    deleteSingleFieldName,
   };
+};
+
+/**
+ * Extracts a `where` argument that a mutation refuses to run without: missing, or present
+ * but matching every row (e.g. `where: {}` or filters that all collapse to nothing), both
+ * throw instead of becoming an unbounded write. Used by the `Single` write variants always
+ * and by the plural update/delete mutations when `features.requireWhere` is on.
+ */
+export const extractRequiredFilters = <TTable extends Table>(
+  table: TTable,
+  tableName: string,
+  where: Filters<TTable> | undefined,
+  fieldName: string,
+  relationCtx?: RelationFilterContext,
+): SQL => {
+  const filters = where ? extractFilters(table, tableName, where, relationCtx) : undefined;
+  if (!filters) {
+    throw new GraphQLError(`${fieldName} requires a 'where' argument with at least one filter!`);
+  }
+  return filters;
+};
+
+/**
+ * Guard for the `Single` write variants: throws before anything is written when `where`
+ * matches more than one row, so a multi-row update/delete never executes. Probed with a
+ * `LIMIT 2` select rather than a count so the check stays cheap on large matches.
+ */
+export const assertSingleMatch = async (
+  executor: any,
+  table: Table,
+  filters: SQL,
+  fieldName: string,
+): Promise<void> => {
+  const matched = await executor.select({ found: sql`1` }).from(table).where(filters).limit(2);
+  if (matched.length > 1) {
+    throw new GraphQLError(`${fieldName}: 'where' matched more than one row — nothing was written!`);
+  }
 };
 
 /** GraphQL argument map for a list/array select field. */
