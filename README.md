@@ -623,6 +623,28 @@ Generated schemas resolve nested relations without N+1 query explosions:
 > **SQLite 3.25+**. Relations without pagination, and all other query/mutation paths,
 > have no such requirement.
 
+### Relation nullability
+
+A **to-many** relation field is always `[Target!]!`. A **to-one** relation field is
+nullable by default, but honors the relation's declared optionality: declaring
+`optional: false` on a Drizzle `one` relation — the assertion that the related row always
+exists, i.e. a `NOT NULL` foreign key — emits the field as `Target!`:
+
+```Typescript
+const relations = buildRelations({ Users, Posts }, {
+    Posts: {
+        // posts.author_id is NOT NULL → author: Users!
+        author: r.one.Users({ from: r.Posts.authorId, to: r.Users.id, optional: false }),
+    },
+})
+```
+
+Only the explicit `optional: false` declaration is honored — required-ness is never
+inferred from column nullability, since a `NOT NULL` `from` column does not guarantee a
+related row exists when the constraint lives on the other side of the join. Note that on a
+required relation, a `where` argument that filters out the related row (or a dangling
+foreign key) resolves to `null` and therefore surfaces as a GraphQL non-null error.
+
 ### Overriding a relation's resolver without overfetching
 
 By default the eager `with:` pre-fetch is driven purely by the GraphQL selection set:
