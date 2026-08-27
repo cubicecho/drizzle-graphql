@@ -8,12 +8,15 @@ import type { AnyDrizzleDB } from '../types.ts';
 import {
   attachTargetPrimaryKeys,
   buildNamedRelations,
+  type DerivedTypeNameMapper,
   extractRelationsParams,
   getPrimaryKeyPropNamesFromConfig,
   type RelationFilterBase,
-  resolveTypeName,
+  resolveGeneratedTypeNames,
+  resolveObjectTypeName,
   runRelationalSelect,
   type TypeNameMapper,
+  type TypeNameResolver,
 } from './builders/common.ts';
 import type { TableNamedRelations } from './builders/types.ts';
 
@@ -118,7 +121,23 @@ export type SelectionOptions = {
    * pass the same mapper here or nothing will match.
    */
   typeNameMapper?: TypeNameMapper;
+  /**
+   * The `derivedTypeNameMapper` / `typeNamePrefix` / `typeNameSuffix` the schema was built
+   * with, when any were configured. Same reason as `typeNameMapper`: the translation matches
+   * selections against the names the build actually published.
+   */
+  derivedTypeNameMapper?: DerivedTypeNameMapper;
+  typeNamePrefix?: string;
+  typeNameSuffix?: string;
 };
+
+/** The build's naming rule, reassembled from the three options a caller passes back. */
+const namingRuleOf = (options: SelectionOptions): TypeNameResolver =>
+  resolveGeneratedTypeNames({
+    derivedTypeNameMapper: options.derivedTypeNameMapper,
+    typeNamePrefix: options.typeNamePrefix,
+    typeNameSuffix: options.typeNameSuffix,
+  });
 
 /**
  * Reads the parsed selection tree out of a resolver's `info`, resolving fragments and
@@ -158,6 +177,7 @@ export const selectionToWith = (
   options: SelectionOptions,
 ): Record<string, any> | undefined => {
   const { db, table, typeNameMapper } = options;
+  const resolveName = namingRuleOf(options);
   const { tables, relationMap, filterCtx } = contextFor(db);
   if (!tables[table]) {
     throw new Error(`Drizzle-GraphQL Error: '${table}' is not a table in the Drizzle schema.`);
@@ -172,9 +192,13 @@ export const selectionToWith = (
     tables,
     table,
     parsed,
-    resolveTypeName(table, typeNameMapper),
+    resolveObjectTypeName(table, typeNameMapper, resolveName),
     typeNameMapper,
     filterCtx,
+    undefined,
+    undefined,
+    undefined,
+    resolveName,
   );
   // A selection with no relations in it gets no `with` clause at all, rather than an empty
   // object the query builder would have to be asked to ignore.
@@ -230,6 +254,7 @@ export const resolveSelection = async (
     offset,
     after,
   } = options;
+  const resolveName = namingRuleOf(options);
   const { tables, relationMap, filterCtx, primaryKeyOf } = contextFor(db);
   const table = tables[tableName];
   if (!table) {
@@ -255,8 +280,9 @@ export const resolveSelection = async (
     tableName,
     table,
     relationMap,
-    typeName: resolveTypeName(tableName, typeNameMapper),
+    typeName: resolveObjectTypeName(tableName, typeNameMapper, resolveName),
     typeNameMapper,
+    resolveName,
     parsedInfo,
     single,
     where,

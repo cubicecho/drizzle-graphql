@@ -364,6 +364,56 @@ const { schema } = buildSchema(db, {
 
 Return `undefined` for any table that should keep its default naming.
 
+### Renaming the derived types
+
+`typeNameMapper` names the table. Everything derived from it — `UsersFilters`, `UsersOrderBy`,
+`CreateUsersInput`, `UsersAggregate`, and the shared inputs like `InnerOrder` and `StringFilter` —
+follows the default template. Two schemas built from different databases therefore collide the
+moment they are stitched into one gateway: both publish a `StringFilter`, and the two are not the
+same type.
+
+`typeNamePrefix` and `typeNameSuffix` move a whole build into its own namespace:
+
+```Typescript
+const { schema } = buildSchema(db, { typeNamePrefix: 'Shop' })
+// type ShopUsers; input ShopUsersFilters, ShopCreateUsersInput, ShopInnerOrder, ShopStringFilter…
+```
+
+The prefix must be a valid GraphQL name start (`/^[_A-Za-z][_0-9A-Za-z]*$/`) and the suffix a valid
+continuation (`/^[_0-9A-Za-z]+$/`); anything else throws at build time rather than producing a
+schema graphql-js will reject.
+
+For control over one kind of type rather than all of them, `derivedTypeNameMapper` is asked for
+every type the build constructs:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    typeNamePrefix: 'Shop',
+    derivedTypeNameMapper: ({ kind, defaultName, table }) =>
+        kind === 'filter' ? `${table}Where` : undefined,
+})
+// input UsersWhere; everything it declined keeps the prefix — ShopUsers, ShopUsersOrderBy…
+```
+
+`kind` is one of `object`, `filter`, `listRelationFilter`, `orderBy`, `createInput`, `updateInput`,
+`updateManyInput`, `nestedWriteInput`, `fieldUpdateInput`, `aggregate`, `having`, `groupBy`,
+`groupKeys`, `onConflict`, `uniqueKey`, `columnEnum`, `columnFilter` and `shared`. `table` is the
+Drizzle schema key the type belongs to, where it belongs to one, and `operation` further identifies
+it (the aggregate's `avg`, the column filter's `String`, the unique key's field name). An answer is
+used **verbatim** — the prefix and suffix are the fallback, not a wrapper around it. Return
+`undefined` to fall back.
+
+Custom scalars (`BigInt`, `Decimal`, …), PostgreSQL enum types and `PgGeometryObject` keep their own
+names under all three options: their definition does not vary between builds, so a gateway merges
+them rather than colliding on them.
+
+The [`resolveSelection` and `selectionToWith` helpers](#writing-your-own-resolver-over-a-generated-type) match selections
+against GraphQL type names, so an override in a renamed build passes the same three options back:
+
+```Typescript
+resolveSelection(info, { db, table: 'Users', typeNamePrefix: 'Shop' })
+```
+
 ## Soft delete
 
 `softDelete` turns a table's `delete` mutation into an UPDATE that marks the row, and hides
@@ -2136,6 +2186,7 @@ that explains it, where there is one.
 | `exclude` | none | [tables and columns left out](#excluding-tables-and-columns) of the generated schema entirely |
 | `relationsDepthLimit` | unlimited | how deep relation fields are generated; `0` gives a flat, columns-only schema |
 | `prefixes` / `suffixes` / `typeNameMapper` | see [Naming](#naming) | operation and type names |
+| `typeNamePrefix` / `typeNameSuffix` / `derivedTypeNameMapper` | none | [names of the derived types](#renaming-the-derived-types) — filters, inputs, aggregates, shared inputs |
 | `scalars` / `mapColumnType` | built-in detection | [override a column's GraphQL type](#overriding-a-columns-scalar), by name or by rule |
 | `enumNameMapper` | shared `<EnumName>Enum` per database enum | [names the enum a column maps to](#enum-types) |
 | `describeColumn` / `describeTable` / `describeRelation` | none | [GraphQL descriptions](#documenting-the-schema) |

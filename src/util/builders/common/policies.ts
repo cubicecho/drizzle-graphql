@@ -8,6 +8,7 @@ import { drizzleError } from './errors.ts';
 import type { DefaultOrderByFor } from './limits.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
+import { sharedType, type TypeNameResolver } from './type-names.ts';
 import type { WriteHookFor } from './write-hooks.ts';
 
 /**
@@ -73,18 +74,25 @@ export type SoftDeleteInfo = {
 export type SoftDeleteFor = (tableName: string) => SoftDeleteInfo | undefined;
 
 /**
- * The enum behind the `deleted` argument on every read over a soft-deleting table. One
- * instance shared by every build — it carries no per-build state.
+ * The enum behind the `deleted` argument on every read over a soft-deleting table. Built once
+ * per name it resolves to — it carries no per-build state beyond that name, so every build
+ * that names it the same way shares one instance.
  */
-export const deletedFilterEnum = new GraphQLEnumType({
-  name: 'DeletedFilter',
-  description: 'Which rows a read over a soft-deleting table returns.',
-  values: {
-    EXCLUDE: { value: 'EXCLUDE', description: 'Only rows that are not marked deleted. The default.' },
-    INCLUDE: { value: 'INCLUDE', description: 'Marked and unmarked rows alike.' },
-    ONLY: { value: 'ONLY', description: 'Only rows that are marked deleted — a trash view.' },
-  },
-});
+export const deletedFilterEnumType = (typeName: TypeNameResolver): GraphQLEnumType =>
+  sharedType(
+    typeName,
+    { kind: 'shared', defaultName: 'DeletedFilter' },
+    (name) =>
+      new GraphQLEnumType({
+        name,
+        description: 'Which rows a read over a soft-deleting table returns.',
+        values: {
+          EXCLUDE: { value: 'EXCLUDE', description: 'Only rows that are not marked deleted. The default.' },
+          INCLUDE: { value: 'INCLUDE', description: 'Marked and unmarked rows alike.' },
+          ONLY: { value: 'ONLY', description: 'Only rows that are marked deleted — a trash view.' },
+        },
+      }),
+  );
 
 /**
  * Resolves one table's `softDelete` declaration against the real column, at build time, so a

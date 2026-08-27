@@ -22,6 +22,7 @@ import {
 import {
   applyContextValues,
   applyContextValuesAll,
+  applyObjectTypeName,
   assertSingleMatch,
   type DrizzleErrorContext,
   drizzleError,
@@ -44,6 +45,7 @@ import {
   type SelectionCtx,
   stripContextValues,
   type TypeNameMapper,
+  type TypeNameResolver,
   toGraphQLError,
   type WriteOperation,
   withErrorContext,
@@ -83,6 +85,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
     nested?: NestedWriteRuntime,
     limits?: LimitPolicyFor,
     policies?: ResolverPolicies,
+    /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
+    resolveName?: TypeNameResolver,
   ): CreatedResolver => {
     const queryArgs: GraphQLFieldConfigArgumentMap = {
       values: {
@@ -145,6 +149,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
                 tableName,
                 typeName,
                 typeNameMapper,
+                resolveName,
                 table,
                 pkNames,
                 parsedInfo,
@@ -220,6 +225,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
     nested?: NestedWriteRuntime,
     limits?: LimitPolicyFor,
     policies?: ResolverPolicies,
+    /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
+    resolveName?: TypeNameResolver,
   ): CreatedResolver => {
     const queryArgs: GraphQLFieldConfigArgumentMap = {
       values: {
@@ -273,6 +280,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
                 tableName,
                 typeName,
                 typeNameMapper,
+                resolveName,
                 table,
                 pkNames,
                 parsedInfo,
@@ -366,6 +374,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
     nested?: NestedWriteRuntime,
     limits?: LimitPolicyFor,
     policies?: ResolverPolicies,
+    /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
+    resolveName?: TypeNameResolver,
   ): CreatedResolver => {
     const queryArgs: GraphQLFieldConfigArgumentMap = {
       values: {
@@ -432,6 +442,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
                 tableName,
                 typeName,
                 typeNameMapper,
+                resolveName,
                 table,
                 pkNames,
                 parsedInfo,
@@ -537,6 +548,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
     nested?: NestedWriteRuntime,
     limits?: LimitPolicyFor,
     policies?: ResolverPolicies,
+    /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
+    resolveName?: TypeNameResolver,
   ): CreatedResolver => {
     const queryArgs = {
       set: {
@@ -584,6 +597,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
                 tableName,
                 typeName,
                 typeNameMapper,
+                resolveName,
                 table,
                 pkNames,
                 parsedInfo,
@@ -715,6 +729,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
     txCtx?: MutationTxCtx,
     policies?: ResolverPolicies,
     restore: boolean = false,
+    /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
+    resolveName?: TypeNameResolver,
   ): CreatedResolver => {
     const softDelete = policies?.softDelete?.(tableName);
     const operation: WriteOperation = restore ? 'restore' : 'delete';
@@ -760,7 +776,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
               }) as ResolveTree;
 
               const columns = extractSelectedColumnsFromTreeSQLFormat(
-                parsedInfo.fieldsByTypeName[typeName]!,
+                parsedInfo.fieldsByTypeName[applyObjectTypeName(typeName, tableName, resolveName)]!,
                 table,
                 selectionCtx,
               );

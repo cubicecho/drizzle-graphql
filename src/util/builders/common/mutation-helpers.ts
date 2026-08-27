@@ -16,6 +16,7 @@ import { type DrizzleErrorContext, drizzleError, toGraphQLError, withErrorContex
 import { withPrimaryKeyColumns } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import type { TypeNameMapper } from './naming.ts';
+import { resolveObjectTypeName } from './naming.ts';
 import type { ScopeResolver } from './policies.ts';
 import type { RelationFilterBase, RelationFilterContext } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
@@ -23,6 +24,8 @@ import { extractRelationsParams } from './relation-params.ts';
 import { extractSelectedColumnsFromTreeSQLFormat } from './selected-columns.ts';
 import type { MutationTxCtx } from './transactions.ts';
 import { runMutation } from './transactions.ts';
+import type { TypeCacheCtx } from './type-cache.ts';
+import type { TypeNameResolver } from './type-names.ts';
 
 /**
  * The `hard` argument on the delete mutations of a soft-deleting table that opted into
@@ -54,12 +57,15 @@ export const prepareMutationRelationColumns = (params: {
   limits?: LimitPolicyFor;
   scope?: ScopeResolver;
   defaultOrderBy?: DefaultOrderByFor;
+  /** The build's type-naming rule — the selection tree is keyed by the name it produced. */
+  resolveName?: TypeNameResolver;
 }): {
   columns: Record<string, Column>;
   hasRelations: boolean;
   withParams: Record<string, Partial<ProcessedTableSelectArgs>> | undefined;
 } => {
-  const { relationMap, tables, tableName, typeName, typeNameMapper, table, pkNames, parsedInfo } = params;
+  const { relationMap, tables, tableName, typeNameMapper, table, pkNames, parsedInfo, resolveName } = params;
+  const typeName = resolveObjectTypeName(tableName, typeNameMapper, resolveName);
   const withParams = relationMap[tableName]
     ? extractRelationsParams(
         relationMap,
@@ -72,6 +78,7 @@ export const prepareMutationRelationColumns = (params: {
         params.limits,
         params.scope,
         params.defaultOrderBy,
+        resolveName,
       )
     : undefined;
   const hasRelations = !!(withParams && Object.keys(withParams).length);
@@ -89,14 +96,20 @@ export const prepareMutationRelationColumns = (params: {
  * update `set` input and filter input. Shared by all three dialect builders.
  */
 export const generateUpdateManyInput = (params: {
+  tableName: string;
   typeName: string;
   updatePrefix: string;
   updateInput: GraphQLInputObjectType;
   tableFilters: GraphQLInputObjectType;
+  cacheCtx: TypeCacheCtx;
 }): GraphQLInputObjectType => {
-  const { typeName, updatePrefix, updateInput, tableFilters } = params;
+  const { tableName, typeName, updatePrefix, updateInput, tableFilters, cacheCtx } = params;
   return new GraphQLInputObjectType({
-    name: `${capitalize(updatePrefix)}${typeName}ManyInput`,
+    name: cacheCtx.typeName({
+      kind: 'updateManyInput',
+      defaultName: `${capitalize(updatePrefix)}${typeName}ManyInput`,
+      table: tableName,
+    }),
     description: `One entry of a batch update of ${typeName}: the rows \`where\` matches get this entry's \`set\` applied.`,
     fields: {
       where: {

@@ -28,6 +28,7 @@ import type { RelationFilterBase } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractRelationsParams } from './relation-params.ts';
 import { extractSelectedColumnsFromTree } from './selected-columns.ts';
+import type { TypeNameResolver } from './type-names.ts';
 
 /**
  * Runs the relational-query-builder select shared by every dialect's `generateSelect*`
@@ -60,6 +61,8 @@ export const runRelationalSelect = async (opts: {
   scope?: ScopeResolver;
   defaultOrderBy?: DefaultOrderByFor;
   deleted?: DeletedMode;
+  /** The build's type-naming rule, so a relation's target type is looked up under its real name. */
+  resolveName?: TypeNameResolver;
 }): Promise<any> => {
   const {
     queryBase,
@@ -209,6 +212,7 @@ export const runRelationalSelect = async (opts: {
           opts.limits,
           scope,
           opts.defaultOrderBy,
+          opts.resolveName,
         )
       : undefined,
   };

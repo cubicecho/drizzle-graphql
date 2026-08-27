@@ -23,7 +23,7 @@ import type {
   GraphQLSchema,
 } from 'graphql';
 
-import type { WriteHooks } from './util/builders/common.ts';
+import type { DerivedTypeNameMapper, WriteHooks } from './util/builders/common.ts';
 import type {
   Filters,
   GetRemappedTableDataType,
@@ -1000,10 +1000,15 @@ export type SoftDeleteColumn =
     };
 
 /**
- * The write-hook types, re-exported from the builder that defines them so a consumer can type
- * a hook without reaching into the package's internals. See {@link BuildSchemaConfig.onWrite}.
+ * The write-hook and generated-type-naming types, re-exported from the builders that define
+ * them so a consumer can type a hook or a name mapper without reaching into the package's
+ * internals. See {@link BuildSchemaConfig.onWrite} and
+ * {@link BuildSchemaConfig.derivedTypeNameMapper}.
  */
 export type {
+  DerivedTypeNameMapper,
+  GeneratedTypeInfo,
+  GeneratedTypeKind,
   WriteHook,
   WriteHookPayload,
   WriteHookPositions,
@@ -1480,6 +1485,58 @@ export type BuildSchemaConfig = {
    * table's names as they are: `(t) => (t === 'audit_log' ? undefined : singularizeMapper(t))`.
    */
   typeNameMapper?: 'singularize' | ((tableName: string) => { singular: string; plural: string } | undefined);
+  /**
+   * Renames the types generated *around* a table — the filter, the write inputs, the
+   * order-by, the aggregate family, the group-by types, the conflict input, the shared scalar
+   * filters. `typeNameMapper` names a table's object type and its root fields; those derived
+   * names follow from it by a fixed rule, and this is the hook that overrides the rule.
+   *
+   * Asked once per generated type, with the kind, the name the library would use, and the
+   * table it belongs to where it belongs to one. Return `undefined` — or the same name — to
+   * keep the default, so a mapper that answers for one kind leaves everything else alone:
+   *
+   * ```ts
+   * buildSchema(db, {
+   *   derivedTypeNameMapper: ({ kind, table, operation, defaultName }) =>
+   *     kind === 'aggregate' && operation ? `${table}Aggregate${operation}` : undefined,
+   * });
+   * ```
+   *
+   * A returned name is used verbatim — {@link BuildSchemaConfig.typeNamePrefix} and
+   * {@link BuildSchemaConfig.typeNameSuffix} do not wrap it, since the more specific of the
+   * two knobs wins.
+   *
+   * The point of it is stitching: a schema merged with a second generator over the same
+   * tables collides on the derived names constantly, because both derive them from the model
+   * name by the same obvious rule. Renaming them here means the collision never exists, rather
+   * than being papered over by a `RenameTypes` transform on the way out.
+   */
+  derivedTypeNameMapper?: DerivedTypeNameMapper;
+  /**
+   * Prepended to every generated type name — object types, filters, write inputs, the
+   * aggregate family, the shared scalar filters, everything — that
+   * {@link BuildSchemaConfig.derivedTypeNameMapper} did not answer for. The one-line way to
+   * make a whole subschema collision-free before stitching it:
+   *
+   * ```ts
+   * buildSchema(db, { typeNamePrefix: 'Db' });
+   * // type DbUsers, input DbUsersFilters, input DbStringFilter, enum DbOrderNulls, …
+   * ```
+   *
+   * Custom scalars, database enum types and `PgGeometryObject` keep their own names: their
+   * definition does not vary between builds, so a gateway merges them rather than colliding
+   * on them. Field and argument names are untouched too — only type names move, so a client's
+   * queries are unaffected apart from the names it spells in variable declarations.
+   *
+   * Must be a valid GraphQL name start (`/^[_A-Za-z][_0-9A-Za-z]*$/`); anything else throws.
+   */
+  typeNamePrefix?: string;
+  /**
+   * Appended to every generated type name that {@link BuildSchemaConfig.derivedTypeNameMapper}
+   * did not answer for. The counterpart of {@link BuildSchemaConfig.typeNamePrefix}; both may
+   * be given at once.
+   */
+  typeNameSuffix?: string;
   /**
    * Controls whether a relation is eagerly pre-fetched via Drizzle's `with:` clause
    * when its parent is loaded through a generated query or mutation.

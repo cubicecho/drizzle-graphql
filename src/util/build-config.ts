@@ -17,6 +17,7 @@ import {
   normalizeWriteHooks,
   type ResolvedLimitPolicy,
   type ResolvedWriteHooks,
+  resolveGeneratedTypeNames,
   resolveLimitPolicy,
   resolveSoftDeleteInfo,
   type SoftDeleteInfo,
@@ -57,6 +58,22 @@ export const resolveBuildConfig = (
 
   // `'singularize'` is the one shipped preset; anything else is the caller's own function.
   const typeNameMapper = config?.typeNameMapper === 'singularize' ? singularizeMapper : config?.typeNameMapper;
+
+  // The naming rule for every generated type. Validated here rather than left to graphql-js,
+  // whose complaint names the finished type and not the affix that produced it.
+  const affix = (value: string | undefined, key: 'typeNamePrefix' | 'typeNameSuffix', pattern: RegExp) => {
+    if (value !== undefined && !pattern.test(value)) {
+      throw new Error(
+        `Drizzle-GraphQL Error: config.${key} must be a valid GraphQL name fragment (letters, digits and underscores${key === 'typeNamePrefix' ? ', not starting with a digit' : ''}), got '${value}'.`,
+      );
+    }
+    return value;
+  };
+  const typeName = resolveGeneratedTypeNames({
+    derivedTypeNameMapper: config?.derivedTypeNameMapper,
+    typeNamePrefix: affix(config?.typeNamePrefix, 'typeNamePrefix', /^[_A-Za-z][_0-9A-Za-z]*$/),
+    typeNameSuffix: affix(config?.typeNameSuffix, 'typeNameSuffix', /^[_0-9A-Za-z]+$/),
+  });
 
   // Table keys this build generates for — what a per-table feature predicate is asked about.
   // Excluded tables are dropped up front so no predicate is ever consulted for a table that
@@ -425,6 +442,7 @@ export const resolveBuildConfig = (
     suffixes,
     conflictDoNothing: config?.conflictDoNothing ?? false,
     typeNameMapper,
+    typeName,
     shouldEagerLoad,
     features: config?.features ?? {},
     complexity,

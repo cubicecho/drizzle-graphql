@@ -4,6 +4,7 @@
 import type { Column, Table } from 'drizzle-orm';
 import { GraphQLEnumType } from 'graphql';
 import { excludedColumnsKey, visibleColumns } from './exclusions.ts';
+import type { TypeNameResolver } from './type-names.ts';
 
 /** Alias of the row-number helper column in the `distinct` pass. Namespaced against real columns. */
 export const DISTINCT_RN = '__drizzle_graphql_distinct_rn';
@@ -57,8 +58,24 @@ export const generateColumnEnum = (
   return enumType;
 };
 
-/** `${typeName}DistinctColumn` — the enum of columns a list query may be made distinct on. */
-export const generateDistinctEnum = (table: Table, typeName: string): GraphQLEnumType | undefined =>
-  generateColumnEnum(table, `${typeName}DistinctColumn`, `Columns of ${typeName} that a query can be made distinct on`);
+/**
+ * `${typeName}DistinctColumn` — the enum of columns a list query may be made distinct on.
+ *
+ * @param resolveName the build's naming rule, where the caller has one; the default name is
+ *   used as-is when it does not, which is what a consumer calling this directly gets.
+ */
+export const generateDistinctEnum = (
+  table: Table,
+  typeName: string,
+  resolveName?: TypeNameResolver,
+  tableKey?: string,
+): GraphQLEnumType | undefined => {
+  const defaultName = `${typeName}DistinctColumn`;
+  return generateColumnEnum(
+    table,
+    resolveName?.({ kind: 'columnEnum', defaultName, table: tableKey, operation: 'distinct' }) ?? defaultName,
+    `Columns of ${typeName} that a query can be made distinct on`,
+  );
+};
 
 // ── upsert / conflict handling ────────────────────────────────────────────────

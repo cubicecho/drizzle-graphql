@@ -20,11 +20,13 @@ import {
   type NullOrdering,
   type RelationFilterBase,
   type ResolverPolicies,
+  resolveObjectTypeName,
   resolveQueryExecutor,
   runRelationalSelect,
   selectArrayArgs,
   selectSingleArgs,
   type TypeNameMapper,
+  type TypeNameResolver,
   toGraphQLError,
   withDefaultOrderBy,
   withErrorContext,
@@ -47,6 +49,8 @@ export type SelectArrayGenerator = (
   distinctEnabled?: boolean,
   limits?: LimitPolicyFor,
   policies?: ResolverPolicies,
+  /** The build's type-naming rule, which names the `distinct` enum. */
+  resolveName?: TypeNameResolver,
 ) => CreatedResolver;
 
 /** `<table>Single` — the same read, capped at one row. */
@@ -63,6 +67,8 @@ export type SelectSingleGenerator = (
   filterCtx?: RelationFilterBase,
   limits?: LimitPolicyFor,
   policies?: ResolverPolicies,
+  /** The build's type-naming rule, which names the `deleted` argument's enum. */
+  resolveName?: TypeNameResolver,
 ) => CreatedResolver;
 
 /** The table's entry in `db.query`, which is what a relational read runs through. */
@@ -99,6 +105,7 @@ export const createSelectGenerators = (
     distinctEnabled = true,
     limits,
     policies,
+    resolveName,
   ): CreatedResolver => {
     const queryBase = queryBaseFor(db, tableName);
 
@@ -109,10 +116,13 @@ export const createSelectGenerators = (
     const queryArgs = selectArrayArgs(
       orderArgs,
       filterArgs,
-      distinctEnabled ? generateDistinctEnum(table, typeName) : undefined,
+      distinctEnabled ? generateDistinctEnum(table, typeName, resolveName, tableName) : undefined,
       policies?.softDelete,
       tableName,
+      resolveName,
     );
+    // The name the object type actually carries — what `fieldsByTypeName` is keyed by.
+    const objectTypeName = resolveObjectTypeName(tableName, typeNameMapper, resolveName);
 
     return {
       name: fieldName,
@@ -130,8 +140,9 @@ export const createSelectGenerators = (
             tableName,
             table,
             relationMap,
-            typeName,
+            typeName: objectTypeName,
             typeNameMapper,
+            resolveName,
             parsedInfo,
             ...args,
             limit: applyLimitPolicy(args.limit, limitPolicy),
@@ -165,10 +176,12 @@ export const createSelectGenerators = (
     filterCtx,
     limits,
     policies,
+    resolveName,
   ): CreatedResolver => {
     const queryBase = queryBaseFor(db, tableName);
 
-    const queryArgs = selectSingleArgs(orderArgs, filterArgs, policies?.softDelete, tableName);
+    const queryArgs = selectSingleArgs(orderArgs, filterArgs, policies?.softDelete, tableName, resolveName);
+    const objectTypeName = resolveObjectTypeName(tableName, typeNameMapper, resolveName);
 
     const table = tables[tableName]!;
     const pkNames = primaryKeyPropNames(table);
@@ -188,8 +201,9 @@ export const createSelectGenerators = (
             tableName,
             table,
             relationMap,
-            typeName,
+            typeName: objectTypeName,
             typeNameMapper,
+            resolveName,
             parsedInfo,
             ...args,
             single: true,

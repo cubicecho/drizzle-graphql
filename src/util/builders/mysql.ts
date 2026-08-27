@@ -19,6 +19,7 @@ import {
   attachTargetPrimaryKeys,
   bindPolicies,
   buildNamedRelations,
+  buildUniqueKeyMap,
   computeResolverFieldNames,
   createMutationTxCtx,
   createRelationResolverFactory,
@@ -31,6 +32,7 @@ import {
   generateUpdateManyInput,
   generateWriteCount,
   getPrimaryKeyPropNamesFromConfig,
+  getUniqueColumnSets,
   hardDeleteArg,
   listFieldComplexity,
   type MutationTxCtx,
@@ -50,6 +52,8 @@ import {
   type TablesRelationalConfig,
   type TypeCacheCtx,
   toGraphQLError,
+  type UniqueKeyMap,
+  visibleColumns,
   type WriteOperation,
   withErrorContext,
   withScope,
@@ -726,7 +730,24 @@ export const generateSchemaData = <
   // Pruned map for query resolvers' `with:`; type generation keeps the full map.
   const eagerRelations = pruneNonEagerRelations(namedRelations, shouldEagerLoad);
 
-  const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations };
+  // A `where` field per compound unique constraint, for the tables that asked for one. Built
+  // once and shared by the input types and the resolvers: the fields a request may spell and
+  // the fields a resolver understands are the same map, so neither can drift from the other.
+  const uniqueKeys: Record<string, UniqueKeyMap> = {};
+  for (const [tableName, table] of tableEntries) {
+    if (!featureOf(tableName).uniqueKeyFilters) {
+      continue;
+    }
+    // Whatever the filter input already offers under a name keeps it — columns are added
+    // first, then relations, and a key field last.
+    const taken = new Set([...Object.keys(visibleColumns(table)), ...Object.keys(namedRelations[tableName] ?? {})]);
+    const map = buildUniqueKeyMap(getUniqueColumnSets(table, getTableConfig), taken);
+    if (Object.keys(map).length) {
+      uniqueKeys[tableName] = map;
+    }
+  }
+
+  const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations, uniqueKeys };
 
   // The row scope compiled against this build's relation graph, plus the columns whose value
   // the server supplies. Both stay undefined unless configured.
@@ -747,6 +768,7 @@ export const generateSchemaData = <
   // Fresh cache per generateSchemaData call — prevents type name collisions
   // when buildSchema() is called multiple times.
   const cacheCtx: TypeCacheCtx = {
+    typeName: options.typeName ?? ((info) => info.defaultName),
     genericFilterCache: new Map(),
     objectTypeCache: new Map(),
     relationFieldContainers: new Map(),
@@ -765,6 +787,7 @@ export const generateSchemaData = <
     contextValuesOf,
     softDeleteOf,
     featureOf,
+    uniqueKeysOf: (tableName) => uniqueKeys[tableName],
   };
 
   // Built when at least one table wants relation aggregates; a table that has them off is
@@ -799,7 +822,7 @@ export const generateSchemaData = <
   );
 
   const mutationReturnType = new GraphQLObjectType({
-    name: 'MutationReturn',
+    name: cacheCtx.typeName({ kind: 'shared', defaultName: 'MutationReturn' }),
     fields: {
       isSuccess: {
         type: new GraphQLNonNull(GraphQLBoolean),
@@ -864,6 +887,7 @@ export const generateSchemaData = <
       tableFeatures.distinct,
       limits,
       policies,
+      cacheCtx.typeName,
     );
     const selectSingleGenerated = generateSelectSingle(
       db,
@@ -878,6 +902,7 @@ export const generateSchemaData = <
       filterCtx,
       limits,
       policies,
+      cacheCtx.typeName,
     );
     const insertArrGenerated = tableFeatures.insert
       ? generateInsertArray(
@@ -906,10 +931,12 @@ export const generateSchemaData = <
     const onConflictInput = tableFeatures.upsert
       ? generateOnConflictInput({
           table: schema[tableName] as MySqlTable,
+          tableName,
           typeName,
           uniqueSets: [],
           tableFilters,
           withTarget: false,
+          cacheCtx,
         })
       : undefined;
     const upsertArrGenerated = onConflictInput
@@ -971,7 +998,14 @@ export const generateSchemaData = <
     // The batch update reuses the update `set` input, so it needs `update` on too.
     const updateManyInput =
       tableFeatures.update && tableFeatures.updateMany
-        ? generateUpdateManyInput({ typeName, updatePrefix: prefixes.update, updateInput, tableFilters })
+        ? generateUpdateManyInput({
+            tableName,
+            typeName,
+            updatePrefix: prefixes.update,
+            updateInput,
+            tableFilters,
+            cacheCtx,
+          })
         : undefined;
     const updateManyGenerated = updateManyInput
       ? generateUpdateMany(
@@ -1087,6 +1121,7 @@ export const generateSchemaData = <
           tableFilters,
           filterCtx,
           tablePolicies,
+          cacheCtx.typeName,
         )
       : undefined;
 
@@ -1096,10 +1131,10 @@ export const generateSchemaData = <
         ? generateGroupByType(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
         : undefined;
     const groupByEnum = groupByType
-      ? generateGroupByEnum(schema[tableName] as MySqlTable, tableName, typeName)
+      ? generateGroupByEnum(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
       : undefined;
     const havingInput = groupByEnum
-      ? generateHavingInput(schema[tableName] as MySqlTable, tableName, typeName)
+      ? generateHavingInput(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
       : undefined;
     const groupByGenerated =
       groupByType && groupByEnum && havingInput
@@ -1114,6 +1149,7 @@ export const generateSchemaData = <
             havingInput,
             filterCtx,
             tablePolicies,
+            cacheCtx.typeName,
           )
         : undefined;
 

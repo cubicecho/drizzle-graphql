@@ -10,13 +10,14 @@ import { primaryKeyOrderExprs } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import { applyLimitPolicy, withDefaultOrderBy } from './limits.ts';
 import type { TypeNameMapper } from './naming.ts';
-import { resolveTypeName } from './naming.ts';
+import { resolveObjectTypeName } from './naming.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { DeletedMode, ScopeResolver } from './policies.ts';
 import { withScope } from './policies.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractSelectedColumnsFromTree } from './selected-columns.ts';
+import type { TypeNameResolver } from './type-names.ts';
 
 export const extractRelationsParamsInner = (
   relationMap: Record<string, Record<string, TableNamedRelations>>,
@@ -30,6 +31,7 @@ export const extractRelationsParamsInner = (
   limits?: LimitPolicyFor,
   scope?: ScopeResolver,
   defaultOrderBy?: DefaultOrderByFor,
+  resolveName?: TypeNameResolver,
 ) => {
   const relationsForTable = relationMap[tableName];
   if (!relationsForTable) {
@@ -46,7 +48,7 @@ export const extractRelationsParamsInner = (
   for (const [relName, relEntry] of Object.entries(relationsForTable)) {
     const { targetTableName, targetPkNames } = relEntry;
     // The relation field resolves to the target table's own type, e.g. "Posts" not "UsersPostsRelation".
-    const relTypeName = resolveTypeName(targetTableName, typeNameMapper);
+    const relTypeName = resolveObjectTypeName(targetTableName, typeNameMapper, resolveName);
     // Look up by field name OR by alias (when the caller uses an alias for the relation).
     // graphql-parse-resolve-info keys fieldsByTypeName entries by alias.
     const field = baseField[relName] ?? Object.values(baseField).find((f) => (f as ResolveTree).name === relName);
@@ -185,6 +187,7 @@ export const extractRelationsParamsInner = (
           limits,
           scope,
           defaultOrderBy,
+          resolveName,
         )
       : undefined;
     thisRecord.with = relWith;
@@ -206,6 +209,7 @@ export const extractRelationsParams = (
   limits?: LimitPolicyFor,
   scope?: ScopeResolver,
   defaultOrderBy?: DefaultOrderByFor,
+  resolveName?: TypeNameResolver,
 ): Record<string, Partial<ProcessedTableSelectArgs>> | undefined => {
   if (!info) {
     return undefined;
@@ -223,6 +227,7 @@ export const extractRelationsParams = (
     limits,
     scope,
     defaultOrderBy,
+    resolveName,
   );
 };
 

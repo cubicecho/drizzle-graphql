@@ -43,6 +43,7 @@ import {
   type TablesRelationalConfig,
   type TypeCacheCtx,
   type TypeNameMapper,
+  type TypeNameResolver,
   type UniqueKeyMap,
   visibleColumns,
 } from '../builders/common.ts';
@@ -84,6 +85,8 @@ export type UpdateManyGenerator = (
   nested?: NestedWriteRuntime,
   limits?: LimitPolicyFor,
   policies?: ResolverPolicies,
+  /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
+  resolveName?: TypeNameResolver,
 ) => CreatedResolver;
 
 /** Everything {@link createSchemaDataGenerator} cannot decide for itself. */
@@ -230,6 +233,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
     // Fresh cache per generateSchemaData call — prevents type name collisions
     // when buildSchema() is called multiple times.
     const cacheCtx: TypeCacheCtx = {
+      typeName: options.typeName ?? ((info) => info.defaultName),
       genericFilterCache: new Map(),
       objectTypeCache: new Map(),
       relationFieldContainers: new Map(),
@@ -363,6 +367,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
         tableFeatures.distinct,
         limits,
         policies,
+        cacheCtx.typeName,
       );
       const selectSingleGenerated = generateSelectSingle(
         db,
@@ -377,6 +382,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
         filterCtx,
         limits,
         policies,
+        cacheCtx.typeName,
       );
       const insertArrGenerated = tableFeatures.insert
         ? generateInsertArray(
@@ -394,6 +400,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             nestedRuntime,
             limits,
             policies,
+            cacheCtx.typeName,
           )
         : undefined;
       const insertSingleGenerated = tableFeatures.insert
@@ -412,6 +419,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             nestedRuntime,
             limits,
             policies,
+            cacheCtx.typeName,
           )
         : undefined;
       // An upsert needs something to conflict on, so a table with no primary key and no
@@ -420,10 +428,12 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
       const onConflictInput = tableFeatures.upsert
         ? generateOnConflictInput({
             table: schema[tableName] as Table,
+            tableName,
             typeName,
             uniqueSets,
             tableFilters,
             withTarget: true,
+            cacheCtx,
           })
         : undefined;
       const upsertArrGenerated = onConflictInput
@@ -445,6 +455,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             nestedRuntime,
             limits,
             policies,
+            cacheCtx.typeName,
           )
         : undefined;
       const upsertSingleGenerated = onConflictInput
@@ -466,6 +477,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             nestedRuntime,
             limits,
             policies,
+            cacheCtx.typeName,
           )
         : undefined;
       const updateGenerated = tableFeatures.update
@@ -487,6 +499,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             nestedRuntime,
             limits,
             policies,
+            cacheCtx.typeName,
           )
         : undefined;
       const updateSingleGenerated = tableFeatures.update
@@ -508,12 +521,20 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             nestedRuntime,
             limits,
             policies,
+            cacheCtx.typeName,
           )
         : undefined;
       // The batch update reuses the update `set` input, so it needs `update` on too.
       const updateManyInput =
         tableFeatures.update && tableFeatures.updateMany
-          ? generateUpdateManyInput({ typeName, updatePrefix: prefixes.update, updateInput, tableFilters })
+          ? generateUpdateManyInput({
+              tableName,
+              typeName,
+              updatePrefix: prefixes.update,
+              updateInput,
+              tableFilters,
+              cacheCtx,
+            })
           : undefined;
       const updateManyGenerated = updateManyInput
         ? adapter.generateUpdateMany(
@@ -531,6 +552,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             nestedRuntime,
             limits,
             policies,
+            cacheCtx.typeName,
           )
         : undefined;
       const deleteGenerated = tableFeatures.delete
@@ -547,6 +569,8 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             { tableName, relationMap: namedRelations, tables },
             mutationTxCtx,
             policies,
+            false,
+            cacheCtx.typeName,
           )
         : undefined;
       const deleteSingleGenerated = tableFeatures.delete
@@ -563,6 +587,8 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             { tableName, relationMap: namedRelations, tables },
             mutationTxCtx,
             policies,
+            false,
+            cacheCtx.typeName,
           )
         : undefined;
       const restoreGenerated = softDeleteInfo
@@ -580,6 +606,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             mutationTxCtx,
             policies,
             true,
+            cacheCtx.typeName,
           )
         : undefined;
       const restoreSingleGenerated = softDeleteInfo
@@ -597,6 +624,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             mutationTxCtx,
             policies,
             true,
+            cacheCtx.typeName,
           )
         : undefined;
       // The count variants are the plural write with its payload left off, so each follows the
@@ -644,6 +672,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             tableFilters,
             filterCtx,
             tablePolicies,
+            cacheCtx.typeName,
           )
         : undefined;
 
@@ -653,10 +682,10 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
           ? generateGroupByType(schema[tableName] as Table, tableName, typeName, cacheCtx)
           : undefined;
       const groupByEnum = groupByType
-        ? generateGroupByEnum(schema[tableName] as Table, tableName, typeName)
+        ? generateGroupByEnum(schema[tableName] as Table, tableName, typeName, cacheCtx)
         : undefined;
       const havingInput = groupByEnum
-        ? generateHavingInput(schema[tableName] as Table, tableName, typeName)
+        ? generateHavingInput(schema[tableName] as Table, tableName, typeName, cacheCtx)
         : undefined;
       const groupByGenerated =
         groupByType && groupByEnum && havingInput
@@ -671,6 +700,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
               havingInput,
               filterCtx,
               tablePolicies,
+              cacheCtx.typeName,
             )
           : undefined;
 

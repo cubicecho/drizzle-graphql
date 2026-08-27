@@ -17,7 +17,7 @@ import type {
   ScalarOverridesConfig,
   SchemaDocs,
 } from '../type-converter/types.ts';
-import type { LimitPolicyFor, ResolvedComplexityOptions, TablePolicies } from './common.ts';
+import type { LimitPolicyFor, ResolvedComplexityOptions, TablePolicies, TypeNameResolver } from './common.ts';
 // import type {
 //   ConvertedColumn,
 //   ConvertedRelationColumnWithArgs,
@@ -63,6 +63,13 @@ export type SchemaGeneratorOptions = {
   suffixes: { list: string; single: string };
   conflictDoNothing: boolean;
   typeNameMapper?: (tableName: string) => { singular: string; plural: string } | undefined;
+  /**
+   * The build's type-naming rule, resolved from `derivedTypeNameMapper`, `typeNamePrefix` and
+   * `typeNameSuffix`. Asked at every type construction; the identity function when the caller
+   * configured none of the three. Optional so a consumer calling a dialect generator directly
+   * need not supply one.
+   */
+  typeName?: TypeNameResolver;
   shouldEagerLoad: (tableName: string, relationName: string) => boolean;
   features: GeneratorFeatures;
   /** Resolved cost-hint settings, or `undefined` when the caller passed `complexity: false`. */

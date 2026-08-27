@@ -18,6 +18,7 @@ import { drizzleError } from './errors.ts';
 import { visibleColumns } from './exclusions.ts';
 import type { TypeNameMapper } from './naming.ts';
 import { resolveTypeName } from './naming.ts';
+import type { TypeCacheCtx } from './type-cache.ts';
 
 /** A table's unique-key `where` fields: field name → the constraint's member property names. */
 export type UniqueKeyMap = Record<string, readonly string[]>;
@@ -61,6 +62,7 @@ export const generateUniqueKeyFilterFields = (
   tableName: string,
   uniqueKeys: UniqueKeyMap,
   typeNameMapper: TypeNameMapper | undefined,
+  cacheCtx: TypeCacheCtx,
 ): Record<string, ConvertedInputColumn> => {
   const columns = visibleColumns(table) as Record<string, Column>;
   const typeName = resolveTypeName(tableName, typeNameMapper);
@@ -69,7 +71,12 @@ export const generateUniqueKeyFilterFields = (
   for (const [fieldName, members] of Object.entries(uniqueKeys)) {
     fields[fieldName] = {
       type: new GraphQLInputObjectType({
-        name: `${typeName}${members.map((member) => capitalize(member)).join('')}Key`,
+        name: cacheCtx.typeName({
+          kind: 'uniqueKey',
+          defaultName: `${typeName}${members.map((member) => capitalize(member)).join('')}Key`,
+          table: tableName,
+          operation: fieldName,
+        }),
         description: `The unique constraint on ${members.join(' + ')} of ${typeName}. Every field is required — a half-supplied key is an error, not a broader filter.`,
         fields: Object.fromEntries(
           members.map((member) => [

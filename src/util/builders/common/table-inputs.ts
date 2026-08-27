@@ -11,21 +11,25 @@ import { generateColumnFilterValues } from './column-filters.ts';
 import { CURSOR_FIELD_NAME, rowCursorResolver } from './cursor.ts';
 import { columnDocs } from './docs.ts';
 import { hasExcludedColumns, visibleColumns } from './exclusions.ts';
-import { innerOrder } from './input-order.ts';
+import { innerOrderType } from './input-order.ts';
 import type { TypeNameMapper } from './naming.ts';
 import { resolveTypeName } from './naming.ts';
 import { isFilterableRelation } from './relations.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
 import { generateUniqueKeyFilterFields } from './unique-keys.ts';
 
-const orderMap = new WeakMap<object, Record<string, ConvertedInputColumn>>();
-const generateTableOrderCached = (table: Table) => {
+// Keyed by the `InnerOrder` instance as well as the table: the type's name follows the
+// build's naming rule, and the cache outlives a build, so two builds that name it differently
+// must not share one field map.
+const orderMap = new WeakMap<object, Map<GraphQLInputObjectType, Record<string, ConvertedInputColumn>>>();
+const generateTableOrderCached = (table: Table, innerOrder: GraphQLInputObjectType) => {
   // The cache outlives a build, so a table whose columns this build hides must not read from
   // it (a previous build may have cached the full set) or write to it (a later unfiltered
   // build would inherit the holes).
   const cacheable = !hasExcludedColumns(table);
-  if (cacheable && orderMap.has(table)) {
-    return orderMap.get(table)!;
+  const cached = cacheable ? orderMap.get(table)?.get(innerOrder) : undefined;
+  if (cached) {
+    return cached;
   }
 
   let remapped = {};
@@ -38,7 +42,12 @@ const generateTableOrderCached = (table: Table) => {
     );
 
     if (cacheable) {
-      orderMap.set(table, remapped);
+      let byInnerOrder = orderMap.get(table);
+      if (!byInnerOrder) {
+        byInnerOrder = new Map();
+        orderMap.set(table, byInnerOrder);
+      }
+      byInnerOrder.set(innerOrder, remapped);
     }
   } catch (_err) {}
   return remapped;
@@ -174,9 +183,13 @@ export const generateTableOrderTypeCached = (
   // Fields are thunked so that relation order fields, which reference other tables' order
   // inputs (and eventually this one again), are only resolved after this type is cached.
   const order = new GraphQLInputObjectType({
-    name: `${resolveTypeName(tableName, typeNameMapper)}OrderBy`,
+    name: cacheCtx.typeName({
+      kind: 'orderBy',
+      defaultName: `${resolveTypeName(tableName, typeNameMapper)}OrderBy`,
+      table: tableName,
+    }),
     fields: () => {
-      const orderColumns = generateTableOrderCached(table);
+      const orderColumns = generateTableOrderCached(table, innerOrderType(cacheCtx.typeName));
       return {
         ...orderColumns,
         ...generateRelationOrderFields(tableName, cacheCtx, typeNameMapper, orderColumns, relationMap, tables),
@@ -208,7 +221,11 @@ const generateListRelationFilterCached = (
   }
 
   const listFilter = new GraphQLInputObjectType({
-    name: `${resolveTypeName(targetTableName, typeNameMapper)}ListRelationFilter`,
+    name: cacheCtx.typeName({
+      kind: 'listRelationFilter',
+      defaultName: `${resolveTypeName(targetTableName, typeNameMapper)}ListRelationFilter`,
+      table: targetTableName,
+    }),
     fields: () => {
       const targetFilters = generateTableFilterTypeCached(
         targetTable,
@@ -312,7 +329,7 @@ export const generateTableFilterTypeCached = (
       ...generateRelationFilterFields(tableName, cacheCtx, typeNameMapper, filterColumns, relationMap, tables),
       // Last, and already filtered against both — a key field only exists under a name no
       // column and no relation claimed.
-      ...(uniqueKeys ? generateUniqueKeyFilterFields(table, tableName, uniqueKeys, typeNameMapper) : {}),
+      ...(uniqueKeys ? generateUniqueKeyFilterFields(table, tableName, uniqueKeys, typeNameMapper, cacheCtx) : {}),
     };
   };
 
@@ -320,7 +337,11 @@ export const generateTableFilterTypeCached = (
   // itself — so the thunk references the type being constructed. Siblings and branches
   // compose: sibling fields are implicitly ANDed with the OR / AND / NOT groups.
   const filters: GraphQLInputObjectType = new GraphQLInputObjectType({
-    name: `${resolveTypeName(tableName, typeNameMapper)}Filters`,
+    name: cacheCtx.typeName({
+      kind: 'filter',
+      defaultName: `${resolveTypeName(tableName, typeNameMapper)}Filters`,
+      table: tableName,
+    }),
     fields: () => ({
       ...buildFields(),
       OR: {

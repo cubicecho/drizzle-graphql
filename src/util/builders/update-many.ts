@@ -29,6 +29,7 @@ import {
   runWriteHook,
   stripContextValues,
   type TypeNameMapper,
+  type TypeNameResolver,
   toGraphQLError,
   withErrorContext,
   withScope,
@@ -138,6 +139,8 @@ export const createUpdateManyGenerator = (
     nested?: NestedWriteRuntime,
     limits?: LimitPolicyFor,
     policies?: ResolverPolicies,
+    /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
+    resolveName?: TypeNameResolver,
   ): CreatedResolver => {
     const queryArgs = {
       updates: {
@@ -191,6 +194,7 @@ export const createUpdateManyGenerator = (
                 tableName,
                 typeName,
                 typeNameMapper,
+                resolveName,
                 table,
                 pkNames,
                 parsedInfo,

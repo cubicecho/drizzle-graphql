@@ -393,7 +393,12 @@ export const createNestedWriteTypes = (params: {
     );
 
     const type = new GraphQLInputObjectType({
-      name: `${typeName}${capitalize(plan.relationName)}NestedCreatePayloadInput`,
+      name: cacheCtx.typeName({
+        kind: 'nestedWriteInput',
+        defaultName: `${typeName}${capitalize(plan.relationName)}NestedCreatePayloadInput`,
+        table: tableName,
+        operation: plan.relationName,
+      }),
       description:
         omitted === undefined
           ? `A new ${resolveTypeName(plan.targetTableName, typeNameMapper)} row for ${typeName}.${plan.relationName}`
@@ -499,7 +504,12 @@ export const createNestedWriteTypes = (params: {
     // `create` alone is still a usable relation field, and outside a many-to-many a relation
     // with nothing on it at all cannot happen: `create` is unconditional there.
     const type = new GraphQLInputObjectType({
-      name: `${typeName}${capitalize(plan.relationName)}Nested${forUpdate ? 'Update' : 'Create'}Input`,
+      name: cacheCtx.typeName({
+        kind: 'nestedWriteInput',
+        defaultName: `${typeName}${capitalize(plan.relationName)}Nested${forUpdate ? 'Update' : 'Create'}Input`,
+        table: tableName,
+        operation: plan.relationName,
+      }),
       description: `Writes through ${typeName}.${plan.relationName}`,
       fields,
     });

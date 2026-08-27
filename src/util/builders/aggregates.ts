@@ -42,6 +42,7 @@ import {
   drizzleError,
   extractFilters,
   extractRelationJoinColumns,
+  type GeneratedTypeInfo,
   generateColumnEnum,
   type RelationAggregateFactory,
   type RelationFilterBase,
@@ -50,9 +51,11 @@ import {
   resolveExecutor,
   resolveScope,
   resolveTypeName,
+  sharedType,
   type TablePolicies,
   type TypeCacheCtx,
   type TypeNameMapper,
+  type TypeNameResolver,
   toGraphQLError,
   visibleColumns,
   withErrorContext,
@@ -152,6 +155,13 @@ export const generateAggregateTypes = (
   }
 
   const { numeric, orderable, all } = classifyAggregateColumns(table, tableName);
+  const nameOf = (op: string) =>
+    cacheCtx?.typeName({
+      kind: 'aggregate',
+      defaultName: `${typeName}${capitalize(op)}Aggregate`,
+      table: tableName,
+      operation: op,
+    }) ?? `${typeName}${capitalize(op)}Aggregate`;
 
   const fields: Record<string, { type: any }> = {
     count: { type: new GraphQLNonNull(GraphQLInt) },
@@ -161,7 +171,7 @@ export const generateAggregateTypes = (
     for (const op of ['avg', 'sum'] as const) {
       fields[op] = {
         type: new GraphQLObjectType({
-          name: `${typeName}${capitalize(op)}Aggregate`,
+          name: nameOf(op),
           fields: Object.fromEntries(Object.keys(numeric).map((columnName) => [columnName, { type: GraphQLFloat }])),
         }),
       };
@@ -172,7 +182,7 @@ export const generateAggregateTypes = (
     for (const op of ['min', 'max'] as const) {
       fields[op] = {
         type: new GraphQLObjectType({
-          name: `${typeName}${capitalize(op)}Aggregate`,
+          name: nameOf(op),
           fields: Object.fromEntries(
             Object.entries(orderable).map(([columnName, { column, converted }]) => [
               columnName,
@@ -194,7 +204,7 @@ export const generateAggregateTypes = (
     }
     fields[op] = {
       type: new GraphQLObjectType({
-        name: `${typeName}${capitalize(op)}Aggregate`,
+        name: nameOf(op),
         fields: Object.fromEntries(
           columnNames.map((columnName) => [columnName, { type: new GraphQLNonNull(GraphQLInt) }]),
         ),
@@ -203,7 +213,9 @@ export const generateAggregateTypes = (
   }
 
   const aggregateType = new GraphQLObjectType({
-    name: `${typeName}Aggregate`,
+    name:
+      cacheCtx?.typeName({ kind: 'aggregate', defaultName: `${typeName}Aggregate`, table: tableName }) ??
+      `${typeName}Aggregate`,
     fields,
   });
 
@@ -236,17 +248,37 @@ interface AggregateRequest {
 interface AggregateTarget {
   tableName: string;
   typeName: string;
+  /** The name the `${Table}Aggregate` object type actually carries, which keys the resolve tree. */
+  aggregateTypeName: string;
+  /** The same for each per-op sub-type, e.g. `${Table}AvgAggregate`. */
+  opTypeName: (op: AggregateOp) => string;
   columns: Record<string, Column>;
   /** Columns whose GraphQL output is DateTime — their min/max may need string→Date coercion. */
   dateTimeColumns: Set<string>;
 }
 
-const aggregateTarget = (table: Table, tableName: string, typeName: string): AggregateTarget => {
+const aggregateTarget = (
+  table: Table,
+  tableName: string,
+  typeName: string,
+  resolveName?: TypeNameResolver,
+): AggregateTarget => {
   const { orderable } = classifyAggregateColumns(table, tableName);
-
+  // Named exactly the way `generateAggregateTypes` names them, so the resolver reads the
+  // selection tree under the key the schema actually published.
   return {
     tableName,
     typeName,
+    aggregateTypeName:
+      resolveName?.({ kind: 'aggregate', defaultName: `${typeName}Aggregate`, table: tableName }) ??
+      `${typeName}Aggregate`,
+    opTypeName: (op) =>
+      resolveName?.({
+        kind: 'aggregate',
+        defaultName: `${typeName}${capitalize(op)}Aggregate`,
+        table: tableName,
+        operation: op,
+      }) ?? `${typeName}${capitalize(op)}Aggregate`,
     columns: getColumns(table),
     dateTimeColumns: new Set(
       Object.entries(orderable)
@@ -264,7 +296,7 @@ const aggregateTarget = (table: Table, tableName: string, typeName: string): Agg
 const parseAggregateRequest = (
   info: any,
   target: AggregateTarget,
-  rootTypeName = `${target.typeName}Aggregate`,
+  rootTypeName = target.aggregateTypeName,
 ): AggregateRequest => {
   const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
   const selectionTree = parsedInfo.fieldsByTypeName[rootTypeName] ?? {};
@@ -289,7 +321,7 @@ const parseAggregateRequest = (
       continue;
     }
     const op = field.name as AggregateOp;
-    const subTree = field.fieldsByTypeName[`${target.typeName}${capitalize(op)}Aggregate`];
+    const subTree = field.fieldsByTypeName[target.opTypeName(op)];
     if (!subTree) {
       continue;
     }
@@ -368,13 +400,14 @@ export const generateAggregate = (
   filterArgs: GraphQLInputObjectType,
   filterCtx?: RelationFilterBase,
   policies?: TablePolicies,
+  resolveName?: TypeNameResolver,
 ): CreatedResolver => {
-  const target = aggregateTarget(table, tableName, typeName);
+  const target = aggregateTarget(table, tableName, typeName, resolveName);
   const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'aggregate', field: fieldName };
 
   const queryArgs = {
     where: { type: filterArgs },
-    ...deletedArg(policies?.softDelete, tableName),
+    ...deletedArg(policies?.softDelete, tableName, resolveName),
   };
 
   return {
@@ -451,7 +484,7 @@ export const createRelationAggregateFactory = (
 
     const targetTypeName = resolveTypeName(targetTableName, typeNameMapper);
     const type = generateAggregateTypes(targetTable, targetTableName, targetTypeName, cacheCtx);
-    const target = aggregateTarget(targetTable, targetTableName, targetTypeName);
+    const target = aggregateTarget(targetTable, targetTableName, targetTypeName, cacheCtx.typeName);
     const errorCtx: DrizzleErrorContext = {
       table: targetTableName,
       operation: 'relationAggregate',
@@ -566,23 +599,35 @@ const groupableColumns = (
 };
 
 /** The `${typeName}GroupByColumn` enum listing what a group-by query can group on. */
-export const generateGroupByEnum = (table: Table, tableName: string, typeName: string): GraphQLEnumType | undefined => {
+export const generateGroupByEnum = (
+  table: Table,
+  tableName: string,
+  typeName: string,
+  cacheCtx?: TypeCacheCtx,
+): GraphQLEnumType | undefined => {
   const groupable = groupableColumns(table, tableName);
+  const defaultName = `${typeName}GroupByColumn`;
 
   return generateColumnEnum(
     table,
-    `${typeName}GroupByColumn`,
+    cacheCtx?.typeName({ kind: 'columnEnum', defaultName, table: tableName, operation: 'groupBy' }) ?? defaultName,
     `Columns of ${typeName} that a query can group by`,
     (_column, columnName) => Boolean(groupable[columnName]),
   );
 };
 
-/** Shared by every `having` clause, so it is created once rather than per table. */
-export const aggregateNumberFilter = new GraphQLInputObjectType({
-  name: 'AggregateNumberFilter',
-  description: 'Compares an aggregated value. Several operators in one filter are ANDed together.',
-  fields: Object.fromEntries(Object.keys(HAVING_OPS).map((op) => [op, { type: GraphQLFloat }])),
-});
+/** Shared by every `having` clause, so it is created once per name rather than per table. */
+export const aggregateNumberFilterType = (typeName: TypeNameResolver): GraphQLInputObjectType =>
+  sharedType(
+    typeName,
+    { kind: 'shared', defaultName: 'AggregateNumberFilter' },
+    (name) =>
+      new GraphQLInputObjectType({
+        name,
+        description: 'Compares an aggregated value. Several operators in one filter are ANDed together.',
+        fields: Object.fromEntries(Object.keys(HAVING_OPS).map((op) => [op, { type: GraphQLFloat }])),
+      }),
+  );
 
 /**
  * The `${typeName}Having` input: one entry per aggregate the group-by query can filter on.
@@ -592,11 +637,18 @@ export const aggregateNumberFilter = new GraphQLInputObjectType({
  * for every orderable column — the comparison is numeric, so a min over a text column has
  * nothing to compare against.
  */
-export const generateHavingInput = (table: Table, tableName: string, typeName: string): GraphQLInputObjectType => {
+export const generateHavingInput = (
+  table: Table,
+  tableName: string,
+  typeName: string,
+  cacheCtx?: TypeCacheCtx,
+): GraphQLInputObjectType => {
   const { numeric, orderable, all } = classifyAggregateColumns(table, tableName);
+  const resolveName = cacheCtx?.typeName ?? ((info: GeneratedTypeInfo) => info.defaultName);
+  const numberFilter = aggregateNumberFilterType(resolveName);
 
   const fields: Record<string, { type: any; description?: string }> = {
-    count: { type: aggregateNumberFilter, description: 'Filters groups by how many rows they contain' },
+    count: { type: numberFilter, description: 'Filters groups by how many rows they contain' },
   };
 
   const opColumns: Record<string, Record<string, unknown>> = {
@@ -615,14 +667,19 @@ export const generateHavingInput = (table: Table, tableName: string, typeName: s
     }
     fields[op] = {
       type: new GraphQLInputObjectType({
-        name: `${typeName}${capitalize(op)}Having`,
-        fields: Object.fromEntries(columnNames.map((columnName) => [columnName, { type: aggregateNumberFilter }])),
+        name: resolveName({
+          kind: 'having',
+          defaultName: `${typeName}${capitalize(op)}Having`,
+          table: tableName,
+          operation: op,
+        }),
+        fields: Object.fromEntries(columnNames.map((columnName) => [columnName, { type: numberFilter }])),
       }),
     };
   }
 
   return new GraphQLInputObjectType({
-    name: `${typeName}Having`,
+    name: resolveName({ kind: 'having', defaultName: `${typeName}Having`, table: tableName }),
     description: `Filters ${typeName} groups by their aggregated values`,
     fields,
   });
@@ -648,7 +705,9 @@ export const generateGroupByType = (
   }
 
   const keysType = new GraphQLObjectType({
-    name: `${typeName}GroupKeys`,
+    name:
+      cacheCtx?.typeName({ kind: 'groupKeys', defaultName: `${typeName}GroupKeys`, table: tableName }) ??
+      `${typeName}GroupKeys`,
     description: `The grouped column values of one ${typeName} group. A column the query did not group by is null.`,
     fields: Object.fromEntries(
       Object.entries(groupable).map(([columnName, { column, converted }]) => [
@@ -667,7 +726,9 @@ export const generateGroupByType = (
   );
 
   return new GraphQLObjectType({
-    name: `${typeName}GroupBy`,
+    name:
+      cacheCtx?.typeName({ kind: 'groupBy', defaultName: `${typeName}GroupBy`, table: tableName }) ??
+      `${typeName}GroupBy`,
     fields: { group: { type: new GraphQLNonNull(keysType) }, ...aggregateFields },
   });
 };
@@ -727,11 +788,13 @@ export const generateGroupBy = (
   havingInput: GraphQLInputObjectType,
   filterCtx?: RelationFilterBase,
   policies?: TablePolicies,
+  resolveName?: TypeNameResolver,
 ): CreatedResolver => {
-  const target = aggregateTarget(table, tableName, typeName);
+  const target = aggregateTarget(table, tableName, typeName, resolveName);
   const groupable = groupableColumns(table, tableName);
   const columns = getColumns(table);
-  const rootTypeName = `${typeName}GroupBy`;
+  const rootTypeName =
+    resolveName?.({ kind: 'groupBy', defaultName: `${typeName}GroupBy`, table: tableName }) ?? `${typeName}GroupBy`;
   const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'groupBy', field: fieldName };
 
   const queryArgs = {
@@ -741,7 +804,7 @@ export const generateGroupBy = (
     },
     where: { type: filterArgs, description: 'Filters the rows before they are grouped.' },
     having: { type: havingInput, description: 'Filters the groups after they are aggregated.' },
-    ...deletedArg(policies?.softDelete, tableName),
+    ...deletedArg(policies?.softDelete, tableName, resolveName),
   };
 
   return {
