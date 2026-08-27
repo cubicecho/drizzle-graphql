@@ -7,6 +7,7 @@ import {
   GraphQLBoolean,
   GraphQLError,
   type GraphQLInputObjectType,
+  GraphQLInt,
   GraphQLList,
   GraphQLNonNull,
   GraphQLObjectType,
@@ -33,6 +34,7 @@ import {
   generateOnConflictInput,
   generateTableTypes,
   generateUpdateManyInput,
+  generateWriteCount,
   getPrimaryKeyPropNamesFromConfig,
   type LimitPolicyFor,
   listFieldComplexity,
@@ -72,6 +74,7 @@ import {
   generateGroupByType,
   generateHavingInput,
 } from './aggregates.ts';
+import { remapUpdateInput } from './field-updates.ts';
 import type {
   CreatedResolver,
   Filters,
@@ -394,7 +397,7 @@ const generateUpdate = (
           // A context-derived column is the server's to set, so an update never reassigns
           // one — that is what stops a row being handed to another owner.
           const input = stripContextValues(
-            remapFromGraphQLSingleInput(set, table),
+            remapUpdateInput(set, table, tableName),
             policies?.contextValues?.(tableName),
           );
           if (!Object.keys(input).length) {
@@ -480,7 +483,7 @@ const generateUpdateMany = (
           // Remap and validate every entry before the transaction opens, so a malformed
           // entry rejects the request instead of rolling back mid-batch.
           const entries = updates.map(({ where, set }) => {
-            const input = stripContextValues(remapFromGraphQLSingleInput(set, table), contextColumns);
+            const input = stripContextValues(remapUpdateInput(set, table, tableName), contextColumns);
             if (!Object.keys(input).length) {
               throw new GraphQLError('Unable to update with no values specified!');
             }
@@ -676,6 +679,7 @@ export const generateSchemaData = <
   const resolverFactory: RelationResolverFactory = createRelationResolverFactory(
     db,
     tables,
+    'nulls-smallest',
     filterCtx,
     limits,
     tablePolicies,
@@ -701,6 +705,7 @@ export const generateSchemaData = <
     primaryKeyOf: (name) => (tables[name] ? mysqlPrimaryKeyPropNames(tables[name] as MySqlTable) : []),
     contextValuesOf,
     softDeleteOf,
+    featureOf,
   };
 
   // Built when at least one table wants relation aggregates; a table that has them off is
@@ -774,10 +779,12 @@ export const generateSchemaData = <
       updateFieldName,
       updateManyFieldName,
       updateSingleFieldName,
+      updateCountFieldName,
       deleteFieldName,
       deleteSingleFieldName,
       restoreFieldName,
       restoreSingleFieldName,
+      deleteCountFieldName,
     } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
     // A table that marks rows deleted instead of removing them also gets the mutation that
     // reverses it — clearing the column through an ordinary update is not possible, since the
@@ -977,6 +984,37 @@ export const generateSchemaData = <
           true,
         )
       : undefined;
+    // The count variants are the plural write with its payload left off, so each follows the
+    // same feature switch as the write it mirrors.
+    const updateCountGenerated =
+      tableFeatures.update && tableFeatures.countMutations
+        ? generateWriteCount({
+            db,
+            tableName,
+            table: schema[tableName] as MySqlTable,
+            kind: 'update',
+            setArgs: updateInput,
+            filterArgs: tableFilters,
+            fieldName: updateCountFieldName,
+            requireWhere: tableFeatures.requireWhere,
+            filterCtx,
+            txCtx: mutationTxCtx,
+          })
+        : undefined;
+    const deleteCountGenerated =
+      tableFeatures.delete && tableFeatures.countMutations
+        ? generateWriteCount({
+            db,
+            tableName,
+            table: schema[tableName] as MySqlTable,
+            kind: 'delete',
+            filterArgs: tableFilters,
+            fieldName: deleteCountFieldName,
+            requireWhere: tableFeatures.requireWhere,
+            filterCtx,
+            txCtx: mutationTxCtx,
+          })
+        : undefined;
     const aggregateType = tableFeatures.aggregates
       ? generateAggregateTypes(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
       : undefined;
@@ -1083,6 +1121,26 @@ export const generateSchemaData = <
           extensions: { drizzle: drizzleMeta({ kind: 'mutation', ...meta }) },
         };
       }
+    }
+    // Apart from the loop above: the count mutations are the one pair whose return value is
+    // not MySQL's shared `isSuccess` shape.
+    if (updateCountGenerated) {
+      mutations[updateCountGenerated.name] = {
+        type: new GraphQLNonNull(GraphQLInt),
+        args: updateCountGenerated.args,
+        resolve: updateCountGenerated.resolver,
+        description:
+          'How many rows the update touched. The rows themselves are not read back, which is the point of this mutation.',
+      };
+    }
+    if (deleteCountGenerated) {
+      mutations[deleteCountGenerated.name] = {
+        type: new GraphQLNonNull(GraphQLInt),
+        args: deleteCountGenerated.args,
+        resolve: deleteCountGenerated.resolver,
+        description:
+          'How many rows the delete removed. The rows themselves are not read back, which is the point of this mutation.',
+      };
     }
     // The insert/update inputs are still built (they type the mutations that survive) but
     // only reach the schema's type map when a mutation actually references them.

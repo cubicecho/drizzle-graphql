@@ -48,7 +48,7 @@ import {
   SQL,
   sql,
 } from 'drizzle-orm';
-import type { GraphQLFieldResolver } from 'graphql';
+import type { GraphQLFieldConfigArgumentMap, GraphQLFieldResolver } from 'graphql';
 import {
   GraphQLBoolean,
   GraphQLEnumType,
@@ -82,10 +82,12 @@ import type {
   ConvertedRelationColumnWithArgs,
   SchemaDocs,
 } from '../type-converter/types.ts';
+import { fieldUpdateInputType, remapUpdateInput } from './field-updates.ts';
 // Type-only: the nested-write module imports this one at runtime, so the dependency has to
 // stay one-directional. The implementation is injected by the dialect builder.
-import type { NestedWriteTypes } from './nested-writes.ts';
+import type { NestedWriteRuntime, NestedWriteTypes } from './nested-writes.ts';
 import type {
+  CreatedResolver,
   FilterColumnOperators,
   FilterColumnOperatorsCore,
   Filters,
@@ -97,6 +99,7 @@ import type {
   SelectData,
   SelectedColumnsRaw,
   SelectedSQLColumns,
+  TableFeatures,
   TableNamedRelations,
   TableSelectArgs,
 } from './types.ts';
@@ -711,11 +714,18 @@ const batchedPaginatedRelationQuery = async (
  *   2. When limit/offset args are present, falls back to a direct per-item query.
  *   3. Otherwise batches all sibling resolver calls within the same GraphQL execution tick
  *      into a single IN-clause query, eliminating N+1 database round-trips.
+ *
+ * `nullOrdering` is the dialect's native `ORDER BY` placement for `NULL` — the keyset
+ * predicate behind a relation's `after` argument has to match it, or rows with a `NULL` in an
+ * ordered column would be skipped instead of paged through. It has no sensible default, so
+ * each dialect builder states it: `'nulls-largest'` for PostgreSQL, `'nulls-smallest'` for
+ * MySQL and SQLite.
  */
 export const createRelationResolverFactory =
   (
     db: any,
     tables: Record<string, Table>,
+    nullOrdering: NullOrdering,
     filterCtx?: RelationFilterBase,
     limits?: LimitPolicyFor,
     policies?: TablePolicies,
@@ -740,7 +750,7 @@ export const createRelationResolverFactory =
     // Resolved at build time (composite keys included) — used to tiebreak paginated batches.
     const targetPkNames = relEntry.targetPkNames ?? [];
 
-    return async (parent, args, context) => {
+    return async (parent, args, context, info) => {
       // Eager path: the parent resolver pre-fetched this relation via Drizzle's `with`.
       if (parent[relationName] !== undefined) {
         return parent[relationName];
@@ -751,19 +761,62 @@ export const createRelationResolverFactory =
         return isOne ? null : [];
       }
 
-      const { where: whereArg, orderBy: orderByArg, limit: requestedLimit, offset, deleted } = (args ?? {}) as any;
+      const {
+        where: whereArg,
+        orderBy: orderByArg,
+        limit: requestedLimit,
+        offset,
+        after,
+        deleted,
+      } = (args ?? {}) as any;
       const limit = applyLimitPolicy(requestedLimit, limitPolicy, `${tableName}.${relationName}`);
+      const distinct = ((args ?? {}) as any).distinct?.length ? ((args ?? {}) as any).distinct : undefined;
+
+      // ── keyset (cursor) pagination ──
+      // The same rules the root list follows, over the related rows of one parent: the cursor
+      // is defined over the request's orderBy plus the target's primary-key tiebreak, and the
+      // keyset predicate is a plain condition on the target's own columns — so it filters each
+      // parent's rows independently even though the batch fetches them all at once.
+      const cursorSelected = !isOne && !!info && selectsCursorField(info, targetTable);
+      let cursorEntries: CursorOrderEntry[] | undefined;
+      if (!isOne && (after != null || cursorSelected)) {
+        if (after != null && distinct) {
+          throw new GraphQLError("'after' cannot be combined with 'distinct'.");
+        }
+        if (orderByHasRelationEntry(orderByArg)) {
+          if (after != null) {
+            throw new GraphQLError(
+              "'after' cannot be combined with an orderBy that orders through a relation — a related row's value cannot be encoded into a cursor.",
+            );
+          }
+          // `cursor` was selected under a relation ordering — the field resolves to null.
+        } else if (!targetPkNames.length) {
+          if (after != null) {
+            throw new GraphQLError(
+              `Table ${targetTableName} has no primary key, so cursor pagination cannot be used on it.`,
+            );
+          }
+          // `cursor` was selected but no total order exists — the field resolves to null.
+        } else {
+          cursorEntries = cursorOrderingEntries(orderByArg, targetPkNames);
+        }
+      }
+      const cursorValues = after != null && cursorEntries ? decodeCursor(after, cursorEntries) : undefined;
 
       // Batch path: collect all sibling calls in this tick and execute one query.
       // Pagination args are part of the loader key so siblings sharing identical
       // args batch together; per-parent limit/offset is applied inside the batch
       // via a window function rather than bailing to a per-parent query (N+1).
+      // `cursorEntries` joins the key because it changes the ordering, not just the filter.
       const argsKey = JSON.stringify({
         where: whereArg ?? null,
         orderBy: orderByArg ?? null,
         limit: limit ?? null,
         offset: offset ?? null,
         deleted: deleted ?? null,
+        after: after ?? null,
+        distinct: distinct ?? null,
+        cursor: cursorEntries ? 1 : 0,
       });
       const loaderKey = `${tableName}::${relationName}::${argsKey}`;
 
@@ -774,7 +827,7 @@ export const createRelationResolverFactory =
         const uniqueIds = [...new Set(parentIds)];
         // Loaders are keyed per context too, so the scope resolved here is this request's.
         const scope = resolveScope(policies, context, filterCtx);
-        const whereCondition = withScope(
+        let whereCondition = withScope(
           scope,
           targetTableName,
           targetTable,
@@ -783,13 +836,38 @@ export const createRelationResolverFactory =
             whereArg
               ? extractFilters(targetTable, targetTableName, whereArg, relationFilterCtx(filterCtx, targetTableName))
               : undefined,
+            cursorValues ? buildCursorCondition(targetTable, cursorEntries!, cursorValues, nullOrdering) : undefined,
           ),
           deleted,
         );
 
+        if (distinct) {
+          // Partitioned by the foreign key as well as the requested columns, so "one row per
+          // distinct value" means one per parent — `users { posts(distinct: [status]) }` gives
+          // each user one post per status, not one post per status across all users. The pass
+          // runs first and the batch query is then narrowed to the keys it picked, exactly as
+          // the root list does.
+          const keys = await selectDistinctKeys({
+            db: executor,
+            table: targetTable,
+            tableName: targetTableName,
+            distinct,
+            pkNames: targetPkNames,
+            where: whereCondition,
+            orderBy: orderByArg,
+            partitionBy: [foreignCol],
+          });
+          if (!keys.length) {
+            return parentIds.map(() => (isOne ? null : []));
+          }
+          whereCondition = and(whereCondition, primaryKeyRestriction(targetTable, targetPkNames, keys));
+        }
+
         let rows: any[];
         if (limit != null || offset != null) {
-          // Per-parent pagination across the whole batch in one query.
+          // Per-parent pagination across the whole batch in one query. Its window ordering is
+          // the request's orderBy plus the primary key, which is the cursor's total order too,
+          // so a cursor page and a limit/offset page agree on row order.
           rows = await batchedPaginatedRelationQuery(
             executor,
             targetTable,
@@ -806,12 +884,20 @@ export const createRelationResolverFactory =
           // Use plain db.select() so column refs are never aliased — avoids drizzle-orm v1
           // RQB aliasing requirements that would require referencing via aliasedTable proxy.
           let q = executor.select().from(targetTable).where(whereCondition) as any;
-          if (orderByArg) {
-            q = q.orderBy(
-              ...extractOrderBy(targetTable, orderByArg, relationFilterCtx(filterCtx, targetTableName), whereArg),
-            );
+          const orderExprs = cursorEntries
+            ? cursorOrderExprs(targetTable, cursorEntries)
+            : orderByArg
+              ? extractOrderBy(targetTable, orderByArg, relationFilterCtx(filterCtx, targetTableName), whereArg)
+              : [];
+          if (orderExprs.length) {
+            q = q.orderBy(...orderExprs);
           }
           rows = await q;
+        }
+
+        // Before remapping, which rewrites dates and bigints into their transport forms.
+        if (cursorEntries) {
+          attachRowCursors(rows, cursorEntries);
         }
 
         // Group by FK value before remapping (remapping may delete null fields).
@@ -941,6 +1027,14 @@ export interface TypeCacheCtx {
    * — and when a read field's `deleted` argument is generated.
    */
   softDeleteOf?: SoftDeleteFor;
+  /**
+   * This build's feature flags, resolved for one table. Like `complexity` and `docs`, not a
+   * cache — the type builders are several calls deep and this context is already threaded
+   * through them. A lookup rather than a flat object because a flag may be a per-table
+   * predicate, and because the table a builder is asked about is not always the one whose
+   * type it is building: a relation field reads the flags of the table it points at.
+   */
+  featureOf: (tableName: string) => TableFeatures;
 }
 
 /**
@@ -1092,6 +1186,17 @@ export const registerColumnExclusions = (
 
 /** Whether any column of this table was excluded from the schema. */
 export const hasExcludedColumns = (table: Table): boolean => excludedColumnRegistry.has(table);
+
+/**
+ * A stable string naming this build's exclusions for `table`, empty when it has none. Used to
+ * key the caches that hold generated types: two builds of the same table objects with
+ * different exclusions must not share an entry, but *within* one build every call site has to
+ * get the same instance back or the schema ends up with two types of the same name.
+ */
+export const excludedColumnsKey = (table: Table): string => {
+  const hidden = excludedColumnRegistry.get(table);
+  return hidden ? [...hidden].sort().join(',') : '';
+};
 
 /**
  * The columns of `table` that this build exposes — every column unless some were excluded.
@@ -2244,6 +2349,15 @@ const generateSelectFields = <TWithOrder extends boolean>(
         continue;
       }
 
+      // A to-many relation field is a list of the target table, so it takes the same
+      // pagination surface a root list of that table does. `after` and `distinct` are the
+      // two drizzle's `with:` clause cannot express, so a request that passes either drops
+      // the relation out of the eager fetch and resolves it through the batch loader, which
+      // implements both — see extractRelationsParamsInner.
+      const targetDistinctEnum = cacheCtx.featureOf(targetTableName).distinct
+        ? generateDistinctEnum(tables[targetTableName]!, resolveTypeName(targetTableName, typeNameMapper))
+        : undefined;
+
       rawRelationFields.push([
         relationName,
         {
@@ -2254,6 +2368,14 @@ const generateSelectFields = <TWithOrder extends boolean>(
             offset: { type: GraphQLInt },
             limit: { type: GraphQLInt },
             ...deletedArg(cacheCtx.softDeleteOf, targetTableName),
+            after: {
+              type: GraphQLString,
+              description:
+                "Keyset pagination: only return related rows strictly after this cursor (a row's `cursor` field from a previous page of this relation, under the same orderBy).",
+            },
+            ...(targetDistinctEnum
+              ? { distinct: { type: new GraphQLList(new GraphQLNonNull(targetDistinctEnum)) } }
+              : {}),
           },
           resolve,
           ...relationDocs,
@@ -2402,10 +2524,13 @@ export const generateTableTypes = <WithReturning extends boolean>(
   const updateFields = Object.fromEntries(
     writableEntries.map(([columnName, column]) => {
       const converted = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, true);
-      return [
-        columnName,
-        { ...converted, ...inputFieldDocs(cacheCtx.docs, column, tableName, columnName, converted.type) },
-      ];
+      // A numeric or array column takes an operations input instead of the bare scalar, so
+      // it can be changed relative to its current value rather than only replaced.
+      const operations = cacheCtx.featureOf(tableName).fieldUpdateOperations
+        ? fieldUpdateInputType(column, columnName, tableName)
+        : undefined;
+      const field = operations ? { ...converted, type: operations } : converted;
+      return [columnName, { ...field, ...inputFieldDocs(cacheCtx.docs, column, tableName, columnName, field.type) }];
     }),
   );
 
@@ -3815,6 +3940,22 @@ const extractRelationsParamsInner = (
       continue;
     }
 
+    // `after`, `distinct` and the `cursor` field are the relation-level half of the root
+    // list's keyset and distinct machinery, and drizzle's `with:` clause can express none of
+    // them: keyset needs a predicate over the request's own total order, distinct needs a
+    // window pass, and a cursor has to be computed from the raw row. As with an aliased
+    // relation above, the fix is to leave the relation out of the eager clause — the field
+    // resolver's batch loader implements all three, still in one query per relation.
+    const eagerArgs = (field as ResolveTree).args as Partial<TableSelectArgs> | undefined;
+    if (
+      !is((relEntry as any).relation ?? relEntry, One) &&
+      (eagerArgs?.after != null ||
+        !!(eagerArgs?.distinct as string[] | undefined)?.length ||
+        isCursorFieldSelected(relFieldSelection, tables[targetTableName]!))
+    ) {
+      continue;
+    }
+
     const columns = extractSelectedColumnsFromTree(relFieldSelection, tables[targetTableName]!, {
       tableName: targetTableName,
       relationMap,
@@ -4277,6 +4418,39 @@ export const isCursorFieldSelected = (tree: Record<string, ResolveTree> | undefi
 };
 
 /**
+ * Whether a field's own selection set asks for the `cursor` meta field, read straight off the
+ * AST. The relation resolvers need this per parent row on the batch path, where parsing a
+ * full resolve tree each time would cost far more than the one-level walk the question needs;
+ * fragment spreads are followed, and a real column named `cursor` keeps the field for itself
+ * exactly as in {@link isCursorFieldSelected}.
+ */
+const selectsCursorField = (info: any, table: Table): boolean => {
+  if (getColumns(table)[CURSOR_FIELD_NAME]) {
+    return false;
+  }
+
+  const visited = new Set<string>();
+  const walk = (selections: any[]): boolean =>
+    selections.some((selection) => {
+      if (selection.kind === 'Field') {
+        return selection.name.value === CURSOR_FIELD_NAME;
+      }
+      if (selection.kind === 'InlineFragment') {
+        return walk(selection.selectionSet.selections);
+      }
+      const name = selection.name?.value;
+      if (!name || visited.has(name)) {
+        return false;
+      }
+      visited.add(name);
+      const fragment = info.fragments?.[name];
+      return fragment ? walk(fragment.selectionSet.selections) : false;
+    });
+
+  return (info.fieldNodes ?? []).some((node: any) => !!node.selectionSet && walk(node.selectionSet.selections));
+};
+
+/**
  * Computes and attaches each row's opaque cursor (under a namespaced property the `cursor`
  * field's resolver reads). Must run on the raw driver rows, before output remapping rewrites
  * dates and bigints into their transport forms.
@@ -4365,9 +4539,9 @@ const DISTINCT_RN = '__drizzle_graphql_distinct_rn';
 const columnEnumCache = new WeakMap<object, Map<string, GraphQLEnumType>>();
 
 /**
- * An enum of a table's column property names, under `enumName`. Cached per (table, enum
- * name), like the order/filter inputs, so repeated builds reuse one instance and two enums
- * over the same table never collide.
+ * An enum of a table's column property names, under `enumName`. Cached per (table, enum name,
+ * exclusions), like the order/filter inputs, so repeated builds reuse one instance and two
+ * enums over the same table never collide.
  *
  * Returns `undefined` when no column qualifies — the caller then omits the argument or
  * input field the enum would have typed, rather than emitting an empty enum, which is
@@ -4379,11 +4553,13 @@ export const generateColumnEnum = (
   description: string,
   predicate: (column: Column, columnName: string) => boolean = () => true,
 ): GraphQLEnumType | undefined => {
-  // Same reasoning as `generateTableOrderCached`: the cache is keyed only by the table object,
-  // so a build that hides columns neither reads it nor writes to it.
-  const cacheable = !hasExcludedColumns(table);
-  let tableCache = cacheable ? columnEnumCache.get(table) : undefined;
-  const cached = tableCache?.get(enumName);
+  // The exclusions are part of the key, not a reason to skip the cache: a table's enum is
+  // asked for from more than one place in a build (a list query's `distinct` argument and the
+  // same argument on a to-many relation field pointing at it), and handing those two call
+  // sites separate instances would put two types of the same name in one schema.
+  const cacheKey = `${enumName}\u0000${excludedColumnsKey(table)}`;
+  let tableCache = columnEnumCache.get(table);
+  const cached = tableCache?.get(cacheKey);
   if (cached) {
     return cached;
   }
@@ -4401,13 +4577,11 @@ export const generateColumnEnum = (
     values: Object.fromEntries(columnNames.map((columnName) => [columnName, { value: columnName }])),
   });
 
-  if (cacheable) {
-    if (!tableCache) {
-      tableCache = new Map();
-      columnEnumCache.set(table, tableCache);
-    }
-    tableCache.set(enumName, enumType);
+  if (!tableCache) {
+    tableCache = new Map();
+    columnEnumCache.set(table, tableCache);
   }
+  tableCache.set(cacheKey, enumType);
   return enumType;
 };
 
@@ -4610,6 +4784,10 @@ export const mysqlValuesColumnRef = (columnName: string): SQL => sql`values(${sq
  * `row_number() over (partition by … order by …)` pass and the main query is narrowed to the
  * keys it returns. `orderExprs` is the full ordering (the request's `orderBy` plus the primary
  * key tiebreak); the caller applies the same ordering to the main query, so the two agree.
+ *
+ * `partitionBy` prepends extra columns to the window's partition. A to-many relation field
+ * uses it to pass the foreign key, which makes the pass distinct *within each parent* rather
+ * than across the whole batch — the same meaning `distinct` has on a root list.
  */
 export const selectDistinctKeys = async (params: {
   db: any;
@@ -4621,18 +4799,20 @@ export const selectDistinctKeys = async (params: {
   orderBy: Record<string, any> | undefined;
   limit?: number;
   offset?: number;
+  partitionBy?: Column[];
 }): Promise<Record<string, any>[]> => {
-  const { db, table, tableName, distinct, pkNames, where, orderBy, limit, offset } = params;
+  const { db, table, tableName, distinct, pkNames, where, orderBy, limit, offset, partitionBy } = params;
   const cols = getColumns(table);
 
   if (!pkNames.length) {
     throw new GraphQLError(`Table ${tableName} has no primary key, so 'distinct' cannot be applied to it.`);
   }
 
-  const partitionCols = distinct.map((name) => cols[name]).filter(Boolean);
-  if (!partitionCols.length) {
+  const requestedCols = distinct.map((name) => cols[name]).filter(Boolean);
+  if (!requestedCols.length) {
     throw new GraphQLError(`No known columns were given to 'distinct' on ${tableName}.`);
   }
+  const partitionCols = [...(partitionBy ?? []), ...requestedCols];
 
   const orderEntries = orderBy ? orderByEntries(orderBy) : [];
   // Both orderings must agree, so build each from the same entries — once against the table
@@ -4852,10 +5032,12 @@ export const computeResolverFieldNames = (
   updateFieldName: string;
   updateManyFieldName: string;
   updateSingleFieldName: string;
+  updateCountFieldName: string;
   deleteFieldName: string;
   deleteSingleFieldName: string;
   restoreFieldName: string;
   restoreSingleFieldName: string;
+  deleteCountFieldName: string;
 } => {
   const mapped = typeNameMapper?.(tableName);
   const typeName = mapped ? capitalize(mapped.singular) : capitalize(tableName);
@@ -4888,6 +5070,11 @@ export const computeResolverFieldNames = (
   const updateSingleFieldName = `${updateFieldName}${writeSingleSuffix}`;
   const deleteSingleFieldName = `${deleteFieldName}${writeSingleSuffix}`;
   const restoreSingleFieldName = `${restoreFieldName}${writeSingleSuffix}`;
+  // The count variants are the plural write under another name, so they take the plural
+  // noun rather than the singular one the plural mutations inherited from the mapper.
+  const pluralNoun = mapped ? capitalize(mapped.plural) : capitalize(tableName);
+  const updateCountFieldName = `${prefixes.update}${pluralNoun}Count`;
+  const deleteCountFieldName = `${prefixes.delete}${pluralNoun}Count`;
   return {
     typeName,
     listFieldName,
@@ -4901,10 +5088,12 @@ export const computeResolverFieldNames = (
     updateFieldName,
     updateManyFieldName,
     updateSingleFieldName,
+    updateCountFieldName,
     deleteFieldName,
     deleteSingleFieldName,
     restoreFieldName,
     restoreSingleFieldName,
+    deleteCountFieldName,
   };
 };
 
@@ -4955,6 +5144,38 @@ export const extractRequiredFilters = <TTable extends Table>(
 };
 
 /**
+ * How many rows a returnless write reported affecting. The three dialects' drivers each
+ * spell it differently — `rowCount` (node-postgres, Neon), `affectedRows` (PGlite, and MySQL
+ * on its result header), `count` (postgres.js), `rowsAffected` (libsql), `changes`
+ * (better-sqlite3) — and none of them is reachable through a common drizzle type, so the
+ * shape is probed rather than declared.
+ *
+ * Only the result object itself is read, plus `affectedRows` one level in, since MySQL
+ * returns `[header, fields]`. A row of the table is never inspected, so a table with a
+ * column named `count` cannot be mistaken for a count.
+ */
+export const rowsAffected = (result: any, fieldName: string): number => {
+  const asNumber = (value: unknown): number | undefined =>
+    typeof value === 'number' ? value : typeof value === 'bigint' ? Number(value) : undefined;
+
+  if (result && typeof result === 'object') {
+    for (const key of ['rowCount', 'affectedRows', 'rowsAffected', 'changes', 'count']) {
+      const value = asNumber((result as any)[key]);
+      if (value !== undefined) {
+        return value;
+      }
+    }
+    const header = Array.isArray(result) ? result[0] : undefined;
+    const affected = header && typeof header === 'object' ? asNumber(header.affectedRows) : undefined;
+    if (affected !== undefined) {
+      return affected;
+    }
+  }
+
+  throw new GraphQLError(`${fieldName}: the driver did not report how many rows the write affected.`);
+};
+
+/**
  * Guard for the `Single` write variants: throws before anything is written when `where`
  * matches more than one row, so a multi-row update/delete never executes. Probed with a
  * `LIMIT 2` select rather than a count so the check stays cheap on large matches.
@@ -4969,6 +5190,99 @@ export const assertSingleMatch = async (
   if (matched.length > 1) {
     throw new GraphQLError(`${fieldName}: 'where' matched more than one row — nothing was written!`);
   }
+};
+
+/**
+ * `update<Tables>Count` / `delete<Tables>Count` — the plural write without the payload
+ * (`features.countMutations`).
+ *
+ * The plural `update` and `delete` always `RETURNING *`, which is the wrong shape for
+ * "archive everything older than a year": the caller pays to ship rows it does not want, and
+ * on a large match that cost is the whole mutation. These return `Int!` instead — how many
+ * rows the write touched, as the driver reported it, with no RETURNING clause at all.
+ *
+ * Dialect-independent: drizzle's update/delete builders take the same calls everywhere, and
+ * the drivers' disagreement about how to spell the row count is handled by
+ * {@link rowsAffected}.
+ */
+export const generateWriteCount = ({
+  db,
+  tableName,
+  table,
+  kind,
+  setArgs,
+  filterArgs,
+  fieldName,
+  requireWhere,
+  filterCtx,
+  txCtx,
+  nested,
+}: {
+  db: any;
+  tableName: string;
+  table: Table;
+  kind: 'update' | 'delete';
+  /** The update `set` input; omitted for the delete variant, which has nothing to set. */
+  setArgs?: GraphQLInputObjectType;
+  filterArgs: GraphQLInputObjectType;
+  fieldName: string;
+  requireWhere: boolean;
+  filterCtx?: RelationFilterBase;
+  txCtx?: MutationTxCtx;
+  nested?: NestedWriteRuntime;
+}): CreatedResolver => {
+  const queryArgs = {
+    ...(setArgs ? { set: { type: new GraphQLNonNull(setArgs) } } : {}),
+    where: {
+      type: requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
+    },
+  } as GraphQLFieldConfigArgumentMap;
+
+  return {
+    name: fieldName,
+    resolver: async (_source, args: { where?: any; set?: Record<string, any> }, context, info) => {
+      try {
+        return await runMutation(db, context, info, txCtx, async (executor) => {
+          const { where, set } = args;
+
+          const relationCtx = relationFilterCtx(filterCtx, tableName);
+          const filters = requireWhere
+            ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+            : where
+              ? extractFilters(table, tableName, where, relationCtx)
+              : undefined;
+
+          let query: any;
+          if (kind === 'delete') {
+            query = executor.delete(table);
+          } else {
+            // Nested writes need the parent rows they attach to, which is exactly what this
+            // mutation exists not to fetch — so they are refused rather than silently dropped.
+            const entry = nested?.enabled(tableName) ? nested.split(tableName, set!) : undefined;
+            if (entry && nested!.hasOps(entry.ops)) {
+              throw new GraphQLError(
+                `${fieldName} does not support nested writes — use ${fieldName.slice(0, -'Count'.length)} instead.`,
+              );
+            }
+            const values = remapUpdateInput(entry ? entry.columns : set!, table, tableName);
+            if (!Object.keys(values).length) {
+              throw new GraphQLError('Unable to update with no values specified!');
+            }
+            query = executor.update(table).set(values);
+          }
+
+          if (filters) {
+            query = query.where(filters);
+          }
+
+          return rowsAffected(await query, fieldName);
+        });
+      } catch (e) {
+        throw toGraphQLError(e);
+      }
+    },
+    args: queryArgs,
+  };
 };
 
 /** GraphQL argument map for a list/array select field. */

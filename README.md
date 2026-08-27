@@ -134,9 +134,12 @@ const { schema } = buildSchema(db, {
         distinct: false,          // the `distinct` argument on list queries
         insert: false,            // create<Table> / create<Table>Single mutations
         update: false,            // update<Table> / update<Table>Single mutations
+        updateMany: false,        // update<Table>Many batch mutation (needs `update`)
         delete: false,            // delete<Table> / delete<Table>Single mutations
         upsert: true,             // upsert<Table> / upsert<Table>Single mutations (off by default)
         nestedWrites: true,       // relation fields on the create/update inputs (off by default)
+        fieldUpdateOperations: true, // increment/push operations on the update input (off by default)
+        countMutations: true,     // update<Table>Count / delete<Table>Count mutations (off by default)
         requireWhere: true,       // make `where` non-null on plural update/delete (off by default)
     },
 })
@@ -144,8 +147,8 @@ const { schema } = buildSchema(db, {
 
 -   Any flag left out keeps its default of `true`, so `{ features: { delete: false } }`
     changes nothing else
--   `upsert` and `nestedWrites` are the exceptions: both default to `false`, so the upsert
-    mutations and the relation fields on the write inputs only exist if you ask for them
+-   `upsert`, `nestedWrites`, `fieldUpdateOperations` and `countMutations` are the
+    exceptions: all four default to `false`, so they only exist if you ask for them
 -   `groupBy` needs `aggregates`: it reuses those output types, so turning `aggregates` off
     turns the group-by queries off with it
 -   Turning off `insert` or `update` also drops the input type that only that mutation
@@ -180,8 +183,8 @@ const { schema } = buildSchema(db, {
     asks for `upsert` while its `insert` or `update` is off — an upsert is a second write
     path past the operation you turned off — warns on the console at build time, naming the
     tables, rather than leaving that to be discovered later. So does asking for `updateMany`
-    without `update`, `groupBy` without `aggregates`, or `nestedWrites` alongside a table
-    whose own writes are off
+    without `update`, `groupBy` without `aggregates`, `countMutations` with neither plural
+    write, or `nestedWrites` alongside a table whose own writes are off
 
 ## Excluding tables and columns
 
@@ -324,6 +327,40 @@ Together the two close the loop: `contextValues` decides which tenant a new row 
 
 Names that match nothing throw at build time, the same as `exclude` — a renamed column fails the
 build instead of quietly ceasing to be scoped.
+> request who may see what is a job for [`graphql-shield`](https://the-guild.dev/graphql/shield)
+> or an equivalent layer above the schema, which has the request context this library
+> does not.
+## Naming
+
+Type and field names are derived from the Drizzle schema keys. Three options change them.
+
+`prefixes` and `suffixes` rename operations without touching type names:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    prefixes: { insert: 'add', update: 'edit', delete: 'remove' }, // default: create / update / delete
+    suffixes: { list: 'All', single: '' },                         // default: '' / 'Single'
+})
+```
+
+The list and single suffixes cannot be identical unless a `typeNameMapper` is also given —
+`users` and `usersSingle` would otherwise collapse onto one field name, and `buildSchema`
+throws rather than generating a schema that silently drops one of them.
+
+`typeNameMapper` renames the table itself, which is what a plural-keyed schema usually wants:
+`export const users = pgTable('users', …)` otherwise produces `type Users` and a
+`usersSingle` query.
+
+```Typescript
+import pluralize from 'pluralize'
+
+const { schema } = buildSchema(db, {
+    typeNameMapper: (table) => ({ singular: pluralize.singular(table), plural: table }),
+})
+// type User; queries `users` / `user`; mutations `createUsers` / `createUser`
+```
+
+Return `undefined` for any table that should keep its default naming.
 
 ## Soft delete
 
@@ -438,6 +475,25 @@ import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQL
 
 `GraphQLBigIntString` is the `BigInt` scalar — named for what it does rather than what it is
 called in SDL, to avoid clashing with the language's own `BigInt`.
+
+### Overriding a column's scalar
+
+Built-in detection is a default, not a ceiling. `scalars` overrides named columns, and
+`mapColumnType` applies a rule across every column at build time — the tool for a convention
+("every `numeric` column is `Money`") or for a custom column type detection does not know:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    scalars: {
+        users: { email: EmailAddressScalar },              // by table key, then column key
+    },
+    mapColumnType: (column) => (column.columnType === 'PgNumeric' ? MoneyScalar : undefined),
+})
+```
+
+Either may return a single scalar, or an `{ output, input }` pair when the read and write
+types differ. `mapColumnType` returning `undefined` keeps the default, and a column matched
+by both is decided by `scalars` alone.
 
 ## Enum types
 
@@ -864,7 +920,10 @@ enum. Rows sharing the same combination of those columns collapse to one:
 -   `where` is applied **before** rows are collapsed; `limit` and `offset` are applied
     **after**, so `limit: 10` returns ten distinct rows
 -   Several columns are treated as one combined key, not as independent ones
--   `distinct` is available on list queries only — a single query returns one row either way
+-   `distinct` is also available on to-many relation fields, where it means one row per
+    distinct value **per parent** — the window is partitioned by the foreign key as well as
+    the requested columns
+-   `distinct` is not on single queries — those return one row either way
 
 It runs as an extra `row_number() over (partition by …)` query that picks the surviving
 rows' primary keys, after which the main query is narrowed to them — so it needs the same
@@ -932,6 +991,32 @@ field, and passing it back as `after` resumes strictly after that row.
     no primary key cannot use cursor pagination (its `cursor` field resolves to `null`)
 -   If a table has a real column named `cursor`, the column wins and the meta field is
     skipped
+
+To-many relation fields take `after` and `distinct` too, with the same meaning they have on
+a root list of the same table — a relation field is a list of the target table, so it gets
+that table's whole pagination surface:
+
+```graphql
+{
+    users {
+        id
+        posts(orderBy: { createdAt: { direction: desc, priority: 1 } }, limit: 10, after: "…") {
+            id
+            cursor
+        }
+    }
+}
+```
+
+Drizzle's `with:` clause cannot express either one — keyset needs a predicate over the
+request's own total order, `distinct` needs a window pass, and a `cursor` has to be computed
+from the raw row. So a relation field that is passed `after` or `distinct`, or that selects
+`cursor`, drops out of the eager fetch and resolves through the request-scoped batch loader
+instead, which implements all three. That is still **one query per relation** across every
+parent in the batch (`distinct` adds its key-selection pass, as on a root list) — never one
+per parent. Nothing about the arguments changes; only how many round-trips the request
+costs.
+
 
 ## Upsert
 
@@ -1057,6 +1142,71 @@ and interleaves awaited statements inside a transaction, which a synchronous SQL
 cannot do — `buildSchema` rejects both combinations rather than generating something that
 half-works.
 
+## Atomic column updates
+
+`Update<Table>Input` sets columns to values, so "increment the view count" is a read followed
+by a write of the number the read returned — two round-trips, and a lost update whenever two
+clients read the same number. `features.fieldUpdateOperations` replaces qualifying columns'
+update fields with an operations input, so the arithmetic happens in the database:
+
+```graphql
+mutation {
+    updatePostsSingle(where: { id: { eq: 1 } }, set: { views: { increment: 1 } }) {
+        views
+    }
+}
+```
+
+compiles to `SET views = views + 1`. The flag changes the update inputs only; insert inputs
+are untouched.
+
+-   **Numeric columns** (`Int`, `Float`, `BigInt`, `Decimal`) take
+    `set` / `increment` / `decrement` / `multiply` / `divide`
+-   **Array columns** take `set` / `push`, where `push` appends to the existing array
+-   Exactly one operation per column. Passing two, or `{}`, is a `GraphQLError` naming the
+    column — graphql-js has no `@oneOf` on the version range this library supports, so it is
+    enforced at resolve time rather than by the type
+-   `set` is the explicit spelling of the plain assignment the field had before the flag, so
+    every existing update has a one-key rewrite: `{ views: 5 }` → `{ views: { set: 5 } }`
+-   The input types are named for the **scalar**, not the column — every `Int` column in the
+    schema shares one `IntFieldUpdate` — and a column claimed by a `scalarOverrides` entry
+    keeps its plain field, since the override decides what that column accepts
+
+Two things follow the database's own semantics rather than being guarded:
+
+-   `increment`/`multiply` on an integer column can overflow, and `divide` on one **rounds**
+    the way the dialect rounds (PostgreSQL truncates toward zero; use a `Float` or `Decimal`
+    column if you need the fraction)
+-   `divide: 0` raises the driver's division-by-zero error, surfaced as a `GraphQLError`
+
+## Row counts instead of rows
+
+The plural `update<Table>` / `delete<Table>` mutations always `RETURNING *`, which is wasted
+work — and wasted bandwidth — when a client only wants to know how many rows were touched.
+`features.countMutations` adds a count-returning variant of each:
+
+```graphql
+mutation {
+    deletePostsCount(where: { status: { eq: "spam" } })
+    updatePostsCount(where: { draft: { eq: true } }, set: { draft: false })
+}
+```
+
+-   Both return `Int!` — the number of rows the write affected — and add no new output type
+    to the schema
+-   Arguments are exactly the plural mutation's, so a client swaps one field name for the
+    other; `features.requireWhere` applies to them the same way
+-   They follow the feature switch of the write they mirror: `updateCount` needs
+    `features.update`, `deleteCount` needs `features.delete`
+-   **MySQL** gets them too, and they are arguably most useful there: MySQL's other mutations
+    return only `MutationReturn { isSuccess }`, so a row count is strictly more information
+-   `update<Table>Count` **rejects** nested writes with a `GraphQLError` — a nested write
+    needs the parent rows this mutation deliberately does not read back. Use the plural
+    mutation for those
+-   The count is read from whichever field the driver reports it in (`rowCount`,
+    `affectedRows`, `rowsAffected`, `changes`, `count`); a driver that reports none is a
+    `GraphQLError` rather than a silent `0`
+
 ## Single-row update & delete
 
 Alongside the plural `update<Table>` / `delete<Table>` mutations, every table gets an
@@ -1082,6 +1232,17 @@ mutation {
     MySQL mutation
 -   The variants are generated under `features.update` / `features.delete`, share the plural
     mutations' input types, and appear in `entities.mutations` for custom schemas
+
+### Mutation return shapes
+
+Every mutation that returns rows returns them non-null, with two exceptions that are
+deliberate rather than accidental:
+
+| Mutation | Returns | Why |
+| --- | --- | --- |
+| `create<Table>Single` | `Table!`, or `Table` under `conflictDoNothing` | An insert of one row returns that row. It can only fail to produce one when the `conflictDoNothing` build option swallows a conflict, so it is nullable exactly when that option is set |
+| `update<Table>Many` | `[Table]!` | Each entry's updated rows **in entry order**. An entry whose `where` matched nothing contributes `null` in its slot, so the response lines up with the request positionally — the nullable element is the whole point |
+| everything else | `[Table!]!` / `Table!` / `Table` | — |
 
 The plural mutations still accept a missing `where` (a full-table write) by default. To rule
 that out at the type level, `features: { requireWhere: true }` makes `where` non-null on
@@ -1179,9 +1340,105 @@ buildSchema(db, { complexity: false });
 
 Cost is not a depth bound. A cyclic relation graph (`user -> posts -> author -> posts -> …`)
 lets a client nest as deep as it likes, and a deep query over cheap fields can stay under any
-complexity ceiling. Put a depth limit in front of a publicly exposed schema as well — e.g.
-[`graphql-depth-limit`](https://github.com/stems/graphql-depth-limit) — or set
-`relationsDepthLimit: 0` to generate no relation fields at all.
+complexity ceiling. Set `relationsDepthLimit: 0` to generate no relation fields at all, or —
+more usefully — bound depth at the edge, along with the rest of the document-shape defences
+below.
+
+### Hardening a public endpoint
+
+A generated schema is wide by construction: every table is reachable, every relation is
+traversable, and the relation graph is usually cyclic. The `complexity` hints price that
+surface, but only for the shapes the generator knows about, and nothing in this library
+inspects the incoming document. For a schema exposed to untrusted clients, put
+[GraphQL Armor](https://github.com/Escape-Technologies/graphql-armor) in front of it — it
+bundles the document-level defences this library deliberately does not generate:
+
+| Protection | What it bounds |
+| --- | --- |
+| `maxDepth` | nesting through a cyclic relation graph |
+| `maxAliases` | the same expensive list requested many times under many aliases |
+| `maxDirectives` | directive-count amplification |
+| `maxTokens` | parser blow-up, rejected before validation runs |
+| `costLimit` | a static per-document cost ceiling |
+| `blockFieldSuggestion` | `Did you mean "keyHash"?` leaking field names on a typo |
+
+```ts
+import { EnvelopArmor } from '@escape.tech/graphql-armor';
+import { createYoga } from 'graphql-yoga';
+
+const { schema } = buildSchema(db);
+const armor = new EnvelopArmor({
+  maxDepth: { n: 8 }, // roughly three relation hops into the generated graph
+  maxAliases: { n: 15 },
+  costLimit: { maxCost: 5000 },
+});
+
+const yoga = createYoga({ schema, plugins: armor.protect().plugins });
+```
+
+`ApolloArmor` is the Apollo Server equivalent — its `protect()` returns `plugins` plus
+`validationRules`.
+
+Armor's `costLimit` is its own document-shape estimate and does not read the `complexity`
+extensions above; the two compose, if you want a cheap static ceiling alongside row-count
+aware pricing. Neither one bounds an individual `limit` argument, so a single unbounded list
+query is still a full table scan — cap `limit` yourself if that matters.
+
+## Authorization
+
+`buildSchema` is handed a Drizzle instance, not a request. It has no notion of who is asking,
+so it generates no authorization: every table it knows about is queryable and writable by
+anyone who can reach the endpoint. Auth belongs to a layer above the schema, where the
+request context actually lives.
+
+-   **[graphql-shield](https://github.com/maticzav/graphql-shield)** — permission rules
+    mapped onto fields and applied with
+    [`graphql-middleware`](https://github.com/maticzav/graphql-middleware). Rules attach to
+    root fields *and* to fields of a generated object type, which is what makes it an answer
+    to "this column must never leave the server" and not just "this query is blocked":
+
+    ```ts
+    import { applyMiddleware } from 'graphql-middleware';
+    import { allow, deny, rule, shield } from 'graphql-shield';
+
+    const isAuthenticated = rule()((parent, args, ctx) => Boolean(ctx.userId));
+
+    const { schema } = buildSchema(db);
+    const guarded = applyMiddleware(
+      schema,
+      shield(
+        {
+          Query: { users: isAuthenticated, usersSingle: isAuthenticated },
+          Mutation: { '*': isAuthenticated },
+          ApiKeys: { keyHash: deny }, // field stays in the schema, never resolves
+        },
+        { fallbackRule: allow },
+      ),
+    );
+    ```
+
+-   **[CASL](https://casl.js.org)** (`@casl/ability`) — one ability definition, conditions and
+    field lists included (`can('read', 'Posts', ['title', 'body'])`), shared between the
+    GraphQL layer and the rest of the app instead of a permission model that exists only in
+    the API. CASL is not GraphQL middleware itself: wire it in through the shield rules above
+    or through your own resolver wrapper, and let the ability answer the questions.
+
+What neither can do is **narrow** a query. They permit or deny a field; they do not append
+`WHERE user_id = …` to the SQL a generated resolver runs, and a permitted `users` query still
+returns every tenant's rows. Until row scoping is a first-class option here, the ways to get
+it are, in increasing order of effort:
+
+-   supply the tenant predicate as an ordinary `where` argument from a trusted gateway, and
+    deny the raw generated fields to everyone else;
+-   build the schema by hand from `entities`, exposing only the generated resolvers you have
+    wrapped;
+-   put the scoped tables behind database row-level security and give the driver the
+    request's identity, so the narrowing happens below Drizzle entirely.
+
+None of this removes anything from introspection either — `deny` hides the data, not the
+shape. If the schema must not so much as mention a table, keep that table out of the Drizzle
+instance you pass to `buildSchema` (a second instance over a narrowed schema object is
+cheap).
 
 Nor is it a row bound: a complexity ceiling prices the `limit` a client asks for, it does not
 cap it. Use [`limits`](#bounding-page-size) for that.
@@ -1231,10 +1488,44 @@ want to fall back to it explicitly.
 
 ## Transactions
 
-Each resolver runs its statements on the database the schema was built from. A request that
-fires several mutations therefore commits each one separately, and a failure halfway leaves
-the earlier ones in place. To run a whole request as one unit, open a transaction yourself
-and put it on the GraphQL context under the exported `drizzleExecutorKey`:
+Each resolver runs its statements on the database the schema was built from, so by default a
+request that fires several mutations commits each one separately and a failure halfway leaves
+the earlier ones in place. There are two ways to make a request atomic.
+
+### Letting the library open one
+
+`transactions: 'auto'` opens `db.transaction()` once per request whose document selects more
+than one root mutation field, and runs every mutation field — plus the reads nested under
+them — inside it:
+
+```Typescript
+const { schema } = buildSchema(db, { transactions: 'auto' })
+
+// or, to change the safety timeout:
+const { schema } = buildSchema(db, { transactions: { mode: 'auto', timeoutMs: 10_000 } })
+```
+
+The transaction commits when the last mutation field completes and rolls back if any of them
+fails; mutation fields after a failure fail fast instead of running against a rolled-back
+transaction. A document with one mutation field or none opens nothing, so ordinary requests
+are untouched.
+
+-   The driver must support `db.transaction()` — `neon-http` does not. For SQLite only an
+    asynchronous driver can hold a transaction open across resolvers, and `buildSchema`
+    throws for a synchronous one rather than failing at request time
+-   The GraphQL context value must be a fresh object per request (every mainstream server
+    does this) — it keys the per-request transaction state
+-   `timeoutMs` (default `30000`) rolls back an abandoned transaction, e.g. when the host
+    server stopped calling resolvers because of a non-null completion error, instead of
+    leaking the connection
+-   A document that mixes in mutation fields this build did not generate is left alone: their
+    completion cannot be tracked, so no transaction is opened
+-   It never nests — an executor supplied on the context wins, as below
+
+### Supplying your own executor
+
+To control the boundary yourself, open a transaction and put it on the GraphQL context under
+the exported `drizzleExecutorKey`:
 
 ```Typescript
 import { buildSchema, drizzleExecutorKey } from 'drizzle-graphql'
@@ -1461,3 +1752,23 @@ table with no primary key at all.
 > `extensions.drizzle` is stable API. The point of publishing it is that consumers stop
 > parsing names, which only holds if the shape does not move: fields are added to it, never
 > removed or repurposed.
+## Configuration reference
+
+Every key of the second argument to `buildSchema(db, config?)`. Each links to the section
+that explains it, where there is one.
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `mutations` | `true` | `false` omits the `Mutation` type entirely |
+| `features` | see [Choosing what gets generated](#choosing-what-gets-generated) | which operations are generated, per operation |
+| `relationsDepthLimit` | unlimited | how deep relation fields are generated; `0` gives a flat, columns-only schema |
+| `prefixes` / `suffixes` / `typeNameMapper` | see [Naming](#naming) | operation and type names |
+| `scalars` / `mapColumnType` | built-in detection | [override a column's GraphQL type](#overriding-a-columns-scalar), by name or by rule |
+| `enumNameMapper` | shared `<EnumName>Enum` per database enum | [names the enum a column maps to](#enum-types) |
+| `describeColumn` / `describeTable` / `describeRelation` | none | [GraphQL descriptions](#documenting-the-schema) |
+| `deprecateColumn` | none | `@deprecated` on a column's output and optional input fields |
+| `conflictDoNothing` | `false` | PostgreSQL only — `ON CONFLICT DO NOTHING` on inserts, which makes `create<Table>Single` nullable |
+| `complexity` | on | [cost hints](#query-cost) in field extensions; `false` turns them off |
+| `transactions` | `'none'` | `'auto'` wraps a multi-mutation request in one [transaction](#transactions) |
+| `onError` | replaces driver errors | [error handling](#error-handling) hook — log, or surface a different error |
+| `eagerLoadRelations` | `true` | [which relations are pre-fetched](#overriding-a-relations-resolver-without-overfetching) with the parent query |
