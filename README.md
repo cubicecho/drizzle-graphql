@@ -1555,6 +1555,81 @@ example a pooled connection bound to a tenant, or a logging proxy around `db`. B
 key is created with `Symbol.for`, the ESM and CJS builds of this package agree on it when
 both end up loaded in one process.
 
+Or let the library open one per request: `transactions: 'auto'` wraps a document that fires
+more than one generated mutation in a single transaction, committed when the last one
+completes and rolled back if any of them fails.
+
+```Typescript
+buildSchema(db, { transactions: 'auto' })
+```
+
+A document with one mutation, or one that selects a mutation field this build did not
+generate, still runs unwrapped — there is nothing to keep atomic.
+
+## Write hooks
+
+`onWrite` runs a hook **inside the mutation's transaction**, so its writes commit or roll back
+with the mutation itself. That is the position an audit row, an outbox row or a denormalized
+counter needs, and the one a `graphql-middleware` wrapper cannot occupy — a wrapper sits
+outside the resolver, so its after-position is after the commit.
+
+```Typescript
+const { schema } = buildSchema(db, {
+    onWrite: {
+        posts: async ({ table, operation, rows, tx }) => {
+            await tx.insert(auditLog).values(rows.map((row) => ({ table, operation, rowId: row.id })))
+        },
+    },
+})
+```
+
+A bare function is the **`after`** hook — the position that has rows. `{ before, after }` names
+them explicitly:
+
+```Typescript
+onWrite: {
+    posts: {
+        // Reads inside the same snapshot the write will use.
+        before: async ({ args, tx }) => {
+            const [parent] = await tx.select().from(orgs).where(eq(orgs.id, args.values[0].orgId))
+            if (!parent) throw new Error('org went away')
+        },
+        after: async ({ rows, tx }) => { /* … */ },
+    },
+}
+```
+
+Registering a bare function (or a positions object) at the top level applies it to every table;
+anything else is read as a table map keyed by the **Drizzle schema key**, and a name that
+matches nothing throws at build time.
+
+The payload:
+
+| Field | |
+| --- | --- |
+| `table` | Drizzle schema key of the table being written |
+| `operation` | `'insert' \| 'update' \| 'updateMany' \| 'upsert' \| 'delete' \| 'restore'` |
+| `position` | `'before'` or `'after'` |
+| `single` | whether the field writes one row or a list |
+| `args` | the field's GraphQL arguments, as the resolver received them |
+| `rows` | the post-write rows **as the database returned them**, before the output mapper |
+| `context`, `info` | the GraphQL context value and resolve info |
+| `tx` | the executor the mutation ran on |
+
+-   **`tx` is the executor the mutation itself used** — one you supplied under
+    `drizzleExecutorKey`, the request's auto-transaction, or, for a field that would otherwise
+    have run unwrapped, a transaction opened for it *because* the hook is there. The hook does
+    not have to know which.
+-   **Throwing rolls the mutation back.** A hook that can only log is what a logging plugin
+    already does.
+-   **`rows` is empty** at the `before` position, and on MySQL, whose mutations return no rows.
+    The `before` position and `args` still work there.
+-   The hook fires for the **mutation field's own table**. Rows a nested `create` writes into
+    another table do not fire that table's hook.
+
+A build with no `onWrite` opens exactly the transactions it did before.
+
+
 ## Relations & N+1 handling
 
 Generated schemas resolve nested relations without N+1 query explosions:

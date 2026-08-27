@@ -56,6 +56,7 @@ import {
   resolveQueryExecutor,
   runMutation,
   runRelationalSelect,
+  runWriteHook,
   type SelectionCtx,
   selectArrayArgs,
   selectSingleArgs,
@@ -64,6 +65,7 @@ import {
   type TypeCacheCtx,
   type TypeNameMapper,
   toGraphQLError,
+  type WriteOperation,
   withScope,
 } from '../builders/common.ts';
 import {
@@ -261,79 +263,108 @@ const generateInsertArray = (
   // rather than re-running getTableConfig on every mutation request.
   const pkNames = sqlitePrimaryKeyPropNames(table);
 
+  const hooks = policies?.onWrite?.(tableName, 'insert');
+
   return {
     name: fieldName,
     resolver: async (_source, args: { values: Record<string, any>[] }, context, info) => {
       try {
-        return await runMutation(db, context, info, txCtx, async (executor) => {
-          if (!args.values.length) {
-            throw new GraphQLError('No values were provided!');
-          }
-
-          // Split each row's relation fields off its columns. Only when something is actually
-          // nested does the write leave the single multi-row statement below.
-          const entries = nested?.enabled(tableName)
-            ? args.values.map((values) => nested.split(tableName, values))
-            : undefined;
-          const nestedEntries = entries?.some((entry) => nested!.hasOps(entry.ops)) ? entries : undefined;
-          const contextColumns = policies?.contextValues?.(tableName);
-          const scope = policies?.scope?.(context);
-          const input = nestedEntries
-            ? []
-            : applyContextValuesAll(
-                remapFromGraphQLArrayInput(entries ? entries.map((entry) => entry.columns) : args.values, table),
-                contextColumns,
-                context,
-              );
-
-          const parsedInfo = parseResolveInfo(info, {
-            deep: true,
-          }) as ResolveTree;
-
-          const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
-            relationMap,
-            tables,
-            tableName,
-            typeName,
-            typeNameMapper,
-            table,
-            pkNames,
-            parsedInfo,
-            limits,
-            scope,
-          });
-
-          const returning = nestedEntries
-            ? nested!.withJoinColumns(tableName, mergedOps(nestedEntries), { ...columns }, table)
-            : columns;
-
-          const runInsert = async (target: any, values: Record<string, any>[]) => {
-            let query = target.insert(table).values(values).returning(returning);
-            if (conflictDoNothing) {
-              query = query.onConflictDoNothing() as any;
+        return await runMutation(
+          db,
+          context,
+          info,
+          txCtx,
+          async (executor) => {
+            if (!args.values.length) {
+              throw new GraphQLError('No values were provided!');
             }
-            return (await query) as Record<string, any>[];
-          };
+            await runWriteHook(hooks, 'before', {
+              table: tableName,
+              operation: 'insert',
+              single: false,
+              args,
+              context,
+              info,
+              tx: executor,
+            });
 
-          const result = nestedEntries
-            ? await writeWithNestedOps({
-                executor,
-                runtime: nested!,
-                tableName,
-                entries: nestedEntries,
-                remapValues: (values) =>
-                  applyContextValues(remapFromGraphQLSingleInput(values, table), contextColumns, context),
-                write: (tx, values) => runInsert(tx, [values]),
-                context,
-              })
-            : await runInsert(executor, input);
+            // Split each row's relation fields off its columns. Only when something is actually
+            // nested does the write leave the single multi-row statement below.
+            const entries = nested?.enabled(tableName)
+              ? args.values.map((values) => nested.split(tableName, values))
+              : undefined;
+            const nestedEntries = entries?.some((entry) => nested!.hasOps(entry.ops)) ? entries : undefined;
+            const contextColumns = policies?.contextValues?.(tableName);
+            const scope = policies?.scope?.(context);
+            const input = nestedEntries
+              ? []
+              : applyContextValuesAll(
+                  remapFromGraphQLArrayInput(entries ? entries.map((entry) => entry.columns) : args.values, table),
+                  contextColumns,
+                  context,
+                );
 
-          const enriched = hasRelations
-            ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
-            : result;
+            const parsedInfo = parseResolveInfo(info, {
+              deep: true,
+            }) as ResolveTree;
 
-          return remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
-        });
+            const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+              relationMap,
+              tables,
+              tableName,
+              typeName,
+              typeNameMapper,
+              table,
+              pkNames,
+              parsedInfo,
+              limits,
+              scope,
+            });
+
+            const returning = nestedEntries
+              ? nested!.withJoinColumns(tableName, mergedOps(nestedEntries), { ...columns }, table)
+              : columns;
+
+            const runInsert = async (target: any, values: Record<string, any>[]) => {
+              let query = target.insert(table).values(values).returning(returning);
+              if (conflictDoNothing) {
+                query = query.onConflictDoNothing() as any;
+              }
+              return (await query) as Record<string, any>[];
+            };
+
+            const result = nestedEntries
+              ? await writeWithNestedOps({
+                  executor,
+                  runtime: nested!,
+                  tableName,
+                  entries: nestedEntries,
+                  remapValues: (values) =>
+                    applyContextValues(remapFromGraphQLSingleInput(values, table), contextColumns, context),
+                  write: (tx, values) => runInsert(tx, [values]),
+                  context,
+                })
+              : await runInsert(executor, input);
+
+            await runWriteHook(hooks, 'after', {
+              table: tableName,
+              operation: 'insert',
+              single: false,
+              args,
+              rows: result,
+              context,
+              info,
+              tx: executor,
+            });
+
+            const enriched = hasRelations
+              ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
+              : result;
+
+            return remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
+          },
+          !!hooks,
+        );
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -367,79 +398,108 @@ const generateInsertSingle = (
   // Derived once at build time — PK prop names don't change per request.
   const pkNames = sqlitePrimaryKeyPropNames(table);
 
+  const hooks = policies?.onWrite?.(tableName, 'insert');
+
   return {
     name: fieldName,
     resolver: async (_source, args: { values: Record<string, any> }, context, info) => {
       try {
-        return await runMutation(db, context, info, txCtx, async (executor) => {
-          const entry = nested?.enabled(tableName) ? nested.split(tableName, args.values) : undefined;
-          const nestedEntry = entry && nested!.hasOps(entry.ops) ? entry : undefined;
-          const contextColumns = policies?.contextValues?.(tableName);
-          const scope = policies?.scope?.(context);
-          const input = nestedEntry
-            ? {}
-            : applyContextValues(
-                remapFromGraphQLSingleInput(entry ? entry.columns : args.values, table),
-                contextColumns,
-                context,
-              );
+        return await runMutation(
+          db,
+          context,
+          info,
+          txCtx,
+          async (executor) => {
+            await runWriteHook(hooks, 'before', {
+              table: tableName,
+              operation: 'insert',
+              single: true,
+              args,
+              context,
+              info,
+              tx: executor,
+            });
+            const entry = nested?.enabled(tableName) ? nested.split(tableName, args.values) : undefined;
+            const nestedEntry = entry && nested!.hasOps(entry.ops) ? entry : undefined;
+            const contextColumns = policies?.contextValues?.(tableName);
+            const scope = policies?.scope?.(context);
+            const input = nestedEntry
+              ? {}
+              : applyContextValues(
+                  remapFromGraphQLSingleInput(entry ? entry.columns : args.values, table),
+                  contextColumns,
+                  context,
+                );
 
-          const parsedInfo = parseResolveInfo(info, {
-            deep: true,
-          }) as ResolveTree;
+            const parsedInfo = parseResolveInfo(info, {
+              deep: true,
+            }) as ResolveTree;
 
-          const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
-            relationMap,
-            tables,
-            tableName,
-            typeName,
-            typeNameMapper,
-            table,
-            pkNames,
-            parsedInfo,
-            limits,
-            scope,
-          });
-          const returning = nestedEntry
-            ? nested!.withJoinColumns(tableName, nestedEntry.ops, { ...columns }, table)
-            : columns;
+            const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+              relationMap,
+              tables,
+              tableName,
+              typeName,
+              typeNameMapper,
+              table,
+              pkNames,
+              parsedInfo,
+              limits,
+              scope,
+            });
+            const returning = nestedEntry
+              ? nested!.withJoinColumns(tableName, nestedEntry.ops, { ...columns }, table)
+              : columns;
 
-          const runInsert = async (target: any, values: Record<string, any>) => {
-            let query = target.insert(table).values(values).returning(returning);
-            if (conflictDoNothing) {
-              query = query.onConflictDoNothing() as any;
+            const runInsert = async (target: any, values: Record<string, any>) => {
+              let query = target.insert(table).values(values).returning(returning);
+              if (conflictDoNothing) {
+                query = query.onConflictDoNothing() as any;
+              }
+              return (await query) as Record<string, any>[];
+            };
+
+            const result = nestedEntry
+              ? await writeWithNestedOps({
+                  executor,
+                  runtime: nested!,
+                  tableName,
+                  entries: [nestedEntry],
+                  remapValues: (values) =>
+                    applyContextValues(remapFromGraphQLSingleInput(values, table), contextColumns, context),
+                  write: runInsert,
+                  context,
+                })
+              : await runInsert(executor, input);
+
+            await runWriteHook(hooks, 'after', {
+              table: tableName,
+              operation: 'insert',
+              single: true,
+              args,
+              rows: result,
+              context,
+              info,
+              tx: executor,
+            });
+
+            if (!result[0]) {
+              // Only reachable under `conflictDoNothing`, which is why the field is nullable
+              // there and non-null everywhere else.
+              if (!conflictDoNothing) {
+                throw new GraphQLError(`${fieldName}: the insert returned no row.`);
+              }
+              return undefined;
             }
-            return (await query) as Record<string, any>[];
-          };
 
-          const result = nestedEntry
-            ? await writeWithNestedOps({
-                executor,
-                runtime: nested!,
-                tableName,
-                entries: [nestedEntry],
-                remapValues: (values) =>
-                  applyContextValues(remapFromGraphQLSingleInput(values, table), contextColumns, context),
-                write: runInsert,
-                context,
-              })
-            : await runInsert(executor, input);
+            const enriched = hasRelations
+              ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
+              : result;
 
-          if (!result[0]) {
-            // Only reachable under `conflictDoNothing`, which is why the field is nullable
-            // there and non-null everywhere else.
-            if (!conflictDoNothing) {
-              throw new GraphQLError(`${fieldName}: the insert returned no row.`);
-            }
-            return undefined;
-          }
-
-          const enriched = hasRelations
-            ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
-            : result;
-
-          return remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap);
-        });
+            return remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap);
+          },
+          !!hooks,
+        );
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -485,6 +545,8 @@ const generateUpsert = (
 
   const pkNames = sqlitePrimaryKeyPropNames(table);
 
+  const hooks = policies?.onWrite?.(tableName, 'upsert');
+
   return {
     name: fieldName,
     resolver: async (
@@ -494,98 +556,125 @@ const generateUpsert = (
       info,
     ) => {
       try {
-        return await runMutation(db, context, info, txCtx, async (executor) => {
-          const supplied = single ? [args.values as Record<string, any>] : (args.values as Record<string, any>[]);
-          if (!supplied.length) {
-            throw new GraphQLError('No values were provided!');
-          }
-
-          const entries = nested?.enabled(tableName)
-            ? supplied.map((values) => nested.split(tableName, values))
-            : undefined;
-          const nestedEntries = entries?.some((entry) => nested!.hasOps(entry.ops)) ? entries : undefined;
-          const contextColumns = policies?.contextValues?.(tableName);
-          const scope = policies?.scope?.(context);
-          const input = nestedEntries
-            ? []
-            : applyContextValuesAll(
-                remapFromGraphQLArrayInput(entries ? entries.map((entry) => entry.columns) : supplied, table),
-                contextColumns,
-                context,
-              );
-
-          const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
-
-          const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
-            relationMap,
-            tables,
-            tableName,
-            typeName,
-            typeNameMapper,
-            table,
-            pkNames,
-            parsedInfo,
-            limits,
-            scope,
-          });
-
-          const returning = nestedEntries
-            ? nested!.withJoinColumns(tableName, mergedOps(nestedEntries), { ...columns }, table)
-            : columns;
-
-          // The conflict plan reads the columns the write actually supplies, so a nested write
-          // — whose rows go in one at a time, each already carrying whatever its parent-side
-          // operations produced — resolves its plan per row rather than once for the batch.
-          const runUpsert = async (target: any, values: Record<string, any>[]) => {
-            const plan = resolveConflictPlan({
-              table,
-              values,
-              onConflict: args.onConflict,
-              pkNames,
-              uniqueSets,
-              excludedRef: excludedColumnRef,
-              withTarget: true,
-              buildWhere: (where) => extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)),
+        return await runMutation(
+          db,
+          context,
+          info,
+          txCtx,
+          async (executor) => {
+            const supplied = single ? [args.values as Record<string, any>] : (args.values as Record<string, any>[]);
+            if (!supplied.length) {
+              throw new GraphQLError('No values were provided!');
+            }
+            await runWriteHook(hooks, 'before', {
+              table: tableName,
+              operation: 'upsert',
+              single,
+              args,
+              context,
+              info,
+              tx: executor,
             });
 
-            let query = target.insert(table).values(values).returning(returning);
-            // On conflict the statement updates a row that already exists, so the scope applies
-            // to it exactly as it would to `update<Table>`: a conflicting row the caller cannot
-            // see is left alone rather than taken over.
-            const setWhere = withScope(scope, tableName, table, plan.setWhere);
-            query =
-              plan.action === 'NOTHING'
-                ? (query.onConflictDoNothing(plan.target ? { target: plan.target } : undefined) as any)
-                : (query.onConflictDoUpdate({ target: plan.target!, set: plan.set, setWhere }) as any);
+            const entries = nested?.enabled(tableName)
+              ? supplied.map((values) => nested.split(tableName, values))
+              : undefined;
+            const nestedEntries = entries?.some((entry) => nested!.hasOps(entry.ops)) ? entries : undefined;
+            const contextColumns = policies?.contextValues?.(tableName);
+            const scope = policies?.scope?.(context);
+            const input = nestedEntries
+              ? []
+              : applyContextValuesAll(
+                  remapFromGraphQLArrayInput(entries ? entries.map((entry) => entry.columns) : supplied, table),
+                  contextColumns,
+                  context,
+                );
 
-            return (await query) as Record<string, any>[];
-          };
+            const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
 
-          const result = nestedEntries
-            ? await writeWithNestedOps({
-                executor,
-                runtime: nested!,
-                tableName,
-                entries: nestedEntries,
-                remapValues: (values) =>
-                  applyContextValues(remapFromGraphQLSingleInput(values, table), contextColumns, context),
-                write: (tx, values) => runUpsert(tx, [values]),
-                context,
-              })
-            : await runUpsert(executor, input);
+            const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+              relationMap,
+              tables,
+              tableName,
+              typeName,
+              typeNameMapper,
+              table,
+              pkNames,
+              parsedInfo,
+              limits,
+              scope,
+            });
 
-          if (single && !result[0]) {
-            return undefined;
-          }
+            const returning = nestedEntries
+              ? nested!.withJoinColumns(tableName, mergedOps(nestedEntries), { ...columns }, table)
+              : columns;
 
-          const enriched = hasRelations
-            ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
-            : result;
+            // The conflict plan reads the columns the write actually supplies, so a nested write
+            // — whose rows go in one at a time, each already carrying whatever its parent-side
+            // operations produced — resolves its plan per row rather than once for the batch.
+            const runUpsert = async (target: any, values: Record<string, any>[]) => {
+              const plan = resolveConflictPlan({
+                table,
+                values,
+                onConflict: args.onConflict,
+                pkNames,
+                uniqueSets,
+                excludedRef: excludedColumnRef,
+                withTarget: true,
+                buildWhere: (where) => extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)),
+              });
 
-          return single
-            ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
-            : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
-        });
+              let query = target.insert(table).values(values).returning(returning);
+              // On conflict the statement updates a row that already exists, so the scope applies
+              // to it exactly as it would to `update<Table>`: a conflicting row the caller cannot
+              // see is left alone rather than taken over.
+              const setWhere = withScope(scope, tableName, table, plan.setWhere);
+              query =
+                plan.action === 'NOTHING'
+                  ? (query.onConflictDoNothing(plan.target ? { target: plan.target } : undefined) as any)
+                  : (query.onConflictDoUpdate({ target: plan.target!, set: plan.set, setWhere }) as any);
+
+              return (await query) as Record<string, any>[];
+            };
+
+            const result = nestedEntries
+              ? await writeWithNestedOps({
+                  executor,
+                  runtime: nested!,
+                  tableName,
+                  entries: nestedEntries,
+                  remapValues: (values) =>
+                    applyContextValues(remapFromGraphQLSingleInput(values, table), contextColumns, context),
+                  write: (tx, values) => runUpsert(tx, [values]),
+                  context,
+                })
+              : await runUpsert(executor, input);
+
+            await runWriteHook(hooks, 'after', {
+              table: tableName,
+              operation: 'upsert',
+              single,
+              args,
+              rows: result,
+              context,
+              info,
+              tx: executor,
+            });
+
+            if (single && !result[0]) {
+              return undefined;
+            }
+
+            const enriched = hasRelations
+              ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
+              : result;
+
+            return single
+              ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
+              : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
+          },
+          !!hooks,
+        );
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -625,105 +714,136 @@ const generateUpdate = (
   // Derived once at build time — PK prop names don't change per request.
   const pkNames = sqlitePrimaryKeyPropNames(table);
 
+  const hooks = policies?.onWrite?.(tableName, 'update');
+
   return {
     name: fieldName,
     resolver: async (_source, args: { where?: Filters<Table>; set: Record<string, any> }, context, info) => {
       try {
-        return await runMutation(db, context, info, txCtx, async (executor) => {
-          const { where, set } = args;
-          const scope = policies?.scope?.(context);
+        return await runMutation(
+          db,
+          context,
+          info,
+          txCtx,
+          async (executor) => {
+            await runWriteHook(hooks, 'before', {
+              table: tableName,
+              operation: 'update',
+              single,
+              args,
+              context,
+              info,
+              tx: executor,
+            });
+            const { where, set } = args;
+            const scope = policies?.scope?.(context);
 
-          const parsedInfo = parseResolveInfo(info, {
-            deep: true,
-          }) as ResolveTree;
+            const parsedInfo = parseResolveInfo(info, {
+              deep: true,
+            }) as ResolveTree;
 
-          const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
-            relationMap,
-            tables,
-            tableName,
-            typeName,
-            typeNameMapper,
-            table,
-            pkNames,
-            parsedInfo,
-            limits,
-            scope,
-          });
+            const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+              relationMap,
+              tables,
+              tableName,
+              typeName,
+              typeNameMapper,
+              table,
+              pkNames,
+              parsedInfo,
+              limits,
+              scope,
+            });
 
-          const entry = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
-          const nestedOps = entry && nested!.hasOps(entry.ops) ? entry.ops : undefined;
-          // A context-derived column is the server's to set, so an update never reassigns
-          // one — that is what stops a row being handed to another owner.
-          const input = stripContextValues(
-            remapUpdateInput(entry ? entry.columns : set, table, tableName),
-            policies?.contextValues?.(tableName),
-          );
-          // A `set` that carries only nested operations is a legitimate update — of the
-          // relation rather than of the row — so it is only empty when neither is present.
-          if (!Object.keys(input).length && !nestedOps) {
-            throw new GraphQLError('Unable to update with no values specified!');
-          }
-
-          const relationCtx = relationFilterCtx(filterCtx, tableName);
-          // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
-          const filters = withScope(
-            scope,
-            tableName,
-            table,
-            single || requireWhere
-              ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
-              : where
-                ? extractFilters(table, tableName, where, relationCtx)
-                : undefined,
-          );
-
-          if (single) {
-            await assertSingleMatch(executor, table, filters!, fieldName);
-          }
-
-          const returning = nestedOps ? nested!.withJoinColumns(tableName, nestedOps, { ...columns }, table) : columns;
-
-          const runUpdate = async (target: any, values: Record<string, any>) => {
-            // Nothing to write to the row itself: the operations attach to whatever the
-            // `where` matched, so the rows are read rather than rewritten.
-            const writes = Object.keys(values).length > 0;
-            let query = writes ? target.update(table).set(values) : target.select(returning).from(table);
-            if (filters) {
-              query = query.where(filters) as any;
+            const entry = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
+            const nestedOps = entry && nested!.hasOps(entry.ops) ? entry.ops : undefined;
+            // A context-derived column is the server's to set, so an update never reassigns
+            // one — that is what stops a row being handed to another owner.
+            const input = stripContextValues(
+              remapUpdateInput(entry ? entry.columns : set, table, tableName),
+              policies?.contextValues?.(tableName),
+            );
+            // A `set` that carries only nested operations is a legitimate update — of the
+            // relation rather than of the row — so it is only empty when neither is present.
+            if (!Object.keys(input).length && !nestedOps) {
+              throw new GraphQLError('Unable to update with no values specified!');
             }
-            return (await (writes ? (query.returning(returning) as any) : query)) as Record<string, any>[];
-          };
 
-          const result = nestedOps
-            ? await updateWithNestedOps({
-                executor,
-                runtime: nested!,
-                tableName,
-                columns: input,
-                ops: nestedOps,
-                remapValues: (values) => values,
-                write: runUpdate,
-                context,
-              })
-            : await runUpdate(executor, input);
+            const relationCtx = relationFilterCtx(filterCtx, tableName);
+            // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
+            const filters = withScope(
+              scope,
+              tableName,
+              table,
+              single || requireWhere
+                ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+                : where
+                  ? extractFilters(table, tableName, where, relationCtx)
+                  : undefined,
+            );
 
-          if (single && result.length > 1) {
-            // A row started matching between the pre-check and the write.
-            throw new GraphQLError(`${fieldName}: 'where' matched more than one row!`);
-          }
+            if (single) {
+              await assertSingleMatch(executor, table, filters!, fieldName);
+            }
 
-          if (single && !result[0]) {
-            return undefined;
-          }
+            const returning = nestedOps
+              ? nested!.withJoinColumns(tableName, nestedOps, { ...columns }, table)
+              : columns;
 
-          const enriched = hasRelations
-            ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
-            : result;
+            const runUpdate = async (target: any, values: Record<string, any>) => {
+              // Nothing to write to the row itself: the operations attach to whatever the
+              // `where` matched, so the rows are read rather than rewritten.
+              const writes = Object.keys(values).length > 0;
+              let query = writes ? target.update(table).set(values) : target.select(returning).from(table);
+              if (filters) {
+                query = query.where(filters) as any;
+              }
+              return (await (writes ? (query.returning(returning) as any) : query)) as Record<string, any>[];
+            };
 
-          return single
-            ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
-            : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
-        });
+            const result = nestedOps
+              ? await updateWithNestedOps({
+                  executor,
+                  runtime: nested!,
+                  tableName,
+                  columns: input,
+                  ops: nestedOps,
+                  remapValues: (values) => values,
+                  write: runUpdate,
+                  context,
+                })
+              : await runUpdate(executor, input);
+
+            await runWriteHook(hooks, 'after', {
+              table: tableName,
+              operation: 'update',
+              single,
+              args,
+              rows: result,
+              context,
+              info,
+              tx: executor,
+            });
+
+            if (single && result.length > 1) {
+              // A row started matching between the pre-check and the write.
+              throw new GraphQLError(`${fieldName}: 'where' matched more than one row!`);
+            }
+
+            if (single && !result[0]) {
+              return undefined;
+            }
+
+            const enriched = hasRelations
+              ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
+              : result;
+
+            return single
+              ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
+              : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
+          },
+          !!hooks,
+        );
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -767,6 +887,8 @@ const generateUpdateMany = (
   // Derived once at build time — PK prop names don't change per request.
   const pkNames = sqlitePrimaryKeyPropNames(table);
 
+  const hooks = policies?.onWrite?.(tableName, 'updateMany');
+
   return {
     name: fieldName,
     resolver: async (
@@ -776,155 +898,182 @@ const generateUpdateMany = (
       info,
     ) => {
       try {
-        return await runMutation(db, context, info, txCtx, async (executor) => {
-          const { updates } = args;
-          if (!updates.length) {
-            throw new GraphQLError('No updates were provided!');
-          }
-          const scope = policies?.scope?.(context);
-          const contextColumns = policies?.contextValues?.(tableName);
-
-          const parsedInfo = parseResolveInfo(info, {
-            deep: true,
-          }) as ResolveTree;
-
-          const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
-            relationMap,
-            tables,
-            tableName,
-            typeName,
-            typeNameMapper,
-            table,
-            pkNames,
-            parsedInfo,
-            limits,
-            scope,
-          });
-
-          // Remap and validate every entry before the transaction opens, so a malformed
-          // entry rejects the request instead of rolling back mid-batch.
-          const entries = updates.map(({ where, set }) => {
-            const split = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
-            const ops = split && nested!.hasOps(split.ops) ? split.ops : undefined;
-            const input = stripContextValues(
-              remapUpdateInput(split ? split.columns : set, table, tableName),
-              contextColumns,
-            );
-            // An entry that only writes through a relation still has work to do.
-            if (!Object.keys(input).length && !ops) {
-              throw new GraphQLError('Unable to update with no values specified!');
+        return await runMutation(
+          db,
+          context,
+          info,
+          txCtx,
+          async (executor) => {
+            const { updates } = args;
+            if (!updates.length) {
+              throw new GraphQLError('No updates were provided!');
             }
-            return {
-              set: input,
-              ops,
-              filters: withScope(
-                scope,
-                tableName,
-                table,
-                where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
-              ),
+            await runWriteHook(hooks, 'before', {
+              table: tableName,
+              operation: 'updateMany',
+              single: false,
+              args,
+              context,
+              info,
+              tx: executor,
+            });
+            const scope = policies?.scope?.(context);
+            const contextColumns = policies?.contextValues?.(tableName);
+
+            const parsedInfo = parseResolveInfo(info, {
+              deep: true,
+            }) as ResolveTree;
+
+            const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+              relationMap,
+              tables,
+              tableName,
+              typeName,
+              typeNameMapper,
+              table,
+              pkNames,
+              parsedInfo,
+              limits,
+              scope,
+            });
+
+            // Remap and validate every entry before the transaction opens, so a malformed
+            // entry rejects the request instead of rolling back mid-batch.
+            const entries = updates.map(({ where, set }) => {
+              const split = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
+              const ops = split && nested!.hasOps(split.ops) ? split.ops : undefined;
+              const input = stripContextValues(
+                remapUpdateInput(split ? split.columns : set, table, tableName),
+                contextColumns,
+              );
+              // An entry that only writes through a relation still has work to do.
+              if (!Object.keys(input).length && !ops) {
+                throw new GraphQLError('Unable to update with no values specified!');
+              }
+              return {
+                set: input,
+                ops,
+                filters: withScope(
+                  scope,
+                  tableName,
+                  table,
+                  where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
+                ),
+              };
+            });
+
+            const anyNested = entries.some((entry) => entry.ops);
+            const returning = anyNested
+              ? nested!.withJoinColumns(
+                  tableName,
+                  mergedOps(entries.map((entry) => ({ ops: entry.ops ?? {} }))),
+                  { ...columns },
+                  table,
+                )
+              : columns;
+
+            const runEntry = (tx: any, entry: (typeof entries)[number]) => {
+              let query = tx.update(table).set(entry.set);
+              if (entry.filters) {
+                query = query.where(entry.filters);
+              }
+              // `.all()` instead of awaiting the thenable: a sync driver (better-sqlite3)
+              // executes it immediately, which is the only way the statement still runs
+              // inside the synchronous native transaction below.
+              return query.returning(returning).all();
             };
-          });
 
-          const anyNested = entries.some((entry) => entry.ops);
-          const returning = anyNested
-            ? nested!.withJoinColumns(
-                tableName,
-                mergedOps(entries.map((entry) => ({ ops: entry.ops ?? {} }))),
-                { ...columns },
-                table,
-              )
-            : columns;
+            // Nested writes need statements interleaved with awaited reads, which only an async
+            // driver can do inside a transaction — `features.nestedWrites` rejects a sync driver
+            // at build time, so this branch is always on one.
+            const runNestedEntry = async (tx: any, entry: (typeof entries)[number]) => {
+              const values = entry.ops
+                ? { ...entry.set, ...(await nested!.applyParentSide(tx, tableName, entry.ops, context)) }
+                : entry.set;
 
-          const runEntry = (tx: any, entry: (typeof entries)[number]) => {
-            let query = tx.update(table).set(entry.set);
-            if (entry.filters) {
-              query = query.where(entry.filters);
+              // Same as the single update: an entry with no column values reads the rows its
+              // `where` matched so the nested operations have something to attach to.
+              const writes = Object.keys(values).length > 0;
+              let query = writes ? tx.update(table).set(values) : tx.select(returning).from(table);
+              if (entry.filters) {
+                query = query.where(entry.filters);
+              }
+              const rows = (await (writes ? query.returning(returning) : query)) as Record<string, any>[];
+
+              if (entry.ops) {
+                await nested!.applyChildSide(tx, tableName, entry.ops, rows, context);
+              }
+              return rows;
+            };
+
+            // On a caller-supplied transaction — or the shared multi-mutation transaction
+            // opened by `runMutation` — this opens a savepoint, so the batch stays atomic
+            // without breaking the outer transaction. A sync driver's transaction callback
+            // must not be async — it would commit before any awaited statement ran — so the
+            // driver kind is probed from the first statement's result instead.
+            const perEntry: Record<string, any>[][] = await executor.transaction((tx: any) => {
+              if (anyNested) {
+                return (async () => {
+                  const results: Record<string, any>[][] = [];
+                  for (const entry of entries) {
+                    results.push(await runNestedEntry(tx, entry));
+                  }
+                  return results;
+                })();
+              }
+
+              const first = runEntry(tx, entries[0]!);
+              if (typeof (first as any)?.then === 'function') {
+                // Async driver: await sequentially so the entries apply in input order.
+                return (async () => {
+                  const results: Record<string, any>[][] = [await first];
+                  for (let i = 1; i < entries.length; i++) {
+                    results.push(await runEntry(tx, entries[i]!));
+                  }
+                  return results;
+                })();
+              }
+              const results: Record<string, any>[][] = [first];
+              for (let i = 1; i < entries.length; i++) {
+                results.push(runEntry(tx, entries[i]!));
+              }
+              return results;
+            });
+
+            const flatRows = perEntry.flat();
+            await runWriteHook(hooks, 'after', {
+              table: tableName,
+              operation: 'updateMany',
+              single: false,
+              args,
+              rows: flatRows,
+              context,
+              info,
+              tx: executor,
+            });
+
+            const enriched = hasRelations
+              ? await eagerLoadMutationRelations(executor, tableName, flatRows, pkNames, withParams)
+              : flatRows;
+
+            // Rebuild the per-entry slots: a no-match entry contributes `null`, a multi-match
+            // entry contributes each of its rows.
+            const output: (Record<string, any> | null)[] = [];
+            let offset = 0;
+            for (const rows of perEntry) {
+              if (!rows.length) {
+                output.push(null);
+                continue;
+              }
+              for (let i = 0; i < rows.length; i++) {
+                output.push(remapToGraphQLSingleOutput(enriched[offset + i], tableName, table, relationMap));
+              }
+              offset += rows.length;
             }
-            // `.all()` instead of awaiting the thenable: a sync driver (better-sqlite3)
-            // executes it immediately, which is the only way the statement still runs
-            // inside the synchronous native transaction below.
-            return query.returning(returning).all();
-          };
-
-          // Nested writes need statements interleaved with awaited reads, which only an async
-          // driver can do inside a transaction — `features.nestedWrites` rejects a sync driver
-          // at build time, so this branch is always on one.
-          const runNestedEntry = async (tx: any, entry: (typeof entries)[number]) => {
-            const values = entry.ops
-              ? { ...entry.set, ...(await nested!.applyParentSide(tx, tableName, entry.ops, context)) }
-              : entry.set;
-
-            // Same as the single update: an entry with no column values reads the rows its
-            // `where` matched so the nested operations have something to attach to.
-            const writes = Object.keys(values).length > 0;
-            let query = writes ? tx.update(table).set(values) : tx.select(returning).from(table);
-            if (entry.filters) {
-              query = query.where(entry.filters);
-            }
-            const rows = (await (writes ? query.returning(returning) : query)) as Record<string, any>[];
-
-            if (entry.ops) {
-              await nested!.applyChildSide(tx, tableName, entry.ops, rows, context);
-            }
-            return rows;
-          };
-
-          // On a caller-supplied transaction — or the shared multi-mutation transaction
-          // opened by `runMutation` — this opens a savepoint, so the batch stays atomic
-          // without breaking the outer transaction. A sync driver's transaction callback
-          // must not be async — it would commit before any awaited statement ran — so the
-          // driver kind is probed from the first statement's result instead.
-          const perEntry: Record<string, any>[][] = await executor.transaction((tx: any) => {
-            if (anyNested) {
-              return (async () => {
-                const results: Record<string, any>[][] = [];
-                for (const entry of entries) {
-                  results.push(await runNestedEntry(tx, entry));
-                }
-                return results;
-              })();
-            }
-
-            const first = runEntry(tx, entries[0]!);
-            if (typeof (first as any)?.then === 'function') {
-              // Async driver: await sequentially so the entries apply in input order.
-              return (async () => {
-                const results: Record<string, any>[][] = [await first];
-                for (let i = 1; i < entries.length; i++) {
-                  results.push(await runEntry(tx, entries[i]!));
-                }
-                return results;
-              })();
-            }
-            const results: Record<string, any>[][] = [first];
-            for (let i = 1; i < entries.length; i++) {
-              results.push(runEntry(tx, entries[i]!));
-            }
-            return results;
-          });
-
-          const flatRows = perEntry.flat();
-          const enriched = hasRelations
-            ? await eagerLoadMutationRelations(executor, tableName, flatRows, pkNames, withParams)
-            : flatRows;
-
-          // Rebuild the per-entry slots: a no-match entry contributes `null`, a multi-match
-          // entry contributes each of its rows.
-          const output: (Record<string, any> | null)[] = [];
-          let offset = 0;
-          for (const rows of perEntry) {
-            if (!rows.length) {
-              output.push(null);
-              continue;
-            }
-            for (let i = 0; i < rows.length; i++) {
-              output.push(remapToGraphQLSingleOutput(enriched[offset + i], tableName, table, relationMap));
-            }
-            offset += rows.length;
-          }
-          return output;
-        });
+            return output;
+          },
+          !!hooks,
+        );
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -955,75 +1104,105 @@ const generateDelete = (
   restore: boolean = false,
 ): CreatedResolver => {
   const softDelete = policies?.softDelete?.(tableName);
+  const operation: WriteOperation = restore ? 'restore' : 'delete';
   const queryArgs = {
     where: {
       type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
     },
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
+  const hooks = policies?.onWrite?.(tableName, operation);
+
   return {
     name: fieldName,
     resolver: async (_source, args: { where?: Filters<Table> }, context, info) => {
       try {
-        return await runMutation(db, context, info, txCtx, async (executor) => {
-          const { where } = args;
-          const scope = policies?.scope?.(context);
+        return await runMutation(
+          db,
+          context,
+          info,
+          txCtx,
+          async (executor) => {
+            await runWriteHook(hooks, 'before', {
+              table: tableName,
+              operation,
+              single,
+              args,
+              context,
+              info,
+              tx: executor,
+            });
+            const { where } = args;
+            const scope = policies?.scope?.(context);
 
-          const parsedInfo = parseResolveInfo(info, {
-            deep: true,
-          }) as ResolveTree;
+            const parsedInfo = parseResolveInfo(info, {
+              deep: true,
+            }) as ResolveTree;
 
-          const columns = extractSelectedColumnsFromTreeSQLFormat<SQLiteColumn>(
-            parsedInfo.fieldsByTypeName[typeName]!,
-            table,
-            selectionCtx,
-          );
+            const columns = extractSelectedColumnsFromTreeSQLFormat<SQLiteColumn>(
+              parsedInfo.fieldsByTypeName[typeName]!,
+              table,
+              selectionCtx,
+            );
 
-          const relationCtx = relationFilterCtx(filterCtx, tableName);
-          // Same rule as update: the scope is ANDed on last, so a delete can only ever reach
-          // rows inside it — an out-of-scope row is not matched rather than being refused.
-          // A soft-deleting table adds the marker predicate the same way: `delete` only sees
-          // rows that are not already marked, `restore` only sees the ones that are.
-          const filters = withScope(
-            scope,
-            tableName,
-            table,
-            single || requireWhere
-              ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
-              : where
-                ? extractFilters(table, tableName, where, relationCtx)
-                : undefined,
-            restore ? 'ONLY' : undefined,
-          );
+            const relationCtx = relationFilterCtx(filterCtx, tableName);
+            // Same rule as update: the scope is ANDed on last, so a delete can only ever reach
+            // rows inside it — an out-of-scope row is not matched rather than being refused.
+            // A soft-deleting table adds the marker predicate the same way: `delete` only sees
+            // rows that are not already marked, `restore` only sees the ones that are.
+            const filters = withScope(
+              scope,
+              tableName,
+              table,
+              single || requireWhere
+                ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+                : where
+                  ? extractFilters(table, tableName, where, relationCtx)
+                  : undefined,
+              restore ? 'ONLY' : undefined,
+            );
 
-          if (single) {
-            await assertSingleMatch(executor, table, filters!, fieldName);
-          }
+            if (single) {
+              await assertSingleMatch(executor, table, filters!, fieldName);
+            }
 
-          let query = softDelete
-            ? executor
-                .update(table)
-                .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
-            : executor.delete(table);
-          if (filters) {
-            query = query.where(filters) as any;
-          }
+            let query = softDelete
+              ? executor
+                  .update(table)
+                  .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
+              : executor.delete(table);
+            if (filters) {
+              query = query.where(filters) as any;
+            }
 
-          query = query.returning(columns) as any;
+            query = query.returning(columns) as any;
 
-          const result = await query;
+            const result = await query;
 
-          if (single && result.length > 1) {
-            // A row started matching between the pre-check and the write.
-            throw new GraphQLError(`${fieldName}: 'where' matched more than one row!`);
-          }
+            await runWriteHook(hooks, 'after', {
+              table: tableName,
+              operation,
+              single,
+              args,
+              rows: result,
+              context,
+              info,
+              tx: executor,
+            });
 
-          if (single) {
-            return result[0] ? remapToGraphQLSingleOutput(result[0], tableName, table) : undefined;
-          }
+            if (single && result.length > 1) {
+              // A row started matching between the pre-check and the write.
+              throw new GraphQLError(`${fieldName}: 'where' matched more than one row!`);
+            }
 
-          return remapToGraphQLArrayOutput(result, tableName, table);
-        });
+            if (single) {
+              return result[0] ? remapToGraphQLSingleOutput(result[0], tableName, table) : undefined;
+            }
+
+            return remapToGraphQLArrayOutput(result, tableName, table);
+          },
+          !!hooks,
+        );
       } catch (e) {
         throw toGraphQLError(e);
       }

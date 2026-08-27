@@ -14,11 +14,16 @@ import {
   applyErrorMapper,
   defaultErrorMapper,
   type LimitPolicyFor,
+  normalizeWriteHooks,
   type ResolvedLimitPolicy,
+  type ResolvedWriteHooks,
   resolveLimitPolicy,
   resolveSoftDeleteInfo,
   type SoftDeleteInfo,
   type TablePolicies,
+  type WriteHookFor,
+  type WriteHookPositions,
+  type WriteHooks,
 } from './util/builders/common.ts';
 import { generateMySQL, generatePG, generateSQLite } from './util/builders/index.ts';
 import type { SchemaGeneratorOptions } from './util/builders/types.ts';
@@ -47,6 +52,7 @@ export type {
   LimitsConfig,
   MutationReturnlessResult,
   MutationsCore,
+  OnWriteConfig,
   QueriesCore,
   RowScope,
   RowScopeFilter,
@@ -67,6 +73,11 @@ export type {
   UpsertArrResolver,
   UpsertConflictArgs,
   UpsertResolver,
+  WriteHook,
+  WriteHookPayload,
+  WriteHookPositions,
+  WriteHooks,
+  WriteOperation,
 } from './types.ts';
 export type { RelationResolverFactory } from './util/builders/common.ts';
 export {
@@ -283,12 +294,50 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     }
   }
 
+  // Write hooks are resolved the same way: a table name that matches nothing fails the build,
+  // and the two registration shapes collapse into one per-table lookup here rather than in
+  // every resolver.
+  const onWriteConfig = config?.onWrite;
+  const writeHooks = new Map<string, ResolvedWriteHooks | undefined>();
+  let globalWriteHooks: ResolvedWriteHooks | undefined;
+  if (onWriteConfig) {
+    // A bare function, or an object naming the positions, applies to every table; anything
+    // else is a table map. `before`/`after` are reserved as position names for that reason.
+    const isGlobal =
+      typeof onWriteConfig === 'function' ||
+      typeof (onWriteConfig as WriteHookPositions).before === 'function' ||
+      typeof (onWriteConfig as WriteHookPositions).after === 'function';
+    if (isGlobal) {
+      globalWriteHooks = normalizeWriteHooks(onWriteConfig as WriteHooks);
+    } else {
+      const tableNames = new Set(tableKeys);
+      for (const [tableName, hooks] of Object.entries(onWriteConfig as Record<string, WriteHooks>)) {
+        if (!tableNames.has(tableName)) {
+          throw new Error(
+            `Drizzle-GraphQL Error: config.onWrite names '${tableName}', which is not a table in the Drizzle schema.`,
+          );
+        }
+        if (typeof hooks !== 'function' && typeof hooks !== 'object') {
+          throw new Error(
+            `Drizzle-GraphQL Error: config.onWrite.${tableName} must be a function or an object with 'before' and/or 'after'.`,
+          );
+        }
+        writeHooks.set(tableName, normalizeWriteHooks(hooks));
+      }
+    }
+  }
+  const onWrite: WriteHookFor | undefined =
+    globalWriteHooks || writeHooks.size
+      ? (tableName: string) => globalWriteHooks ?? writeHooks.get(tableName)
+      : undefined;
+
   const policies: TablePolicies | undefined =
-    scopeConfig || contextValuesConfig || softDeleteInfos.size
+    scopeConfig || contextValuesConfig || softDeleteInfos.size || onWrite
       ? {
           scope: scopeConfig ? (tableName: string) => scopeConfig[tableName] : undefined,
           contextValues: contextValuesConfig ? (tableName: string) => contextValuesConfig[tableName] : undefined,
           softDelete: softDeleteInfos.size ? (tableName: string) => softDeleteInfos.get(tableName) : undefined,
+          onWrite,
         }
       : undefined;
 

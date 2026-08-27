@@ -52,6 +52,7 @@ import {
   resolveQueryExecutor,
   runMutation,
   runRelationalSelect,
+  runWriteHook,
   selectArrayArgs,
   selectSingleArgs,
   stripContextValues,
@@ -59,6 +60,7 @@ import {
   type TypeCacheCtx,
   type TypeNameMapper,
   toGraphQLError,
+  type WriteOperation,
   withScope,
 } from '../builders/common.ts';
 import { remapFromGraphQLArrayInput, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
@@ -227,24 +229,53 @@ const generateInsertArray = (
     },
   };
 
+  const hooks = policies?.onWrite?.(tableName, 'insert');
+
   return {
     name: fieldName,
     resolver: async (_source, args: { values: Record<string, any>[] }, context, info) => {
       try {
-        return await runMutation(db, context, info, txCtx, async (executor) => {
-          const input = applyContextValuesAll(
-            remapFromGraphQLArrayInput(args.values, table),
-            policies?.contextValues?.(tableName),
-            context,
-          );
-          if (!input.length) {
-            throw new GraphQLError('No values were provided!');
-          }
+        return await runMutation(
+          db,
+          context,
+          info,
+          txCtx,
+          async (executor) => {
+            const input = applyContextValuesAll(
+              remapFromGraphQLArrayInput(args.values, table),
+              policies?.contextValues?.(tableName),
+              context,
+            );
+            if (!input.length) {
+              throw new GraphQLError('No values were provided!');
+            }
+            await runWriteHook(hooks, 'before', {
+              table: tableName,
+              operation: 'insert',
+              single: false,
+              args,
+              context,
+              info,
+              tx: executor,
+            });
 
-          await executor.insert(table).values(input);
+            await executor.insert(table).values(input);
 
-          return { isSuccess: true };
-        });
+            await runWriteHook(hooks, 'after', {
+              table: tableName,
+              operation: 'insert',
+              single: false,
+              args,
+              rows: [],
+              context,
+              info,
+              tx: executor,
+            });
+
+            return { isSuccess: true };
+          },
+          !!hooks,
+        );
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -268,21 +299,50 @@ const generateInsertSingle = (
     },
   };
 
+  const hooks = policies?.onWrite?.(tableName, 'insert');
+
   return {
     name: fieldName,
     resolver: async (_source, args: { values: Record<string, any> }, context, info) => {
       try {
-        return await runMutation(db, context, info, txCtx, async (executor) => {
-          const input = applyContextValues(
-            remapFromGraphQLSingleInput(args.values, table),
-            policies?.contextValues?.(tableName),
-            context,
-          );
+        return await runMutation(
+          db,
+          context,
+          info,
+          txCtx,
+          async (executor) => {
+            await runWriteHook(hooks, 'before', {
+              table: tableName,
+              operation: 'insert',
+              single: true,
+              args,
+              context,
+              info,
+              tx: executor,
+            });
+            const input = applyContextValues(
+              remapFromGraphQLSingleInput(args.values, table),
+              policies?.contextValues?.(tableName),
+              context,
+            );
 
-          await executor.insert(table).values(input);
+            await executor.insert(table).values(input);
 
-          return { isSuccess: true };
-        });
+            await runWriteHook(hooks, 'after', {
+              table: tableName,
+              operation: 'insert',
+              single: true,
+              args,
+              rows: [],
+              context,
+              info,
+              tx: executor,
+            });
+
+            return { isSuccess: true };
+          },
+          !!hooks,
+        );
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -314,6 +374,8 @@ const generateUpsert = (
 
   const pkNames = mysqlPrimaryKeyPropNames(table);
 
+  const hooks = policies?.onWrite?.(tableName, 'upsert');
+
   return {
     name: fieldName,
     resolver: async (
@@ -323,39 +385,66 @@ const generateUpsert = (
       info,
     ) => {
       try {
-        return await runMutation(db, context, info, txCtx, async (executor) => {
-          const input = applyContextValuesAll(
-            single
-              ? [remapFromGraphQLSingleInput(args.values as Record<string, any>, table)]
-              : remapFromGraphQLArrayInput(args.values as Record<string, any>[], table),
-            policies?.contextValues?.(tableName),
-            context,
-          );
-          if (!input.length) {
-            throw new GraphQLError('No values were provided!');
-          }
+        return await runMutation(
+          db,
+          context,
+          info,
+          txCtx,
+          async (executor) => {
+            const input = applyContextValuesAll(
+              single
+                ? [remapFromGraphQLSingleInput(args.values as Record<string, any>, table)]
+                : remapFromGraphQLArrayInput(args.values as Record<string, any>[], table),
+              policies?.contextValues?.(tableName),
+              context,
+            );
+            if (!input.length) {
+              throw new GraphQLError('No values were provided!');
+            }
+            await runWriteHook(hooks, 'before', {
+              table: tableName,
+              operation: 'upsert',
+              single,
+              args,
+              context,
+              info,
+              tx: executor,
+            });
 
-          // MySQL's ON DUPLICATE KEY UPDATE fires on whichever unique key was violated, so
-          // there is no target to resolve and no predicate to attach.
-          const plan = resolveConflictPlan({
-            table,
-            values: input,
-            onConflict: args.onConflict,
-            pkNames,
-            uniqueSets: [],
-            excludedRef: mysqlValuesColumnRef,
-            withTarget: false,
-          });
+            // MySQL's ON DUPLICATE KEY UPDATE fires on whichever unique key was violated, so
+            // there is no target to resolve and no predicate to attach.
+            const plan = resolveConflictPlan({
+              table,
+              values: input,
+              onConflict: args.onConflict,
+              pkNames,
+              uniqueSets: [],
+              excludedRef: mysqlValuesColumnRef,
+              withTarget: false,
+            });
 
-          if (plan.action === 'NOTHING') {
-            // INSERT IGNORE is the closest MySQL gets to DO NOTHING.
-            await executor.insert(table).ignore().values(input);
-          } else {
-            await executor.insert(table).values(input).onDuplicateKeyUpdate({ set: plan.set });
-          }
+            if (plan.action === 'NOTHING') {
+              // INSERT IGNORE is the closest MySQL gets to DO NOTHING.
+              await executor.insert(table).ignore().values(input);
+            } else {
+              await executor.insert(table).values(input).onDuplicateKeyUpdate({ set: plan.set });
+            }
 
-          return { isSuccess: true };
-        });
+            await runWriteHook(hooks, 'after', {
+              table: tableName,
+              operation: 'upsert',
+              single,
+              args,
+              rows: [],
+              context,
+              info,
+              tx: executor,
+            });
+
+            return { isSuccess: true };
+          },
+          !!hooks,
+        );
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -386,50 +475,79 @@ const generateUpdate = (
     },
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
+  const hooks = policies?.onWrite?.(tableName, 'update');
+
   return {
     name: fieldName,
     resolver: async (_source, args: { where?: Filters<Table>; set: Record<string, any> }, context, info) => {
       try {
-        return await runMutation(db, context, info, txCtx, async (executor) => {
-          const { where, set } = args;
-          const scope = policies?.scope?.(context);
+        return await runMutation(
+          db,
+          context,
+          info,
+          txCtx,
+          async (executor) => {
+            const { where, set } = args;
+            const scope = policies?.scope?.(context);
 
-          // A context-derived column is the server's to set, so an update never reassigns
-          // one — that is what stops a row being handed to another owner.
-          const input = stripContextValues(
-            remapUpdateInput(set, table, tableName),
-            policies?.contextValues?.(tableName),
-          );
-          if (!Object.keys(input).length) {
-            throw new GraphQLError('Unable to update with no values specified!');
-          }
+            // A context-derived column is the server's to set, so an update never reassigns
+            // one — that is what stops a row being handed to another owner.
+            const input = stripContextValues(
+              remapUpdateInput(set, table, tableName),
+              policies?.contextValues?.(tableName),
+            );
+            if (!Object.keys(input).length) {
+              throw new GraphQLError('Unable to update with no values specified!');
+            }
+            await runWriteHook(hooks, 'before', {
+              table: tableName,
+              operation: 'update',
+              single,
+              args,
+              context,
+              info,
+              tx: executor,
+            });
 
-          const relationCtx = relationFilterCtx(filterCtx, tableName);
-          // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
-          const filters = withScope(
-            scope,
-            tableName,
-            table,
-            single || requireWhere
-              ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
-              : where
-                ? extractFilters(table, tableName, where, relationCtx)
-                : undefined,
-          );
+            const relationCtx = relationFilterCtx(filterCtx, tableName);
+            // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
+            const filters = withScope(
+              scope,
+              tableName,
+              table,
+              single || requireWhere
+                ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+                : where
+                  ? extractFilters(table, tableName, where, relationCtx)
+                  : undefined,
+            );
 
-          if (single) {
-            await assertSingleMatch(executor, table, filters!, fieldName);
-          }
+            if (single) {
+              await assertSingleMatch(executor, table, filters!, fieldName);
+            }
 
-          let query = executor.update(table).set(input);
-          if (filters) {
-            query = query.where(filters) as any;
-          }
+            let query = executor.update(table).set(input);
+            if (filters) {
+              query = query.where(filters) as any;
+            }
 
-          await query;
+            await query;
 
-          return { isSuccess: true };
-        });
+            await runWriteHook(hooks, 'after', {
+              table: tableName,
+              operation: 'update',
+              single,
+              args,
+              rows: [],
+              context,
+              info,
+              tx: executor,
+            });
+
+            return { isSuccess: true };
+          },
+          !!hooks,
+        );
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -463,6 +581,8 @@ const generateUpdateMany = (
     },
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
+  const hooks = policies?.onWrite?.(tableName, 'updateMany');
+
   return {
     name: fieldName,
     resolver: async (
@@ -472,47 +592,74 @@ const generateUpdateMany = (
       info,
     ) => {
       try {
-        return await runMutation(db, context, info, txCtx, async (executor) => {
-          const { updates } = args;
-          if (!updates.length) {
-            throw new GraphQLError('No updates were provided!');
-          }
-          const scope = policies?.scope?.(context);
-          const contextColumns = policies?.contextValues?.(tableName);
-
-          // Remap and validate every entry before the transaction opens, so a malformed
-          // entry rejects the request instead of rolling back mid-batch.
-          const entries = updates.map(({ where, set }) => {
-            const input = stripContextValues(remapUpdateInput(set, table, tableName), contextColumns);
-            if (!Object.keys(input).length) {
-              throw new GraphQLError('Unable to update with no values specified!');
+        return await runMutation(
+          db,
+          context,
+          info,
+          txCtx,
+          async (executor) => {
+            const { updates } = args;
+            if (!updates.length) {
+              throw new GraphQLError('No updates were provided!');
             }
-            return {
-              set: input,
-              filters: withScope(
-                scope,
-                tableName,
-                table,
-                where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
-              ),
-            };
-          });
+            await runWriteHook(hooks, 'before', {
+              table: tableName,
+              operation: 'updateMany',
+              single: false,
+              args,
+              context,
+              info,
+              tx: executor,
+            });
+            const scope = policies?.scope?.(context);
+            const contextColumns = policies?.contextValues?.(tableName);
 
-          // On a caller-supplied transaction — or the shared multi-mutation transaction
-          // opened by `runMutation` — this opens a savepoint, so the batch stays atomic
-          // without breaking the outer transaction.
-          await executor.transaction(async (tx: any) => {
-            for (const entry of entries) {
-              let query = tx.update(table).set(entry.set);
-              if (entry.filters) {
-                query = query.where(entry.filters) as any;
+            // Remap and validate every entry before the transaction opens, so a malformed
+            // entry rejects the request instead of rolling back mid-batch.
+            const entries = updates.map(({ where, set }) => {
+              const input = stripContextValues(remapUpdateInput(set, table, tableName), contextColumns);
+              if (!Object.keys(input).length) {
+                throw new GraphQLError('Unable to update with no values specified!');
               }
-              await query;
-            }
-          });
+              return {
+                set: input,
+                filters: withScope(
+                  scope,
+                  tableName,
+                  table,
+                  where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
+                ),
+              };
+            });
 
-          return { isSuccess: true };
-        });
+            // On a caller-supplied transaction — or the shared multi-mutation transaction
+            // opened by `runMutation` — this opens a savepoint, so the batch stays atomic
+            // without breaking the outer transaction.
+            await executor.transaction(async (tx: any) => {
+              for (const entry of entries) {
+                let query = tx.update(table).set(entry.set);
+                if (entry.filters) {
+                  query = query.where(entry.filters) as any;
+                }
+                await query;
+              }
+            });
+
+            await runWriteHook(hooks, 'after', {
+              table: tableName,
+              operation: 'updateMany',
+              single: false,
+              args,
+              rows: [],
+              context,
+              info,
+              tx: executor,
+            });
+
+            return { isSuccess: true };
+          },
+          !!hooks,
+        );
       } catch (e) {
         throw toGraphQLError(e);
       }
@@ -540,54 +687,84 @@ const generateDelete = (
   restore: boolean = false,
 ): CreatedResolver => {
   const softDelete = policies?.softDelete?.(tableName);
+  const operation: WriteOperation = restore ? 'restore' : 'delete';
   const queryArgs = {
     where: {
       type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
     },
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
+  const hooks = policies?.onWrite?.(tableName, operation);
+
   return {
     name: fieldName,
     resolver: async (_source, args: { where?: Filters<Table> }, context, info) => {
       try {
-        return await runMutation(db, context, info, txCtx, async (executor) => {
-          const { where } = args;
-          const scope = policies?.scope?.(context);
+        return await runMutation(
+          db,
+          context,
+          info,
+          txCtx,
+          async (executor) => {
+            await runWriteHook(hooks, 'before', {
+              table: tableName,
+              operation,
+              single,
+              args,
+              context,
+              info,
+              tx: executor,
+            });
+            const { where } = args;
+            const scope = policies?.scope?.(context);
 
-          const relationCtx = relationFilterCtx(filterCtx, tableName);
-          // Same rule as update: the scope is ANDed on last, so a delete can only ever reach
-          // rows inside it — an out-of-scope row is not matched rather than being refused.
-          // A soft-deleting table adds the marker predicate the same way: `delete` only sees
-          // rows that are not already marked, `restore` only sees the ones that are.
-          const filters = withScope(
-            scope,
-            tableName,
-            table,
-            single || requireWhere
-              ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
-              : where
-                ? extractFilters(table, tableName, where, relationCtx)
-                : undefined,
-            restore ? 'ONLY' : undefined,
-          );
+            const relationCtx = relationFilterCtx(filterCtx, tableName);
+            // Same rule as update: the scope is ANDed on last, so a delete can only ever reach
+            // rows inside it — an out-of-scope row is not matched rather than being refused.
+            // A soft-deleting table adds the marker predicate the same way: `delete` only sees
+            // rows that are not already marked, `restore` only sees the ones that are.
+            const filters = withScope(
+              scope,
+              tableName,
+              table,
+              single || requireWhere
+                ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+                : where
+                  ? extractFilters(table, tableName, where, relationCtx)
+                  : undefined,
+              restore ? 'ONLY' : undefined,
+            );
 
-          if (single) {
-            await assertSingleMatch(executor, table, filters!, fieldName);
-          }
+            if (single) {
+              await assertSingleMatch(executor, table, filters!, fieldName);
+            }
 
-          let query = softDelete
-            ? executor
-                .update(table)
-                .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
-            : executor.delete(table);
-          if (filters) {
-            query = query.where(filters) as any;
-          }
+            let query = softDelete
+              ? executor
+                  .update(table)
+                  .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
+              : executor.delete(table);
+            if (filters) {
+              query = query.where(filters) as any;
+            }
 
-          await query;
+            await query;
 
-          return { isSuccess: true };
-        });
+            await runWriteHook(hooks, 'after', {
+              table: tableName,
+              operation,
+              single,
+              args,
+              rows: [],
+              context,
+              info,
+              tx: executor,
+            });
+
+            return { isSuccess: true };
+          },
+          !!hooks,
+        );
       } catch (e) {
         throw toGraphQLError(e);
       }
