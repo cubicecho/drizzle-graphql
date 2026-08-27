@@ -120,7 +120,11 @@ export const extractRelationsParamsInner = (
     // single row by definition, so it is left alone.
     const limit = is(relEntry.relation, One)
       ? (relationArgs?.limit ?? undefined)
-      : applyLimitPolicy(relationArgs?.limit, limits?.(targetTableName), `${tableName}.${relName}`);
+      : applyLimitPolicy(relationArgs?.limit, limits?.(targetTableName), {
+          table: targetTableName,
+          operation: 'relation',
+          relation: relName,
+        });
 
     // drizzle-orm v1 RQB calls both `where` and `orderBy` callbacks with an
     // aliased table proxy (e.g. d0, d1). Pass the proxy through so column

@@ -3,8 +3,8 @@
 
 import type { Table } from 'drizzle-orm';
 import { and, eq, getColumns, gt, isNotNull, isNull, lt, or, type SQL, sql } from 'drizzle-orm';
-import { GraphQLError } from 'graphql';
 import type { ResolveTree } from 'graphql-parse-resolve-info';
+import { drizzleError } from './errors.ts';
 import type { OrderNullsOption } from './order-by.ts';
 import { orderByEntries, orderExpressions } from './order-by.ts';
 
@@ -145,7 +145,9 @@ export const decodeCursor = (after: string, entries: CursorOrderEntry[]): any[] 
   try {
     payload = JSON.parse(Buffer.from(after, 'base64url').toString('utf8'));
   } catch (_e) {
-    throw new GraphQLError('Invalid cursor: unable to decode it. Pass a cursor returned by a previous page.');
+    throw drizzleError('Invalid cursor: unable to decode it. Pass a cursor returned by a previous page.', {
+      code: 'DRIZZLE_INVALID_CURSOR',
+    });
   }
 
   if (
@@ -155,7 +157,9 @@ export const decodeCursor = (after: string, entries: CursorOrderEntry[]): any[] 
     !Array.isArray(payload.v) ||
     payload.o.length !== payload.v.length
   ) {
-    throw new GraphQLError('Invalid cursor: malformed payload. Pass a cursor returned by a previous page.');
+    throw drizzleError('Invalid cursor: malformed payload. Pass a cursor returned by a previous page.', {
+      code: 'DRIZZLE_INVALID_CURSOR',
+    });
   }
 
   const matchesOrdering =
@@ -170,8 +174,9 @@ export const decodeCursor = (after: string, entries: CursorOrderEntry[]): any[] 
         (entry[2] ?? null) === (entries[i]![2] ?? null),
     );
   if (!matchesOrdering) {
-    throw new GraphQLError(
+    throw drizzleError(
       "Invalid cursor: it was issued for a different ordering. Pass the same orderBy the cursor's page used.",
+      { code: 'DRIZZLE_INVALID_CURSOR' },
     );
   }
 
@@ -204,7 +209,7 @@ export const buildCursorCondition = (
   entries.forEach(([column, direction, nulls], i) => {
     const col = cols[column];
     if (!col) {
-      throw new GraphQLError(`Invalid cursor: unknown column '${column}'.`);
+      throw drizzleError(`Invalid cursor: unknown column '${column}'.`, { code: 'DRIZZLE_INVALID_CURSOR' });
     }
 
     const value = values[i];

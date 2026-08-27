@@ -3,7 +3,8 @@
 
 import type { Column, Table } from 'drizzle-orm';
 import { and, eq, extractExtendedColumnType, getColumns, is, isNotNull, isNull, ne, or, SQL } from 'drizzle-orm';
-import { GraphQLEnumType, GraphQLError } from 'graphql';
+import { GraphQLEnumType } from 'graphql';
+import { drizzleError } from './errors.ts';
 import type { DefaultOrderByFor } from './limits.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
@@ -289,8 +290,9 @@ export const resolveScope = (
         return and(deleted, predicate as SQL);
       }
       if (typeof predicate !== 'object') {
-        throw new GraphQLError(
+        throw drizzleError(
           `Drizzle-GraphQL Error: the scope for '${tableName}' returned a ${typeof predicate}. A scope returns a filter object, a Drizzle SQL expression, or undefined.`,
+          { code: 'DRIZZLE_INVALID_SCOPE' },
         );
       }
       // A filter object is compiled the same way the field's own `where` is, against the

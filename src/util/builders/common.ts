@@ -45,7 +45,15 @@ export {
 } from './common/cursor.ts';
 export { primaryKeyRestriction, selectDistinctKeys } from './common/distinct.ts';
 export { columnDocs } from './common/docs.ts';
-export { applyErrorMapper, defaultErrorMapper, toGraphQLError } from './common/errors.ts';
+export {
+  applyErrorMapper,
+  type DrizzleErrorCode,
+  type DrizzleErrorContext,
+  defaultErrorMapper,
+  drizzleError,
+  toGraphQLError,
+  withErrorContext,
+} from './common/errors.ts';
 export {
   excludedColumnsKey,
   hasExcludedColumns,

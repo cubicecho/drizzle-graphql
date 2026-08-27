@@ -66,10 +66,11 @@ export type {
   WriteHooks,
   WriteOperation,
 } from './types.ts';
-export type { RelationResolverFactory } from './util/builders/common.ts';
+export type { DrizzleErrorCode, DrizzleErrorContext, RelationResolverFactory } from './util/builders/common.ts';
 export {
   createRelationResolverFactory,
   defaultErrorMapper,
+  drizzleError,
   drizzleExecutorKey,
   extractFilters,
   extractOrderBy,

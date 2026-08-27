@@ -3,8 +3,8 @@
 
 import type { Column, Table } from 'drizzle-orm';
 import { and, asc, eq, getColumns, inArray, or, type SQL, sql } from 'drizzle-orm';
-import { GraphQLError } from 'graphql';
 import { DISTINCT_RN } from './column-enums.ts';
+import { drizzleError } from './errors.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import { orderByEntries, orderExpressions } from './order-by.ts';
 
@@ -38,12 +38,16 @@ export const selectDistinctKeys = async (params: {
   const cols = getColumns(table);
 
   if (!pkNames.length) {
-    throw new GraphQLError(`Table ${tableName} has no primary key, so 'distinct' cannot be applied to it.`);
+    throw drizzleError(`Table ${tableName} has no primary key, so 'distinct' cannot be applied to it.`, {
+      code: 'DRIZZLE_INVALID_DISTINCT',
+    });
   }
 
   const requestedCols = distinct.map((name) => cols[name]).filter(Boolean);
   if (!requestedCols.length) {
-    throw new GraphQLError(`No known columns were given to 'distinct' on ${tableName}.`);
+    throw drizzleError(`No known columns were given to 'distinct' on ${tableName}.`, {
+      code: 'DRIZZLE_INVALID_DISTINCT',
+    });
   }
   const partitionCols = [...(partitionBy ?? []), ...requestedCols];
 

@@ -3,8 +3,9 @@
 
 import type { Column, Table } from 'drizzle-orm';
 import { getColumns, type SQL, sql } from 'drizzle-orm';
-import { GraphQLEnumType, GraphQLError, GraphQLInputObjectType, GraphQLList, GraphQLNonNull } from 'graphql';
+import { GraphQLEnumType, GraphQLInputObjectType, GraphQLList, GraphQLNonNull } from 'graphql';
 import { generateColumnEnum } from './column-enums.ts';
+import { drizzleError } from './errors.ts';
 
 /** Shared by every table's `${typeName}OnConflict` input, so it is created once. */
 export const conflictActionEnum = new GraphQLEnumType({
@@ -134,8 +135,9 @@ export const resolveConflictPlan = (params: {
   if (withTarget) {
     const targetNames = onConflict?.target?.length ? onConflict.target : [...pkNames];
     if (!targetNames.length) {
-      throw new GraphQLError(
+      throw drizzleError(
         'Unable to upsert: no conflict target was given and this table has no primary key. Pass onConflict.target.',
+        { code: 'DRIZZLE_INVALID_ON_CONFLICT' },
       );
     }
     // A target that is not itself a unique constraint is a database error, and a confusing
@@ -143,10 +145,11 @@ export const resolveConflictPlan = (params: {
     // specification"), so reject it here where we can say which sets are valid.
     const requested = [...targetNames].sort().join(',');
     if (!uniqueSets.some((set) => [...set].sort().join(',') === requested)) {
-      throw new GraphQLError(
+      throw drizzleError(
         `Unable to upsert: [${targetNames.join(', ')}] is not a unique constraint on this table. Valid conflict targets: ${uniqueSets
           .map((set) => `[${set.join(', ')}]`)
           .join(', ')}.`,
+        { code: 'DRIZZLE_INVALID_ON_CONFLICT' },
       );
     }
     target = targetNames.map((name) => columns[name]!);
@@ -165,8 +168,9 @@ export const resolveConflictPlan = (params: {
   if (onConflict?.update?.length) {
     const unsupplied = onConflict.update.filter((name) => !supplied.has(name));
     if (unsupplied.length) {
-      throw new GraphQLError(
+      throw drizzleError(
         `Unable to upsert: onConflict.update lists ${unsupplied.join(', ')}, which the values do not supply.`,
+        { code: 'DRIZZLE_INVALID_ON_CONFLICT' },
       );
     }
     updateNames = onConflict.update;

@@ -10,13 +10,7 @@
 import type { Table } from 'drizzle-orm';
 import type { PgAsyncDatabase } from 'drizzle-orm/pg-core';
 import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
-import {
-  GraphQLError,
-  type GraphQLFieldConfigArgumentMap,
-  type GraphQLInputObjectType,
-  GraphQLList,
-  GraphQLNonNull,
-} from 'graphql';
+import { type GraphQLFieldConfigArgumentMap, type GraphQLInputObjectType, GraphQLList, GraphQLNonNull } from 'graphql';
 import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import {
@@ -29,6 +23,8 @@ import {
   applyContextValues,
   applyContextValuesAll,
   assertSingleMatch,
+  type DrizzleErrorContext,
+  drizzleError,
   eagerLoadMutationRelations,
   excludedColumnRef,
   extractFilters,
@@ -50,6 +46,7 @@ import {
   type TypeNameMapper,
   toGraphQLError,
   type WriteOperation,
+  withErrorContext,
   withScope,
 } from './common.ts';
 import { remapUpdateInput } from './field-updates.ts';
@@ -97,6 +94,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
     // rather than re-running getTableConfig on every mutation request.
     const pkNames = primaryKeyPropNames(table);
     const hooks = policies?.onWrite?.(tableName, 'insert');
+    const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'insert', field: fieldName };
 
     return {
       name: fieldName,
@@ -109,7 +107,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             txCtx,
             async (executor) => {
               if (!args.values.length) {
-                throw new GraphQLError('No values were provided!');
+                throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
               }
               await runWriteHook(hooks, 'before', {
                 table: tableName,
@@ -200,7 +198,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             !!hooks,
           );
         } catch (e) {
-          throw toGraphQLError(e);
+          throw withErrorContext(toGraphQLError(e), errorCtx);
         }
       },
       args: queryArgs,
@@ -232,6 +230,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
     // Derived once at build time — PK prop names don't change per request.
     const pkNames = primaryKeyPropNames(table);
     const hooks = policies?.onWrite?.(tableName, 'insert');
+    const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'insert', field: fieldName };
 
     return {
       name: fieldName,
@@ -322,7 +321,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
                 // Only reachable under `conflictDoNothing`, which is why the field is nullable
                 // there and non-null everywhere else.
                 if (!conflictDoNothing) {
-                  throw new GraphQLError(`${fieldName}: the insert returned no row.`);
+                  throw drizzleError('The insert returned no row.', { code: 'DRIZZLE_NO_ROW_RETURNED' });
                 }
                 return undefined;
               }
@@ -336,7 +335,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             !!hooks,
           );
         } catch (e) {
-          throw toGraphQLError(e);
+          throw withErrorContext(toGraphQLError(e), errorCtx);
         }
       },
       args: queryArgs,
@@ -380,6 +379,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
 
     const pkNames = primaryKeyPropNames(table);
     const hooks = policies?.onWrite?.(tableName, 'upsert');
+    const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'upsert', field: fieldName };
 
     return {
       name: fieldName,
@@ -398,7 +398,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             async (executor) => {
               const supplied = single ? [args.values as Record<string, any>] : (args.values as Record<string, any>[]);
               if (!supplied.length) {
-                throw new GraphQLError('No values were provided!');
+                throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
               }
               await runWriteHook(hooks, 'before', {
                 table: tableName,
@@ -512,7 +512,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             !!hooks,
           );
         } catch (e) {
-          throw toGraphQLError(e);
+          throw withErrorContext(toGraphQLError(e), errorCtx);
         }
       },
       args: queryArgs,
@@ -550,6 +550,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
     // Derived once at build time — PK prop names don't change per request.
     const pkNames = primaryKeyPropNames(table);
     const hooks = policies?.onWrite?.(tableName, 'update');
+    const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'update', field: fieldName };
 
     return {
       name: fieldName,
@@ -602,7 +603,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
               // A `set` that carries only nested operations is a legitimate update — of the
               // relation rather than of the row — so it is only empty when neither is present.
               if (!Object.keys(input).length && !nestedOps) {
-                throw new GraphQLError('Unable to update with no values specified!');
+                throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
               }
 
               const relationCtx = relationFilterCtx(filterCtx, tableName);
@@ -612,14 +613,14 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
                 tableName,
                 table,
                 single || requireWhere
-                  ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+                  ? extractRequiredFilters(table, tableName, where, relationCtx)
                   : where
                     ? extractFilters(table, tableName, where, relationCtx)
                     : undefined,
               );
 
               if (single) {
-                await assertSingleMatch(executor, table, filters!, fieldName);
+                await assertSingleMatch(executor, table, filters!);
               }
 
               const returning = nestedOps
@@ -663,7 +664,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
 
               if (single && result.length > 1) {
                 // A row started matching between the pre-check and the write.
-                throw new GraphQLError(`${fieldName}: 'where' matched more than one row!`);
+                throw drizzleError("'where' matched more than one row!", { code: 'DRIZZLE_MULTI_ROW_MATCH' });
               }
 
               if (single && !result[0]) {
@@ -681,7 +682,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             !!hooks,
           );
         } catch (e) {
-          throw toGraphQLError(e);
+          throw withErrorContext(toGraphQLError(e), errorCtx);
         }
       },
       args: queryArgs,
@@ -718,6 +719,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
     const softDelete = policies?.softDelete?.(tableName);
     const operation: WriteOperation = restore ? 'restore' : 'delete';
     const hooks = policies?.onWrite?.(tableName, operation);
+    const errorCtx: DrizzleErrorContext = { table: tableName, operation, field: fieldName };
     // Only a soft-deleting table that opted in gets the argument, so the schema itself says
     // which tables can be purged — and `restore` never takes one, having nothing to remove.
     const canHardDelete = !restore && softDelete?.hardDelete === true;
@@ -773,7 +775,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
                 tableName,
                 table,
                 single || requireWhere
-                  ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+                  ? extractRequiredFilters(table, tableName, where, relationCtx)
                   : where
                     ? extractFilters(table, tableName, where, relationCtx)
                     : undefined,
@@ -783,7 +785,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
               );
 
               if (single) {
-                await assertSingleMatch(executor, table, filters!, fieldName);
+                await assertSingleMatch(executor, table, filters!);
               }
 
               let query =
@@ -813,7 +815,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
 
               if (single && result.length > 1) {
                 // A row started matching between the pre-check and the write.
-                throw new GraphQLError(`${fieldName}: 'where' matched more than one row!`);
+                throw drizzleError("'where' matched more than one row!", { code: 'DRIZZLE_MULTI_ROW_MATCH' });
               }
 
               if (single) {
@@ -825,7 +827,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             !!hooks,
           );
         } catch (e) {
-          throw toGraphQLError(e);
+          throw withErrorContext(toGraphQLError(e), errorCtx);
         }
       },
       args: queryArgs,

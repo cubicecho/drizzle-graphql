@@ -3,7 +3,6 @@ import { getTableConfig, type MySqlDatabase, MySqlTable } from 'drizzle-orm/mysq
 import type { GraphQLFieldConfig, GraphQLFieldConfigArgumentMap, ThunkObjMap } from 'graphql';
 import {
   GraphQLBoolean,
-  GraphQLError,
   type GraphQLInputObjectType,
   GraphQLInt,
   GraphQLList,
@@ -23,6 +22,8 @@ import {
   computeResolverFieldNames,
   createMutationTxCtx,
   createRelationResolverFactory,
+  type DrizzleErrorContext,
+  drizzleError,
   extractFilters,
   extractRequiredFilters,
   generateOnConflictInput,
@@ -50,6 +51,7 @@ import {
   type TypeCacheCtx,
   toGraphQLError,
   type WriteOperation,
+  withErrorContext,
   withScope,
 } from '../builders/common.ts';
 import { remapFromGraphQLArrayInput, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
@@ -85,6 +87,7 @@ const generateInsertArray = (
   };
 
   const hooks = policies?.onWrite?.(tableName, 'insert');
+  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'insert', field: fieldName };
 
   return {
     name: fieldName,
@@ -102,7 +105,7 @@ const generateInsertArray = (
               context,
             );
             if (!input.length) {
-              throw new GraphQLError('No values were provided!');
+              throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
             }
             await runWriteHook(hooks, 'before', {
               table: tableName,
@@ -132,7 +135,7 @@ const generateInsertArray = (
           !!hooks,
         );
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     },
     args: queryArgs,
@@ -155,6 +158,7 @@ const generateInsertSingle = (
   };
 
   const hooks = policies?.onWrite?.(tableName, 'insert');
+  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'insert', field: fieldName };
 
   return {
     name: fieldName,
@@ -199,7 +203,7 @@ const generateInsertSingle = (
           !!hooks,
         );
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     },
     args: queryArgs,
@@ -230,6 +234,7 @@ const generateUpsert = (
   const pkNames = mysqlPrimaryKeyPropNames(table);
 
   const hooks = policies?.onWrite?.(tableName, 'upsert');
+  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'upsert', field: fieldName };
 
   return {
     name: fieldName,
@@ -254,7 +259,7 @@ const generateUpsert = (
               context,
             );
             if (!input.length) {
-              throw new GraphQLError('No values were provided!');
+              throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
             }
             await runWriteHook(hooks, 'before', {
               table: tableName,
@@ -301,7 +306,7 @@ const generateUpsert = (
           !!hooks,
         );
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     },
     args: queryArgs,
@@ -331,6 +336,7 @@ const generateUpdate = (
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
   const hooks = policies?.onWrite?.(tableName, 'update');
+  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'update', field: fieldName };
 
   return {
     name: fieldName,
@@ -352,7 +358,7 @@ const generateUpdate = (
               policies?.contextValues?.(tableName),
             );
             if (!Object.keys(input).length) {
-              throw new GraphQLError('Unable to update with no values specified!');
+              throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
             }
             await runWriteHook(hooks, 'before', {
               table: tableName,
@@ -371,14 +377,14 @@ const generateUpdate = (
               tableName,
               table,
               single || requireWhere
-                ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+                ? extractRequiredFilters(table, tableName, where, relationCtx)
                 : where
                   ? extractFilters(table, tableName, where, relationCtx)
                   : undefined,
             );
 
             if (single) {
-              await assertSingleMatch(executor, table, filters!, fieldName);
+              await assertSingleMatch(executor, table, filters!);
             }
 
             let query = executor.update(table).set(input);
@@ -404,7 +410,7 @@ const generateUpdate = (
           !!hooks,
         );
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     },
     args: queryArgs,
@@ -437,6 +443,7 @@ const generateUpdateMany = (
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
   const hooks = policies?.onWrite?.(tableName, 'updateMany');
+  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'updateMany', field: fieldName };
 
   return {
     name: fieldName,
@@ -455,7 +462,7 @@ const generateUpdateMany = (
           async (executor) => {
             const { updates } = args;
             if (!updates.length) {
-              throw new GraphQLError('No updates were provided!');
+              throw drizzleError('No updates were provided!', { code: 'DRIZZLE_NO_VALUES' });
             }
             await runWriteHook(hooks, 'before', {
               table: tableName,
@@ -474,7 +481,7 @@ const generateUpdateMany = (
             const entries = updates.map(({ where, set }) => {
               const input = stripContextValues(remapUpdateInput(set, table, tableName), contextColumns);
               if (!Object.keys(input).length) {
-                throw new GraphQLError('Unable to update with no values specified!');
+                throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
               }
               return {
                 set: input,
@@ -516,7 +523,7 @@ const generateUpdateMany = (
           !!hooks,
         );
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     },
     args: queryArgs,
@@ -557,6 +564,7 @@ const generateDelete = (
   } as GraphQLFieldConfigArgumentMap;
 
   const hooks = policies?.onWrite?.(tableName, operation);
+  const errorCtx: DrizzleErrorContext = { table: tableName, operation, field: fieldName };
 
   return {
     name: fieldName,
@@ -593,7 +601,7 @@ const generateDelete = (
               tableName,
               table,
               single || requireWhere
-                ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+                ? extractRequiredFilters(table, tableName, where, relationCtx)
                 : where
                   ? extractFilters(table, tableName, where, relationCtx)
                   : undefined,
@@ -603,7 +611,7 @@ const generateDelete = (
             );
 
             if (single) {
-              await assertSingleMatch(executor, table, filters!, fieldName);
+              await assertSingleMatch(executor, table, filters!);
             }
 
             let query =
@@ -634,7 +642,7 @@ const generateDelete = (
           !!hooks,
         );
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     },
     args: queryArgs,

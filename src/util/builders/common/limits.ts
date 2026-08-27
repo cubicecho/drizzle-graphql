@@ -1,7 +1,7 @@
 // The `limits`, `defaults` and `complexity` configs resolved per table, plus the estimator
 // functions the generated fields publish on `extensions.complexity`.
 
-import { GraphQLError } from 'graphql';
+import { type DrizzleErrorContext, drizzleError } from './errors.ts';
 
 /** The shape `graphql-query-complexity`'s `fieldExtensionsEstimator` hands to a field's hint. */
 type ComplexityEstimatorArgs = { args: Record<string, any>; childComplexity: number };
@@ -72,7 +72,11 @@ export const withDefaultOrderBy = <T extends { orderBy?: any }>(
 export const applyLimitPolicy = (
   limit: number | null | undefined,
   policy: ResolvedLimitPolicy | undefined,
-  fieldName: string,
+  /**
+   * Only a relation field passes this: its limit is applied while the *parent's* resolver is
+   * building the eager query, so there is no relation-shaped catch to attach the context at.
+   */
+  errorCtx?: DrizzleErrorContext,
 ): number | undefined => {
   if (!policy) {
     return limit ?? undefined;
@@ -91,7 +95,10 @@ export const applyLimitPolicy = (
     if (clampToMax) {
       return maxLimit;
     }
-    throw new GraphQLError(`${fieldName}: 'limit' of ${limit} exceeds the maximum of ${maxLimit}.`);
+    throw drizzleError(`'limit' of ${limit} exceeds the maximum of ${maxLimit}.`, {
+      code: 'DRIZZLE_LIMIT_EXCEEDED',
+      ...errorCtx,
+    });
   }
   return limit;
 };

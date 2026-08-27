@@ -1689,6 +1689,39 @@ The hook covers root queries and mutations, relation and aggregate fields, and t
 standalone `entities.fieldResolvers`. The default is exported as `defaultErrorMapper` if you
 want to fall back to it explicitly.
 
+### What an error carries
+
+Every error the library raises itself carries its context as data, so nothing downstream has
+to match on prose:
+
+```json
+{
+    "message": "'where' matched more than one row — nothing was written!",
+    "path": ["updateUser"],
+    "extensions": {
+        "code": "DRIZZLE_MULTI_ROW_MATCH",
+        "drizzle": { "table": "Users", "operation": "update", "field": "updateUsersSingle" }
+    }
+}
+```
+
+-   `code` classifies the failure — `DRIZZLE_MULTI_ROW_MATCH`, `DRIZZLE_WHERE_REQUIRED`,
+    `DRIZZLE_LIMIT_EXCEEDED`, `DRIZZLE_NO_VALUES`, `DRIZZLE_INVALID_FILTER`,
+    `DRIZZLE_INVALID_CURSOR`, and so on. The full union is exported as `DrizzleErrorCode`.
+-   `drizzle` says what it was about: the Drizzle schema key of the `table`, the `operation`,
+    the generated `field`, and the `relation` for a relation field. The type is exported as
+    `DrizzleErrorContext`.
+
+The **generated** field name is in `extensions.drizzle.field` rather than in the message on
+purpose. A schema that republishes these fields under other names — `RenameRootFields`, a
+stitched gateway, a hand-written façade — renames the schema, not the inside of a message, so
+a message naming `updateUsersSingle` would be telling a client about a field it has never
+heard of. The name the client asked for is in `path`, already correct under any rename.
+
+Driver errors are not classified: they are sanitized as above and keep
+`code: "INTERNAL_SERVER_ERROR"` with no `drizzle` block, which is also how `onError` can tell
+the two apart without inspecting messages.
+
 ## Transactions
 
 Each resolver runs its statements on the database the schema was built from, so by default a

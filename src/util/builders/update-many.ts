@@ -11,10 +11,12 @@
 
 import type { Table } from 'drizzle-orm';
 import type { GraphQLFieldConfigArgumentMap, GraphQLInputObjectType } from 'graphql';
-import { GraphQLError, GraphQLList, GraphQLNonNull } from 'graphql';
+import { GraphQLList, GraphQLNonNull } from 'graphql';
 import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import {
+  type DrizzleErrorContext,
+  drizzleError,
   eagerLoadMutationRelations,
   extractFilters,
   type LimitPolicyFor,
@@ -28,6 +30,7 @@ import {
   stripContextValues,
   type TypeNameMapper,
   toGraphQLError,
+  withErrorContext,
   withScope,
 } from '../builders/common.ts';
 import { remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
@@ -145,6 +148,7 @@ export const createUpdateManyGenerator = (
     // Derived once at build time — PK prop names don't change per request.
     const pkNames = primaryKeyPropNames(table);
     const hooks = policies?.onWrite?.(tableName, 'updateMany');
+    const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'updateMany', field: fieldName };
 
     return {
       name: fieldName,
@@ -163,7 +167,7 @@ export const createUpdateManyGenerator = (
             async (executor) => {
               const { updates } = args;
               if (!updates.length) {
-                throw new GraphQLError('No updates were provided!');
+                throw drizzleError('No updates were provided!', { code: 'DRIZZLE_NO_VALUES' });
               }
               await runWriteHook(hooks, 'before', {
                 table: tableName,
@@ -206,7 +210,7 @@ export const createUpdateManyGenerator = (
                 );
                 // An entry that only writes through a relation still has work to do.
                 if (!Object.keys(input).length && !ops) {
-                  throw new GraphQLError('Unable to update with no values specified!');
+                  throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
                 }
                 return {
                   set: input,
@@ -278,7 +282,7 @@ export const createUpdateManyGenerator = (
             !!hooks,
           );
         } catch (e) {
-          throw toGraphQLError(e);
+          throw withErrorContext(toGraphQLError(e), errorCtx);
         }
       },
       args: queryArgs,

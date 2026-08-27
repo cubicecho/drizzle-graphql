@@ -4,7 +4,6 @@
 
 import type { Column, Table } from 'drizzle-orm';
 import { and, getColumns, gt, inArray, lte, type SQL, sql } from 'drizzle-orm';
-import { GraphQLError } from 'graphql';
 import { getOrCreateLoader } from '../../batch-loader/index.ts';
 import { remapToGraphQLArrayOutput } from '../../data-mappers/index.ts';
 import { relationFieldExtension } from '../../extensions.ts';
@@ -20,6 +19,7 @@ import {
   selectsCursorField,
 } from './cursor.ts';
 import { primaryKeyRestriction, selectDistinctKeys } from './distinct.ts';
+import { type DrizzleErrorContext, drizzleError, toGraphQLError, withErrorContext } from './errors.ts';
 import { resolveExecutor } from './executor.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { LimitPolicyFor } from './limits.ts';
@@ -146,8 +146,9 @@ export const createRelationResolverFactory =
     const limitPolicy = isOne ? undefined : limits?.(targetTableName);
     // Resolved at build time (composite keys included) — used to tiebreak paginated batches.
     const targetPkNames = relEntry.targetPkNames ?? [];
+    const errorCtx: DrizzleErrorContext = { table: targetTableName, operation: 'relation', relation: relationName };
 
-    return async (parent, args, context, info) => {
+    const resolve = async (parent: any, args: any, context: any, info: any) => {
       // Eager path: the parent resolver pre-fetched this relation via Drizzle's `with`.
       if (parent[relationName] !== undefined) {
         return parent[relationName];
@@ -164,7 +165,7 @@ export const createRelationResolverFactory =
       const orderByArg = isOne
         ? (args as any)?.orderBy
         : withDefaultOrderBy(args ?? {}, targetTableName, policies?.defaultOrderBy).orderBy;
-      const limit = applyLimitPolicy(requestedLimit, limitPolicy, `${tableName}.${relationName}`);
+      const limit = applyLimitPolicy(requestedLimit, limitPolicy, errorCtx);
       const distinct = ((args ?? {}) as any).distinct?.length ? ((args ?? {}) as any).distinct : undefined;
 
       // ── keyset (cursor) pagination ──
@@ -176,19 +177,21 @@ export const createRelationResolverFactory =
       let cursorEntries: CursorOrderEntry[] | undefined;
       if (!isOne && (after != null || cursorSelected)) {
         if (after != null && distinct) {
-          throw new GraphQLError("'after' cannot be combined with 'distinct'.");
+          throw drizzleError("'after' cannot be combined with 'distinct'.", { code: 'DRIZZLE_INVALID_CURSOR' });
         }
         if (orderByHasRelationEntry(orderByArg)) {
           if (after != null) {
-            throw new GraphQLError(
+            throw drizzleError(
               "'after' cannot be combined with an orderBy that orders through a relation — a related row's value cannot be encoded into a cursor.",
+              { code: 'DRIZZLE_INVALID_CURSOR' },
             );
           }
           // `cursor` was selected under a relation ordering — the field resolves to null.
         } else if (!targetPkNames.length) {
           if (after != null) {
-            throw new GraphQLError(
+            throw drizzleError(
               `Table ${targetTableName} has no primary key, so cursor pagination cannot be used on it.`,
+              { code: 'DRIZZLE_INVALID_CURSOR' },
             );
           }
           // `cursor` was selected but no total order exists — the field resolves to null.
@@ -311,6 +314,17 @@ export const createRelationResolverFactory =
       });
 
       return loader.load(localValue);
+    };
+
+    // The context goes on here rather than at each throw: everything this resolver leans on —
+    // filter compilation, ordering, the cursor — raises coded errors that know nothing about
+    // which relation field called them.
+    return async (parent, args, context, info) => {
+      try {
+        return await resolve(parent, args, context, info);
+      } catch (e) {
+        throw withErrorContext(toGraphQLError(e), errorCtx);
+      }
     };
   };
 

@@ -13,7 +13,6 @@
 import type { Column, SQL, Table } from 'drizzle-orm';
 import { getColumns, sql } from 'drizzle-orm';
 import {
-  GraphQLError,
   GraphQLFloat,
   GraphQLInputObjectType,
   type GraphQLInputType,
@@ -25,6 +24,7 @@ import {
 import { remapFromGraphQLCore, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
 import { GraphQLBigIntString, GraphQLDecimalString } from '../scalars/index.ts';
 import { drizzleColumnToGraphQLType, getColumnScalarOverride } from '../type-converter/index.ts';
+import { drizzleError } from './common/errors.ts';
 
 /** What a column's update-input field offers: arithmetic, list append, or nothing. */
 export type FieldUpdateKind = 'numeric' | 'list' | 'none';
@@ -162,10 +162,11 @@ const singleOperation = (value: Record<string, any>, columnName: string): [strin
   if (given.length === 1) {
     return [given[0]!, value[given[0]!]];
   }
-  throw new GraphQLError(
+  throw drizzleError(
     given.length
       ? `Field '${columnName}' takes exactly one update operation, but ${given.length} were given (${given.join(', ')}).`
       : `Field '${columnName}' was given no update operation. Pass exactly one of ${OPERATIONS.join(', ')}.`,
+    { code: 'DRIZZLE_INVALID_UPDATE_OPERATION' },
   );
 };
 

@@ -5073,7 +5073,11 @@ describe.sequential('limit policy', () => {
       contextValue: {},
     });
 
-    expect(res.errors?.[0]?.message).toBe("users: 'limit' of 3 exceeds the maximum of 2.");
+    expect(res.errors?.[0]?.message).toBe("'limit' of 3 exceeds the maximum of 2.");
+    expect(res.errors?.[0]?.extensions).toStrictEqual({
+      code: 'DRIZZLE_LIMIT_EXCEEDED',
+      drizzle: { table: 'Users', operation: 'select', field: 'users' },
+    });
   });
 
   for (const [label, eager] of [

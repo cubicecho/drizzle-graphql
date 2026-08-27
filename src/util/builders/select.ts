@@ -14,6 +14,7 @@ import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import {
   applyLimitPolicy,
+  type DrizzleErrorContext,
   generateDistinctEnum,
   type LimitPolicyFor,
   type NullOrdering,
@@ -26,6 +27,7 @@ import {
   type TypeNameMapper,
   toGraphQLError,
   withDefaultOrderBy,
+  withErrorContext,
 } from '../builders/common.ts';
 import { missingQueryBuilderError } from './errors.ts';
 import type { CreatedResolver, TableNamedRelations, TableSelectArgs } from './types.ts';
@@ -103,6 +105,7 @@ export const createSelectGenerators = (
     const table = tables[tableName]!;
     const limitPolicy = limits?.(tableName);
     const pkNames = primaryKeyPropNames(table);
+    const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'select', field: fieldName };
     const queryArgs = selectArrayArgs(
       orderArgs,
       filterArgs,
@@ -131,7 +134,7 @@ export const createSelectGenerators = (
             typeNameMapper,
             parsedInfo,
             ...args,
-            limit: applyLimitPolicy(args.limit, limitPolicy, fieldName),
+            limit: applyLimitPolicy(args.limit, limitPolicy),
             single: false,
             filterCtx,
             limits,
@@ -142,7 +145,7 @@ export const createSelectGenerators = (
             nullOrdering,
           });
         } catch (e) {
-          throw toGraphQLError(e);
+          throw withErrorContext(toGraphQLError(e), errorCtx);
         }
       },
       args: queryArgs,
@@ -169,6 +172,7 @@ export const createSelectGenerators = (
 
     const table = tables[tableName]!;
     const pkNames = primaryKeyPropNames(table);
+    const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'select', field: fieldName };
 
     return {
       name: fieldName,
@@ -197,7 +201,7 @@ export const createSelectGenerators = (
             scope: policies?.scope?.(context),
           });
         } catch (e) {
-          throw toGraphQLError(e);
+          throw withErrorContext(toGraphQLError(e), errorCtx);
         }
       },
       args: queryArgs,

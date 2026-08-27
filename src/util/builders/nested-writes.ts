@@ -10,17 +10,11 @@
 // an operation whose every call would be a database error.
 // =============================================================================
 import { and, Column, eq, getColumns, inArray, is, One, type Table } from 'drizzle-orm';
-import {
-  GraphQLBoolean,
-  GraphQLError,
-  GraphQLInputObjectType,
-  type GraphQLInputType,
-  GraphQLList,
-  GraphQLNonNull,
-} from 'graphql';
+import { GraphQLBoolean, GraphQLInputObjectType, type GraphQLInputType, GraphQLList, GraphQLNonNull } from 'graphql';
 import { capitalize } from '../case-ops/index.ts';
 import { remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
+import { drizzleError } from './common/errors.ts';
 import {
   applyContextValues,
   type ContextValuesFor,
@@ -613,8 +607,9 @@ export const createNestedWriteRuntime = (params: {
       relationFilterCtx(filterCtx, plan.targetTableName),
     );
     if (!condition) {
-      throw new GraphQLError(
+      throw drizzleError(
         `Drizzle-GraphQL Error: '${operation}' on '${plan.relationName}' needs a filter that selects rows — it was given one that matches everything.`,
+        { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
       );
     }
     // The filter selects rows to attach or detach, so it is a write against the target
@@ -626,8 +621,9 @@ export const createNestedWriteRuntime = (params: {
   const assertSingleOperation = (plan: NestedRelationPlan, op: Record<string, any>) => {
     const supplied = ['create', 'connect', 'disconnect'].filter((key) => op[key] !== undefined && op[key] !== null);
     if (supplied.length > 1) {
-      throw new GraphQLError(
+      throw drizzleError(
         `Drizzle-GraphQL Error: '${plan.relationName}' takes one of ${supplied.join(', ')} at a time — it holds a single row.`,
+        { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
       );
     }
   };
@@ -779,8 +775,9 @@ export const createNestedWriteRuntime = (params: {
           const inserted = await executor.insert(plan.targetTable).values(values).returning();
           const created = inserted[0];
           if (!created) {
-            throw new GraphQLError(
+            throw drizzleError(
               `Drizzle-GraphQL Error: 'create' on '${relationName}' inserted no row, so there is nothing to attach.`,
+              { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
             );
           }
           patch[plan.localColPropName] = created[plan.foreignColPropName];
@@ -790,8 +787,9 @@ export const createNestedWriteRuntime = (params: {
             .from(plan.targetTable)
             .where(conditionOf(plan, op['connect'], 'connect', scope));
           if (rows.length !== 1) {
-            throw new GraphQLError(
+            throw drizzleError(
               `Drizzle-GraphQL Error: 'connect' on '${relationName}' matched ${rows.length} rows — it attaches a single row, so its filter must match exactly one.`,
+              { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
             );
           }
           patch[plan.localColPropName] = rows[0][plan.foreignColPropName];
@@ -822,8 +820,9 @@ export const createNestedWriteRuntime = (params: {
         for (const parentRow of parentRows) {
           const key = parentRow?.[plan.localColPropName];
           if (key === undefined || key === null) {
-            throw new GraphQLError(
+            throw drizzleError(
               `Drizzle-GraphQL Error: cannot write through '${relationName}': the ${tableName} row has no '${plan.localColPropName}' value to attach to.`,
+              { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
             );
           }
 

@@ -20,7 +20,6 @@ import {
 } from 'drizzle-orm';
 import {
   type GraphQLEnumType,
-  GraphQLError,
   GraphQLFloat,
   GraphQLInputObjectType,
   GraphQLInt,
@@ -38,7 +37,9 @@ import type { ConvertedColumn } from '../type-converter/types.ts';
 import {
   columnDocs,
   type DeletedMode,
+  type DrizzleErrorContext,
   deletedArg,
+  drizzleError,
   extractFilters,
   extractRelationJoinColumns,
   generateColumnEnum,
@@ -54,6 +55,7 @@ import {
   type TypeNameMapper,
   toGraphQLError,
   visibleColumns,
+  withErrorContext,
   withScope,
 } from './common.ts';
 import type { CreatedResolver, Filters } from './types.ts';
@@ -368,6 +370,7 @@ export const generateAggregate = (
   policies?: TablePolicies,
 ): CreatedResolver => {
   const target = aggregateTarget(table, tableName, typeName);
+  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'aggregate', field: fieldName };
 
   const queryArgs = {
     where: { type: filterArgs },
@@ -400,7 +403,7 @@ export const generateAggregate = (
 
         return assembleAggregateRow(rows[0] ?? {}, request, target);
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     },
     args: queryArgs,
@@ -449,6 +452,11 @@ export const createRelationAggregateFactory = (
     const targetTypeName = resolveTypeName(targetTableName, typeNameMapper);
     const type = generateAggregateTypes(targetTable, targetTableName, targetTypeName, cacheCtx);
     const target = aggregateTarget(targetTable, targetTableName, targetTypeName);
+    const errorCtx: DrizzleErrorContext = {
+      table: targetTableName,
+      operation: 'relationAggregate',
+      relation: relationName,
+    };
 
     const resolve = async (
       parent: any,
@@ -512,7 +520,7 @@ export const createRelationAggregateFactory = (
 
         return assembleAggregateRow(await loader.load(localValue), request, target);
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     };
 
@@ -724,6 +732,7 @@ export const generateGroupBy = (
   const groupable = groupableColumns(table, tableName);
   const columns = getColumns(table);
   const rootTypeName = `${typeName}GroupBy`;
+  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'groupBy', field: fieldName };
 
   const queryArgs = {
     groupBy: {
@@ -746,13 +755,17 @@ export const generateGroupBy = (
       try {
         const requestedKeys = [...new Set(args.groupBy ?? [])];
         if (!requestedKeys.length) {
-          throw new GraphQLError('At least one column to group by is required!');
+          throw drizzleError('At least one column to group by is required!', {
+            code: 'DRIZZLE_INVALID_GROUP_BY',
+          });
         }
 
         const keyColumns = requestedKeys.map((columnName) => {
           const groupableColumn = groupable[columnName];
           if (!groupableColumn) {
-            throw new GraphQLError(`Cannot group ${typeName} by ${columnName}!`);
+            throw drizzleError(`Cannot group ${typeName} by ${columnName}!`, {
+              code: 'DRIZZLE_INVALID_GROUP_BY',
+            });
           }
           return [columnName, groupableColumn.column] as const;
         });
@@ -797,7 +810,7 @@ export const generateGroupBy = (
           return { group, ...assembleAggregateRow(row, request, target) };
         });
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     },
     args: queryArgs,

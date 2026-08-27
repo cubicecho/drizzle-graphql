@@ -25,10 +25,10 @@ import {
   type SQL,
   sql,
 } from 'drizzle-orm';
-import { GraphQLError } from 'graphql';
 import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
 import type { FilterColumnOperators, FilterColumnOperatorsCore } from '../types.ts';
 import { columnDialect } from './column-filters.ts';
+import { drizzleError } from './errors.ts';
 
 /**
  * Escape character pinned via `ESCAPE` on every generated safe-LIKE predicate. Bound as a
@@ -137,7 +137,9 @@ const jsonContains = (column: Column, columnName: string, value: any): SQL => {
     case 'mysql':
       return sql`json_contains(${column}, ${serialized})`;
     default:
-      throw new GraphQLError(`WHERE ${columnName}: Operator 'contains' is not supported for this dialect!`);
+      throw drizzleError(`WHERE ${columnName}: Operator 'contains' is not supported for this dialect!`, {
+        code: 'DRIZZLE_INVALID_FILTER',
+      });
   }
 };
 
@@ -250,7 +252,7 @@ const jsonPathCondition = (column: Column, columnName: string, filter: Record<st
   const locator = `${columnName}.path`;
 
   if (!Array.isArray(path) || !path.length) {
-    throw new GraphQLError(`WHERE ${locator}: 'path' must name at least one key`);
+    throw drizzleError(`WHERE ${locator}: 'path' must name at least one key`, { code: 'DRIZZLE_INVALID_FILTER' });
   }
 
   const exprs = jsonPathExprs(column, path);
@@ -272,7 +274,9 @@ const jsonPathCondition = (column: Column, columnName: string, filter: Record<st
     if (operatorName in safeLikeOps) {
       const { buildPattern, insensitive } = safeLikeOps[operatorName]!;
       if (typeof operatorValue !== 'string') {
-        throw new GraphQLError(`WHERE ${locator}: operator '${operatorName}' takes a string`);
+        throw drizzleError(`WHERE ${locator}: operator '${operatorName}' takes a string`, {
+          code: 'DRIZZLE_INVALID_FILTER',
+        });
       }
       // The extracted value is an expression, not a column, so the case-insensitive form
       // always goes through `lower()` rather than Postgres's ILIKE.
@@ -282,15 +286,16 @@ const jsonPathCondition = (column: Column, columnName: string, filter: Record<st
 
     const comparison = JSON_PATH_COMPARISONS[operatorName];
     if (!comparison) {
-      throw new GraphQLError(`WHERE ${locator}: Unknown operator: ${operatorName}`);
+      throw drizzleError(`WHERE ${locator}: Unknown operator: ${operatorName}`, { code: 'DRIZZLE_INVALID_FILTER' });
     }
 
     const cast = castOverride ?? inferJsonPathCast(operatorValue);
     if (cast === 'number') {
       const numeric = Number(operatorValue);
       if (Number.isNaN(numeric)) {
-        throw new GraphQLError(
+        throw drizzleError(
           `WHERE ${locator}: operator '${operatorName}' compares as a number, so its value must be one`,
+          { code: 'DRIZZLE_INVALID_FILTER' },
         );
       }
       variants.push(sql`${exprs.number} ${sql.raw(comparison)} ${numeric}`);
@@ -403,7 +408,7 @@ export const extractFiltersColumn = <TColumn extends Column>(
       // schema is stitched/merged with another schema, foreign operators (e.g. `equals`,
       // `contains`, `mode`) can pass input validation, and silently dropping them could
       // turn a constrained where into an unbounded one.
-      throw new GraphQLError(`WHERE ${columnName}: Unknown operator: ${operatorName}`);
+      throw drizzleError(`WHERE ${columnName}: Unknown operator: ${operatorName}`, { code: 'DRIZZLE_INVALID_FILTER' });
     }
   }
 
