@@ -6,6 +6,7 @@ import type { GraphQLFieldConfig, GraphQLFieldConfigArgumentMap, ThunkObjMap } f
 import {
   GraphQLError,
   type GraphQLInputObjectType,
+  GraphQLInt,
   GraphQLList,
   GraphQLNonNull,
   type GraphQLObjectType,
@@ -42,6 +43,7 @@ import {
   generateOnConflictInput,
   generateTableTypes,
   generateUpdateManyInput,
+  generateWriteCount,
   getPrimaryKeyPropNamesFromConfig,
   getUniqueColumnSets,
   isCursorFieldSelected,
@@ -93,6 +95,7 @@ import {
   generateGroupByType,
   generateHavingInput,
 } from './aggregates.ts';
+import { remapUpdateInput } from './field-updates.ts';
 import {
   buildNestedWritePlans,
   createNestedWriteRuntime,
@@ -570,6 +573,11 @@ const generateInsertSingle = (
             : await runInsert(executor, input);
 
           if (!result[0]) {
+            // Only reachable under `conflictDoNothing`, which is why the field is nullable
+            // there and non-null everywhere else.
+            if (!conflictDoNothing) {
+              throw new GraphQLError(`${fieldName}: the insert returned no row.`);
+            }
             return undefined;
           }
 
@@ -794,7 +802,7 @@ const generateUpdate = (
           // A context-derived column is the server's to set, so an update never reassigns
           // one — that is what stops a row being handed to another owner.
           const input = stripContextValues(
-            remapFromGraphQLSingleInput(entry ? entry.columns : set, table),
+            remapUpdateInput(entry ? entry.columns : set, table, tableName),
             policies?.contextValues?.(tableName),
           );
           // A `set` that carries only nested operations is a legitimate update — of the
@@ -946,7 +954,7 @@ const generateUpdateMany = (
             const split = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
             const ops = split && nested!.hasOps(split.ops) ? split.ops : undefined;
             const input = stripContextValues(
-              remapFromGraphQLSingleInput(split ? split.columns : set, table),
+              remapUpdateInput(split ? split.columns : set, table, tableName),
               contextColumns,
             );
             // An entry that only writes through a relation still has work to do.
@@ -1197,7 +1205,14 @@ export function generateSchemaData<
   const contextValuesOf = options.policies?.contextValues;
   const policies = bindPolicies(options.policies, filterCtx);
 
-  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(db, tables, filterCtx, limits, scopes);
+  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(
+    db,
+    tables,
+    'nulls-largest',
+    filterCtx,
+    limits,
+    scopes,
+  );
 
   // Fresh cache per generateSchemaData call — prevents type name collisions
   // when buildSchema() is called multiple times.
@@ -1218,6 +1233,7 @@ export function generateSchemaData<
     docs: options.docs ?? {},
     primaryKeyOf: (name) => (tables[name] ? pgPrimaryKeyPropNames(tables[name] as PgTable) : []),
     contextValuesOf,
+    featureOf,
   };
 
   // Nested writes: the plans decide which relations are writable at all, the types add their
@@ -1299,8 +1315,10 @@ export function generateSchemaData<
       updateFieldName,
       updateManyFieldName,
       updateSingleFieldName,
+      updateCountFieldName,
       deleteFieldName,
       deleteSingleFieldName,
+      deleteCountFieldName,
     } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
 
     const selectArrGenerated = generateSelectArray(
@@ -1519,6 +1537,38 @@ export function generateSchemaData<
           policies,
         )
       : undefined;
+    // The count variants are the plural write with its payload left off, so each follows the
+    // same feature switch as the write it mirrors.
+    const updateCountGenerated =
+      tableFeatures.update && tableFeatures.countMutations
+        ? generateWriteCount({
+            db,
+            tableName,
+            table: schema[tableName] as PgTable,
+            kind: 'update',
+            setArgs: updateInput,
+            filterArgs: tableFilters,
+            fieldName: updateCountFieldName,
+            requireWhere: tableFeatures.requireWhere,
+            filterCtx,
+            txCtx: mutationTxCtx,
+            nested: nestedRuntime,
+          })
+        : undefined;
+    const deleteCountGenerated =
+      tableFeatures.delete && tableFeatures.countMutations
+        ? generateWriteCount({
+            db,
+            tableName,
+            table: schema[tableName] as PgTable,
+            kind: 'delete',
+            filterArgs: tableFilters,
+            fieldName: deleteCountFieldName,
+            requireWhere: tableFeatures.requireWhere,
+            filterCtx,
+            txCtx: mutationTxCtx,
+          })
+        : undefined;
     const aggregateType = tableFeatures.aggregates
       ? generateAggregateTypes(schema[tableName] as PgTable, tableName, typeName, cacheCtx)
       : undefined;
@@ -1613,7 +1663,9 @@ export function generateSchemaData<
     }
     if (insertSingleGenerated) {
       mutations[insertSingleGenerated.name] = {
-        type: singleTableItemOutput,
+        // An insert either returns the row it inserted or throws — the one path to `null` is
+        // `conflictDoNothing` swallowing the insert, so the field is nullable only there.
+        type: conflictDoNothing ? singleTableItemOutput : new GraphQLNonNull(singleTableItemOutput),
         args: insertSingleGenerated.args,
         resolve: insertSingleGenerated.resolver,
         extensions: {
@@ -1653,13 +1705,17 @@ export function generateSchemaData<
     }
     if (updateManyGenerated) {
       mutations[updateManyGenerated.name] = {
-        // Nullable items: a no-match entry yields `null` in its slot.
         type: new GraphQLNonNull(new GraphQLList(singleTableItemOutput)),
         args: updateManyGenerated.args,
         resolve: updateManyGenerated.resolver,
         extensions: {
           drizzle: drizzleMeta({ kind: 'mutation', operation: 'updateMany', single: false, targetArg: 'updates' }),
         },
+        // The nullable element is deliberate, and the reason this mutation's return type
+        // differs from every sibling's: the result is aligned with the input, one slot per
+        // entry, so an entry that matched nothing has to be able to say so.
+        description:
+          "Each entry's updated rows, in entry order. An entry whose `where` matched no rows contributes `null` in its slot; an entry that matched several contributes each of its rows.",
       };
     }
     if (updateSingleGenerated) {
@@ -1690,6 +1746,24 @@ export function generateSchemaData<
         extensions: {
           drizzle: drizzleMeta({ kind: 'mutation', operation: 'delete', single: true, targetArg: 'where' }),
         },
+      };
+    }
+    if (updateCountGenerated) {
+      mutations[updateCountGenerated.name] = {
+        type: new GraphQLNonNull(GraphQLInt),
+        args: updateCountGenerated.args,
+        resolve: updateCountGenerated.resolver,
+        description:
+          'How many rows the update touched. The rows themselves are not read back, which is the point of this mutation.',
+      };
+    }
+    if (deleteCountGenerated) {
+      mutations[deleteCountGenerated.name] = {
+        type: new GraphQLNonNull(GraphQLInt),
+        args: deleteCountGenerated.args,
+        resolve: deleteCountGenerated.resolver,
+        description:
+          'How many rows the delete removed. The rows themselves are not read back, which is the point of this mutation.',
       };
     }
     // The insert/update inputs are still built (they type the mutations that survive) but

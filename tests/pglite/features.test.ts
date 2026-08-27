@@ -315,6 +315,26 @@ describe('features: per-table predicates', () => {
     expect(queryFields(gqlSchema)['posts']!.args.map((arg) => arg.name)).toContain('distinct');
   });
 
+  it('opts one table in to the count mutations', () => {
+    const mutations = build({ countMutations: (table) => table === 'Users' })
+      .schema.getMutationType()!
+      .getFields();
+
+    expect(mutations['updateUsersCount']).toBeDefined();
+    expect(mutations['deleteUsersCount']).toBeDefined();
+    expect(mutations['updatePostsCount']).toBeUndefined();
+  });
+
+  it('opts one table in to the atomic update operations', () => {
+    const gqlSchema = build({ fieldUpdateOperations: (table) => table === 'Posts' }).schema;
+    const postFields = (gqlSchema.getType('UpdatePostsInput') as GraphQLInputObjectType).getFields();
+    const userFields = (gqlSchema.getType('UpdateUsersInput') as GraphQLInputObjectType).getFields();
+
+    // Only the opted-in table's numeric columns take an operations input instead of the scalar.
+    expect(String(postFields['id']!.type)).toBe('IntFieldUpdate');
+    expect(String(userFields['id']!.type)).toBe('Int');
+  });
+
   it('omits the Mutation type when no table generates one', () => {
     const gqlSchema = build({ insert: () => false, update: () => false, delete: () => false }).schema;
 
