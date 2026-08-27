@@ -3,18 +3,27 @@
 
 import type { Column, Table } from 'drizzle-orm';
 import { getColumns, type SQL, sql } from 'drizzle-orm';
-import { GraphQLEnumType, GraphQLError, GraphQLInputObjectType, GraphQLList, GraphQLNonNull } from 'graphql';
+import { GraphQLEnumType, GraphQLInputObjectType, GraphQLList, GraphQLNonNull } from 'graphql';
 import { generateColumnEnum } from './column-enums.ts';
+import { drizzleError } from './errors.ts';
+import type { TypeCacheCtx } from './type-cache.ts';
+import { sharedType, type TypeNameResolver } from './type-names.ts';
 
-/** Shared by every table's `${typeName}OnConflict` input, so it is created once. */
-export const conflictActionEnum = new GraphQLEnumType({
-  name: 'ConflictAction',
-  description: 'What an upsert does when a row with the same unique key already exists',
-  values: {
-    UPDATE: { value: 'UPDATE', description: 'Overwrite the conflicting row with the supplied values' },
-    NOTHING: { value: 'NOTHING', description: 'Keep the existing row and insert nothing' },
-  },
-});
+/** Shared by every table's `${typeName}OnConflict` input, so it is created once per name. */
+export const conflictActionEnumType = (typeName: TypeNameResolver): GraphQLEnumType =>
+  sharedType(
+    typeName,
+    { kind: 'shared', defaultName: 'ConflictAction' },
+    (name) =>
+      new GraphQLEnumType({
+        name,
+        description: 'What an upsert does when a row with the same unique key already exists',
+        values: {
+          UPDATE: { value: 'UPDATE', description: 'Overwrite the conflicting row with the supplied values' },
+          NOTHING: { value: 'NOTHING', description: 'Keep the existing row and insert nothing' },
+        },
+      }),
+  );
 
 /**
  * The `${typeName}OnConflict` input that types an upsert's `onConflict` argument.
@@ -29,16 +38,24 @@ export const conflictActionEnum = new GraphQLEnumType({
  */
 export const generateOnConflictInput = (params: {
   table: Table;
+  tableName: string;
   typeName: string;
   uniqueSets: string[][];
   tableFilters: GraphQLInputObjectType;
   withTarget: boolean;
+  cacheCtx: TypeCacheCtx;
 }): GraphQLInputObjectType | undefined => {
-  const { table, typeName, uniqueSets, tableFilters, withTarget } = params;
+  const { table, tableName, typeName, uniqueSets, tableFilters, withTarget, cacheCtx } = params;
+  const resolveName = cacheCtx.typeName;
 
   const updateEnum = generateColumnEnum(
     table,
-    `${typeName}UpdateColumn`,
+    resolveName({
+      kind: 'columnEnum',
+      defaultName: `${typeName}UpdateColumn`,
+      table: tableName,
+      operation: 'conflictUpdate',
+    }),
     `Columns of ${typeName} that an upsert can overwrite`,
   );
   if (!updateEnum) {
@@ -47,7 +64,7 @@ export const generateOnConflictInput = (params: {
 
   const fields: Record<string, any> = {
     action: {
-      type: conflictActionEnum,
+      type: conflictActionEnumType(resolveName),
       defaultValue: 'UPDATE',
       description: 'Whether a conflicting row is overwritten or left alone. Defaults to UPDATE.',
     },
@@ -62,7 +79,12 @@ export const generateOnConflictInput = (params: {
     const uniqueColumns = new Set(uniqueSets.flat());
     const targetEnum = generateColumnEnum(
       table,
-      `${typeName}ConflictTarget`,
+      resolveName({
+        kind: 'columnEnum',
+        defaultName: `${typeName}ConflictTarget`,
+        table: tableName,
+        operation: 'conflictTarget',
+      }),
       `Columns of ${typeName} that carry a unique constraint, and so can be conflicted on`,
       (_column, columnName) => uniqueColumns.has(columnName),
     );
@@ -82,7 +104,7 @@ export const generateOnConflictInput = (params: {
   }
 
   return new GraphQLInputObjectType({
-    name: `${typeName}OnConflict`,
+    name: resolveName({ kind: 'onConflict', defaultName: `${typeName}OnConflict`, table: tableName }),
     description: `Conflict handling for an upsert of ${typeName}`,
     fields,
   });
@@ -134,8 +156,9 @@ export const resolveConflictPlan = (params: {
   if (withTarget) {
     const targetNames = onConflict?.target?.length ? onConflict.target : [...pkNames];
     if (!targetNames.length) {
-      throw new GraphQLError(
+      throw drizzleError(
         'Unable to upsert: no conflict target was given and this table has no primary key. Pass onConflict.target.',
+        { code: 'DRIZZLE_INVALID_ON_CONFLICT' },
       );
     }
     // A target that is not itself a unique constraint is a database error, and a confusing
@@ -143,10 +166,11 @@ export const resolveConflictPlan = (params: {
     // specification"), so reject it here where we can say which sets are valid.
     const requested = [...targetNames].sort().join(',');
     if (!uniqueSets.some((set) => [...set].sort().join(',') === requested)) {
-      throw new GraphQLError(
+      throw drizzleError(
         `Unable to upsert: [${targetNames.join(', ')}] is not a unique constraint on this table. Valid conflict targets: ${uniqueSets
           .map((set) => `[${set.join(', ')}]`)
           .join(', ')}.`,
+        { code: 'DRIZZLE_INVALID_ON_CONFLICT' },
       );
     }
     target = targetNames.map((name) => columns[name]!);
@@ -165,8 +189,9 @@ export const resolveConflictPlan = (params: {
   if (onConflict?.update?.length) {
     const unsupplied = onConflict.update.filter((name) => !supplied.has(name));
     if (unsupplied.length) {
-      throw new GraphQLError(
+      throw drizzleError(
         `Unable to upsert: onConflict.update lists ${unsupplied.join(', ')}, which the values do not supply.`,
+        { code: 'DRIZZLE_INVALID_ON_CONFLICT' },
       );
     }
     updateNames = onConflict.update;

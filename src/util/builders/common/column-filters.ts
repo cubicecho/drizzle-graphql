@@ -26,6 +26,7 @@ import {
 import { drizzleColumnToGraphQLType, getColumnScalarOverride } from '../../type-converter/index.ts';
 import type { ConvertedColumn } from '../../type-converter/types.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
+import { sharedType, type TypeNameResolver } from './type-names.ts';
 
 /** The dialect a column belongs to, inferred from its drizzle columnType string (e.g. 'PgJsonb'). */
 export const columnDialect = (column: Column): 'pg' | 'mysql' | 'sqlite' | undefined => {
@@ -129,7 +130,7 @@ const resolveGenericFilterDescriptor = (
  * Postgres `@>` / MySQL `JSON_CONTAINS`. SQLite stores json as text and has no containment
  * operator, so `contains` is omitted there (same precedent as dialect-specific ops like ilike).
  */
-const jsonFilterFields = (column: Column, colType: ConvertedColumn<true>['type']) => {
+const jsonFilterFields = (column: Column, colType: ConvertedColumn<true>['type'], typeName: TypeNameResolver) => {
   const dialect = columnDialect(column);
   return {
     eq: { type: colType, description: 'JSON equality on the whole value' },
@@ -143,7 +144,7 @@ const jsonFilterFields = (column: Column, colType: ConvertedColumn<true>['type']
         }
       : {}),
     path: {
-      type: new GraphQLList(new GraphQLNonNull(jsonPathFilter)),
+      type: new GraphQLList(new GraphQLNonNull(jsonPathFilterType(typeName))),
       description:
         'Compares the value at one path inside the document. Several entries are ANDed; a single object may be passed without the list brackets.',
     },
@@ -158,15 +159,21 @@ const jsonFilterFields = (column: Column, colType: ConvertedColumn<true>['type']
  * text. Set it when the operand's type does not match the document's — comparing a numeric
  * field against a `String` variable, say.
  */
-const jsonPathCast = new GraphQLEnumType({
-  name: 'JSONPathCast',
-  description: 'How to read the value at a JSON path before comparing it',
-  values: {
-    TEXT: { value: 'text', description: 'Compare as text (lexicographic ordering)' },
-    NUMBER: { value: 'number', description: 'Compare as a number; a non-numeric value never matches' },
-    BOOLEAN: { value: 'boolean', description: 'Compare as a boolean' },
-  },
-});
+const jsonPathCastType = (typeName: TypeNameResolver): GraphQLEnumType =>
+  sharedType(
+    typeName,
+    { kind: 'shared', defaultName: 'JSONPathCast' },
+    (name) =>
+      new GraphQLEnumType({
+        name,
+        description: 'How to read the value at a JSON path before comparing it',
+        values: {
+          TEXT: { value: 'text', description: 'Compare as text (lexicographic ordering)' },
+          NUMBER: { value: 'number', description: 'Compare as a number; a non-numeric value never matches' },
+          BOOLEAN: { value: 'boolean', description: 'Compare as a boolean' },
+        },
+      }),
+  );
 
 /**
  * One predicate on the value at a path inside a json/jsonb column. `path` walks the document
@@ -178,43 +185,49 @@ const jsonPathCast = new GraphQLEnumType({
  * on the column itself, which is structural JSON containment. A path names a scalar, so the
  * string reading is the useful one.
  */
-const jsonPathFilter = new GraphQLInputObjectType({
-  name: 'JSONPathFilter',
-  fields: {
-    path: {
-      type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(GraphQLString))),
-      description:
-        'Keys to walk from the document root, e.g. `["profile", "level"]`. An all-digits key indexes an array.',
-    },
-    as: { type: jsonPathCast, description: 'Overrides how the value is read before comparing' },
-    eq: { type: GraphQLJSON, description: 'Equal to' },
-    ne: { type: GraphQLJSON, description: 'Not equal to' },
-    lt: { type: GraphQLJSON, description: 'Less than' },
-    lte: { type: GraphQLJSON, description: 'Less than or equal to' },
-    gt: { type: GraphQLJSON, description: 'Greater than' },
-    gte: { type: GraphQLJSON, description: 'Greater than or equal to' },
-    startsWith: {
-      type: GraphQLString,
-      description: 'Extracted value starts with this string. `%`, `_` and `\\` are matched literally.',
-    },
-    endsWith: {
-      type: GraphQLString,
-      description: 'Extracted value ends with this string. `%`, `_` and `\\` are matched literally.',
-    },
-    contains: {
-      type: GraphQLString,
-      description: 'Extracted value contains this string. `%`, `_` and `\\` are matched literally.',
-    },
-    iStartsWith: { type: GraphQLString, description: 'Case-insensitive `startsWith`.' },
-    iEndsWith: { type: GraphQLString, description: 'Case-insensitive `endsWith`.' },
-    iContains: { type: GraphQLString, description: 'Case-insensitive `contains`.' },
-    isNull: {
-      type: GraphQLBoolean,
-      description: 'When true, matches rows where the path is missing or holds JSON null',
-    },
-    isNotNull: { type: GraphQLBoolean, description: 'When true, matches rows where the path holds a value' },
-  },
-});
+const jsonPathFilterType = (typeName: TypeNameResolver): GraphQLInputObjectType =>
+  sharedType(
+    typeName,
+    { kind: 'shared', defaultName: 'JSONPathFilter' },
+    (name) =>
+      new GraphQLInputObjectType({
+        name,
+        fields: {
+          path: {
+            type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(GraphQLString))),
+            description:
+              'Keys to walk from the document root, e.g. `["profile", "level"]`. An all-digits key indexes an array.',
+          },
+          as: { type: jsonPathCastType(typeName), description: 'Overrides how the value is read before comparing' },
+          eq: { type: GraphQLJSON, description: 'Equal to' },
+          ne: { type: GraphQLJSON, description: 'Not equal to' },
+          lt: { type: GraphQLJSON, description: 'Less than' },
+          lte: { type: GraphQLJSON, description: 'Less than or equal to' },
+          gt: { type: GraphQLJSON, description: 'Greater than' },
+          gte: { type: GraphQLJSON, description: 'Greater than or equal to' },
+          startsWith: {
+            type: GraphQLString,
+            description: 'Extracted value starts with this string. `%`, `_` and `\\` are matched literally.',
+          },
+          endsWith: {
+            type: GraphQLString,
+            description: 'Extracted value ends with this string. `%`, `_` and `\\` are matched literally.',
+          },
+          contains: {
+            type: GraphQLString,
+            description: 'Extracted value contains this string. `%`, `_` and `\\` are matched literally.',
+          },
+          iStartsWith: { type: GraphQLString, description: 'Case-insensitive `startsWith`.' },
+          iEndsWith: { type: GraphQLString, description: 'Case-insensitive `endsWith`.' },
+          iContains: { type: GraphQLString, description: 'Case-insensitive `contains`.' },
+          isNull: {
+            type: GraphQLBoolean,
+            description: 'When true, matches rows where the path is missing or holds JSON null',
+          },
+          isNotNull: { type: GraphQLBoolean, description: 'When true, matches rows where the path holds a value' },
+        },
+      }),
+  );
 
 /**
  * `inArray` / `notInArray` take a list of candidate values and compile to SQL `IN` /
@@ -340,7 +353,7 @@ export const generateColumnFilterValues = (
 
   const baseFields =
     kind === 'json'
-      ? jsonFilterFields(column, colType)
+      ? jsonFilterFields(column, colType, cacheCtx.typeName)
       : kind === 'array'
         ? arrayFilterFields(colType as GraphQLList<any>, colArr)
         : {
@@ -383,6 +396,11 @@ export const generateColumnFilterValues = (
                     type: GraphQLString,
                     description: 'Case-insensitive `contains`.',
                   },
+                  insensitive: {
+                    type: GraphQLBoolean,
+                    description:
+                      'When true, every comparison operator in this object matches case-insensitively — `eq`, `ne`, the ordering operators, `inArray`/`notInArray` and the pattern operators all compare `lower(column)` against `lower(operand)`. Applies only to the operators beside it; a nested `AND`/`OR`/`NOT` branch sets its own.',
+                  },
                 }),
             inArray: { type: colArr, description: IN_ARRAY_DESCRIPTION },
             notInArray: { type: colArr, description: NOT_IN_ARRAY_DESCRIPTION },
@@ -393,7 +411,7 @@ export const generateColumnFilterValues = (
   // The boolean branches are recursive — each branch is this filter type itself — so the
   // fields are thunked and reference the type being constructed.
   const mainType: GraphQLInputObjectType = new GraphQLInputObjectType({
-    name: `${genericName}Filter`,
+    name: cacheCtx.typeName({ kind: 'columnFilter', defaultName: `${genericName}Filter`, operation: genericName }),
     fields: () => ({
       ...baseFields,
       OR: {

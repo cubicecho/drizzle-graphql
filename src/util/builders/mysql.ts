@@ -1,41 +1,39 @@
 import { is, One, type Table } from 'drizzle-orm';
 import { getTableConfig, type MySqlDatabase, MySqlTable } from 'drizzle-orm/mysql-core';
-import type { RelationalQueryBuilder } from 'drizzle-orm/mysql-core/query-builders/query';
 import type { GraphQLFieldConfig, GraphQLFieldConfigArgumentMap, ThunkObjMap } from 'graphql';
 import {
   GraphQLBoolean,
-  GraphQLError,
   type GraphQLInputObjectType,
   GraphQLInt,
   GraphQLList,
   GraphQLNonNull,
   GraphQLObjectType,
 } from 'graphql';
-import type { ResolveTree } from 'graphql-parse-resolve-info';
-import { parseResolveInfo } from 'graphql-parse-resolve-info';
 
 import type { GeneratedEntities } from '../../types.ts';
 import {
   aggregateFieldComplexity,
   applyContextValues,
   applyContextValuesAll,
-  applyLimitPolicy,
   assertSingleMatch,
   attachTargetPrimaryKeys,
   bindPolicies,
   buildNamedRelations,
+  buildUniqueKeyMap,
   computeResolverFieldNames,
   createMutationTxCtx,
   createRelationResolverFactory,
+  type DrizzleErrorContext,
+  drizzleError,
   extractFilters,
   extractRequiredFilters,
-  generateDistinctEnum,
   generateOnConflictInput,
   generateTableTypes,
   generateUpdateManyInput,
   generateWriteCount,
   getPrimaryKeyPropNamesFromConfig,
-  type LimitPolicyFor,
+  getUniqueColumnSets,
+  hardDeleteArg,
   listFieldComplexity,
   type MutationTxCtx,
   mysqlValuesColumnRef,
@@ -48,19 +46,16 @@ import {
   registerColumnExclusions,
   relationFilterCtx,
   resolveConflictPlan,
-  resolveQueryExecutor,
   runMutation,
-  runRelationalSelect,
   runWriteHook,
-  selectArrayArgs,
-  selectSingleArgs,
   stripContextValues,
   type TablesRelationalConfig,
   type TypeCacheCtx,
-  type TypeNameMapper,
   toGraphQLError,
+  type UniqueKeyMap,
+  visibleColumns,
   type WriteOperation,
-  withDefaultOrderBy,
+  withErrorContext,
   withScope,
 } from '../builders/common.ts';
 import { remapFromGraphQLArrayInput, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
@@ -76,150 +71,9 @@ import {
   generateGroupByType,
   generateHavingInput,
 } from './aggregates.ts';
-import { missingQueryBuilderError } from './errors.ts';
 import { remapUpdateInput } from './field-updates.ts';
-import type {
-  CreatedResolver,
-  Filters,
-  SchemaGeneratorOptions,
-  TableFeatures,
-  TableNamedRelations,
-  TableSelectArgs,
-} from './types.ts';
-
-const generateSelectArray = (
-  db: MySqlDatabase<any, any, any>,
-  tableName: string,
-  tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  orderArgs: GraphQLInputObjectType,
-  filterArgs: GraphQLInputObjectType,
-  fieldName: string,
-  typeName: string,
-  typeNameMapper?: TypeNameMapper,
-  filterCtx?: RelationFilterBase,
-  distinctEnabled: boolean = true,
-  limits?: LimitPolicyFor,
-  policies?: ResolverPolicies,
-): CreatedResolver => {
-  const queryBase = db.query[tableName as keyof typeof db.query & string] as unknown as
-    | RelationalQueryBuilder<any, any, any>
-    | undefined;
-  if (!queryBase) {
-    throw missingQueryBuilderError(tableName);
-  }
-
-  const table = tables[tableName]!;
-  const limitPolicy = limits?.(tableName);
-  const pkNames = mysqlPrimaryKeyPropNames(table as MySqlTable);
-  const queryArgs = selectArrayArgs(
-    orderArgs,
-    filterArgs,
-    distinctEnabled ? generateDistinctEnum(table, typeName) : undefined,
-    policies?.softDelete,
-    tableName,
-  );
-
-  return {
-    name: fieldName,
-    resolver: async (_source, rawArgs: Partial<TableSelectArgs>, context, info) => {
-      // An omitted `orderBy` falls back to the table's configured default ordering here,
-      // before anything reads the arguments — the cursor tuple, a `distinct` pass and the
-      // plain-select fallback all have to agree on one effective ordering.
-      const args = withDefaultOrderBy(rawArgs, tableName, policies?.defaultOrderBy);
-      try {
-        const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
-        const { executor, queryBase: requestQueryBase } = resolveQueryExecutor(db, context, tableName, queryBase);
-        return await runRelationalSelect({
-          queryBase: requestQueryBase,
-          tables,
-          tableName,
-          table,
-          relationMap,
-          typeName,
-          typeNameMapper,
-          parsedInfo,
-          ...args,
-          limit: applyLimitPolicy(args.limit, limitPolicy, fieldName),
-          single: false,
-          filterCtx,
-          limits,
-          defaultOrderBy: policies?.defaultOrderBy,
-          scope: policies?.scope?.(context),
-          pkNames,
-          db: executor,
-          // MySQL sorts NULLs as the smallest values (first in ASC).
-          nullOrdering: 'nulls-smallest',
-        });
-      } catch (e) {
-        throw toGraphQLError(e);
-      }
-    },
-    args: queryArgs,
-  };
-};
-
-const generateSelectSingle = (
-  db: MySqlDatabase<any, any, any>,
-  tableName: string,
-  tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  orderArgs: GraphQLInputObjectType,
-  filterArgs: GraphQLInputObjectType,
-  fieldName: string,
-  typeName: string,
-  typeNameMapper?: TypeNameMapper,
-  filterCtx?: RelationFilterBase,
-  limits?: LimitPolicyFor,
-  policies?: ResolverPolicies,
-): CreatedResolver => {
-  const queryBase = db.query[tableName as keyof typeof db.query & string] as unknown as
-    | RelationalQueryBuilder<any, any, any>
-    | undefined;
-  if (!queryBase) {
-    throw missingQueryBuilderError(tableName);
-  }
-
-  const queryArgs = selectSingleArgs(orderArgs, filterArgs, policies?.softDelete, tableName);
-
-  const table = tables[tableName]!;
-  const pkNames = mysqlPrimaryKeyPropNames(table as MySqlTable);
-
-  return {
-    name: fieldName,
-    resolver: async (_source, rawArgs: Partial<TableSelectArgs>, context, info) => {
-      // An omitted `orderBy` falls back to the table's configured default ordering here,
-      // before anything reads the arguments — the cursor tuple, a `distinct` pass and the
-      // plain-select fallback all have to agree on one effective ordering.
-      const args = withDefaultOrderBy(rawArgs, tableName, policies?.defaultOrderBy);
-      try {
-        const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
-        const { executor, queryBase: requestQueryBase } = resolveQueryExecutor(db, context, tableName, queryBase);
-        return await runRelationalSelect({
-          queryBase: requestQueryBase,
-          tables,
-          tableName,
-          table,
-          relationMap,
-          typeName,
-          typeNameMapper,
-          parsedInfo,
-          ...args,
-          single: true,
-          filterCtx,
-          limits,
-          defaultOrderBy: policies?.defaultOrderBy,
-          scope: policies?.scope?.(context),
-          pkNames,
-          db: executor,
-        });
-      } catch (e) {
-        throw toGraphQLError(e);
-      }
-    },
-    args: queryArgs,
-  };
-};
+import { createSelectGenerators } from './select.ts';
+import type { CreatedResolver, Filters, SchemaGeneratorOptions, TableFeatures } from './types.ts';
 
 const generateInsertArray = (
   db: MySqlDatabase<any, any, any, any>,
@@ -237,6 +91,7 @@ const generateInsertArray = (
   };
 
   const hooks = policies?.onWrite?.(tableName, 'insert');
+  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'insert', field: fieldName };
 
   return {
     name: fieldName,
@@ -254,7 +109,7 @@ const generateInsertArray = (
               context,
             );
             if (!input.length) {
-              throw new GraphQLError('No values were provided!');
+              throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
             }
             await runWriteHook(hooks, 'before', {
               table: tableName,
@@ -284,7 +139,7 @@ const generateInsertArray = (
           !!hooks,
         );
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     },
     args: queryArgs,
@@ -307,6 +162,7 @@ const generateInsertSingle = (
   };
 
   const hooks = policies?.onWrite?.(tableName, 'insert');
+  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'insert', field: fieldName };
 
   return {
     name: fieldName,
@@ -351,7 +207,7 @@ const generateInsertSingle = (
           !!hooks,
         );
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     },
     args: queryArgs,
@@ -382,6 +238,7 @@ const generateUpsert = (
   const pkNames = mysqlPrimaryKeyPropNames(table);
 
   const hooks = policies?.onWrite?.(tableName, 'upsert');
+  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'upsert', field: fieldName };
 
   return {
     name: fieldName,
@@ -406,7 +263,7 @@ const generateUpsert = (
               context,
             );
             if (!input.length) {
-              throw new GraphQLError('No values were provided!');
+              throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
             }
             await runWriteHook(hooks, 'before', {
               table: tableName,
@@ -453,7 +310,7 @@ const generateUpsert = (
           !!hooks,
         );
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     },
     args: queryArgs,
@@ -483,6 +340,7 @@ const generateUpdate = (
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
   const hooks = policies?.onWrite?.(tableName, 'update');
+  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'update', field: fieldName };
 
   return {
     name: fieldName,
@@ -504,7 +362,7 @@ const generateUpdate = (
               policies?.contextValues?.(tableName),
             );
             if (!Object.keys(input).length) {
-              throw new GraphQLError('Unable to update with no values specified!');
+              throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
             }
             await runWriteHook(hooks, 'before', {
               table: tableName,
@@ -523,14 +381,14 @@ const generateUpdate = (
               tableName,
               table,
               single || requireWhere
-                ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+                ? extractRequiredFilters(table, tableName, where, relationCtx)
                 : where
                   ? extractFilters(table, tableName, where, relationCtx)
                   : undefined,
             );
 
             if (single) {
-              await assertSingleMatch(executor, table, filters!, fieldName);
+              await assertSingleMatch(executor, table, filters!);
             }
 
             let query = executor.update(table).set(input);
@@ -556,7 +414,7 @@ const generateUpdate = (
           !!hooks,
         );
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     },
     args: queryArgs,
@@ -589,6 +447,7 @@ const generateUpdateMany = (
   } as const satisfies GraphQLFieldConfigArgumentMap;
 
   const hooks = policies?.onWrite?.(tableName, 'updateMany');
+  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'updateMany', field: fieldName };
 
   return {
     name: fieldName,
@@ -607,7 +466,7 @@ const generateUpdateMany = (
           async (executor) => {
             const { updates } = args;
             if (!updates.length) {
-              throw new GraphQLError('No updates were provided!');
+              throw drizzleError('No updates were provided!', { code: 'DRIZZLE_NO_VALUES' });
             }
             await runWriteHook(hooks, 'before', {
               table: tableName,
@@ -626,7 +485,7 @@ const generateUpdateMany = (
             const entries = updates.map(({ where, set }) => {
               const input = stripContextValues(remapUpdateInput(set, table, tableName), contextColumns);
               if (!Object.keys(input).length) {
-                throw new GraphQLError('Unable to update with no values specified!');
+                throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
               }
               return {
                 set: input,
@@ -668,7 +527,7 @@ const generateUpdateMany = (
           !!hooks,
         );
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     },
     args: queryArgs,
@@ -679,6 +538,9 @@ const generateUpdateMany = (
  * `delete<Table>` and, for a table that declares a soft-delete column, `restore<Table>`.
  * MySQL's writes return no rows either way, so both answer `{ isSuccess: true }` — the
  * difference from the other dialects is only what the payload can say, not what runs.
+ *
+ * A table that opted into `hardDelete` also takes `hard: true`, which issues the real
+ * `DELETE` instead of writing the marker, reading at `INCLUDE` so it reaches marked rows.
  */
 const generateDelete = (
   db: MySqlDatabase<any, any, any>,
@@ -695,17 +557,22 @@ const generateDelete = (
 ): CreatedResolver => {
   const softDelete = policies?.softDelete?.(tableName);
   const operation: WriteOperation = restore ? 'restore' : 'delete';
+  // Only a soft-deleting table that opted in gets the argument, so the schema itself says
+  // which tables can be purged — and `restore` never takes one, having nothing to remove.
+  const canHardDelete = !restore && softDelete?.hardDelete === true;
   const queryArgs = {
     where: {
       type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
     },
-  } as const satisfies GraphQLFieldConfigArgumentMap;
+    ...(canHardDelete ? { hard: hardDeleteArg } : {}),
+  } as GraphQLFieldConfigArgumentMap;
 
   const hooks = policies?.onWrite?.(tableName, operation);
+  const errorCtx: DrizzleErrorContext = { table: tableName, operation, field: fieldName };
 
   return {
     name: fieldName,
-    resolver: async (_source, args: { where?: Filters<Table> }, context, info) => {
+    resolver: async (_source, args: { where?: Filters<Table>; hard?: boolean }, context, info) => {
       try {
         return await runMutation(
           db,
@@ -723,6 +590,9 @@ const generateDelete = (
               tx: executor,
             });
             const { where } = args;
+            // `canHardDelete` decides whether the argument exists; this decides what it does,
+            // so a stitched-in `hard: true` on a table that never opted in stays a soft delete.
+            const hard = canHardDelete && args.hard === true;
             const scope = policies?.scope?.(context);
 
             const relationCtx = relationFilterCtx(filterCtx, tableName);
@@ -735,22 +605,25 @@ const generateDelete = (
               tableName,
               table,
               single || requireWhere
-                ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+                ? extractRequiredFilters(table, tableName, where, relationCtx)
                 : where
                   ? extractFilters(table, tableName, where, relationCtx)
                   : undefined,
-              restore ? 'ONLY' : undefined,
+              // A hard delete reads at INCLUDE: the rows it mostly exists to remove are the
+              // ones already marked, which the default EXCLUDE could not reach at all.
+              restore ? 'ONLY' : hard ? 'INCLUDE' : undefined,
             );
 
             if (single) {
-              await assertSingleMatch(executor, table, filters!, fieldName);
+              await assertSingleMatch(executor, table, filters!);
             }
 
-            let query = softDelete
-              ? executor
-                  .update(table)
-                  .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
-              : executor.delete(table);
+            let query =
+              softDelete && !hard
+                ? executor
+                    .update(table)
+                    .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
+                : executor.delete(table);
             if (filters) {
               query = query.where(filters) as any;
             }
@@ -773,7 +646,7 @@ const generateDelete = (
           !!hooks,
         );
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     },
     args: queryArgs,
@@ -783,6 +656,12 @@ const generateDelete = (
 /** Primary-key property names for a MySQL table, including table-level composite keys. */
 const mysqlPrimaryKeyPropNames = (table: MySqlTable): string[] =>
   getPrimaryKeyPropNamesFromConfig(table, getTableConfig);
+
+// MySQL sorts NULLs as the smallest values (first in ASC).
+const { generateSelectArray, generateSelectSingle } = createSelectGenerators(
+  mysqlPrimaryKeyPropNames,
+  'nulls-smallest',
+);
 
 export const generateSchemaData = <
   TDrizzleInstance extends MySqlDatabase<any, any, any, any>,
@@ -851,7 +730,24 @@ export const generateSchemaData = <
   // Pruned map for query resolvers' `with:`; type generation keeps the full map.
   const eagerRelations = pruneNonEagerRelations(namedRelations, shouldEagerLoad);
 
-  const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations };
+  // A `where` field per compound unique constraint, for the tables that asked for one. Built
+  // once and shared by the input types and the resolvers: the fields a request may spell and
+  // the fields a resolver understands are the same map, so neither can drift from the other.
+  const uniqueKeys: Record<string, UniqueKeyMap> = {};
+  for (const [tableName, table] of tableEntries) {
+    if (!featureOf(tableName).uniqueKeyFilters) {
+      continue;
+    }
+    // Whatever the filter input already offers under a name keeps it — columns are added
+    // first, then relations, and a key field last.
+    const taken = new Set([...Object.keys(visibleColumns(table)), ...Object.keys(namedRelations[tableName] ?? {})]);
+    const map = buildUniqueKeyMap(getUniqueColumnSets(table, getTableConfig), taken);
+    if (Object.keys(map).length) {
+      uniqueKeys[tableName] = map;
+    }
+  }
+
+  const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations, uniqueKeys };
 
   // The row scope compiled against this build's relation graph, plus the columns whose value
   // the server supplies. Both stay undefined unless configured.
@@ -872,6 +768,7 @@ export const generateSchemaData = <
   // Fresh cache per generateSchemaData call — prevents type name collisions
   // when buildSchema() is called multiple times.
   const cacheCtx: TypeCacheCtx = {
+    typeName: options.typeName ?? ((info) => info.defaultName),
     genericFilterCache: new Map(),
     objectTypeCache: new Map(),
     relationFieldContainers: new Map(),
@@ -890,6 +787,7 @@ export const generateSchemaData = <
     contextValuesOf,
     softDeleteOf,
     featureOf,
+    uniqueKeysOf: (tableName) => uniqueKeys[tableName],
   };
 
   // Built when at least one table wants relation aggregates; a table that has them off is
@@ -924,7 +822,7 @@ export const generateSchemaData = <
   );
 
   const mutationReturnType = new GraphQLObjectType({
-    name: 'MutationReturn',
+    name: cacheCtx.typeName({ kind: 'shared', defaultName: 'MutationReturn' }),
     fields: {
       isSuccess: {
         type: new GraphQLNonNull(GraphQLBoolean),
@@ -989,6 +887,7 @@ export const generateSchemaData = <
       tableFeatures.distinct,
       limits,
       policies,
+      cacheCtx.typeName,
     );
     const selectSingleGenerated = generateSelectSingle(
       db,
@@ -1003,6 +902,7 @@ export const generateSchemaData = <
       filterCtx,
       limits,
       policies,
+      cacheCtx.typeName,
     );
     const insertArrGenerated = tableFeatures.insert
       ? generateInsertArray(
@@ -1031,10 +931,12 @@ export const generateSchemaData = <
     const onConflictInput = tableFeatures.upsert
       ? generateOnConflictInput({
           table: schema[tableName] as MySqlTable,
+          tableName,
           typeName,
           uniqueSets: [],
           tableFilters,
           withTarget: false,
+          cacheCtx,
         })
       : undefined;
     const upsertArrGenerated = onConflictInput
@@ -1096,7 +998,14 @@ export const generateSchemaData = <
     // The batch update reuses the update `set` input, so it needs `update` on too.
     const updateManyInput =
       tableFeatures.update && tableFeatures.updateMany
-        ? generateUpdateManyInput({ typeName, updatePrefix: prefixes.update, updateInput, tableFilters })
+        ? generateUpdateManyInput({
+            tableName,
+            typeName,
+            updatePrefix: prefixes.update,
+            updateInput,
+            tableFilters,
+            cacheCtx,
+          })
         : undefined;
     const updateManyGenerated = updateManyInput
       ? generateUpdateMany(
@@ -1212,6 +1121,7 @@ export const generateSchemaData = <
           tableFilters,
           filterCtx,
           tablePolicies,
+          cacheCtx.typeName,
         )
       : undefined;
 
@@ -1221,10 +1131,10 @@ export const generateSchemaData = <
         ? generateGroupByType(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
         : undefined;
     const groupByEnum = groupByType
-      ? generateGroupByEnum(schema[tableName] as MySqlTable, tableName, typeName)
+      ? generateGroupByEnum(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
       : undefined;
     const havingInput = groupByEnum
-      ? generateHavingInput(schema[tableName] as MySqlTable, tableName, typeName)
+      ? generateHavingInput(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
       : undefined;
     const groupByGenerated =
       groupByType && groupByEnum && havingInput
@@ -1239,6 +1149,7 @@ export const generateSchemaData = <
             havingInput,
             filterCtx,
             tablePolicies,
+            cacheCtx.typeName,
           )
         : undefined;
 
@@ -1282,7 +1193,9 @@ export const generateSchemaData = <
       };
     }
     // Each mutation is paired with the identity it publishes on `extensions.drizzle`, so a
-    // consumer can tell an insert from an upsert without unpicking the configured prefixes.
+    // consumer can tell an insert from an upsert without unpicking the configured prefixes —
+    // and, for a delete, whether the field can purge rather than mark.
+    const hardDeleteMeta = softDeleteInfo?.hardDelete ? ({ hardDelete: true } as const) : {};
     const generatedMutations: [typeof insertArrGenerated, DrizzleMutationMeta][] = [
       [insertArrGenerated, { operation: 'insert', single: false, targetArg: 'values' }],
       [insertSingleGenerated, { operation: 'insert', single: true, targetArg: 'values' }],
@@ -1291,8 +1204,8 @@ export const generateSchemaData = <
       [updateGenerated, { operation: 'update', single: false, targetArg: 'where' }],
       [updateManyGenerated, { operation: 'updateMany', single: false, targetArg: 'updates' }],
       [updateSingleGenerated, { operation: 'update', single: true, targetArg: 'where' }],
-      [deleteGenerated, { operation: 'delete', single: false, targetArg: 'where' }],
-      [deleteSingleGenerated, { operation: 'delete', single: true, targetArg: 'where' }],
+      [deleteGenerated, { operation: 'delete', single: false, targetArg: 'where', ...hardDeleteMeta }],
+      [deleteSingleGenerated, { operation: 'delete', single: true, targetArg: 'where', ...hardDeleteMeta }],
       [restoreGenerated, { operation: 'restore', single: false, targetArg: 'where' }],
       [restoreSingleGenerated, { operation: 'restore', single: true, targetArg: 'where' }],
     ];

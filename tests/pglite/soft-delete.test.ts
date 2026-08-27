@@ -5,7 +5,7 @@ import { boolean, integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
 import { drizzle } from 'drizzle-orm/pglite';
 import { type GraphQLInputObjectType, type GraphQLObjectType, type GraphQLSchema, graphql } from 'graphql';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { type BuildSchemaConfig, buildSchema } from '@/index';
+import { type BuildSchemaConfig, buildSchema, drizzleExtension } from '@/index';
 
 // ── A schema with both shapes of the convention ──────────────────────────────
 // `Articles.deletedAt` is the nullable-timestamp form; `Flags.isArchived` is the NOT NULL
@@ -25,16 +25,43 @@ const Flags = pgTable('flags', {
   label: text('label').notNull(),
   isArchived: boolean('is_archived').notNull().default(false),
 });
+// The third shape: a *nullable* boolean marker, which is what a column added to an existing
+// table without a backfill looks like. NULL there means "never marked", not "deleted".
+const Docs = pgTable('docs', {
+  id: integer('id').primaryKey(),
+  title: text('title').notNull(),
+  isDeleted: boolean('is_deleted').default(false),
+});
 
-const r = createRelationsHelper({ Authors, Articles, Flags });
+// A soft-deleting lookup table reached through relations: `Items.kind` is *required*, so
+// hiding a marked kind there can only produce "Cannot return null for non-nullable field";
+// `Items.altKind` is the nullable version of the same shape.
+const Kinds = pgTable('kinds', {
+  id: integer('id').primaryKey(),
+  label: text('label').notNull(),
+  isRetired: boolean('is_retired').notNull().default(false),
+});
+const Items = pgTable('items', {
+  id: integer('id').primaryKey(),
+  name: text('name').notNull(),
+  kindId: integer('kind_id').notNull(),
+  altKindId: integer('alt_kind_id'),
+});
+
+const r = createRelationsHelper({ Authors, Articles, Flags, Docs, Kinds, Items });
 const relations = buildRelations(
-  { Authors, Articles, Flags },
+  { Authors, Articles, Flags, Docs, Kinds, Items },
   {
     Authors: { articles: r.many.Articles({ from: r.Authors.id, to: r.Articles.authorId }) },
     Articles: { author: r.one.Authors({ from: r.Articles.authorId, to: r.Authors.id }) },
+    Kinds: { items: r.many.Items({ from: r.Kinds.id, to: r.Items.kindId }) },
+    Items: {
+      kind: r.one.Kinds({ from: r.Items.kindId, to: r.Kinds.id, optional: false }),
+      altKind: r.one.Kinds({ from: r.Items.altKindId, to: r.Kinds.id }),
+    },
   },
 );
-const schema = { Authors, Articles, Flags, relations };
+const schema = { Authors, Articles, Flags, Docs, Kinds, Items, relations };
 
 const DATA_DIR = `./tests/.temp/pgdata-soft-delete-${Date.now()}`;
 let pglite: PGlite;
@@ -44,6 +71,24 @@ const softDelete: Partial<BuildSchemaConfig> = {
   softDelete: {
     Articles: 'deletedAt',
     Flags: { column: 'isArchived', deletedValue: true, restoredValue: false },
+    Docs: { column: 'isDeleted', deletedValue: true, restoredValue: false },
+    Kinds: { column: 'isRetired', deletedValue: true, restoredValue: false },
+  },
+};
+
+/** The same declaration, with the article table opted into purging. */
+const hardDeletable: Partial<BuildSchemaConfig> = {
+  softDelete: {
+    ...(softDelete.softDelete as Record<string, any>),
+    Articles: { column: 'deletedAt', hardDelete: true },
+  },
+};
+
+/** The same declaration, with the lookup table scoped to its own root fields. */
+const rootScoped: Partial<BuildSchemaConfig> = {
+  softDelete: {
+    ...(softDelete.softDelete as Record<string, any>),
+    Kinds: { column: 'isRetired', deletedValue: true, restoredValue: false, scope: 'root' },
   },
 };
 
@@ -69,6 +114,15 @@ beforeAll(async () => {
   await db.execute(
     sql`CREATE TABLE "flags" ("id" integer PRIMARY KEY NOT NULL, "label" text NOT NULL, "is_archived" boolean NOT NULL DEFAULT false);`,
   );
+  await db.execute(
+    sql`CREATE TABLE "docs" ("id" integer PRIMARY KEY NOT NULL, "title" text NOT NULL, "is_deleted" boolean DEFAULT false);`,
+  );
+  await db.execute(
+    sql`CREATE TABLE "kinds" ("id" integer PRIMARY KEY NOT NULL, "label" text NOT NULL, "is_retired" boolean NOT NULL DEFAULT false);`,
+  );
+  await db.execute(
+    sql`CREATE TABLE "items" ("id" integer PRIMARY KEY NOT NULL, "name" text NOT NULL, "kind_id" integer NOT NULL, "alt_kind_id" integer);`,
+  );
 });
 
 afterAll(async () => {
@@ -81,6 +135,9 @@ beforeEach(async () => {
   await db.delete(Articles);
   await db.delete(Authors);
   await db.delete(Flags);
+  await db.delete(Docs);
+  await db.delete(Items);
+  await db.delete(Kinds);
   await db.insert(Authors).values([
     { id: 1, name: 'Ada' },
     { id: 2, name: 'Grace' },
@@ -93,6 +150,21 @@ beforeEach(async () => {
   await db.insert(Flags).values([
     { id: 1, label: 'live', isArchived: false },
     { id: 2, label: 'archived', isArchived: true },
+  ]);
+  await db.insert(Docs).values([
+    { id: 1, title: 'live', isDeleted: false },
+    { id: 2, title: 'gone', isDeleted: true },
+    // The un-backfilled row: the column was added after this one was written.
+    { id: 3, title: 'never marked', isDeleted: null },
+  ]);
+  // Kind 2 is retired; item 2 is a live row that still points at it.
+  await db.insert(Kinds).values([
+    { id: 1, label: 'current', isRetired: false },
+    { id: 2, label: 'retired', isRetired: true },
+  ]);
+  await db.insert(Items).values([
+    { id: 1, name: 'one', kindId: 1, altKindId: 1 },
+    { id: 2, name: 'two', kindId: 2, altKindId: 2 },
   ]);
 });
 
@@ -285,6 +357,106 @@ describe.sequential('soft delete', () => {
     expect((restored.data?.['restoreFlags'] as any[])[0].isArchived).toBe(false);
   });
 
+  it('honours an explicit deletedValue on a nullable marker column', async () => {
+    const gqlSchema = buildWith(softDelete);
+
+    // The live row and the un-backfilled NULL row are both alive; only the marked one is not.
+    const list = await run(gqlSchema, `{ docs { id } }`);
+    expect(list.errors).toBeUndefined();
+    expect((list.data?.['docs'] as any[]).map((d) => d.id).sort()).toEqual([1, 3]);
+
+    const included = await run(gqlSchema, `{ docs(deleted: INCLUDE) { id } }`);
+    expect((included.data?.['docs'] as any[]).map((d) => d.id).sort()).toEqual([1, 2, 3]);
+
+    // The trash view is the marked row alone — not every row, which is what reading the
+    // column as NULL-means-alive would have given.
+    const only = await run(gqlSchema, `{ docs(deleted: ONLY) { id } }`);
+    expect((only.data?.['docs'] as any[]).map((d) => d.id)).toEqual([2]);
+  });
+
+  it('writes the configured values on a nullable marker column', async () => {
+    const gqlSchema = buildWith(softDelete);
+
+    const deleted = await run(gqlSchema, `mutation { deleteDocs(where: { id: { eq: 1 } }) { id isDeleted } }`);
+    expect(deleted.errors).toBeUndefined();
+    expect((deleted.data?.['deleteDocs'] as any[])[0].isDeleted).toBe(true);
+    expect(await rowsOf(Docs)).toHaveLength(3);
+
+    const restored = await run(gqlSchema, `mutation { restoreDocs(where: { id: { eq: 1 } }) { id isDeleted } }`);
+    expect((restored.data?.['restoreDocs'] as any[])[0].isDeleted).toBe(false);
+  });
+
+  it('keeps the NULL-means-alive reading when no deletedValue is configured', async () => {
+    // `Articles.deletedAt` is the timestamp form: nothing configured, so holding a value at
+    // all is what marks the row.
+    const gqlSchema = buildWith({ softDelete: { Articles: 'deletedAt' } });
+    const only = await run(gqlSchema, `{ articles(deleted: ONLY) { id } }`);
+    expect((only.data?.['articles'] as any[]).map((a) => a.id)).toEqual([3]);
+  });
+
+  it('reads a marked row through a required to-one relation rather than losing the parent', async () => {
+    const gqlSchema = buildWith(softDelete);
+
+    // Item 2 is live and points at the retired kind. Hiding it there could only produce
+    // "Cannot return null for non-nullable field Items.kind" and take the whole item with it.
+    const res = await run(gqlSchema, `{ items { id kind { id label } } }`);
+    expect(res.errors).toBeUndefined();
+    const items = res.data?.['items'] as any[];
+    expect(items.find((i) => i.id === 2).kind).toEqual({ id: 2, label: 'retired' });
+
+    // The root fields still hide it — the exception is the relation, not the table.
+    const kinds = await run(gqlSchema, `{ kinds { id } }`);
+    expect((kinds.data?.['kinds'] as any[]).map((k) => k.id)).toEqual([1]);
+  });
+
+  it('applies the required-to-one exception on the batch-loader path too', async () => {
+    const gqlSchema = buildWith({ ...softDelete, eagerLoadRelations: false });
+    const res = await run(gqlSchema, `{ items { id kind { id } } }`);
+
+    expect(res.errors).toBeUndefined();
+    expect((res.data?.['items'] as any[]).find((i) => i.id === 2).kind).toEqual({ id: 2 });
+  });
+
+  it('still hides a marked row behind a nullable relation by default', async () => {
+    const gqlSchema = buildWith(softDelete);
+    const res = await run(gqlSchema, `{ items { id altKind { id } } }`);
+
+    expect(res.errors).toBeUndefined();
+    expect((res.data?.['items'] as any[]).find((i) => i.id === 2).altKind).toBeNull();
+
+    // And the argument still reaches it.
+    const included = await run(gqlSchema, `{ items { id altKind(deleted: INCLUDE) { id } } }`);
+    expect((included.data?.['items'] as any[]).find((i) => i.id === 2).altKind).toEqual({ id: 2 });
+  });
+
+  it("scope: 'root' leaves every relation field unscoped", async () => {
+    const gqlSchema = buildWith(rootScoped);
+
+    // Nullable to-one, to-many and the relation aggregate all read the retired row.
+    const res = await run(
+      gqlSchema,
+      `{ items { id altKind { id } } kinds(deleted: INCLUDE) { id items { id } itemsAggregate { count } } }`,
+    );
+    expect(res.errors).toBeUndefined();
+    expect((res.data?.['items'] as any[]).find((i) => i.id === 2).altKind).toEqual({ id: 2 });
+    const retired = (res.data?.['kinds'] as any[]).find((k) => k.id === 2);
+    expect(retired.items.map((i: any) => i.id)).toEqual([2]);
+    expect(retired.itemsAggregate.count).toBe(1);
+
+    // The root fields are scoped exactly as before.
+    const roots = await run(gqlSchema, `{ kinds { id } kindsAggregate { count } }`);
+    expect((roots.data?.['kinds'] as any[]).map((k) => k.id)).toEqual([1]);
+    expect((roots.data?.['kindsAggregate'] as any).count).toBe(1);
+  });
+
+  it("scope: 'root' keeps the argument on relation fields, so either default can be overridden", async () => {
+    const gqlSchema = buildWith({ ...rootScoped, eagerLoadRelations: false });
+    const res = await run(gqlSchema, `{ items { id altKind(deleted: EXCLUDE) { id } } }`);
+
+    expect(res.errors).toBeUndefined();
+    expect((res.data?.['items'] as any[]).find((i) => i.id === 2).altKind).toBeNull();
+  });
+
   it('leaves a table that declares nothing alone', async () => {
     const gqlSchema = buildWith(softDelete);
     const res = await run(gqlSchema, `mutation { deleteAuthors(where: { id: { eq: 2 } }) { id } }`);
@@ -332,6 +504,124 @@ describe.sequential('soft delete', () => {
     expect(theirsDefault.data?.['articles']).toEqual([]);
   });
 
+  it('generates the hard argument only where the table opted in', async () => {
+    const gqlSchema = buildWith(hardDeletable);
+    const mutations = gqlSchema.getMutationType()!.getFields();
+    const argsOf = (field: string) => mutations[field]!.args.map((arg) => arg.name);
+
+    expect(argsOf('deleteArticles')).toContain('hard');
+    expect(argsOf('deleteArticlesSingle')).toContain('hard');
+    // Restoring removes nothing, so it never takes one.
+    expect(argsOf('restoreArticles')).not.toContain('hard');
+    // Flags soft-deletes without opting in; Authors does not soft-delete at all.
+    expect(argsOf('deleteFlags')).not.toContain('hard');
+    expect(argsOf('deleteAuthors')).not.toContain('hard');
+    // And the default is the safe one, so an existing query keeps marking rows.
+    expect(mutations['deleteArticles']!.args.find((arg) => arg.name === 'hard')!.defaultValue).toBe(false);
+
+    // The same table under the un-opted-in declaration has no argument at all.
+    expect(
+      buildWith(softDelete)
+        .getMutationType()!
+        .getFields()
+        ['deleteArticles']!.args.map((arg) => arg.name),
+    ).not.toContain('hard');
+  });
+
+  it('publishes the opt-in on the field extension, so a wrapper need not parse arguments', async () => {
+    const opted = buildWith(hardDeletable).getMutationType()!.getFields();
+    expect(drizzleExtension(opted['deleteArticles'])).toMatchObject({ operation: 'delete', hardDelete: true });
+    expect(drizzleExtension(opted['deleteArticlesSingle'])).toMatchObject({ operation: 'delete', hardDelete: true });
+    expect(drizzleExtension(opted['deleteFlags'])).not.toHaveProperty('hardDelete');
+    expect(drizzleExtension(opted['restoreArticles'])).not.toHaveProperty('hardDelete');
+  });
+
+  it('hard: true removes the row instead of marking it', async () => {
+    const gqlSchema = buildWith(hardDeletable);
+    const res = await run(gqlSchema, `mutation { deleteArticles(where: { id: { eq: 1 } }, hard: true) { id title } }`);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.['deleteArticles']).toEqual([{ id: 1, title: 'first' }]);
+
+    const rows = await rowsOf(Articles);
+    expect(rows.map((row: any) => row.id).sort()).toEqual([2, 3]);
+  });
+
+  it('hard: false, and the default, still mark the row', async () => {
+    const gqlSchema = buildWith(hardDeletable);
+    const explicit = await run(gqlSchema, `mutation { deleteArticles(where: { id: { eq: 1 } }, hard: false) { id } }`);
+    expect(explicit.errors).toBeUndefined();
+    const byDefault = await run(gqlSchema, `mutation { deleteArticles(where: { id: { eq: 2 } }) { id } }`);
+    expect(byDefault.errors).toBeUndefined();
+
+    const rows = await rowsOf(Articles);
+    expect(rows).toHaveLength(3);
+    expect(
+      rows
+        .filter((row: any) => row.deletedAt !== null)
+        .map((row: any) => row.id)
+        .sort(),
+    ).toEqual([1, 2, 3]);
+  });
+
+  it('empties the trash: a hard delete reaches rows that are already marked', async () => {
+    const gqlSchema = buildWith(hardDeletable);
+    // Article 3 is marked, so the soft path cannot see it at all.
+    const soft = await run(gqlSchema, `mutation { deleteArticles(where: { id: { eq: 3 } }) { id } }`);
+    expect(soft.errors).toBeUndefined();
+    expect(soft.data?.['deleteArticles']).toEqual([]);
+
+    const purge = await run(gqlSchema, `mutation { deleteArticles(where: { id: { eq: 3 } }, hard: true) { id } }`);
+    expect(purge.errors).toBeUndefined();
+    expect(purge.data?.['deleteArticles']).toEqual([{ id: 3 }]);
+    expect((await rowsOf(Articles)).map((row: any) => row.id).sort()).toEqual([1, 2]);
+  });
+
+  it('purges through the single variant too, marked row included', async () => {
+    const gqlSchema = buildWith(hardDeletable);
+    const res = await run(gqlSchema, `mutation { deleteArticlesSingle(where: { id: { eq: 3 } }, hard: true) { id } }`);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.['deleteArticlesSingle']).toEqual({ id: 3 });
+    expect((await rowsOf(Articles)).map((row: any) => row.id).sort()).toEqual([1, 2]);
+  });
+
+  it('clears the table when no where is given', async () => {
+    const gqlSchema = buildWith(hardDeletable);
+    const res = await run(gqlSchema, `mutation { deleteArticles(hard: true) { id } }`);
+
+    expect(res.errors).toBeUndefined();
+    // Including the row that was already marked — the reset the issue asks for.
+    expect((res.data?.['deleteArticles'] as any[]).map((row: any) => row.id).sort()).toEqual([1, 2, 3]);
+    expect(await rowsOf(Articles)).toHaveLength(0);
+  });
+
+  it('a scope still confines a hard delete', async () => {
+    const gqlSchema = buildWith({
+      ...hardDeletable,
+      scope: { Articles: (ctx: any, table: any) => eq(table.authorId, ctx.authorId) },
+    });
+
+    // Article 3 belongs to author 2 and is marked; author 1 can reach neither.
+    const res = await run(gqlSchema, `mutation { deleteArticles(hard: true) { id } }`, { authorId: 1 });
+    expect(res.errors).toBeUndefined();
+    expect((res.data?.['deleteArticles'] as any[]).map((row: any) => row.id).sort()).toEqual([1, 2]);
+    expect((await rowsOf(Articles)).map((row: any) => row.id)).toEqual([3]);
+  });
+
+  it('frees the unique key a marked row was holding', async () => {
+    const gqlSchema = buildWith(hardDeletable);
+    // The primary key is the case every table has: reusing it needs the row actually gone.
+    await run(gqlSchema, `mutation { deleteArticles(where: { id: { eq: 1 } }, hard: true) { id } }`);
+    const res = await run(
+      gqlSchema,
+      `mutation { createArticlesSingle(values: { id: 1, title: "reused", authorId: 1 }) { id title } }`,
+    );
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.['createArticlesSingle']).toEqual({ id: 1, title: 'reused' });
+  });
+
   it('rejects a declaration that does not match the schema', () => {
     expect(() => buildWith({ softDelete: { Nope: 'deletedAt' } })).toThrow(/not a table in the Drizzle schema/);
     expect(() => buildWith({ softDelete: { Articles: 'goneAt' } })).toThrow(/not a column of that table/);
@@ -344,6 +634,12 @@ describe.sequential('soft delete', () => {
     );
     expect(() => buildWith({ softDelete: { Flags: { column: 'label', deletedValue: 'gone' } } })).toThrow(
       /must say what restoring writes back/,
+    );
+    expect(() => buildWith({ softDelete: { Articles: { column: 'deletedAt', scope: 'relations' as any } } })).toThrow(
+      /scope must be 'root' or 'all'/,
+    );
+    expect(() => buildWith({ softDelete: { Articles: { column: 'deletedAt', hardDelete: 'yes' as any } } })).toThrow(
+      /hardDelete must be a boolean/,
     );
   });
 });

@@ -18,6 +18,7 @@ export const featureDefaults: TableFeatures = {
   fieldUpdateOperations: false,
   countMutations: false,
   requireWhere: false,
+  uniqueKeyFilters: false,
 };
 
 /**

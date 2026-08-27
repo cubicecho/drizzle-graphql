@@ -15,9 +15,9 @@ import {
   type SQL,
   sql,
 } from 'drizzle-orm';
-import { GraphQLError } from 'graphql';
 import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
 import type { OrderByArgs, TableNamedRelations } from '../types.ts';
+import { drizzleError } from './errors.ts';
 import type { RelationFilterContext } from './relation-filters.ts';
 import { buildRelationJoinCondition } from './relation-filters.ts';
 import { isFilterableRelation } from './relations.ts';
@@ -41,12 +41,16 @@ export const orderByEntries = (
     .filter(([, config]) => config)
     .map(([column, config]) => {
       if (typeof config === 'object' && config.direction === undefined) {
-        throw new GraphQLError(`ORDER BY ${column}: ordering through a relation is not supported in this query`);
+        throw drizzleError(`ORDER BY ${column}: ordering through a relation is not supported in this query`, {
+          code: 'DRIZZLE_INVALID_ORDER_BY',
+        });
       }
       // Same reason as above: the sort key is not a value of the row, so it cannot be
       // rebuilt against a subquery's fields or encoded into a cursor.
       if (config.matchFilterOrder) {
-        throw new GraphQLError(`ORDER BY ${column}: 'matchFilterOrder' is not supported in this query`);
+        throw drizzleError(`ORDER BY ${column}: 'matchFilterOrder' is not supported in this query`, {
+          code: 'DRIZZLE_INVALID_ORDER_BY',
+        });
       }
       return [column, config.direction, config.nulls ?? undefined];
     });
@@ -123,7 +127,9 @@ const extendRelationOrderChain = (
   const relation = ((relEntry as any).relation ?? relEntry) as Relation<string>;
 
   if (!targetTable || !is(relation, One) || !isFilterableRelation(relation)) {
-    throw new GraphQLError(`ORDER BY ${relationName}: Relation cannot be used for ordering`);
+    throw drizzleError(`ORDER BY ${relationName}: Relation cannot be used for ordering`, {
+      code: 'DRIZZLE_INVALID_ORDER_BY',
+    });
   }
 
   ctx.aliases ??= { n: 0 };
@@ -160,8 +166,9 @@ const extendRelationOrderChain = (
 const filterOrderExpression = (column: Column, columnName: string, whereArgs: Record<string, any> | undefined): SQL => {
   const values = whereArgs?.[columnName]?.inArray as unknown;
   if (!Array.isArray(values)) {
-    throw new GraphQLError(
+    throw drizzleError(
       `ORDER BY ${columnName}: 'matchFilterOrder' needs an 'inArray' filter on the same column in this query's 'where'`,
+      { code: 'DRIZZLE_INVALID_ORDER_BY' },
     );
   }
   if (!values.length) {
@@ -203,7 +210,9 @@ const collectOrderEntries = (
     const column = columns[key];
     if (column) {
       if (config.matchFilterOrder && chain) {
-        throw new GraphQLError(`ORDER BY ${key}: 'matchFilterOrder' is not supported through a relation`);
+        throw drizzleError(`ORDER BY ${key}: 'matchFilterOrder' is not supported through a relation`, {
+          code: 'DRIZZLE_INVALID_ORDER_BY',
+        });
       }
       out.push({
         expression: config.matchFilterOrder
@@ -221,7 +230,7 @@ const collectOrderEntries = (
 
     const relEntry = relations?.[key];
     if (!relEntry || !ctx) {
-      throw new GraphQLError(`ORDER BY ${key}: Unknown column or relation`);
+      throw drizzleError(`ORDER BY ${key}: Unknown column or relation`, { code: 'DRIZZLE_INVALID_ORDER_BY' });
     }
 
     const nextChain = extendRelationOrderChain(chain?.table ?? table, key, relEntry, ctx, chain);

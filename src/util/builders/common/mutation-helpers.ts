@@ -4,7 +4,7 @@
 import type { Column, Table } from 'drizzle-orm';
 import { type SQL, sql } from 'drizzle-orm';
 import type { GraphQLFieldConfigArgumentMap } from 'graphql';
-import { GraphQLError, GraphQLInputObjectType, GraphQLNonNull } from 'graphql';
+import { GraphQLBoolean, GraphQLInputObjectType, GraphQLNonNull } from 'graphql';
 import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { capitalize } from '../../case-ops/index.ts';
 import { remapUpdateInput } from '../field-updates.ts';
@@ -12,10 +12,11 @@ import { remapUpdateInput } from '../field-updates.ts';
 // stay one-directional. The implementation is injected by the dialect builder.
 import type { NestedWriteRuntime } from '../nested-writes.ts';
 import type { CreatedResolver, Filters, ProcessedTableSelectArgs, TableNamedRelations } from '../types.ts';
-import { toGraphQLError } from './errors.ts';
+import { type DrizzleErrorContext, drizzleError, toGraphQLError, withErrorContext } from './errors.ts';
 import { withPrimaryKeyColumns } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import type { TypeNameMapper } from './naming.ts';
+import { resolveObjectTypeName } from './naming.ts';
 import type { ScopeResolver } from './policies.ts';
 import type { RelationFilterBase, RelationFilterContext } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
@@ -23,6 +24,20 @@ import { extractRelationsParams } from './relation-params.ts';
 import { extractSelectedColumnsFromTreeSQLFormat } from './selected-columns.ts';
 import type { MutationTxCtx } from './transactions.ts';
 import { runMutation } from './transactions.ts';
+import type { TypeCacheCtx } from './type-cache.ts';
+import type { TypeNameResolver } from './type-names.ts';
+
+/**
+ * The `hard` argument on the delete mutations of a soft-deleting table that opted into
+ * `hardDelete`. One config shared by every such field — argument configs carry no per-field
+ * state — and generated nowhere else, so the schema says which tables can be purged.
+ */
+export const hardDeleteArg = {
+  type: GraphQLBoolean,
+  defaultValue: false,
+  description:
+    'Remove the matched rows instead of marking them deleted. Reads at `INCLUDE`, so it reaches rows that are already marked; a `scope` still confines what it can reach.',
+} as const;
 
 /**
  * Computes the RETURNING columns and relation selection for a mutation resolver: extracts
@@ -42,12 +57,15 @@ export const prepareMutationRelationColumns = (params: {
   limits?: LimitPolicyFor;
   scope?: ScopeResolver;
   defaultOrderBy?: DefaultOrderByFor;
+  /** The build's type-naming rule — the selection tree is keyed by the name it produced. */
+  resolveName?: TypeNameResolver;
 }): {
   columns: Record<string, Column>;
   hasRelations: boolean;
   withParams: Record<string, Partial<ProcessedTableSelectArgs>> | undefined;
 } => {
-  const { relationMap, tables, tableName, typeName, typeNameMapper, table, pkNames, parsedInfo } = params;
+  const { relationMap, tables, tableName, typeNameMapper, table, pkNames, parsedInfo, resolveName } = params;
+  const typeName = resolveObjectTypeName(tableName, typeNameMapper, resolveName);
   const withParams = relationMap[tableName]
     ? extractRelationsParams(
         relationMap,
@@ -60,6 +78,7 @@ export const prepareMutationRelationColumns = (params: {
         params.limits,
         params.scope,
         params.defaultOrderBy,
+        resolveName,
       )
     : undefined;
   const hasRelations = !!(withParams && Object.keys(withParams).length);
@@ -77,14 +96,20 @@ export const prepareMutationRelationColumns = (params: {
  * update `set` input and filter input. Shared by all three dialect builders.
  */
 export const generateUpdateManyInput = (params: {
+  tableName: string;
   typeName: string;
   updatePrefix: string;
   updateInput: GraphQLInputObjectType;
   tableFilters: GraphQLInputObjectType;
+  cacheCtx: TypeCacheCtx;
 }): GraphQLInputObjectType => {
-  const { typeName, updatePrefix, updateInput, tableFilters } = params;
+  const { tableName, typeName, updatePrefix, updateInput, tableFilters, cacheCtx } = params;
   return new GraphQLInputObjectType({
-    name: `${capitalize(updatePrefix)}${typeName}ManyInput`,
+    name: cacheCtx.typeName({
+      kind: 'updateManyInput',
+      defaultName: `${capitalize(updatePrefix)}${typeName}ManyInput`,
+      table: tableName,
+    }),
     description: `One entry of a batch update of ${typeName}: the rows \`where\` matches get this entry's \`set\` applied.`,
     fields: {
       where: {
@@ -108,12 +133,14 @@ export const extractRequiredFilters = <TTable extends Table>(
   table: TTable,
   tableName: string,
   where: Filters<TTable> | undefined,
-  fieldName: string,
   relationCtx?: RelationFilterContext,
 ): SQL => {
   const filters = where ? extractFilters(table, tableName, where, relationCtx) : undefined;
   if (!filters) {
-    throw new GraphQLError(`${fieldName} requires a 'where' argument with at least one filter!`);
+    throw drizzleError(
+      "A 'where' argument with at least one filter is required — this mutation does not run unbounded.",
+      { code: 'DRIZZLE_WHERE_REQUIRED' },
+    );
   }
   return filters;
 };
@@ -129,7 +156,7 @@ export const extractRequiredFilters = <TTable extends Table>(
  * returns `[header, fields]`. A row of the table is never inspected, so a table with a
  * column named `count` cannot be mistaken for a count.
  */
-export const rowsAffected = (result: any, fieldName: string): number => {
+export const rowsAffected = (result: any): number => {
   const asNumber = (value: unknown): number | undefined =>
     typeof value === 'number' ? value : typeof value === 'bigint' ? Number(value) : undefined;
 
@@ -147,7 +174,9 @@ export const rowsAffected = (result: any, fieldName: string): number => {
     }
   }
 
-  throw new GraphQLError(`${fieldName}: the driver did not report how many rows the write affected.`);
+  throw drizzleError('The driver did not report how many rows the write affected.', {
+    code: 'DRIZZLE_ROW_COUNT_UNAVAILABLE',
+  });
 };
 
 /**
@@ -155,15 +184,12 @@ export const rowsAffected = (result: any, fieldName: string): number => {
  * matches more than one row, so a multi-row update/delete never executes. Probed with a
  * `LIMIT 2` select rather than a count so the check stays cheap on large matches.
  */
-export const assertSingleMatch = async (
-  executor: any,
-  table: Table,
-  filters: SQL,
-  fieldName: string,
-): Promise<void> => {
+export const assertSingleMatch = async (executor: any, table: Table, filters: SQL): Promise<void> => {
   const matched = await executor.select({ found: sql`1` }).from(table).where(filters).limit(2);
   if (matched.length > 1) {
-    throw new GraphQLError(`${fieldName}: 'where' matched more than one row — nothing was written!`);
+    throw drizzleError("'where' matched more than one row — nothing was written!", {
+      code: 'DRIZZLE_MULTI_ROW_MATCH',
+    });
   }
 };
 
@@ -213,6 +239,8 @@ export const generateWriteCount = ({
     },
   } as GraphQLFieldConfigArgumentMap;
 
+  const errorCtx: DrizzleErrorContext = { table: tableName, operation: kind, field: fieldName };
+
   return {
     name: fieldName,
     resolver: async (_source, args: { where?: any; set?: Record<string, any> }, context, info) => {
@@ -222,7 +250,7 @@ export const generateWriteCount = ({
 
           const relationCtx = relationFilterCtx(filterCtx, tableName);
           const filters = requireWhere
-            ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
+            ? extractRequiredFilters(table, tableName, where, relationCtx)
             : where
               ? extractFilters(table, tableName, where, relationCtx)
               : undefined;
@@ -235,13 +263,16 @@ export const generateWriteCount = ({
             // mutation exists not to fetch — so they are refused rather than silently dropped.
             const entry = nested?.enabled(tableName) ? nested.split(tableName, set!) : undefined;
             if (entry && nested!.hasOps(entry.ops)) {
-              throw new GraphQLError(
-                `${fieldName} does not support nested writes — use ${fieldName.slice(0, -'Count'.length)} instead.`,
+              throw drizzleError(
+                'This mutation does not support nested writes — use the one that returns the rows instead.',
+                { code: 'DRIZZLE_NESTED_WRITES_UNSUPPORTED' },
               );
             }
             const values = remapUpdateInput(entry ? entry.columns : set!, table, tableName);
             if (!Object.keys(values).length) {
-              throw new GraphQLError('Unable to update with no values specified!');
+              throw drizzleError('Unable to update with no values specified!', {
+                code: 'DRIZZLE_NO_VALUES',
+              });
             }
             query = executor.update(table).set(values);
           }
@@ -250,10 +281,10 @@ export const generateWriteCount = ({
             query = query.where(filters);
           }
 
-          return rowsAffected(await query, fieldName);
+          return rowsAffected(await query);
         });
       } catch (e) {
-        throw toGraphQLError(e);
+        throw withErrorContext(toGraphQLError(e), errorCtx);
       }
     },
     args: queryArgs,

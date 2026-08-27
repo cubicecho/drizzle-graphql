@@ -1,165 +1,11 @@
 import type { Table } from 'drizzle-orm';
-import type { RelationalQueryBuilder } from 'drizzle-orm/mysql-core/query-builders/query';
 import { type BaseSQLiteDatabase, getTableConfig, SQLiteTable } from 'drizzle-orm/sqlite-core';
-import type { GraphQLInputObjectType, GraphQLResolveInfo } from 'graphql';
-import type { ResolveTree } from 'graphql-parse-resolve-info';
-import { parseResolveInfo } from 'graphql-parse-resolve-info';
 
 import type { GeneratedEntities } from '../../types.ts';
-import {
-  applyLimitPolicy,
-  generateDistinctEnum,
-  getPrimaryKeyPropNamesFromConfig,
-  type LimitPolicyFor,
-  type RelationFilterBase,
-  type ResolverPolicies,
-  resolveQueryExecutor,
-  runRelationalSelect,
-  selectArrayArgs,
-  selectSingleArgs,
-  type TablesRelationalConfig,
-  type TypeNameMapper,
-  toGraphQLError,
-  withDefaultOrderBy,
-} from '../builders/common.ts';
-import { missingQueryBuilderError } from './errors.ts';
+import { getPrimaryKeyPropNamesFromConfig, type TablesRelationalConfig } from '../builders/common.ts';
 import { createSchemaDataGenerator } from './schema-data.ts';
-import type { CreatedResolver, SchemaGeneratorOptions, TableNamedRelations, TableSelectArgs } from './types.ts';
+import type { SchemaGeneratorOptions } from './types.ts';
 import { createUpdateManyGenerator, type UpdateManyBatchRunner, type UpdateManyEntry } from './update-many.ts';
-
-const generateSelectArray = (
-  db: BaseSQLiteDatabase<any, any, any, any>,
-  tableName: string,
-  tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  orderArgs: GraphQLInputObjectType,
-  filterArgs: GraphQLInputObjectType,
-  fieldName: string,
-  typeName: string,
-  typeNameMapper?: TypeNameMapper,
-  filterCtx?: RelationFilterBase,
-  distinctEnabled: boolean = true,
-  limits?: LimitPolicyFor,
-  policies?: ResolverPolicies,
-): CreatedResolver => {
-  const queryBase = db.query[tableName as keyof typeof db.query & string] as unknown as
-    | RelationalQueryBuilder<any, any, any>
-    | undefined;
-  if (!queryBase) {
-    throw missingQueryBuilderError(tableName);
-  }
-
-  const table = tables[tableName]!;
-  const limitPolicy = limits?.(tableName);
-  const pkNames = sqlitePrimaryKeyPropNames(table as SQLiteTable);
-  const queryArgs = selectArrayArgs(
-    orderArgs,
-    filterArgs,
-    distinctEnabled ? generateDistinctEnum(table, typeName) : undefined,
-    policies?.softDelete,
-    tableName,
-  );
-
-  return {
-    name: fieldName,
-    resolver: async (_source: any, rawArgs: Partial<TableSelectArgs>, context: any, info: GraphQLResolveInfo) => {
-      // An omitted `orderBy` falls back to the table's configured default ordering here,
-      // before anything reads the arguments — the cursor tuple, a `distinct` pass and the
-      // plain-select fallback all have to agree on one effective ordering.
-      const args = withDefaultOrderBy(rawArgs, tableName, policies?.defaultOrderBy);
-      try {
-        const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
-        const { executor, queryBase: requestQueryBase } = resolveQueryExecutor(db, context, tableName, queryBase);
-        return await runRelationalSelect({
-          queryBase: requestQueryBase,
-          tables,
-          tableName,
-          table,
-          relationMap,
-          typeName,
-          typeNameMapper,
-          parsedInfo,
-          ...args,
-          limit: applyLimitPolicy(args.limit, limitPolicy, fieldName),
-          single: false,
-          filterCtx,
-          limits,
-          defaultOrderBy: policies?.defaultOrderBy,
-          pkNames,
-          db: executor,
-          scope: policies?.scope?.(context),
-          // SQLite sorts NULLs as the smallest values (first in ASC).
-          nullOrdering: 'nulls-smallest',
-        });
-      } catch (e) {
-        throw toGraphQLError(e);
-      }
-    },
-    args: queryArgs,
-  };
-};
-
-const generateSelectSingle = (
-  db: BaseSQLiteDatabase<any, any, any, any>,
-  tableName: string,
-  tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  orderArgs: GraphQLInputObjectType,
-  filterArgs: GraphQLInputObjectType,
-  fieldName: string,
-  typeName: string,
-  typeNameMapper?: TypeNameMapper,
-  filterCtx?: RelationFilterBase,
-  limits?: LimitPolicyFor,
-  policies?: ResolverPolicies,
-): CreatedResolver => {
-  const queryBase = db.query[tableName as keyof typeof db.query & string] as unknown as
-    | RelationalQueryBuilder<any, any, any>
-    | undefined;
-  if (!queryBase) {
-    throw missingQueryBuilderError(tableName);
-  }
-
-  const queryArgs = selectSingleArgs(orderArgs, filterArgs, policies?.softDelete, tableName);
-
-  const table = tables[tableName]!;
-  const pkNames = sqlitePrimaryKeyPropNames(table as SQLiteTable);
-
-  return {
-    name: fieldName,
-    resolver: async (_source, rawArgs: Partial<TableSelectArgs>, context, info) => {
-      // An omitted `orderBy` falls back to the table's configured default ordering here,
-      // before anything reads the arguments — the cursor tuple, a `distinct` pass and the
-      // plain-select fallback all have to agree on one effective ordering.
-      const args = withDefaultOrderBy(rawArgs, tableName, policies?.defaultOrderBy);
-      try {
-        const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
-        const { executor, queryBase: requestQueryBase } = resolveQueryExecutor(db, context, tableName, queryBase);
-        return await runRelationalSelect({
-          queryBase: requestQueryBase,
-          tables,
-          tableName,
-          table,
-          relationMap,
-          typeName,
-          typeNameMapper,
-          parsedInfo,
-          ...args,
-          single: true,
-          filterCtx,
-          limits,
-          defaultOrderBy: policies?.defaultOrderBy,
-          pkNames,
-          db: executor,
-          scope: policies?.scope?.(context),
-        });
-      } catch (e) {
-        throw toGraphQLError(e);
-      }
-    },
-    args: queryArgs,
-  };
-};
 
 /** Primary-key property names for a SQLite table, including table-level composite keys. */
 const sqlitePrimaryKeyPropNames = (table: SQLiteTable): string[] =>
@@ -270,8 +116,6 @@ const sqliteSchemaData = createSchemaDataGenerator({
       );
     }
   },
-  generateSelectArray,
-  generateSelectSingle,
   generateUpdateMany,
 });
 

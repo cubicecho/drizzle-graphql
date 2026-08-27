@@ -10,7 +10,8 @@ import {
   GraphQLString,
 } from 'graphql';
 import type { SoftDeleteFor } from './policies.ts';
-import { deletedFilterEnum } from './policies.ts';
+import { deletedFilterEnumType } from './policies.ts';
+import type { GeneratedTypeInfo, TypeNameResolver } from './type-names.ts';
 
 /** GraphQL argument map for a list/array select field. */
 /**
@@ -20,11 +21,12 @@ import { deletedFilterEnum } from './policies.ts';
 export const deletedArg = (
   softDelete: SoftDeleteFor | undefined,
   tableName: string,
+  resolveName?: TypeNameResolver,
 ): Record<string, { type: any; description: string }> =>
   softDelete?.(tableName)
     ? {
         deleted: {
-          type: deletedFilterEnum,
+          type: deletedFilterEnumType(resolveName ?? ((info: GeneratedTypeInfo) => info.defaultName)),
           description: 'Whether rows marked deleted are returned. Defaults to EXCLUDE.',
         },
       }
@@ -36,6 +38,7 @@ export const selectArrayArgs = (
   distinctEnum?: GraphQLEnumType,
   softDelete?: SoftDeleteFor,
   tableName?: string,
+  resolveName?: TypeNameResolver,
 ): Record<string, { type: any; description?: string }> => ({
   offset: { type: GraphQLInt },
   limit: { type: GraphQLInt },
@@ -47,7 +50,7 @@ export const selectArrayArgs = (
       "Keyset pagination: only return rows strictly after this cursor (a row's `cursor` field from a previous page, under the same orderBy).",
   },
   ...(distinctEnum ? { distinct: { type: new GraphQLList(new GraphQLNonNull(distinctEnum)) } } : {}),
-  ...deletedArg(softDelete, tableName!),
+  ...deletedArg(softDelete, tableName!, resolveName),
 });
 
 /** GraphQL argument map for a single-row select field (no `limit`). */
@@ -56,9 +59,10 @@ export const selectSingleArgs = (
   filterArgs: GraphQLInputObjectType,
   softDelete?: SoftDeleteFor,
   tableName?: string,
+  resolveName?: TypeNameResolver,
 ): Record<string, { type: any }> => ({
   offset: { type: GraphQLInt },
   orderBy: { type: orderArgs },
   where: { type: filterArgs },
-  ...deletedArg(softDelete, tableName!),
+  ...deletedArg(softDelete, tableName!, resolveName),
 });

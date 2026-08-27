@@ -2,11 +2,13 @@
 // bound into the shape the resolvers apply at request time.
 
 import type { Column, Table } from 'drizzle-orm';
-import { and, eq, extractExtendedColumnType, getColumns, is, isNotNull, isNull, ne, SQL } from 'drizzle-orm';
-import { GraphQLEnumType, GraphQLError } from 'graphql';
+import { and, eq, extractExtendedColumnType, getColumns, is, isNotNull, isNull, ne, or, SQL } from 'drizzle-orm';
+import { GraphQLEnumType } from 'graphql';
+import { drizzleError } from './errors.ts';
 import type { DefaultOrderByFor } from './limits.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
+import { sharedType, type TypeNameResolver } from './type-names.ts';
 import type { WriteHookFor } from './write-hooks.ts';
 
 /**
@@ -35,10 +37,11 @@ export type DeletedMode = 'EXCLUDE' | 'INCLUDE' | 'ONLY';
 /**
  * One table's soft-delete convention, resolved against the real column at build time.
  *
- * `nullable` picks the shape of the predicate. A nullable column marks a row deleted by
- * holding a value at all (`deletedAt IS NOT NULL`), which is the common timestamp form; a
- * non-nullable one marks it by holding `marker` (`isDeleted = true`), so the column has to
- * have a constant that means "deleted" and another that means "not deleted".
+ * `marker` picks the shape of the predicate. When the config names a constant that means
+ * deleted, the predicate compares against it (`isDeleted = true`); otherwise the column marks
+ * a row deleted by holding a value at all (`deletedAt IS NOT NULL`), the common timestamp
+ * form. A NOT NULL column has no "absent" state, so it must have a marker; a nullable one
+ * takes the NULL-means-alive reading only when no marker was configured.
  */
 export type SoftDeleteInfo = {
   /** Property name of the column on the drizzle table — also the key on an aliased proxy. */
@@ -49,26 +52,47 @@ export type SoftDeleteInfo = {
   writeDeleted: () => any;
   /** Written by the restore mutation. */
   writeRestored: any;
-  /** Non-nullable form only: the constant that means "this row is deleted". */
+  /**
+   * The constant that means "this row is deleted", when the config named one. Required on a
+   * NOT NULL column; optional on a nullable one, which otherwise reads NULL as alive.
+   */
   marker?: any;
+  /**
+   * Which reads hide marked rows by default — `'all'` (the table's own fields and every
+   * relation pointing at it) or `'root'` (its own fields only). See
+   * {@link relationDeletedDefault}.
+   */
+  scope: 'root' | 'all';
+  /**
+   * Whether the delete mutations take a `hard` argument that issues a real `DELETE`. Off
+   * unless the table opts in, so the generated schema says which tables can be purged.
+   */
+  hardDelete: boolean;
 };
 
 /** Build-time lookup: the soft-delete convention of a table, if it declares one. */
 export type SoftDeleteFor = (tableName: string) => SoftDeleteInfo | undefined;
 
 /**
- * The enum behind the `deleted` argument on every read over a soft-deleting table. One
- * instance shared by every build — it carries no per-build state.
+ * The enum behind the `deleted` argument on every read over a soft-deleting table. Built once
+ * per name it resolves to — it carries no per-build state beyond that name, so every build
+ * that names it the same way shares one instance.
  */
-export const deletedFilterEnum = new GraphQLEnumType({
-  name: 'DeletedFilter',
-  description: 'Which rows a read over a soft-deleting table returns.',
-  values: {
-    EXCLUDE: { value: 'EXCLUDE', description: 'Only rows that are not marked deleted. The default.' },
-    INCLUDE: { value: 'INCLUDE', description: 'Marked and unmarked rows alike.' },
-    ONLY: { value: 'ONLY', description: 'Only rows that are marked deleted — a trash view.' },
-  },
-});
+export const deletedFilterEnumType = (typeName: TypeNameResolver): GraphQLEnumType =>
+  sharedType(
+    typeName,
+    { kind: 'shared', defaultName: 'DeletedFilter' },
+    (name) =>
+      new GraphQLEnumType({
+        name,
+        description: 'Which rows a read over a soft-deleting table returns.',
+        values: {
+          EXCLUDE: { value: 'EXCLUDE', description: 'Only rows that are not marked deleted. The default.' },
+          INCLUDE: { value: 'INCLUDE', description: 'Marked and unmarked rows alike.' },
+          ONLY: { value: 'ONLY', description: 'Only rows that are marked deleted — a trash view.' },
+        },
+      }),
+  );
 
 /**
  * Resolves one table's `softDelete` declaration against the real column, at build time, so a
@@ -77,7 +101,15 @@ export const deletedFilterEnum = new GraphQLEnumType({
 export const resolveSoftDeleteInfo = (
   table: Table,
   tableName: string,
-  declaration: string | { column: string; deletedValue?: any; restoredValue?: any },
+  declaration:
+    | string
+    | {
+        column: string;
+        deletedValue?: any;
+        restoredValue?: any;
+        scope?: 'root' | 'all';
+        hardDelete?: boolean;
+      },
 ): SoftDeleteInfo => {
   const config = typeof declaration === 'string' ? { column: declaration } : declaration;
   const columnName = config?.column;
@@ -114,12 +146,16 @@ export const resolveSoftDeleteInfo = (
             : () => true;
 
   let marker: any;
-  if (!nullable) {
+  if (hasDeleted && typeof config.deletedValue !== 'function') {
+    // A configured constant is what reads compare against, whether or not the column is
+    // nullable: a nullable boolean defaulting to `false` (the shape a marker column added to
+    // an existing table without a backfill takes) means deleted by holding `true`, not by
+    // holding anything at all.
+    marker = config.deletedValue;
+  } else if (!nullable) {
     // A non-nullable column has no "absent" state, so the predicate has to compare against a
     // constant — which a function cannot supply, and which the boolean form supplies for free.
-    if (hasDeleted && typeof config.deletedValue !== 'function') {
-      marker = config.deletedValue;
-    } else if (!hasDeleted && baseType === 'boolean') {
+    if (!hasDeleted && baseType === 'boolean') {
       marker = true;
     } else {
       throw new Error(
@@ -142,7 +178,49 @@ export const resolveSoftDeleteInfo = (
     );
   }
 
-  return { columnName, column, nullable, writeDeleted, writeRestored, marker };
+  const scope = config.scope ?? 'all';
+  if (scope !== 'root' && scope !== 'all') {
+    throw new Error(
+      `Drizzle-GraphQL Error: config.softDelete.${tableName}.scope must be 'root' or 'all', not ${JSON.stringify(scope)}.`,
+    );
+  }
+
+  const hardDelete = config.hardDelete ?? false;
+  if (typeof hardDelete !== 'boolean') {
+    throw new Error(
+      `Drizzle-GraphQL Error: config.softDelete.${tableName}.hardDelete must be a boolean, not ${JSON.stringify(hardDelete)}.`,
+    );
+  }
+
+  return { columnName, column, nullable, writeDeleted, writeRestored, marker, scope, hardDelete };
+};
+
+/**
+ * The `deleted` mode a *relation* field reads its target with when the request does not pass
+ * one. Root fields always default to `EXCLUDE`; a relation field is the case a soft delete
+ * cannot answer for on its own, because the row it hides belongs to a different query than
+ * the one that marked it.
+ *
+ * - `scope: 'root'` reads relations with `INCLUDE`: the row is retired, not erased, so the
+ *   historical rows that reference it keep rendering it.
+ * - `scope: 'all'` keeps hiding it — except through a *required* to-one relation, where a
+ *   hidden row can only surface as "Cannot return null for non-nullable field" and take the
+ *   whole parent down with it. There is no usable result to protect there, so the row is
+ *   included rather than the parent lost.
+ *
+ * Returns `undefined` when the target declares no soft delete, so an unconfigured build
+ * passes exactly the mode it did before.
+ */
+export const relationDeletedDefault = (
+  softDelete: SoftDeleteFor | undefined,
+  targetTableName: string,
+  requiredToOne: boolean,
+): DeletedMode | undefined => {
+  const info = softDelete?.(targetTableName);
+  if (!info) {
+    return undefined;
+  }
+  return info.scope === 'root' || requiredToOne ? 'INCLUDE' : 'EXCLUDE';
 };
 
 /**
@@ -156,10 +234,15 @@ export const softDeletePredicate = (info: SoftDeleteInfo, table: Table, mode: De
     return undefined;
   }
   const column = ((table as any)?.[info.columnName] ?? info.column) as Column;
-  if (info.nullable) {
+  if (info.marker === undefined) {
     return mode === 'ONLY' ? isNotNull(column) : isNull(column);
   }
-  return mode === 'ONLY' ? eq(column, info.marker) : ne(column, info.marker);
+  if (!info.nullable) {
+    return mode === 'ONLY' ? eq(column, info.marker) : ne(column, info.marker);
+  }
+  // A nullable column with a marker: NULL is neither the marker nor a match for `<>`, so the
+  // exclude side has to name it explicitly or every un-backfilled row would drop out.
+  return mode === 'ONLY' ? eq(column, info.marker) : or(ne(column, info.marker), isNull(column))!;
 };
 
 /**
@@ -171,6 +254,12 @@ export const softDeletePredicate = (info: SoftDeleteInfo, table: Table, mode: De
 export type ScopeResolver = {
   has: (tableName: string, mode?: DeletedMode) => boolean;
   on: (tableName: string, table: Table, mode?: DeletedMode) => SQL | undefined;
+  /**
+   * The mode a relation field reading `tableName` defaults to — see
+   * {@link relationDeletedDefault}. Carried here because the eager (`with:`) path has the
+   * resolver but not the build-time soft-delete lookup.
+   */
+  relationDefault: (tableName: string, requiredToOne: boolean) => DeletedMode | undefined;
 };
 
 /**
@@ -191,6 +280,7 @@ export const resolveScope = (
   }
   return {
     has: (tableName, mode) => !!scopes?.(tableName) || (!!softDelete?.(tableName) && (mode ?? 'EXCLUDE') !== 'INCLUDE'),
+    relationDefault: (tableName, requiredToOne) => relationDeletedDefault(softDelete, tableName, requiredToOne),
     on: (tableName, table, mode) => {
       // Order is fixed: the soft-delete predicate first, the scope after it, both ANDed. They
       // commute, but a fixed order keeps the generated SQL stable between requests.
@@ -208,8 +298,9 @@ export const resolveScope = (
         return and(deleted, predicate as SQL);
       }
       if (typeof predicate !== 'object') {
-        throw new GraphQLError(
+        throw drizzleError(
           `Drizzle-GraphQL Error: the scope for '${tableName}' returned a ${typeof predicate}. A scope returns a filter object, a Drizzle SQL expression, or undefined.`,
+          { code: 'DRIZZLE_INVALID_SCOPE' },
         );
       }
       // A filter object is compiled the same way the field's own `where` is, against the

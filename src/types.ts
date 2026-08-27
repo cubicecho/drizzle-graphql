@@ -23,7 +23,7 @@ import type {
   GraphQLSchema,
 } from 'graphql';
 
-import type { WriteHooks } from './util/builders/common.ts';
+import type { DerivedTypeNameMapper, WriteHooks } from './util/builders/common.ts';
 import type {
   Filters,
   GetRemappedTableDataType,
@@ -691,7 +691,8 @@ export type FeatureSwitch = boolean | ((tableName: string) => boolean);
 
 /**
  * Per-feature switches for what `buildSchema` generates. Every flag defaults to `true` except
- * `upsert`, `nestedWrites`, `fieldUpdateOperations`, `countMutations` and `requireWhere`.
+ * `upsert`, `nestedWrites`, `fieldUpdateOperations`, `countMutations`, `requireWhere` and
+ * `uniqueKeyFilters`.
  * Each one takes a boolean or a per-table predicate, apart from `nestedWrites`, which is
  * build-wide.
  * See {@link BuildSchemaConfig.features}.
@@ -826,6 +827,29 @@ export type SchemaFeatures = {
    * @default false
    */
   requireWhere?: FeatureSwitch;
+  /**
+   * One `where` field per compound unique constraint, so a lookup by a natural key names the
+   * key instead of restating its columns:
+   *
+   * ```graphql
+   * stockSingle(where: { itemId_locationId: { itemId: "i1", locationId: "l1" } }) { quantity }
+   * ```
+   *
+   * The field is named after its member columns and every member is non-null, so a half-
+   * supplied key fails query validation rather than becoming a broader filter that returns
+   * whichever row happens to come first. It compiles to the same equalities the columns would
+   * have — the guarantee is in the input type.
+   *
+   * Single-column constraints get no field (`eq` on the column already says it), and a
+   * constraint whose field name is taken by a column or a relation is skipped. The fields live
+   * on `<Type>Filters`, so they are accepted wherever a filter is: the `Single` reads and
+   * writes they are meant for, but also list queries, relation filters and `onConflict.where`.
+   *
+   * Off unless asked for: it adds an input type per compound constraint.
+   *
+   * @default false
+   */
+  uniqueKeyFilters?: FeatureSwitch;
 };
 
 /**
@@ -946,13 +970,45 @@ export type SoftDeleteColumn =
        * for a NOT NULL boolean; required for any other NOT NULL column.
        */
       restoredValue?: any;
+      /**
+       * Which generated reads hide marked rows by default.
+       *
+       * - `'all'` (the default) — the table's own query fields and every relation field that
+       *   points at it. A *required* to-one relation is the one exception: hiding the row
+       *   there can only produce "Cannot return null for non-nullable field", never a usable
+       *   result, so it reads `INCLUDE` unless the request says otherwise.
+       * - `'root'` — only the table's own query fields. Relation fields read marked rows,
+       *   which is what "retired, not erased" usually means: keep the row off the pickers and
+       *   the lists, keep rendering it on the historical rows that reference it.
+       *
+       * The `deleted` argument is generated either way, so either default can be overridden
+       * per request.
+       */
+      scope?: 'root' | 'all';
+      /**
+       * Whether the table's delete mutations accept `hard: Boolean = false`, which issues a
+       * real `DELETE` instead of writing the marker — emptying the trash, reclaiming a unique
+       * key, clearing a table. Opt-in per table, and the argument is only generated when it is
+       * on, so the schema itself says which tables can be purged.
+       *
+       * A hard delete reads at `INCLUDE`: it reaches already-marked rows, which is the case it
+       * mostly exists for. A `scope` still confines it, exactly as it confines every other write.
+       *
+       * @default false
+       */
+      hardDelete?: boolean;
     };
 
 /**
- * The write-hook types, re-exported from the builder that defines them so a consumer can type
- * a hook without reaching into the package's internals. See {@link BuildSchemaConfig.onWrite}.
+ * The write-hook and generated-type-naming types, re-exported from the builders that define
+ * them so a consumer can type a hook or a name mapper without reaching into the package's
+ * internals. See {@link BuildSchemaConfig.onWrite} and
+ * {@link BuildSchemaConfig.derivedTypeNameMapper}.
  */
 export type {
+  DerivedTypeNameMapper,
+  GeneratedTypeInfo,
+  GeneratedTypeKind,
   WriteHook,
   WriteHookPayload,
   WriteHookPositions,
@@ -1429,6 +1485,58 @@ export type BuildSchemaConfig = {
    * table's names as they are: `(t) => (t === 'audit_log' ? undefined : singularizeMapper(t))`.
    */
   typeNameMapper?: 'singularize' | ((tableName: string) => { singular: string; plural: string } | undefined);
+  /**
+   * Renames the types generated *around* a table — the filter, the write inputs, the
+   * order-by, the aggregate family, the group-by types, the conflict input, the shared scalar
+   * filters. `typeNameMapper` names a table's object type and its root fields; those derived
+   * names follow from it by a fixed rule, and this is the hook that overrides the rule.
+   *
+   * Asked once per generated type, with the kind, the name the library would use, and the
+   * table it belongs to where it belongs to one. Return `undefined` — or the same name — to
+   * keep the default, so a mapper that answers for one kind leaves everything else alone:
+   *
+   * ```ts
+   * buildSchema(db, {
+   *   derivedTypeNameMapper: ({ kind, table, operation, defaultName }) =>
+   *     kind === 'aggregate' && operation ? `${table}Aggregate${operation}` : undefined,
+   * });
+   * ```
+   *
+   * A returned name is used verbatim — {@link BuildSchemaConfig.typeNamePrefix} and
+   * {@link BuildSchemaConfig.typeNameSuffix} do not wrap it, since the more specific of the
+   * two knobs wins.
+   *
+   * The point of it is stitching: a schema merged with a second generator over the same
+   * tables collides on the derived names constantly, because both derive them from the model
+   * name by the same obvious rule. Renaming them here means the collision never exists, rather
+   * than being papered over by a `RenameTypes` transform on the way out.
+   */
+  derivedTypeNameMapper?: DerivedTypeNameMapper;
+  /**
+   * Prepended to every generated type name — object types, filters, write inputs, the
+   * aggregate family, the shared scalar filters, everything — that
+   * {@link BuildSchemaConfig.derivedTypeNameMapper} did not answer for. The one-line way to
+   * make a whole subschema collision-free before stitching it:
+   *
+   * ```ts
+   * buildSchema(db, { typeNamePrefix: 'Db' });
+   * // type DbUsers, input DbUsersFilters, input DbStringFilter, enum DbOrderNulls, …
+   * ```
+   *
+   * Custom scalars, database enum types and `PgGeometryObject` keep their own names: their
+   * definition does not vary between builds, so a gateway merges them rather than colliding
+   * on them. Field and argument names are untouched too — only type names move, so a client's
+   * queries are unaffected apart from the names it spells in variable declarations.
+   *
+   * Must be a valid GraphQL name start (`/^[_A-Za-z][_0-9A-Za-z]*$/`); anything else throws.
+   */
+  typeNamePrefix?: string;
+  /**
+   * Appended to every generated type name that {@link BuildSchemaConfig.derivedTypeNameMapper}
+   * did not answer for. The counterpart of {@link BuildSchemaConfig.typeNamePrefix}; both may
+   * be given at once.
+   */
+  typeNameSuffix?: string;
   /**
    * Controls whether a relation is eagerly pre-fetched via Drizzle's `with:` clause
    * when its parent is loaded through a generated query or mutation.

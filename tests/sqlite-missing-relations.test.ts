@@ -24,7 +24,7 @@ const dbWith = (relationTables: Record<string, any>) =>
   drizzle({
     client: createClient({ url: ':memory:' }),
     schema: { Users, Loner },
-    relations: buildRelations(relationTables, () => ({})),
+    relations: buildRelations(relationTables, {}),
   } as any);
 
 describe('a schema table missing from the relations config', () => {

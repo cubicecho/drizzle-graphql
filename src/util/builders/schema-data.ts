@@ -20,6 +20,7 @@ import {
   attachTargetPrimaryKeys,
   bindPolicies,
   buildNamedRelations,
+  buildUniqueKeyMap,
   computeResolverFieldNames,
   createMutationTxCtx,
   createRelationResolverFactory,
@@ -42,6 +43,9 @@ import {
   type TablesRelationalConfig,
   type TypeCacheCtx,
   type TypeNameMapper,
+  type TypeNameResolver,
+  type UniqueKeyMap,
+  visibleColumns,
 } from '../builders/common.ts';
 import { tableFieldExtensions } from '../extensions.ts';
 import { resolveTableFeatures } from '../features.ts';
@@ -61,41 +65,9 @@ import {
   createNestedWriteTypes,
   type NestedWriteRuntime,
 } from './nested-writes.ts';
+import { createSelectGenerators } from './select.ts';
 import type { CreatedResolver, SchemaGeneratorOptions, TableFeatures, TableNamedRelations } from './types.ts';
 import { buildWriteResolvers } from './write-resolvers.ts';
-
-/** `select<Table>` — the plural select, which each dialect implements against its own driver. */
-export type SelectArrayGenerator = (
-  db: any,
-  tableName: string,
-  tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  orderArgs: GraphQLInputObjectType,
-  filterArgs: GraphQLInputObjectType,
-  fieldName: string,
-  typeName: string,
-  typeNameMapper?: TypeNameMapper,
-  filterCtx?: RelationFilterBase,
-  distinctEnabled?: boolean,
-  limits?: LimitPolicyFor,
-  policies?: ResolverPolicies,
-) => CreatedResolver;
-
-/** `select<Table>Single`. */
-export type SelectSingleGenerator = (
-  db: any,
-  tableName: string,
-  tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  orderArgs: GraphQLInputObjectType,
-  filterArgs: GraphQLInputObjectType,
-  fieldName: string,
-  typeName: string,
-  typeNameMapper?: TypeNameMapper,
-  filterCtx?: RelationFilterBase,
-  limits?: LimitPolicyFor,
-  policies?: ResolverPolicies,
-) => CreatedResolver;
 
 /** `update<Table>Many` — batch update, whose statement loop is dialect-specific. */
 export type UpdateManyGenerator = (
@@ -113,6 +85,8 @@ export type UpdateManyGenerator = (
   nested?: NestedWriteRuntime,
   limits?: LimitPolicyFor,
   policies?: ResolverPolicies,
+  /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
+  resolveName?: TypeNameResolver,
 ) => CreatedResolver;
 
 /** Everything {@link createSchemaDataGenerator} cannot decide for itself. */
@@ -134,8 +108,6 @@ export type DialectSchemaAdapter = {
    * reject features a synchronous driver cannot support.
    */
   preflight?: (db: any, options: SchemaGeneratorOptions) => void;
-  generateSelectArray: SelectArrayGenerator;
-  generateSelectSingle: SelectSingleGenerator;
   generateUpdateMany: UpdateManyGenerator;
 };
 
@@ -150,6 +122,12 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
   const uniqueColumnSets = (table: Table): string[][] => getUniqueColumnSets(table, adapter.getTableConfig);
   const { generateInsertArray, generateInsertSingle, generateUpsert, generateUpdate, generateDelete } =
     buildWriteResolvers(primaryKeyPropNames);
+  // Derived rather than supplied: the two values a select generator needs are already on the
+  // adapter, and all three dialects read the same way.
+  const { generateSelectArray, generateSelectSingle } = createSelectGenerators(
+    primaryKeyPropNames,
+    adapter.nullOrdering,
+  );
 
   return (
     db: any,
@@ -217,7 +195,24 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
     // fields still exist and resolve lazily.
     const eagerRelations = pruneNonEagerRelations(namedRelations, shouldEagerLoad);
 
-    const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations };
+    // A `where` field per compound unique constraint, for the tables that asked for one. Built
+    // once and shared by the input types and the resolvers: the fields a request may spell and
+    // the fields a resolver understands are the same map, so neither can drift from the other.
+    const uniqueKeys: Record<string, UniqueKeyMap> = {};
+    for (const [tableName, table] of tableEntries) {
+      if (!featureOf(tableName).uniqueKeyFilters) {
+        continue;
+      }
+      // Whatever the filter input already offers under a name keeps it — columns are added
+      // first, then relations, and a key field last.
+      const taken = new Set([...Object.keys(visibleColumns(table)), ...Object.keys(namedRelations[tableName] ?? {})]);
+      const map = buildUniqueKeyMap(uniqueColumnSets(table), taken);
+      if (Object.keys(map).length) {
+        uniqueKeys[tableName] = map;
+      }
+    }
+
+    const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations, uniqueKeys };
 
     // The row scope compiled against this build's relation graph, plus the columns whose value
     // the server supplies. Both stay undefined unless configured.
@@ -238,6 +233,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
     // Fresh cache per generateSchemaData call — prevents type name collisions
     // when buildSchema() is called multiple times.
     const cacheCtx: TypeCacheCtx = {
+      typeName: options.typeName ?? ((info) => info.defaultName),
       genericFilterCache: new Map(),
       objectTypeCache: new Map(),
       relationFieldContainers: new Map(),
@@ -256,6 +252,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
       contextValuesOf,
       softDeleteOf,
       featureOf,
+      uniqueKeysOf: (tableName) => uniqueKeys[tableName],
     };
 
     adapter.preflight?.(db, options);
@@ -273,7 +270,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
         )
       : undefined;
     const nestedTypes = nestedPlans
-      ? createNestedWriteTypes({ plans: nestedPlans, cacheCtx, typeNameMapper, insertPrefix: prefixes.insert })
+      ? createNestedWriteTypes({ plans: nestedPlans, cacheCtx, typeNameMapper })
       : undefined;
     const nestedRuntime = nestedPlans
       ? createNestedWriteRuntime({
@@ -356,7 +353,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
       // column is not in the update input and a marked row is invisible to a `where` anyway.
       const softDeleteInfo = softDeleteOf?.(tableName);
 
-      const selectArrGenerated = adapter.generateSelectArray(
+      const selectArrGenerated = generateSelectArray(
         db,
         tableName,
         tables,
@@ -370,8 +367,9 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
         tableFeatures.distinct,
         limits,
         policies,
+        cacheCtx.typeName,
       );
-      const selectSingleGenerated = adapter.generateSelectSingle(
+      const selectSingleGenerated = generateSelectSingle(
         db,
         tableName,
         tables,
@@ -384,6 +382,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
         filterCtx,
         limits,
         policies,
+        cacheCtx.typeName,
       );
       const insertArrGenerated = tableFeatures.insert
         ? generateInsertArray(
@@ -401,6 +400,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             nestedRuntime,
             limits,
             policies,
+            cacheCtx.typeName,
           )
         : undefined;
       const insertSingleGenerated = tableFeatures.insert
@@ -419,6 +419,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             nestedRuntime,
             limits,
             policies,
+            cacheCtx.typeName,
           )
         : undefined;
       // An upsert needs something to conflict on, so a table with no primary key and no
@@ -427,10 +428,12 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
       const onConflictInput = tableFeatures.upsert
         ? generateOnConflictInput({
             table: schema[tableName] as Table,
+            tableName,
             typeName,
             uniqueSets,
             tableFilters,
             withTarget: true,
+            cacheCtx,
           })
         : undefined;
       const upsertArrGenerated = onConflictInput
@@ -452,6 +455,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             nestedRuntime,
             limits,
             policies,
+            cacheCtx.typeName,
           )
         : undefined;
       const upsertSingleGenerated = onConflictInput
@@ -473,6 +477,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             nestedRuntime,
             limits,
             policies,
+            cacheCtx.typeName,
           )
         : undefined;
       const updateGenerated = tableFeatures.update
@@ -494,6 +499,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             nestedRuntime,
             limits,
             policies,
+            cacheCtx.typeName,
           )
         : undefined;
       const updateSingleGenerated = tableFeatures.update
@@ -515,12 +521,20 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             nestedRuntime,
             limits,
             policies,
+            cacheCtx.typeName,
           )
         : undefined;
       // The batch update reuses the update `set` input, so it needs `update` on too.
       const updateManyInput =
         tableFeatures.update && tableFeatures.updateMany
-          ? generateUpdateManyInput({ typeName, updatePrefix: prefixes.update, updateInput, tableFilters })
+          ? generateUpdateManyInput({
+              tableName,
+              typeName,
+              updatePrefix: prefixes.update,
+              updateInput,
+              tableFilters,
+              cacheCtx,
+            })
           : undefined;
       const updateManyGenerated = updateManyInput
         ? adapter.generateUpdateMany(
@@ -538,6 +552,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             nestedRuntime,
             limits,
             policies,
+            cacheCtx.typeName,
           )
         : undefined;
       const deleteGenerated = tableFeatures.delete
@@ -554,6 +569,8 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             { tableName, relationMap: namedRelations, tables },
             mutationTxCtx,
             policies,
+            false,
+            cacheCtx.typeName,
           )
         : undefined;
       const deleteSingleGenerated = tableFeatures.delete
@@ -570,6 +587,8 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             { tableName, relationMap: namedRelations, tables },
             mutationTxCtx,
             policies,
+            false,
+            cacheCtx.typeName,
           )
         : undefined;
       const restoreGenerated = softDeleteInfo
@@ -587,6 +606,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             mutationTxCtx,
             policies,
             true,
+            cacheCtx.typeName,
           )
         : undefined;
       const restoreSingleGenerated = softDeleteInfo
@@ -604,6 +624,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             mutationTxCtx,
             policies,
             true,
+            cacheCtx.typeName,
           )
         : undefined;
       // The count variants are the plural write with its payload left off, so each follows the
@@ -651,6 +672,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             tableFilters,
             filterCtx,
             tablePolicies,
+            cacheCtx.typeName,
           )
         : undefined;
 
@@ -660,10 +682,10 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
           ? generateGroupByType(schema[tableName] as Table, tableName, typeName, cacheCtx)
           : undefined;
       const groupByEnum = groupByType
-        ? generateGroupByEnum(schema[tableName] as Table, tableName, typeName)
+        ? generateGroupByEnum(schema[tableName] as Table, tableName, typeName, cacheCtx)
         : undefined;
       const havingInput = groupByEnum
-        ? generateHavingInput(schema[tableName] as Table, tableName, typeName)
+        ? generateHavingInput(schema[tableName] as Table, tableName, typeName, cacheCtx)
         : undefined;
       const groupByGenerated =
         groupByType && groupByEnum && havingInput
@@ -678,6 +700,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
               havingInput,
               filterCtx,
               tablePolicies,
+              cacheCtx.typeName,
             )
           : undefined;
 
@@ -803,7 +826,13 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
           args: deleteGenerated.args,
           resolve: deleteGenerated.resolver,
           extensions: {
-            drizzle: drizzleMeta({ kind: 'mutation', operation: 'delete', single: false, targetArg: 'where' }),
+            drizzle: drizzleMeta({
+              kind: 'mutation',
+              operation: 'delete',
+              single: false,
+              targetArg: 'where',
+              ...(softDeleteInfo?.hardDelete ? { hardDelete: true } : {}),
+            }),
           },
         };
       }
@@ -813,7 +842,13 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
           args: deleteSingleGenerated.args,
           resolve: deleteSingleGenerated.resolver,
           extensions: {
-            drizzle: drizzleMeta({ kind: 'mutation', operation: 'delete', single: true, targetArg: 'where' }),
+            drizzle: drizzleMeta({
+              kind: 'mutation',
+              operation: 'delete',
+              single: true,
+              targetArg: 'where',
+              ...(softDeleteInfo?.hardDelete ? { hardDelete: true } : {}),
+            }),
           },
         };
       }

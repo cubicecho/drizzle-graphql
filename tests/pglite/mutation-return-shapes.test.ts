@@ -215,7 +215,11 @@ describe('countMutations: behaviour', () => {
       strict,
     );
 
-    expect(res.errors?.[0]?.message).toContain("requires a 'where' argument");
+    expect(res.errors?.[0]?.message).toContain("'where' argument with at least one filter is required");
+    expect(res.errors?.[0]?.extensions).toStrictEqual({
+      code: 'DRIZZLE_WHERE_REQUIRED',
+      drizzle: { table: 'Items', operation: 'delete', field: 'deleteItemsCount' },
+    });
     expect((await items()).length).toBe(3);
   });
 

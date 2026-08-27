@@ -51,6 +51,12 @@ export type DrizzleFieldExtension = {
    * no primary key. Carried here so {@link identifyRows} works from the field alone.
    */
   primaryKey: readonly string[];
+  /**
+   * For `operation: 'delete'` on a soft-deleting table that opted into `hardDelete`: the
+   * field takes a `hard` argument that issues a real `DELETE` rather than writing the marker.
+   * Absent everywhere else, so a wrapper can gate purging without parsing arguments.
+   */
+  hardDelete?: boolean;
   /** For `kind: 'relation'` and `operation: 'relationAggregate'`: the relation's name. */
   relation?: string;
   /** For `kind: 'relation'` and `operation: 'relationAggregate'`: the table it hangs off. */
@@ -101,7 +107,7 @@ export const tableFieldExtensions =
  * The parts of a mutation's identity that differ between mutations. Dialect builders that
  * assign every mutation in one loop pair each generated mutation with one of these.
  */
-export type DrizzleMutationMeta = Pick<DrizzleFieldExtension, 'operation' | 'single' | 'targetArg'>;
+export type DrizzleMutationMeta = Pick<DrizzleFieldExtension, 'operation' | 'single' | 'targetArg' | 'hardDelete'>;
 
 /** Builds the extension a generated object type carries. */
 export const tableTypeExtension = (table: string, primaryKey: readonly string[]): DrizzleTypeExtension => ({

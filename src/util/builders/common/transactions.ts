@@ -13,7 +13,8 @@
 // (COMMIT) and the first failure rejects it (ROLLBACK).
 // =============================================================================
 
-import { GraphQLError } from 'graphql';
+import type { GraphQLError } from 'graphql';
+import { drizzleError } from './errors.ts';
 import { drizzleExecutorKey, resolveExecutor } from './executor.ts';
 
 /** How long a shared transaction may sit idle between resolver calls before it is rolled back. */
@@ -132,8 +133,9 @@ const collectRootMutationKeys = (
 };
 
 const abortedBatchError = (): GraphQLError =>
-  new GraphQLError(
+  drizzleError(
     'Drizzle-GraphQL Error: Mutation was not executed because an earlier mutation in the same request failed and the shared transaction was rolled back.',
+    { code: 'DRIZZLE_TRANSACTION_ABORTED' },
   );
 
 /** Opens the request-wide transaction and wires up latch, inactivity timer and cleanup. */
@@ -211,8 +213,9 @@ const openSharedTx = (
         // The host never called the remaining resolvers (e.g. a non-null completion error
         // outside our resolvers aborted serial execution). Roll back rather than leak.
         state.abort(
-          new GraphQLError(
+          drizzleError(
             `Drizzle-GraphQL Error: Shared mutation transaction timed out after ${txCtx.timeoutMs}ms waiting for the remaining mutation fields; rolling back.`,
+            { code: 'DRIZZLE_TRANSACTION_ABORTED' },
           ),
         );
       }, txCtx.timeoutMs);

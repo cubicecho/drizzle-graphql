@@ -3,7 +3,6 @@
 
 import type { Table } from 'drizzle-orm';
 import { and, inArray, type SQL, sql } from 'drizzle-orm';
-import { GraphQLError } from 'graphql';
 import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { remapToGraphQLArrayOutput, remapToGraphQLSingleOutput } from '../../data-mappers/index.ts';
 import type { ProcessedTableSelectArgs, TableNamedRelations } from '../types.ts';
@@ -18,6 +17,7 @@ import {
   orderByCursorObstacle,
 } from './cursor.ts';
 import { primaryKeyRestriction, selectDistinctKeys } from './distinct.ts';
+import { drizzleError } from './errors.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import type { TypeNameMapper } from './naming.ts';
@@ -28,6 +28,7 @@ import type { RelationFilterBase } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractRelationsParams } from './relation-params.ts';
 import { extractSelectedColumnsFromTree } from './selected-columns.ts';
+import type { TypeNameResolver } from './type-names.ts';
 
 /**
  * Runs the relational-query-builder select shared by every dialect's `generateSelect*`
@@ -60,6 +61,8 @@ export const runRelationalSelect = async (opts: {
   scope?: ScopeResolver;
   defaultOrderBy?: DefaultOrderByFor;
   deleted?: DeletedMode;
+  /** The build's type-naming rule, so a relation's target type is looked up under its real name. */
+  resolveName?: TypeNameResolver;
 }): Promise<any> => {
   const {
     queryBase,
@@ -90,18 +93,20 @@ export const runRelationalSelect = async (opts: {
   let cursorEntries: CursorOrderEntry[] | undefined;
   if (!single && (after != null || cursorSelected)) {
     if (after != null && distinct) {
-      throw new GraphQLError("'after' cannot be combined with 'distinct'.");
+      throw drizzleError("'after' cannot be combined with 'distinct'.", { code: 'DRIZZLE_INVALID_CURSOR' });
     }
     const cursorObstacle = orderByCursorObstacle(orderBy);
     if (cursorObstacle) {
       if (after != null) {
-        throw new GraphQLError(cursorObstacle);
+        throw drizzleError(cursorObstacle, { code: 'DRIZZLE_INVALID_CURSOR' });
       }
       // `cursor` was selected under an ordering a cursor cannot express — the field resolves
       // to null and the ordering itself still applies.
     } else if (!pkNames?.length) {
       if (after != null) {
-        throw new GraphQLError(`Table ${tableName} has no primary key, so cursor pagination cannot be used on it.`);
+        throw drizzleError(`Table ${tableName} has no primary key, so cursor pagination cannot be used on it.`, {
+          code: 'DRIZZLE_INVALID_CURSOR',
+        });
       }
       // `cursor` was selected but no total order exists — the field resolves to null.
     } else {
@@ -207,6 +212,7 @@ export const runRelationalSelect = async (opts: {
           opts.limits,
           scope,
           opts.defaultOrderBy,
+          opts.resolveName,
         )
       : undefined,
   };

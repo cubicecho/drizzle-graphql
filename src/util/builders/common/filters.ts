@@ -25,10 +25,10 @@ import {
   type SQL,
   sql,
 } from 'drizzle-orm';
-import { GraphQLError } from 'graphql';
 import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
 import type { FilterColumnOperators, FilterColumnOperatorsCore } from '../types.ts';
 import { columnDialect } from './column-filters.ts';
+import { drizzleError } from './errors.ts';
 
 /**
  * Escape character pinned via `ESCAPE` on every generated safe-LIKE predicate. Bound as a
@@ -74,6 +74,44 @@ const safeLikeCondition = (column: Column, pattern: string, insensitive: boolean
 };
 
 /**
+ * The case-insensitive form of the raw `like` / `notLike` operators, whose operand is a
+ * caller-written pattern rather than a literal. Postgres has `ILIKE`; the other two dialects
+ * compare `lower()` on both sides, exactly as {@link safeLikeCondition} does.
+ */
+const insensitiveLike = (column: Column, pattern: string, negated: boolean): SQL => {
+  if (columnDialect(column) === 'pg') {
+    return negated ? notIlike(column, pattern) : ilike(column, pattern);
+  }
+  return negated ? sql`lower(${column}) not like lower(${pattern})` : sql`lower(${column}) like lower(${pattern})`;
+};
+
+/**
+ * SQL spelling of each comparison operator, for the case-insensitive forms that have to be
+ * written out rather than built by drizzle's `eq`/`ne`/`lt`/… helpers.
+ */
+const COMPARISON_SQL: Record<string, string> = { eq: '=', ne: '<>', lt: '<', lte: '<=', gt: '>', gte: '>=' };
+
+/**
+ * `insensitive: true` folds case out of every comparison beside it by comparing
+ * `lower(column)` against `lower(operand)`. Lowercasing both sides in SQL — rather than the
+ * operand in JS — keeps the comparison under one collation, and `lower(column)` is an
+ * expression a matching index can serve, which `ilike '%…%'` never can. It is the same
+ * `lower()` the case-insensitive LIKE operators already fall back to on the dialects without
+ * a native `ILIKE`, so it adds no dialect surface.
+ */
+const lowerComparison = (column: Column, operatorName: string, value: unknown): SQL =>
+  sql`lower(${column}) ${sql.raw(COMPARISON_SQL[operatorName]!)} lower(${value})`;
+
+/** `lower(column) IN (lower($1), …)` / `NOT IN` — the case-insensitive `inArray`/`notInArray`. */
+const lowerMembership = (column: Column, values: unknown[], negated: boolean): SQL => {
+  const lowered = sql.join(
+    values.map((value) => sql`lower(${value})`),
+    sql`, `,
+  );
+  return negated ? sql`lower(${column}) not in (${lowered})` : sql`lower(${column}) in (${lowered})`;
+};
+
+/**
  * Whether the column stores JSON — its `contains` operator is structural containment,
  * not the safe substring operator string columns get.
  */
@@ -99,7 +137,9 @@ const jsonContains = (column: Column, columnName: string, value: any): SQL => {
     case 'mysql':
       return sql`json_contains(${column}, ${serialized})`;
     default:
-      throw new GraphQLError(`WHERE ${columnName}: Operator 'contains' is not supported for this dialect!`);
+      throw drizzleError(`WHERE ${columnName}: Operator 'contains' is not supported for this dialect!`, {
+        code: 'DRIZZLE_INVALID_FILTER',
+      });
   }
 };
 
@@ -212,7 +252,7 @@ const jsonPathCondition = (column: Column, columnName: string, filter: Record<st
   const locator = `${columnName}.path`;
 
   if (!Array.isArray(path) || !path.length) {
-    throw new GraphQLError(`WHERE ${locator}: 'path' must name at least one key`);
+    throw drizzleError(`WHERE ${locator}: 'path' must name at least one key`, { code: 'DRIZZLE_INVALID_FILTER' });
   }
 
   const exprs = jsonPathExprs(column, path);
@@ -234,7 +274,9 @@ const jsonPathCondition = (column: Column, columnName: string, filter: Record<st
     if (operatorName in safeLikeOps) {
       const { buildPattern, insensitive } = safeLikeOps[operatorName]!;
       if (typeof operatorValue !== 'string') {
-        throw new GraphQLError(`WHERE ${locator}: operator '${operatorName}' takes a string`);
+        throw drizzleError(`WHERE ${locator}: operator '${operatorName}' takes a string`, {
+          code: 'DRIZZLE_INVALID_FILTER',
+        });
       }
       // The extracted value is an expression, not a column, so the case-insensitive form
       // always goes through `lower()` rather than Postgres's ILIKE.
@@ -244,15 +286,16 @@ const jsonPathCondition = (column: Column, columnName: string, filter: Record<st
 
     const comparison = JSON_PATH_COMPARISONS[operatorName];
     if (!comparison) {
-      throw new GraphQLError(`WHERE ${locator}: Unknown operator: ${operatorName}`);
+      throw drizzleError(`WHERE ${locator}: Unknown operator: ${operatorName}`, { code: 'DRIZZLE_INVALID_FILTER' });
     }
 
     const cast = castOverride ?? inferJsonPathCast(operatorValue);
     if (cast === 'number') {
       const numeric = Number(operatorValue);
       if (Number.isNaN(numeric)) {
-        throw new GraphQLError(
+        throw drizzleError(
           `WHERE ${locator}: operator '${operatorName}' compares as a number, so its value must be one`,
+          { code: 'DRIZZLE_INVALID_FILTER' },
         );
       }
       variants.push(sql`${exprs.number} ${sql.raw(comparison)} ${numeric}`);
@@ -274,7 +317,12 @@ export const extractFiltersColumn = <TColumn extends Column>(
 ): SQL | undefined => {
   // Boolean branches compose with sibling operators: siblings and the AND list are ANDed
   // together, NOT negates its whole branch, and the OR group is ANDed with the rest.
-  const { OR, AND, NOT, ...restOperators } = operators;
+  const { OR, AND, NOT, insensitive, ...restOperators } = operators;
+
+  // `insensitive` is a modifier, not a predicate: it changes how the operators beside it
+  // compile and contributes no condition of its own. It applies to this object only —
+  // a nested AND/OR/NOT branch is a separate object and sets its own.
+  const foldCase = insensitive === true;
 
   const entries = Object.entries(restOperators as FilterColumnOperatorsCore<TColumn>);
 
@@ -296,9 +344,20 @@ export const extractFiltersColumn = <TColumn extends Column>(
 
     if (operatorName in singleValueOps) {
       const singleValue = remapFromGraphQLCore(operatorValue, column, columnName);
-      variants.push(singleValueOps[operatorName]!(column, singleValue));
+      variants.push(
+        foldCase
+          ? lowerComparison(column, operatorName, singleValue)
+          : singleValueOps[operatorName]!(column, singleValue),
+      );
     } else if (operatorName in stringValueOps) {
-      variants.push(stringValueOps[operatorName]!(column, operatorValue as string));
+      // Under `insensitive`, `like`/`notLike` compile the same way their `i` counterparts
+      // do; `ilike`/`notIlike` are already case-insensitive and are left alone.
+      const insensitivePattern = foldCase && (operatorName === 'like' || operatorName === 'notLike');
+      variants.push(
+        insensitivePattern
+          ? insensitiveLike(column, operatorValue as string, operatorName === 'notLike')
+          : stringValueOps[operatorName]!(column, operatorValue as string),
+      );
     } else if (operatorName === 'path' && isJsonColumn(column)) {
       // Several path predicates on one column are ANDed, matching how sibling operators
       // already combine. GraphQL coerces a lone object into a one-element list.
@@ -313,8 +372,8 @@ export const extractFiltersColumn = <TColumn extends Column>(
       // safe substring operator handled by safeLikeOps below.
       variants.push(jsonContains(column, columnName, operatorValue));
     } else if (operatorName in safeLikeOps) {
-      const { buildPattern, insensitive } = safeLikeOps[operatorName]!;
-      variants.push(safeLikeCondition(column, buildPattern(operatorValue as string), insensitive));
+      const { buildPattern, insensitive: alwaysInsensitive } = safeLikeOps[operatorName]!;
+      variants.push(safeLikeCondition(column, buildPattern(operatorValue as string), alwaysInsensitive || foldCase));
     } else if (operatorName in arrayValueOps) {
       // An empty candidate list is a well-formed question with a known answer — nothing is
       // `IN ()`, everything is `NOT IN ()` — so it resolves to a constant predicate rather
@@ -324,7 +383,11 @@ export const extractFiltersColumn = <TColumn extends Column>(
         continue;
       }
       const arrayValue = (operatorValue as any[]).map((val) => remapFromGraphQLCore(val, column, columnName));
-      variants.push(arrayValueOps[operatorName]!(column, arrayValue));
+      variants.push(
+        foldCase
+          ? lowerMembership(column, arrayValue, operatorName === 'notInArray')
+          : arrayValueOps[operatorName]!(column, arrayValue),
+      );
     } else if (operatorName === 'has') {
       // Single-element membership: containment with a one-element array (`col @> ARRAY[value]`).
       variants.push(arrayContains(column, [operatorValue]));
@@ -345,7 +408,7 @@ export const extractFiltersColumn = <TColumn extends Column>(
       // schema is stitched/merged with another schema, foreign operators (e.g. `equals`,
       // `contains`, `mode`) can pass input validation, and silently dropping them could
       // turn a constrained where into an unbounded one.
-      throw new GraphQLError(`WHERE ${columnName}: Unknown operator: ${operatorName}`);
+      throw drizzleError(`WHERE ${columnName}: Unknown operator: ${operatorName}`, { code: 'DRIZZLE_INVALID_FILTER' });
     }
   }
 

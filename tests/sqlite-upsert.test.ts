@@ -24,7 +24,8 @@ let client: Client;
 let db: any;
 let gqlSchema: GraphQLSchema;
 
-const run = (source: string) => graphql({ schema: gqlSchema, source, contextValue: {} });
+const run = (source: string, variableValues?: Record<string, any>) =>
+  graphql({ schema: gqlSchema, source, variableValues, contextValue: {} });
 const items = () => db.select().from(Items).orderBy(Items.id);
 
 beforeAll(async () => {
@@ -64,6 +65,23 @@ describe.sequential('SQLite upsert', () => {
 
     expect(result.errors).toBeUndefined();
     expect(result.data?.['upsertItemsSingle']).toMatchObject({ id: 2, name: 'New' });
+  });
+
+  it('takes its key from a nullable variable, inserting when it is null', async () => {
+    // One document for both halves of the upsert: a null key is an absent key, so the
+    // rowid fills it in rather than the write failing on the not-null primary key.
+    const SAVE = `mutation Save($id: Int, $name: String!) {
+      upsertItemsSingle(values: { id: $id, sku: "B", region: "eu", name: $name }) { id name }
+    }`;
+
+    const inserted = await run(SAVE, { id: null, name: 'New' });
+    expect(inserted.errors).toBeUndefined();
+    expect(inserted.data?.['upsertItemsSingle']).toMatchObject({ id: 2, name: 'New' });
+
+    const updated = await run(SAVE, { id: 2, name: 'Edited' });
+    expect(updated.errors).toBeUndefined();
+    expect(updated.data?.['upsertItemsSingle']).toMatchObject({ id: 2, name: 'Edited' });
+    expect(await items()).toHaveLength(2);
   });
 
   it('overwrites the conflicting row on the primary key by default', async () => {

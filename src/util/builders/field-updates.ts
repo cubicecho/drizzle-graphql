@@ -13,7 +13,6 @@
 import type { Column, SQL, Table } from 'drizzle-orm';
 import { getColumns, sql } from 'drizzle-orm';
 import {
-  GraphQLError,
   GraphQLFloat,
   GraphQLInputObjectType,
   type GraphQLInputType,
@@ -25,6 +24,8 @@ import {
 import { remapFromGraphQLCore, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
 import { GraphQLBigIntString, GraphQLDecimalString } from '../scalars/index.ts';
 import { drizzleColumnToGraphQLType, getColumnScalarOverride } from '../type-converter/index.ts';
+import { drizzleError } from './common/errors.ts';
+import type { TypeNameResolver } from './common/type-names.ts';
 
 /** What a column's update-input field offers: arithmetic, list append, or nothing. */
 export type FieldUpdateKind = 'numeric' | 'list' | 'none';
@@ -107,18 +108,23 @@ export const fieldUpdateInputType = (
   column: Column,
   columnName: string,
   tableName: string,
+  resolveName?: TypeNameResolver,
 ): GraphQLInputObjectType | undefined => {
   const kind = fieldUpdateKind(column, columnName, tableName);
   if (kind === 'none') {
     return undefined;
   }
+  // Named for the scalar rather than the column, so the naming rule is asked without a table:
+  // one instance covers every column of that type across the schema.
+  const nameOf = (defaultName: string) =>
+    resolveName?.({ kind: 'fieldUpdateInput', defaultName, operation: kind }) ?? defaultName;
 
   const { type } = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, true);
 
   if (kind === 'numeric') {
     const scalar = type as GraphQLScalarType;
     return namedFieldUpdateInput(
-      `${scalar.name}FieldUpdate`,
+      nameOf(`${scalar.name}FieldUpdate`),
       () => ({
         set: { type: scalar, description: 'Replace the current value with this one' },
         increment: { type: scalar, description: 'Add this to the current value (SQL `column + value`)' },
@@ -139,7 +145,7 @@ export const fieldUpdateInputType = (
   const element = list.ofType;
   const elementName = element instanceof GraphQLNonNull ? String(element.ofType) : String(element);
   return namedFieldUpdateInput(
-    `${elementName}ListFieldUpdate`,
+    nameOf(`${elementName}ListFieldUpdate`),
     () => ({
       set: { type: list, description: 'Replace the current array with this one' },
       push: { type: list, description: 'Append these elements to the current array' },
@@ -162,10 +168,11 @@ const singleOperation = (value: Record<string, any>, columnName: string): [strin
   if (given.length === 1) {
     return [given[0]!, value[given[0]!]];
   }
-  throw new GraphQLError(
+  throw drizzleError(
     given.length
       ? `Field '${columnName}' takes exactly one update operation, but ${given.length} were given (${given.join(', ')}).`
       : `Field '${columnName}' was given no update operation. Pass exactly one of ${OPERATIONS.join(', ')}.`,
+    { code: 'DRIZZLE_INVALID_UPDATE_OPERATION' },
   );
 };
 

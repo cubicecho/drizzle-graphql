@@ -10,17 +10,11 @@
 // an operation whose every call would be a database error.
 // =============================================================================
 import { and, Column, eq, getColumns, inArray, is, One, type Table } from 'drizzle-orm';
-import {
-  GraphQLBoolean,
-  GraphQLError,
-  GraphQLInputObjectType,
-  type GraphQLInputType,
-  GraphQLList,
-  GraphQLNonNull,
-} from 'graphql';
+import { GraphQLBoolean, GraphQLInputObjectType, type GraphQLInputType, GraphQLList, GraphQLNonNull } from 'graphql';
 import { capitalize } from '../case-ops/index.ts';
 import { remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
+import { drizzleError } from './common/errors.ts';
 import {
   applyContextValues,
   type ContextValuesFor,
@@ -361,17 +355,22 @@ export const createNestedWriteTypes = (params: {
   plans: NestedWritePlans;
   cacheCtx: TypeCacheCtx;
   typeNameMapper: TypeNameMapper | undefined;
-  insertPrefix: string;
 }): NestedWriteTypes => {
-  const { plans, cacheCtx, typeNameMapper, insertPrefix } = params;
+  const { plans, cacheCtx, typeNameMapper } = params;
   const wrapperCache = new Map<string, GraphQLInputObjectType>();
   const payloadCache = new Map<string, GraphQLInputObjectType>();
 
   /**
-   * `Create<Type><Relation>Input` — the row a nested `create` inserts. Built from the target's
-   * columns rather than from its create input: the join column this relation fills in is left
-   * out (setting it by hand could point the new row somewhere other than its parent), and the
-   * nesting stops here, so the type carries no relation fields of its own.
+   * `<Type><Relation>NestedCreatePayloadInput` — the row a nested `create` inserts. Built from
+   * the target's columns rather than from its create input: the join column this relation
+   * fills in is left out (setting it by hand could point the new row somewhere other than its
+   * parent), and the nesting stops here, so the type carries no relation fields of its own.
+   *
+   * The name shares the wrapper's `<Type><Relation>Nested…` segment rather than reading
+   * `Create<Type><Relation>Input`, which lands in the same namespace as a table's own create
+   * input: `item.type` spells `CreateItemTypeInput`, and so does a sibling table named
+   * `itemType`. Two types of that name is a schema that cannot be built at all, and
+   * `nestedWrites` is a whole-schema flag, so one such pair made it unusable.
    */
   const payloadType = (tableName: string, typeName: string, plan: NestedRelationPlan): GraphQLInputObjectType => {
     const key = `${tableName}.${plan.relationName}`;
@@ -394,7 +393,12 @@ export const createNestedWriteTypes = (params: {
     );
 
     const type = new GraphQLInputObjectType({
-      name: `${capitalize(insertPrefix)}${typeName}${capitalize(plan.relationName)}Input`,
+      name: cacheCtx.typeName({
+        kind: 'nestedWriteInput',
+        defaultName: `${typeName}${capitalize(plan.relationName)}NestedCreatePayloadInput`,
+        table: tableName,
+        operation: plan.relationName,
+      }),
       description:
         omitted === undefined
           ? `A new ${resolveTypeName(plan.targetTableName, typeNameMapper)} row for ${typeName}.${plan.relationName}`
@@ -500,7 +504,12 @@ export const createNestedWriteTypes = (params: {
     // `create` alone is still a usable relation field, and outside a many-to-many a relation
     // with nothing on it at all cannot happen: `create` is unconditional there.
     const type = new GraphQLInputObjectType({
-      name: `${typeName}${capitalize(plan.relationName)}Nested${forUpdate ? 'Update' : 'Create'}Input`,
+      name: cacheCtx.typeName({
+        kind: 'nestedWriteInput',
+        defaultName: `${typeName}${capitalize(plan.relationName)}Nested${forUpdate ? 'Update' : 'Create'}Input`,
+        table: tableName,
+        operation: plan.relationName,
+      }),
       description: `Writes through ${typeName}.${plan.relationName}`,
       fields,
     });
@@ -608,8 +617,9 @@ export const createNestedWriteRuntime = (params: {
       relationFilterCtx(filterCtx, plan.targetTableName),
     );
     if (!condition) {
-      throw new GraphQLError(
+      throw drizzleError(
         `Drizzle-GraphQL Error: '${operation}' on '${plan.relationName}' needs a filter that selects rows — it was given one that matches everything.`,
+        { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
       );
     }
     // The filter selects rows to attach or detach, so it is a write against the target
@@ -621,8 +631,9 @@ export const createNestedWriteRuntime = (params: {
   const assertSingleOperation = (plan: NestedRelationPlan, op: Record<string, any>) => {
     const supplied = ['create', 'connect', 'disconnect'].filter((key) => op[key] !== undefined && op[key] !== null);
     if (supplied.length > 1) {
-      throw new GraphQLError(
+      throw drizzleError(
         `Drizzle-GraphQL Error: '${plan.relationName}' takes one of ${supplied.join(', ')} at a time — it holds a single row.`,
+        { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
       );
     }
   };
@@ -774,8 +785,9 @@ export const createNestedWriteRuntime = (params: {
           const inserted = await executor.insert(plan.targetTable).values(values).returning();
           const created = inserted[0];
           if (!created) {
-            throw new GraphQLError(
+            throw drizzleError(
               `Drizzle-GraphQL Error: 'create' on '${relationName}' inserted no row, so there is nothing to attach.`,
+              { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
             );
           }
           patch[plan.localColPropName] = created[plan.foreignColPropName];
@@ -785,8 +797,9 @@ export const createNestedWriteRuntime = (params: {
             .from(plan.targetTable)
             .where(conditionOf(plan, op['connect'], 'connect', scope));
           if (rows.length !== 1) {
-            throw new GraphQLError(
+            throw drizzleError(
               `Drizzle-GraphQL Error: 'connect' on '${relationName}' matched ${rows.length} rows — it attaches a single row, so its filter must match exactly one.`,
+              { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
             );
           }
           patch[plan.localColPropName] = rows[0][plan.foreignColPropName];
@@ -817,8 +830,9 @@ export const createNestedWriteRuntime = (params: {
         for (const parentRow of parentRows) {
           const key = parentRow?.[plan.localColPropName];
           if (key === undefined || key === null) {
-            throw new GraphQLError(
+            throw drizzleError(
               `Drizzle-GraphQL Error: cannot write through '${relationName}': the ${tableName} row has no '${plan.localColPropName}' value to attach to.`,
+              { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
             );
           }
 

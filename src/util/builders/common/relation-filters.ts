@@ -17,9 +17,11 @@ import {
   type SQL,
   sql,
 } from 'drizzle-orm';
-import { GraphQLError } from 'graphql';
 import type { FilterColumnOperatorsCore, Filters, TableNamedRelations } from '../types.ts';
+import { drizzleError } from './errors.ts';
 import { extractFiltersColumn } from './filters.ts';
+import type { UniqueKeyMap } from './unique-keys.ts';
+import { extractUniqueKeyFilter } from './unique-keys.ts';
 
 /**
  * Everything `extractFilters` needs to turn a relation key in a `where` argument into a
@@ -38,13 +40,19 @@ export interface RelationFilterContext {
   tableKey: string;
   /** Shared counter making every subquery alias unique within one extraction. */
   aliases?: { n: number };
+  /**
+   * The compound-unique-key `where` fields of each table, keyed by table schema key. Only
+   * populated when `features.uniqueKeyFilters` generated them — a key field the build did not
+   * generate is an unknown filter key like any other.
+   */
+  uniqueKeys?: Record<string, UniqueKeyMap>;
 }
 
 /**
  * The build-scoped half of {@link RelationFilterContext}. Created once per generated schema and
  * handed to every resolver, which adds the table it is filtering.
  */
-export type RelationFilterBase = Pick<RelationFilterContext, 'tables' | 'relationMap'>;
+export type RelationFilterBase = Pick<RelationFilterContext, 'tables' | 'relationMap' | 'uniqueKeys'>;
 
 /** Narrows the build-scoped relation filter context to the table a resolver is filtering. */
 export const relationFilterCtx = (
@@ -70,7 +78,9 @@ export const buildRelationJoinCondition = (
   const targetColumns = (relation as any).targetColumns as Column[] | undefined;
 
   if (!sourceColumns?.length || sourceColumns.length !== targetColumns?.length) {
-    throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+    throw drizzleError(`WHERE ${relationName}: Relation cannot be used as a filter`, {
+      code: 'DRIZZLE_INVALID_FILTER',
+    });
   }
 
   const parentColumns = Object.values(getColumns(parentTable));
@@ -82,7 +92,9 @@ export const buildRelationJoinCondition = (
     const foreignColumn = targetColumnsByName.find((c) => c.name === targetColumns[i]!.name);
 
     if (!localColumn || !foreignColumn) {
-      throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+      throw drizzleError(`WHERE ${relationName}: Relation cannot be used as a filter`, {
+        code: 'DRIZZLE_INVALID_FILTER',
+      });
     }
 
     conditions.push(eq(localColumn, foreignColumn));
@@ -109,7 +121,9 @@ const resolveJunctionColumn = (aliasedThrough: Table, junctionRef: any, relation
   const columnName: string | undefined = junctionRef?._?.column?.name;
   const byName = columnName ? Object.values(throughColumns).find((c) => c.name === columnName) : undefined;
   if (!byName) {
-    throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+    throw drizzleError(`WHERE ${relationName}: Relation cannot be used as a filter`, {
+      code: 'DRIZZLE_INVALID_FILTER',
+    });
   }
 
   return byName;
@@ -140,7 +154,9 @@ const buildThroughJoinConditions = (
     through?.source.length !== sourceColumns.length ||
     through.target.length !== targetColumns.length
   ) {
-    throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+    throw drizzleError(`WHERE ${relationName}: Relation cannot be used as a filter`, {
+      code: 'DRIZZLE_INVALID_FILTER',
+    });
   }
 
   const parentColumns = Object.values(getColumns(parentTable));
@@ -150,7 +166,9 @@ const buildThroughJoinConditions = (
   for (let i = 0; i < sourceColumns.length; i++) {
     const localColumn = parentColumns.find((c) => c.name === sourceColumns[i]!.name);
     if (!localColumn) {
-      throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+      throw drizzleError(`WHERE ${relationName}: Relation cannot be used as a filter`, {
+        code: 'DRIZZLE_INVALID_FILTER',
+      });
     }
     correlationConditions.push(eq(localColumn, resolveJunctionColumn(aliasedThrough, through.source[i], relationName)));
   }
@@ -159,7 +177,9 @@ const buildThroughJoinConditions = (
   for (let i = 0; i < targetColumns.length; i++) {
     const foreignColumn = targetTableColumns.find((c) => c.name === targetColumns[i]!.name);
     if (!foreignColumn) {
-      throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+      throw drizzleError(`WHERE ${relationName}: Relation cannot be used as a filter`, {
+        code: 'DRIZZLE_INVALID_FILTER',
+      });
     }
     junctionJoinConditions.push(
       eq(resolveJunctionColumn(aliasedThrough, through.target[i], relationName), foreignColumn),
@@ -195,7 +215,9 @@ const buildRelationExists = (
   const relation = ((relEntry as any).relation ?? relEntry) as Relation<string>;
 
   if (!targetTable) {
-    throw new GraphQLError(`WHERE ${relationName}: Relation cannot be used as a filter`);
+    throw drizzleError(`WHERE ${relationName}: Relation cannot be used as a filter`, {
+      code: 'DRIZZLE_INVALID_FILTER',
+    });
   }
 
   ctx.aliases ??= { n: 0 };
@@ -279,7 +301,9 @@ const extractRelationFilter = (
     // a stitched schema can contribute foreign keys here too, and dropping them all would
     // silently turn the relation filter into no filter at all.
     if (!relationMatchModes.includes(mode as RelationMatchMode)) {
-      throw new GraphQLError(`WHERE ${relationName}: Unknown relation filter key: ${mode}`);
+      throw drizzleError(`WHERE ${relationName}: Unknown relation filter key: ${mode}`, {
+        code: 'DRIZZLE_INVALID_FILTER',
+      });
     }
 
     const extracted = buildRelationExists(parentTable, relationName, relEntry, inner, mode as RelationMatchMode, ctx);
@@ -318,18 +342,23 @@ export const extractFilters = <TTable extends Table>(
     }
 
     const column = columns[fieldName];
+    // Resolved in the order the fields were generated in: a column keeps its name, then a
+    // relation, and a unique-key field only exists where neither claimed it.
+    const uniqueKey = column ? undefined : relationCtx?.uniqueKeys?.[relationCtx.tableKey]?.[fieldName];
 
-    // A key that is neither a column nor a filterable relation must throw rather than be
-    // dropped: when the generated schema is stitched/merged with another schema, same-named
-    // inputs can contribute foreign keys that pass input validation, and a where that loses
-    // all of its keys silently becomes an unbounded select/update/delete.
-    if (!column && !(relations?.[fieldName] && relationCtx)) {
-      throw new GraphQLError(`WHERE ${tableName}: Unknown filter key: ${fieldName}`);
+    // A key that is none of the three must throw rather than be dropped: when the generated
+    // schema is stitched/merged with another schema, same-named inputs can contribute foreign
+    // keys that pass input validation, and a where that loses all of its keys silently becomes
+    // an unbounded select/update/delete.
+    if (!column && !uniqueKey && !(relations?.[fieldName] && relationCtx)) {
+      throw drizzleError(`WHERE ${tableName}: Unknown filter key: ${fieldName}`, { code: 'DRIZZLE_INVALID_FILTER' });
     }
 
     const extracted = column
       ? extractFiltersColumn(column, fieldName, operators)
-      : extractRelationFilter(table, fieldName, relations![fieldName]!, operators as any, relationCtx!);
+      : uniqueKey
+        ? extractUniqueKeyFilter(table, tableName, fieldName, uniqueKey, operators as any)
+        : extractRelationFilter(table, fieldName, relations![fieldName]!, operators as any, relationCtx!);
 
     if (extracted) {
       variants.push(extracted);

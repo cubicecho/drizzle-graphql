@@ -141,14 +141,16 @@ const { schema } = buildSchema(db, {
         fieldUpdateOperations: true, // increment/push operations on the update input (off by default)
         countMutations: true,     // update<Table>Count / delete<Table>Count mutations (off by default)
         requireWhere: true,       // make `where` non-null on plural update/delete (off by default)
+        uniqueKeyFilters: true,   // a `where` field per compound unique constraint (off by default)
     },
 })
 ```
 
 -   Any flag left out keeps its default of `true`, so `{ features: { delete: false } }`
     changes nothing else
--   `upsert`, `nestedWrites`, `fieldUpdateOperations` and `countMutations` are the
-    exceptions: all four default to `false`, so they only exist if you ask for them
+-   `upsert`, `nestedWrites`, `fieldUpdateOperations`, `countMutations`, `requireWhere` and
+    `uniqueKeyFilters` are the exceptions: they default to `false`, so they only exist if you
+    ask for them
 -   `groupBy` needs `aggregates`: it reuses those output types, so turning `aggregates` off
     turns the group-by queries off with it
 -   Turning off `insert` or `update` also drops the input type that only that mutation
@@ -362,6 +364,56 @@ const { schema } = buildSchema(db, {
 
 Return `undefined` for any table that should keep its default naming.
 
+### Renaming the derived types
+
+`typeNameMapper` names the table. Everything derived from it — `UsersFilters`, `UsersOrderBy`,
+`CreateUsersInput`, `UsersAggregate`, and the shared inputs like `InnerOrder` and `StringFilter` —
+follows the default template. Two schemas built from different databases therefore collide the
+moment they are stitched into one gateway: both publish a `StringFilter`, and the two are not the
+same type.
+
+`typeNamePrefix` and `typeNameSuffix` move a whole build into its own namespace:
+
+```Typescript
+const { schema } = buildSchema(db, { typeNamePrefix: 'Shop' })
+// type ShopUsers; input ShopUsersFilters, ShopCreateUsersInput, ShopInnerOrder, ShopStringFilter…
+```
+
+The prefix must be a valid GraphQL name start (`/^[_A-Za-z][_0-9A-Za-z]*$/`) and the suffix a valid
+continuation (`/^[_0-9A-Za-z]+$/`); anything else throws at build time rather than producing a
+schema graphql-js will reject.
+
+For control over one kind of type rather than all of them, `derivedTypeNameMapper` is asked for
+every type the build constructs:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    typeNamePrefix: 'Shop',
+    derivedTypeNameMapper: ({ kind, defaultName, table }) =>
+        kind === 'filter' ? `${table}Where` : undefined,
+})
+// input UsersWhere; everything it declined keeps the prefix — ShopUsers, ShopUsersOrderBy…
+```
+
+`kind` is one of `object`, `filter`, `listRelationFilter`, `orderBy`, `createInput`, `updateInput`,
+`updateManyInput`, `nestedWriteInput`, `fieldUpdateInput`, `aggregate`, `having`, `groupBy`,
+`groupKeys`, `onConflict`, `uniqueKey`, `columnEnum`, `columnFilter` and `shared`. `table` is the
+Drizzle schema key the type belongs to, where it belongs to one, and `operation` further identifies
+it (the aggregate's `avg`, the column filter's `String`, the unique key's field name). An answer is
+used **verbatim** — the prefix and suffix are the fallback, not a wrapper around it. Return
+`undefined` to fall back.
+
+Custom scalars (`BigInt`, `Decimal`, …), PostgreSQL enum types and `PgGeometryObject` keep their own
+names under all three options: their definition does not vary between builds, so a gateway merges
+them rather than colliding on them.
+
+The [`resolveSelection` and `selectionToWith` helpers](#writing-your-own-resolver-over-a-generated-type) match selections
+against GraphQL type names, so an override in a renamed build passes the same three options back:
+
+```Typescript
+resolveSelection(info, { db, table: 'Users', typeNamePrefix: 'Shop' })
+```
+
 ## Soft delete
 
 `softDelete` turns a table's `delete` mutation into an UPDATE that marks the row, and hides
@@ -388,7 +440,7 @@ What a declared table gets:
 
 | Path | Effect |
 | --- | --- |
-| `deletePosts`, `deletePostsSingle` | UPDATE that writes the marker; returns the rows as they now stand |
+| `deletePosts`, `deletePostsSingle` | UPDATE that writes the marker; returns the rows as they now stand — or a real DELETE under [`hard: true`](#purging-a-row), where the table opted in |
 | `restorePosts`, `restorePostsSingle` | the inverse — matches **only** marked rows and clears the marker |
 | `posts`, `postsSingle`, cursor pages | marked rows are not returned |
 | `postsAggregate`, `postsGroupBy` | counted over unmarked rows only |
@@ -415,14 +467,94 @@ Defaults come from the column's type: `new Date()` for a timestamp, an ISO strin
 the predicate has to compare against a constant: any NOT NULL column other than a boolean must
 give `deletedValue` (a constant, not a function) and `restoredValue`, or the build throws.
 
+**What counts as marked** follows the config, not the column's nullability. With no
+`deletedValue`, a nullable column reads as "holding a value at all means deleted" — the
+timestamp form, `deletedAt IS NOT NULL`. Name a constant and reads compare against it instead,
+on a nullable column as much as a NOT NULL one:
+
+```Typescript
+// `is_deleted boolean DEFAULT false` — nullable, because it was added to an existing table
+softDelete: { docs: { column: 'isDeleted', deletedValue: true, restoredValue: false } }
+```
+
+Here a row is deleted when the column holds `true`; `false` **and NULL** are both alive, so the
+rows written before the column existed are not swept into the trash view.
+
+### What a relation field sees
+
+By default the scope covers the table's own query fields **and** every relation field that
+points at it, with one exception: a *required* to-one relation (`optional: false`, so the
+field is `Kind!`) reads marked rows. Hiding one there can only ever produce `Cannot return
+null for non-nullable field Item.kind` and take the whole parent down with it — there is no
+usable result to protect.
+
+Marking a lookup row usually means *retired*: keep it off the pickers and the lists, keep
+rendering it on the historical rows that reference it. `scope: 'root'` says exactly that:
+
+```Typescript
+softDelete: {
+    kinds: { column: 'isRetired', deletedValue: true, restoredValue: false, scope: 'root' },
+}
+```
+
+| | `scope: 'all'` (default) | `scope: 'root'` |
+| --- | --- | --- |
+| `kinds`, `kindsSingle`, `kindsAggregate` | marked rows hidden | marked rows hidden |
+| `item.kind` (required to-one) | **shown** | shown |
+| `item.altKind` (nullable to-one) | hidden (resolves `null`) | shown |
+| `kind.items`, `kind.itemsAggregate` | hidden | shown |
+
+The `deleted` argument is generated on relation fields either way, so a request can override
+whichever default applies — `altKind(deleted: EXCLUDE)` under `'root'`, `altKind(deleted:
+INCLUDE)` under `'all'`.
+
+`scope` changes reads only. A nested `connect` / `disconnect` / `set` still refuses to attach a
+marked row under either setting, and the table's own writes are unaffected.
+
+### Purging a row
+
+Soft delete and purge are not alternatives — emptying the trash, reclaiming a unique key and
+clearing a table in development all need the row actually gone. `hardDelete: true` puts a
+`hard` argument on the table's delete mutations:
+
+```Typescript
+softDelete: { articles: { column: 'deletedAt', hardDelete: true } }
+```
+
+```graphql
+mutation {
+    trash: deleteArticles(where: { id: { eq: 1 } }) { id }             # UPDATE — marks the row
+    purge: deleteArticles(where: { id: { eq: 3 } }, hard: true) { id } # DELETE — removes it
+}
+```
+
+`hard: true` reads at `INCLUDE` rather than `EXCLUDE`, so it reaches rows that are **already
+marked** — which is the case it mostly exists for; a `scope` still confines what it can reach,
+exactly as it confines every other write. `deleteArticles(hard: true)` with no `where` empties
+the table, marked rows included.
+
+Opt-in per table, since it is destructive: no `hard` argument is generated where it was not
+asked for, so the schema itself says which tables can be purged. `restore` never takes one.
+
+One thing to weigh: an argument is harder to gate than a field — schema-level permission
+middleware registers rules per field name, so `deleteArticles` with and without `hard: true`
+is one rule that has to inspect arguments. The opted-in fields say so on their marker, so a
+wrapper can find them without parsing the schema's arguments:
+
+```Typescript
+const meta = drizzleExtension(field) // { operation: 'delete', hardDelete: true, … }
+```
+
 Three things it deliberately does not do:
 
 -   **It does not cascade.** Marking a post does not mark its comments. A comment whose post is
-    marked is still returned by `comments`; its `post` field resolves to `null`. Declare the
-    child table too if that is not what you want.
+    marked is still returned by `comments`; its `post` field resolves to `null` (or to the
+    marked row, when the field is non-null or the table is `scope: 'root'` — see above).
+    Declare the child table too if that is not what you want.
 -   **It does not free the row's unique keys.** A marked row still occupies its primary key and
     every unique index, so inserting a new row with the same natural key fails the constraint.
-    A partial unique index (`WHERE deleted_at IS NULL`) is the usual answer.
+    A partial unique index (`WHERE deleted_at IS NULL`) is the usual answer; `hardDelete`
+    (above) is the other one.
 -   **It does not refuse.** Like `scope`, an unreachable row answers the same as a row that does
     not exist.
 
@@ -628,6 +760,75 @@ A **to-many** relation takes a `some` / `none` / `every` wrapper
     subquery joins the junction table to the target, so
     `users(where: { roles: { some: { name: { eq: "admin" } } } })` works the same as a direct
     to-many relation
+
+## Lookup by a unique key
+
+A row with a two-column natural key — a stock line identified by item and location, a
+membership identified by user and team — has to be spelled as two ordinary filters that
+happen to match one row. Nothing says they belong together, and the query stays valid when
+half of it goes missing. `features: { uniqueKeyFilters: true }` adds one `where` field per
+compound unique constraint, named after its columns:
+
+```graphql
+{
+    stockSingle(where: { itemId_locationId: { itemId: "widget", locationId: "eu" } }) {
+        quantity
+    }
+}
+```
+
+```graphql
+input StockItemIdLocationIdKey {
+    itemId: String!
+    locationId: String!
+}
+```
+
+-   Every member is non-null, so a half-supplied key is a query-validation error rather than
+    a filter that quietly matches more rows than you meant
+-   The field lives on the table's `Filters` input, so it is accepted anywhere a filter is —
+    list and single queries, aggregates, `update<Table>Single` / `delete<Table>Single` — and
+    composes with column filters, relation filters, `OR` / `AND` / `NOT`
+-   Composite primary keys get a field like any other unique constraint
+-   Single-column constraints do not: `eq` on the column already names the row
+-   A field name a column or relation already holds is skipped, the same way a relation
+    yields to a same-named column
+-   It compiles to exactly the equalities you would have written by hand; the guarantee is in
+    the input type, not in the SQL
+
+## Case-insensitive matching
+
+Every filter on a string column carries an `insensitive` flag alongside its operators. Set it
+and each comparison in that object compares `lower(column)` against `lower(operand)`:
+
+```graphql
+{
+    users(where: { email: { eq: "Dan@Example.com", insensitive: true } }) {
+        id
+    }
+
+    users(where: { username: { inArray: ["dan", "SAM", "Alex"], insensitive: true } }) {
+        id
+    }
+}
+```
+
+This is what a natural key — an email, a username, a slug, an account code, a SKU — actually
+wants, and `ilike` is the wrong tool for it: `%`, `_` and `\` in an `ilike` operand are
+wildcards, so `100%_off` would silently match rows it should not unless the caller escapes them
+by hand. Under `insensitive` the operand stays a literal and stays a bound parameter.
+
+-   It covers every operator beside it: `eq` / `ne`, the ordering comparisons, `inArray` /
+        `notInArray`, `like` / `notLike`, and the safe `startsWith` / `endsWith` / `contains`
+        (the `i`-prefixed forms are already case-insensitive and are unaffected)
+-   It applies to the operators in its own object only. A nested `AND` / `OR` / `NOT` branch is
+        a separate object and sets its own flag
+-   `lower()` is the same function the case-insensitive LIKE operators already fall back to on
+        the dialects without a native `ILIKE`, so the behaviour is identical on all three. Because
+        the left side is a plain `lower(column)`, a `lower(column)` expression index can serve the
+        lookup — which `ilike '%…%'` never can
+-   The flag appears only on filters whose column can take string operators, so it is absent
+        from the numeric, uuid and boolean filters
 
 ## Matching lists of values
 
@@ -1118,6 +1319,30 @@ mutation {
 -   `values` is the same `Create<Type>Input` the insert mutations take, so turning `insert`
     off does not remove it
 
+### A null key is an absent key
+
+Which half of an upsert runs is decided by the key the request supplies, but a GraphQL client
+cannot leave an input field out based on a variable's value. So one document carries both
+halves with one nullable variable:
+
+```graphql
+mutation Save($id: Int, $name: String!) {
+    upsertUsersSingle(values: { id: $id, name: $name }) {
+        id
+    }
+}
+```
+
+`$id: null` inserts a new row; `$id: 1` overwrites row 1. An explicit `null` for a NOT NULL
+column is treated as if the field had been left out, so the column's default fills it in —
+the column cannot store null, so null cannot have been meant as the value to write. It works
+the same for a database default (`serial`, `defaultRandom()`), a drizzle-side one
+(`$defaultFn`), the plain `create*` mutations, and a batch where only some rows carry a key.
+
+The key has to have *something* to fill it in: a primary key declared with no default at all
+stays non-null on the create input, so a nullable variable in that position is a validation
+error at query time rather than a NOT NULL violation from the database.
+
 Dialect differences:
 
 -   **PostgreSQL** and **SQLite** — the full surface above. A table with no primary key and no
@@ -1180,6 +1405,11 @@ mutation {
     `author: { create: … }` available, `authorId` is one of two ways to supply it
 -   Nesting is one level deep: the row a nested `create` inserts takes columns only, and the
     join column is left off, since the write it is part of sets it
+-   The generated input types are `<Type><Relation>NestedCreateInput` and
+    `<Type><Relation>NestedUpdateInput` for the operations, and
+    `<Type><Relation>NestedCreatePayloadInput` for the row a `create` inserts — all named
+    outside the root input namespace, so a relation whose name spells a sibling table's
+    (`item.type` beside a table named `itemType`) is not a collision
 -   Many-to-many (`.through()`) relations are written through their junction table — see
     below
 -   The whole tree runs in one transaction — a savepoint when the request already carries one
@@ -1570,6 +1800,39 @@ The hook covers root queries and mutations, relation and aggregate fields, and t
 standalone `entities.fieldResolvers`. The default is exported as `defaultErrorMapper` if you
 want to fall back to it explicitly.
 
+### What an error carries
+
+Every error the library raises itself carries its context as data, so nothing downstream has
+to match on prose:
+
+```json
+{
+    "message": "'where' matched more than one row — nothing was written!",
+    "path": ["updateUser"],
+    "extensions": {
+        "code": "DRIZZLE_MULTI_ROW_MATCH",
+        "drizzle": { "table": "Users", "operation": "update", "field": "updateUsersSingle" }
+    }
+}
+```
+
+-   `code` classifies the failure — `DRIZZLE_MULTI_ROW_MATCH`, `DRIZZLE_WHERE_REQUIRED`,
+    `DRIZZLE_LIMIT_EXCEEDED`, `DRIZZLE_NO_VALUES`, `DRIZZLE_INVALID_FILTER`,
+    `DRIZZLE_INVALID_CURSOR`, and so on. The full union is exported as `DrizzleErrorCode`.
+-   `drizzle` says what it was about: the Drizzle schema key of the `table`, the `operation`,
+    the generated `field`, and the `relation` for a relation field. The type is exported as
+    `DrizzleErrorContext`.
+
+The **generated** field name is in `extensions.drizzle.field` rather than in the message on
+purpose. A schema that republishes these fields under other names — `RenameRootFields`, a
+stitched gateway, a hand-written façade — renames the schema, not the inside of a message, so
+a message naming `updateUsersSingle` would be telling a client about a field it has never
+heard of. The name the client asked for is in `path`, already correct under any rename.
+
+Driver errors are not classified: they are sanitized as above and keep
+`code: "INTERNAL_SERVER_ERROR"` with no `drizzle` block, which is also how `onError` can tell
+the two apart without inspecting messages.
+
 ## Transactions
 
 Each resolver runs its statements on the database the schema was built from, so by default a
@@ -1923,6 +2186,7 @@ that explains it, where there is one.
 | `exclude` | none | [tables and columns left out](#excluding-tables-and-columns) of the generated schema entirely |
 | `relationsDepthLimit` | unlimited | how deep relation fields are generated; `0` gives a flat, columns-only schema |
 | `prefixes` / `suffixes` / `typeNameMapper` | see [Naming](#naming) | operation and type names |
+| `typeNamePrefix` / `typeNameSuffix` / `derivedTypeNameMapper` | none | [names of the derived types](#renaming-the-derived-types) — filters, inputs, aggregates, shared inputs |
 | `scalars` / `mapColumnType` | built-in detection | [override a column's GraphQL type](#overriding-a-columns-scalar), by name or by rule |
 | `enumNameMapper` | shared `<EnumName>Enum` per database enum | [names the enum a column maps to](#enum-types) |
 | `describeColumn` / `describeTable` / `describeRelation` | none | [GraphQL descriptions](#documenting-the-schema) |

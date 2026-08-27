@@ -122,7 +122,11 @@ const generateSelectFields = <TWithOrder extends boolean>(
   }
 
   if (isRootCall && !cacheCtx.objectTypeCache.has(tableName)) {
-    const typeName = resolveTypeName(tableName, typeNameMapper);
+    const typeName = cacheCtx.typeName({
+      kind: 'object',
+      defaultName: resolveTypeName(tableName, typeNameMapper),
+      table: tableName,
+    });
     // Pre-register shell with thunk BEFORE recursing to break circular refs.
     // The thunk reads container.fields, which will be populated after recursion completes.
     const shell = new GraphQLObjectType({
@@ -187,7 +191,11 @@ const generateSelectFields = <TWithOrder extends boolean>(
         // The thunk reads capturedTargetContainer.fields so that when the target table's root
         // call populates the container, the shell automatically includes those relation fields.
         relType = new GraphQLObjectType({
-          name: resolveTypeName(targetTableName, typeNameMapper),
+          name: cacheCtx.typeName({
+            kind: 'object',
+            defaultName: resolveTypeName(targetTableName, typeNameMapper),
+            table: targetTableName,
+          }),
           description: cacheCtx.docs.describeTable?.(targetTableName),
           fields: () => ({ ...targetTableFields, ...capturedTargetContainer.fields }),
           extensions: {
@@ -215,7 +223,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
             type: isRequired ? new GraphQLNonNull(relType) : relType,
             args: {
               where: { type: relSelectData.filters },
-              ...deletedArg(cacheCtx.softDeleteOf, targetTableName),
+              ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.typeName),
             },
             resolve,
             ...relationDocs,
@@ -231,7 +239,12 @@ const generateSelectFields = <TWithOrder extends boolean>(
       // the relation out of the eager fetch and resolves it through the batch loader, which
       // implements both — see extractRelationsParamsInner.
       const targetDistinctEnum = cacheCtx.featureOf(targetTableName).distinct
-        ? generateDistinctEnum(tables[targetTableName]!, resolveTypeName(targetTableName, typeNameMapper))
+        ? generateDistinctEnum(
+            tables[targetTableName]!,
+            resolveTypeName(targetTableName, typeNameMapper),
+            cacheCtx.typeName,
+            targetTableName,
+          )
         : undefined;
 
       rawRelationFields.push([
@@ -243,7 +256,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
             orderBy: { type: relSelectData.order! },
             offset: { type: GraphQLInt },
             limit: { type: GraphQLInt },
-            ...deletedArg(cacheCtx.softDeleteOf, targetTableName),
+            ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.typeName),
             after: {
               type: GraphQLString,
               description:
@@ -281,7 +294,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
               type: new GraphQLNonNull(relationAggregate.type),
               args: {
                 where: { type: relSelectData.filters },
-                ...deletedArg(cacheCtx.softDeleteOf, targetTableName),
+                ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.typeName),
               },
               resolve: relationAggregate.resolve,
               extensions: {
@@ -403,7 +416,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
       // A numeric or array column takes an operations input instead of the bare scalar, so
       // it can be changed relative to its current value rather than only replaced.
       const operations = cacheCtx.featureOf(tableName).fieldUpdateOperations
-        ? fieldUpdateInputType(column, columnName, tableName)
+        ? fieldUpdateInputType(column, columnName, tableName, cacheCtx.typeName)
         : undefined;
       const field = operations ? { ...converted, type: operations } : converted;
       return [columnName, { ...field, ...inputFieldDocs(cacheCtx.docs, column, tableName, columnName, field.type) }];
@@ -416,14 +429,22 @@ export const generateTableTypes = <WithReturning extends boolean>(
   // With nested writes on, the fields are thunked: a relation field's operand is the target
   // table's filter input, which does not exist yet while this table is being generated.
   const insertInput = new GraphQLInputObjectType({
-    name: `${capitalize(insertPrefix)}${typeName}Input`,
+    name: cacheCtx.typeName({
+      kind: 'createInput',
+      defaultName: `${capitalize(insertPrefix)}${typeName}Input`,
+      table: tableName,
+    }),
     fields: nestedWrites
       ? () => ({ ...insertFields, ...nestedWrites.createFields(tableName, typeName) })
       : insertFields,
   });
 
   const updateInput = new GraphQLInputObjectType({
-    name: `${capitalize(updatePrefix)}${typeName}Input`,
+    name: cacheCtx.typeName({
+      kind: 'updateInput',
+      defaultName: `${capitalize(updatePrefix)}${typeName}Input`,
+      table: tableName,
+    }),
     fields: nestedWrites
       ? () => ({ ...updateFields, ...nestedWrites.updateFields(tableName, typeName) })
       : updateFields,
@@ -434,7 +455,11 @@ export const generateTableTypes = <WithReturning extends boolean>(
   const selectSingleOutput =
     cacheCtx.objectTypeCache.get(tableName) ??
     new GraphQLObjectType({
-      name: resolveTypeName(tableName, typeNameMapper),
+      name: cacheCtx.typeName({
+        kind: 'object',
+        defaultName: resolveTypeName(tableName, typeNameMapper),
+        table: tableName,
+      }),
       description: cacheCtx.docs.describeTable?.(tableName),
       fields: { ...tableFields, ...relationFields },
       extensions: { drizzle: tableTypeExtension(tableName, cacheCtx.primaryKeyOf?.(tableName) ?? []) },

@@ -10,13 +10,14 @@ import { primaryKeyOrderExprs } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import { applyLimitPolicy, withDefaultOrderBy } from './limits.ts';
 import type { TypeNameMapper } from './naming.ts';
-import { resolveTypeName } from './naming.ts';
+import { resolveObjectTypeName } from './naming.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { DeletedMode, ScopeResolver } from './policies.ts';
 import { withScope } from './policies.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractSelectedColumnsFromTree } from './selected-columns.ts';
+import type { TypeNameResolver } from './type-names.ts';
 
 export const extractRelationsParamsInner = (
   relationMap: Record<string, Record<string, TableNamedRelations>>,
@@ -30,6 +31,7 @@ export const extractRelationsParamsInner = (
   limits?: LimitPolicyFor,
   scope?: ScopeResolver,
   defaultOrderBy?: DefaultOrderByFor,
+  resolveName?: TypeNameResolver,
 ) => {
   const relationsForTable = relationMap[tableName];
   if (!relationsForTable) {
@@ -46,7 +48,7 @@ export const extractRelationsParamsInner = (
   for (const [relName, relEntry] of Object.entries(relationsForTable)) {
     const { targetTableName, targetPkNames } = relEntry;
     // The relation field resolves to the target table's own type, e.g. "Posts" not "UsersPostsRelation".
-    const relTypeName = resolveTypeName(targetTableName, typeNameMapper);
+    const relTypeName = resolveObjectTypeName(targetTableName, typeNameMapper, resolveName);
     // Look up by field name OR by alias (when the caller uses an alias for the relation).
     // graphql-parse-resolve-info keys fieldsByTypeName entries by alias.
     const field = baseField[relName] ?? Object.values(baseField).find((f) => (f as ResolveTree).name === relName);
@@ -120,14 +122,25 @@ export const extractRelationsParamsInner = (
     // single row by definition, so it is left alone.
     const limit = is(relEntry.relation, One)
       ? (relationArgs?.limit ?? undefined)
-      : applyLimitPolicy(relationArgs?.limit, limits?.(targetTableName), `${tableName}.${relName}`);
+      : applyLimitPolicy(relationArgs?.limit, limits?.(targetTableName), {
+          table: targetTableName,
+          operation: 'relation',
+          relation: relName,
+        });
 
     // drizzle-orm v1 RQB calls both `where` and `orderBy` callbacks with an
     // aliased table proxy (e.g. d0, d1). Pass the proxy through so column
     // references in the generated SQL match the CTE alias rather than the
     // original unaliased table name.
     const relWhere = relationArgs?.where;
-    const relDeleted = (relationArgs as any)?.deleted as DeletedMode | undefined;
+    // A relation field's soft-delete default is the target's, not the root default — a
+    // required to-one relation, and a table declared `scope: 'root'`, both read INCLUDE.
+    const relDeleted =
+      ((relationArgs as any)?.deleted as DeletedMode | undefined) ??
+      scope?.relationDefault(
+        targetTableName,
+        is(relEntry.relation, One) && (relEntry.relation as any).optional === false,
+      );
     // The eager path is the one read that never passes through the relation field's own
     // resolver, so the target's scope has to be applied here as well — otherwise selecting a
     // relation would be the way around it.
@@ -174,6 +187,7 @@ export const extractRelationsParamsInner = (
           limits,
           scope,
           defaultOrderBy,
+          resolveName,
         )
       : undefined;
     thisRecord.with = relWith;
@@ -195,6 +209,7 @@ export const extractRelationsParams = (
   limits?: LimitPolicyFor,
   scope?: ScopeResolver,
   defaultOrderBy?: DefaultOrderByFor,
+  resolveName?: TypeNameResolver,
 ): Record<string, Partial<ProcessedTableSelectArgs>> | undefined => {
   if (!info) {
     return undefined;
@@ -212,6 +227,7 @@ export const extractRelationsParams = (
     limits,
     scope,
     defaultOrderBy,
+    resolveName,
   );
 };
 

@@ -23,7 +23,7 @@ export { deletedArg, selectArrayArgs, selectSingleArgs } from './common/args.ts'
 export { generateColumnEnum, generateDistinctEnum } from './common/column-enums.ts';
 export type { ConflictPlan, OnConflictArg } from './common/conflict.ts';
 export {
-  conflictActionEnum,
+  conflictActionEnumType,
   excludedColumnRef,
   generateOnConflictInput,
   mysqlValuesColumnRef,
@@ -45,7 +45,15 @@ export {
 } from './common/cursor.ts';
 export { primaryKeyRestriction, selectDistinctKeys } from './common/distinct.ts';
 export { columnDocs } from './common/docs.ts';
-export { applyErrorMapper, defaultErrorMapper, toGraphQLError } from './common/errors.ts';
+export {
+  applyErrorMapper,
+  type DrizzleErrorCode,
+  type DrizzleErrorContext,
+  defaultErrorMapper,
+  drizzleError,
+  toGraphQLError,
+  withErrorContext,
+} from './common/errors.ts';
 export {
   excludedColumnsKey,
   hasExcludedColumns,
@@ -54,7 +62,7 @@ export {
 } from './common/exclusions.ts';
 export { drizzleExecutorKey, resolveExecutor, resolveQueryExecutor } from './common/executor.ts';
 export { extractFiltersColumn } from './common/filters.ts';
-export { innerOrder, orderNulls } from './common/input-order.ts';
+export { innerOrderType, orderNullsType } from './common/input-order.ts';
 export {
   getPrimaryKeyPropNames,
   getPrimaryKeyPropNamesFromConfig,
@@ -81,11 +89,12 @@ export {
   extractRequiredFilters,
   generateUpdateManyInput,
   generateWriteCount,
+  hardDeleteArg,
   prepareMutationRelationColumns,
   rowsAffected,
 } from './common/mutation-helpers.ts';
 export type { TypeNameMapper } from './common/naming.ts';
-export { resolveTypeName } from './common/naming.ts';
+export { applyObjectTypeName, resolveObjectTypeName, resolveTypeName } from './common/naming.ts';
 export type { OrderNullsOption } from './common/order-by.ts';
 export { extractOrderBy, orderByEntries, orderExpressions } from './common/order-by.ts';
 export type {
@@ -103,7 +112,8 @@ export {
   applyContextValues,
   applyContextValuesAll,
   bindPolicies,
-  deletedFilterEnum,
+  deletedFilterEnumType,
+  relationDeletedDefault,
   resolveScope,
   resolveSoftDeleteInfo,
   softDeletePredicate,
@@ -124,6 +134,15 @@ export { generateTableTypes } from './common/table-types.ts';
 export type { MutationTxCtx } from './common/transactions.ts';
 export { createMutationTxCtx, DEFAULT_TRANSACTION_TIMEOUT_MS, runMutation } from './common/transactions.ts';
 export type { TypeCacheCtx } from './common/type-cache.ts';
+export type {
+  DerivedTypeNameMapper,
+  GeneratedTypeInfo,
+  GeneratedTypeKind,
+  GeneratedTypeNameConfig,
+  TypeNameResolver,
+} from './common/type-names.ts';
+export { resolveGeneratedTypeNames, sharedType } from './common/type-names.ts';
+export { buildUniqueKeyMap, type UniqueKeyMap, uniqueKeyFieldName } from './common/unique-keys.ts';
 export type {
   ResolvedWriteHooks,
   WriteHook,

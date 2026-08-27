@@ -11,9 +11,18 @@ import type {
 import type { TableFeatures } from '../types.ts';
 import type { LimitPolicyFor, ResolvedComplexityOptions } from './limits.ts';
 import type { ContextValuesFor, SoftDeleteFor } from './policies.ts';
+import type { TypeNameResolver } from './type-names.ts';
+import type { UniqueKeyMap } from './unique-keys.ts';
 
 /** Per-call cache context — created fresh on each generateSchemaData call to avoid type name collisions. */
 export interface TypeCacheCtx {
+  /**
+   * The build's type-naming rule — `derivedTypeNameMapper`, `typeNamePrefix` and
+   * `typeNameSuffix` resolved into one function, asked at every type construction. The
+   * identity function when the caller configured none of the three, so a default build names
+   * everything exactly as it always did.
+   */
+  typeName: TypeNameResolver;
   /** Cache of generic filter types, keyed by generic name (e.g. "String", "DateTime"). */
   genericFilterCache: Map<string, GraphQLInputObjectType>;
   /**
@@ -107,4 +116,10 @@ export interface TypeCacheCtx {
    * type it is building: a relation field reads the flags of the table it points at.
    */
   featureOf: (tableName: string) => TableFeatures;
+  /**
+   * A table's compound-unique-key `where` fields, or `undefined` where the build generated
+   * none. The same map the resolvers compile against, so a field can only be spelled where it
+   * will also be understood.
+   */
+  uniqueKeysOf?: (tableName: string) => UniqueKeyMap | undefined;
 }

@@ -98,7 +98,13 @@ describe.sequential('limit policy', () => {
       const gqlSchema = buildWith({ maxLimit: 3 });
       const res = await run(gqlSchema, `{ posts(limit: 5) { id } }`);
 
-      expect(res.errors?.[0]?.message).toBe("posts: 'limit' of 5 exceeds the maximum of 3.");
+      expect(res.errors?.[0]?.message).toBe("'limit' of 5 exceeds the maximum of 3.");
+      // The field is data rather than prose, so a schema that republishes it under another
+      // name is not telling the client about a field it has never heard of.
+      expect(res.errors?.[0]?.extensions).toStrictEqual({
+        code: 'DRIZZLE_LIMIT_EXCEEDED',
+        drizzle: { table: 'Posts', operation: 'select', field: 'posts' },
+      });
     });
 
     it('allows a limit at the maximum', async () => {
@@ -182,8 +188,16 @@ describe.sequential('limit policy', () => {
         const gqlSchema = buildWith(limits, eager);
         const res = await run(gqlSchema, `{ users { id posts(limit: 4) { id } } }`);
 
-        // The locator is the Drizzle relation path — the same names the policy is keyed by.
-        expect(res.errors?.[0]?.message).toBe("Users.posts: 'limit' of 4 exceeds the maximum of 3.");
+        expect(res.errors?.[0]?.message).toBe("'limit' of 4 exceeds the maximum of 3.");
+        // The relation path the policy is keyed by, as data: the table it reads and the
+        // relation it was reached through. The eager path runs inside the parent's resolver,
+        // so it also carries the root field the request came through.
+        expect(res.errors?.[0]?.extensions?.['code']).toBe('DRIZZLE_LIMIT_EXCEEDED');
+        expect(res.errors?.[0]?.extensions?.['drizzle']).toMatchObject({
+          table: 'Posts',
+          operation: 'relation',
+          relation: 'posts',
+        });
       });
 
       it(`clamps a relation limit under clampToMax when ${label}`, async () => {
