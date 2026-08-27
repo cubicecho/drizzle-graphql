@@ -1,3 +1,10 @@
+# [7.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.0.0...v7.1.0) (2026-08-27)
+
+
+### Features
+
+* page-size limits for list queries and to-many relations ([fa61564](https://github.com/cubicecho/drizzle-graphql/commit/fa615643eea92c4fabe2285f194274a97d73e149)), closes [#46](https://github.com/cubicecho/drizzle-graphql/issues/46)
+
 # [7.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v6.0.0...v7.0.0) (2026-08-26)
 
 
