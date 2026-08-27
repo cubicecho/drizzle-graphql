@@ -840,14 +840,12 @@ export const createRelationResolverFactory =
         return isOne ? null : [];
       }
 
-      const {
-        where: whereArg,
-        orderBy: orderByArg,
-        limit: requestedLimit,
-        offset,
-        after,
-        deleted,
-      } = (args ?? {}) as any;
+      const { where: whereArg, limit: requestedLimit, offset, after, deleted } = (args ?? {}) as any;
+      // A relation field falls back to the *target* table's default ordering, since that is
+      // the table it reads. A to-one relation is a single row and takes no ordering at all.
+      const orderByArg = isOne
+        ? (args as any)?.orderBy
+        : withDefaultOrderBy(args ?? {}, targetTableName, policies?.defaultOrderBy).orderBy;
       const limit = applyLimitPolicy(requestedLimit, limitPolicy, `${tableName}.${relationName}`);
       const distinct = ((args ?? {}) as any).distinct?.length ? ((args ?? {}) as any).distinct : undefined;
 
@@ -1182,6 +1180,34 @@ export type ResolvedLimitPolicy = {
  * `buildSchema`; `undefined` for a table the caller left unbounded.
  */
 export type LimitPolicyFor = (tableName: string) => ResolvedLimitPolicy | undefined;
+
+/**
+ * {@link BuildSchemaConfig.defaults} resolved for one table: the `orderBy` a read falls back
+ * to when the request passes none, already in the shape the generated argument has.
+ * `undefined` means the table declares no default and keeps whatever order the database
+ * returns.
+ */
+export type DefaultOrderByFor = (tableName: string) => Record<string, any> | undefined;
+
+/**
+ * Substitutes a table's default ordering for an absent `orderBy`.
+ *
+ * Applied where the arguments are first read, so everything downstream — the cursor tuple, a
+ * `distinct` pass, the plain-select fallback — sees one effective ordering and cannot
+ * disagree about it. Only a missing argument is replaced: `orderBy: {}` is a request for no
+ * ordering, and stays one.
+ */
+export const withDefaultOrderBy = <T extends { orderBy?: any }>(
+  args: T,
+  tableName: string,
+  defaults: DefaultOrderByFor | undefined,
+): T => {
+  if (!defaults || args?.orderBy != null) {
+    return args;
+  }
+  const fallback = defaults(tableName);
+  return fallback ? { ...args, orderBy: fallback } : args;
+};
 
 /**
  * The `limit` a query actually runs with, given the policy for the table it reads.
@@ -3878,6 +3904,8 @@ export type TablePolicies = {
   softDelete?: SoftDeleteFor;
   /** See `BuildSchemaConfig.onWrite`. */
   onWrite?: WriteHookFor;
+  /** See `BuildSchemaConfig.defaults`. */
+  defaultOrderBy?: DefaultOrderByFor;
 };
 
 /**
@@ -3890,6 +3918,7 @@ export type ResolverPolicies = {
   contextValues?: ContextValuesFor;
   softDelete?: SoftDeleteFor;
   onWrite?: WriteHookFor;
+  defaultOrderBy?: DefaultOrderByFor;
 };
 
 /** Binds a build's {@link TablePolicies} to its relation context, once, at schema-build time. */
@@ -3897,7 +3926,7 @@ export const bindPolicies = (
   policies: TablePolicies | undefined,
   filterCtx: RelationFilterBase | undefined,
 ): ResolverPolicies | undefined =>
-  policies?.scope || policies?.contextValues || policies?.softDelete || policies?.onWrite
+  policies?.scope || policies?.contextValues || policies?.softDelete || policies?.onWrite || policies?.defaultOrderBy
     ? {
         scope:
           policies.scope || policies.softDelete
@@ -3906,6 +3935,7 @@ export const bindPolicies = (
         contextValues: policies.contextValues,
         softDelete: policies.softDelete,
         onWrite: policies.onWrite,
+        defaultOrderBy: policies.defaultOrderBy,
       }
     : undefined;
 
@@ -3974,6 +4004,7 @@ const extractRelationsParamsInner = (
   filterCtx?: RelationFilterBase,
   limits?: LimitPolicyFor,
   scope?: ScopeResolver,
+  defaultOrderBy?: DefaultOrderByFor,
 ) => {
   const relationsForTable = relationMap[tableName];
   if (!relationsForTable) {
@@ -4050,7 +4081,12 @@ const extractRelationsParamsInner = (
     thisRecord.columns = columns;
 
     const relationField = Object.values(baseField).find((e) => e.name === relName);
-    const relationArgs: Partial<TableSelectArgs> | undefined = relationField?.args;
+    // The eager path reads its arguments off the AST rather than through the relation field's
+    // resolver, so the target's default ordering has to be substituted here too — otherwise
+    // an eagerly loaded relation would come back in a different order from a lazily loaded one.
+    const relationArgs: Partial<TableSelectArgs> | undefined = is(relEntry.relation, One)
+      ? relationField?.args
+      : relationField && withDefaultOrderBy(relationField.args ?? {}, targetTableName, defaultOrderBy);
 
     const offset = relationArgs?.offset ?? undefined;
     // The eager path reads its arguments off the AST rather than through the relation field's
@@ -4112,6 +4148,7 @@ const extractRelationsParamsInner = (
           filterCtx,
           limits,
           scope,
+          defaultOrderBy,
         )
       : undefined;
     thisRecord.with = relWith;
@@ -4132,6 +4169,7 @@ export const extractRelationsParams = (
   filterCtx?: RelationFilterBase,
   limits?: LimitPolicyFor,
   scope?: ScopeResolver,
+  defaultOrderBy?: DefaultOrderByFor,
 ): Record<string, Partial<ProcessedTableSelectArgs>> | undefined => {
   if (!info) {
     return undefined;
@@ -4148,6 +4186,7 @@ export const extractRelationsParams = (
     filterCtx,
     limits,
     scope,
+    defaultOrderBy,
   );
 };
 
@@ -4977,6 +5016,7 @@ export const prepareMutationRelationColumns = (params: {
   parsedInfo: ResolveTree;
   limits?: LimitPolicyFor;
   scope?: ScopeResolver;
+  defaultOrderBy?: DefaultOrderByFor;
 }): {
   columns: Record<string, Column>;
   hasRelations: boolean;
@@ -4994,6 +5034,7 @@ export const prepareMutationRelationColumns = (params: {
         undefined,
         params.limits,
         params.scope,
+        params.defaultOrderBy,
       )
     : undefined;
   const hasRelations = !!(withParams && Object.keys(withParams).length);
@@ -5448,6 +5489,7 @@ export const runRelationalSelect = async (opts: {
   nullOrdering?: NullOrdering;
   limits?: LimitPolicyFor;
   scope?: ScopeResolver;
+  defaultOrderBy?: DefaultOrderByFor;
   deleted?: DeletedMode;
 }): Promise<any> => {
   const {
@@ -5595,6 +5637,7 @@ export const runRelationalSelect = async (opts: {
           filterCtx,
           opts.limits,
           scope,
+          opts.defaultOrderBy,
         )
       : undefined,
   };

@@ -66,6 +66,7 @@ import {
   type TypeNameMapper,
   toGraphQLError,
   type WriteOperation,
+  withDefaultOrderBy,
   withScope,
 } from '../builders/common.ts';
 import {
@@ -142,7 +143,11 @@ const generateSelectArray = (
 
   return {
     name: fieldName,
-    resolver: async (_source: any, args: Partial<TableSelectArgs>, context: any, info: GraphQLResolveInfo) => {
+    resolver: async (_source: any, rawArgs: Partial<TableSelectArgs>, context: any, info: GraphQLResolveInfo) => {
+      // An omitted `orderBy` falls back to the table's configured default ordering here,
+      // before anything reads the arguments — the cursor tuple, a `distinct` pass and the
+      // plain-select fallback all have to agree on one effective ordering.
+      const args = withDefaultOrderBy(rawArgs, tableName, policies?.defaultOrderBy);
       try {
         const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
         const { executor, queryBase: requestQueryBase } = resolveQueryExecutor(db, context, tableName, queryBase);
@@ -160,6 +165,7 @@ const generateSelectArray = (
           single: false,
           filterCtx,
           limits,
+          defaultOrderBy: policies?.defaultOrderBy,
           pkNames,
           db: executor,
           scope: policies?.scope?.(context),
@@ -204,7 +210,11 @@ const generateSelectSingle = (
 
   return {
     name: fieldName,
-    resolver: async (_source, args: Partial<TableSelectArgs>, context, info) => {
+    resolver: async (_source, rawArgs: Partial<TableSelectArgs>, context, info) => {
+      // An omitted `orderBy` falls back to the table's configured default ordering here,
+      // before anything reads the arguments — the cursor tuple, a `distinct` pass and the
+      // plain-select fallback all have to agree on one effective ordering.
+      const args = withDefaultOrderBy(rawArgs, tableName, policies?.defaultOrderBy);
       try {
         const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
         const { executor, queryBase: requestQueryBase } = resolveQueryExecutor(db, context, tableName, queryBase);
@@ -221,6 +231,7 @@ const generateSelectSingle = (
           single: true,
           filterCtx,
           limits,
+          defaultOrderBy: policies?.defaultOrderBy,
           pkNames,
           db: executor,
           scope: policies?.scope?.(context),
@@ -319,6 +330,7 @@ const generateInsertArray = (
               parsedInfo,
               limits,
               scope,
+              defaultOrderBy: policies?.defaultOrderBy,
             });
 
             const returning = nestedEntries
@@ -446,6 +458,7 @@ const generateInsertSingle = (
               parsedInfo,
               limits,
               scope,
+              defaultOrderBy: policies?.defaultOrderBy,
             });
             const returning = nestedEntry
               ? nested!.withJoinColumns(tableName, nestedEntry.ops, { ...columns }, table)
@@ -603,6 +616,7 @@ const generateUpsert = (
               parsedInfo,
               limits,
               scope,
+              defaultOrderBy: policies?.defaultOrderBy,
             });
 
             const returning = nestedEntries
@@ -753,6 +767,7 @@ const generateUpdate = (
               parsedInfo,
               limits,
               scope,
+              defaultOrderBy: policies?.defaultOrderBy,
             });
 
             const entry = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
@@ -935,6 +950,7 @@ const generateUpdateMany = (
               parsedInfo,
               limits,
               scope,
+              defaultOrderBy: policies?.defaultOrderBy,
             });
 
             // Remap and validate every entry before the transaction opens, so a malformed
