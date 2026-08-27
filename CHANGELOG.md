@@ -1,3 +1,40 @@
+# [7.2.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.1.0...v7.2.0) (2026-08-27)
+
+
+### Features
+
+* exclude tables and columns from the generated schema ([58b1cd5](https://github.com/cubicecho/drizzle-graphql/commit/58b1cd5a297e0b6a87b60c59f0db494fa9262edf))
+
+# [7.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.0.0...v7.1.0) (2026-08-27)
+
+
+### Features
+
+* page-size limits for list queries and to-many relations ([fa61564](https://github.com/cubicecho/drizzle-graphql/commit/fa615643eea92c4fabe2285f194274a97d73e149)), closes [#46](https://github.com/cubicecho/drizzle-graphql/issues/46)
+
+# [7.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v6.0.0...v7.0.0) (2026-08-26)
+
+
+### Features
+
+* atomic column updates, relation pagination parity, mutation return shapes ([723e83b](https://github.com/cubicecho/drizzle-graphql/commit/723e83bab6968276bf296081990f7b079c590168)), closes [#57](https://github.com/cubicecho/drizzle-graphql/issues/57) [#58](https://github.com/cubicecho/drizzle-graphql/issues/58) [#62](https://github.com/cubicecho/drizzle-graphql/issues/62)
+
+
+### BREAKING CHANGES
+
+* `createRelationResolverFactory` takes the dialect's null
+ordering as its third argument, before `filterCtx` — `'nulls-largest'` for
+PostgreSQL, `'nulls-smallest'` for MySQL and SQLite. The keyset predicate behind
+a relation's `after` argument has to agree with the dialect's native `ORDER BY`
+placement for `NULL`, or rows with a `NULL` in an ordered column are skipped
+rather than paged through, and there is no correct default. Callers that build
+custom relation resolvers must pass it.
+* `create<Table>Single` returns `Table!` rather than `Table`
+unless the `conflictDoNothing` option is set. Clients that spread the result into
+a nullable position are unaffected, but a schema diff will show the change.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
 # [6.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v5.6.0...v6.0.0) (2026-08-26)
 
 
