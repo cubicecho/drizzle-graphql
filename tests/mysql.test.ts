@@ -39,6 +39,7 @@ interface Context {
   client: mysql.Connection;
   schema: GraphQLSchema;
   upsertSchema: GraphQLSchema;
+  optInSchema: GraphQLSchema;
   entities: GeneratedEntities<MySql2Database<typeof schema>>;
   server: Server;
   gql: GraphQLClient;
@@ -111,6 +112,10 @@ beforeAll(async (_t) => {
   const { schema: gqlSchema, entities } = buildSchema(ctx.db);
   // Upsert is opt-in, so it needs a schema of its own.
   ctx.upsertSchema = buildSchema(ctx.db, { features: { upsert: true } }).schema;
+  // As are the atomic update operations and the count mutations.
+  ctx.optInSchema = buildSchema(ctx.db, {
+    features: { fieldUpdateOperations: true, countMutations: true },
+  }).schema;
   const yoga = createYoga({
     schema: gqlSchema,
   });
@@ -3175,6 +3180,28 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
+            updateUsersSingle: z
+              .object({
+                args: z
+                  .object({
+                    set: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
             deleteUsers: z
               .object({
                 args: z
@@ -3182,6 +3209,23 @@ describe.sequential('Returned data tests', () => {
                     where: z
                       .object({
                         type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
+            deleteUsersSingle: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
                       })
                       .strict(),
                   })
@@ -3265,6 +3309,28 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
+            updatePostsSingle: z
+              .object({
+                args: z
+                  .object({
+                    set: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
             deletePosts: z
               .object({
                 args: z
@@ -3272,6 +3338,23 @@ describe.sequential('Returned data tests', () => {
                     where: z
                       .object({
                         type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
+            deletePostsSingle: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
                       })
                       .strict(),
                   })
@@ -3355,6 +3438,28 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
+            updateCustomersSingle: z
+              .object({
+                args: z
+                  .object({
+                    set: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
             deleteCustomers: z
               .object({
                 args: z
@@ -3362,6 +3467,23 @@ describe.sequential('Returned data tests', () => {
                     where: z
                       .object({
                         type: z.instanceof(GraphQLInputObjectType),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
+            deleteCustomersSingle: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
                       })
                       .strict(),
                   })
@@ -5029,5 +5151,115 @@ describe.sequential('Group by tests', () => {
 
     expect(res.errors).toBeUndefined();
     expect(res.data!['postsGroupBy']).toStrictEqual([{ group: { authorId: 1 }, count: 3 }]);
+  });
+});
+
+describe.sequential('Atomic column updates and count mutations', () => {
+  const optIn = (source: string) => graphql({ schema: ctx.optInSchema, source, contextValue: {} });
+  const users = () => ctx.db.select().from(schema.Users).orderBy(schema.Users.id);
+
+  it("replaces a numeric column's update field with an operations input", () => {
+    const input = ctx.optInSchema.getType('UpdateUsersInput') as GraphQLInputObjectType;
+
+    expect(String(input.getFields()['bigint']!.type)).toBe('BigIntFieldUpdate');
+    // A text column has no arithmetic, so it keeps its plain field.
+    expect(String(input.getFields()['name']!.type)).toBe('String');
+  });
+
+  it('increments in the database rather than through a read', async () => {
+    const res = await optIn(
+      `mutation { updateUsers(where: { id: { eq: 1 } }, set: { bigint: { increment: "5" } }) { isSuccess } }`,
+    );
+
+    expect(res.errors).toBeUndefined();
+    expect((await users()).find((u) => u.id === 1)?.bigint).toBe(BigInt(15));
+  });
+
+  it('applies the operation per row', async () => {
+    await ctx.db
+      .update(schema.Users)
+      .set({ bigint: BigInt(2) })
+      .where(inArray(schema.Users.id, [2, 5]));
+    await ctx.db
+      .update(schema.Users)
+      .set({ bigint: BigInt(4) })
+      .where(eq(schema.Users.id, 1));
+
+    const res = await optIn(`mutation { updateUsers(set: { bigint: { multiply: "3" } }) { isSuccess } }`);
+
+    expect(res.errors).toBeUndefined();
+    expect((await users()).map((u) => u.bigint)).toStrictEqual([BigInt(12), BigInt(6), BigInt(6)]);
+  });
+
+  it('rejects two operations on one column', async () => {
+    const res = await optIn(
+      `mutation { updateUsers(set: { bigint: { increment: "1", decrement: "1" } }) { isSuccess } }`,
+    );
+
+    expect(res.errors?.[0]?.message).toBe(
+      "Field 'bigint' takes exactly one update operation, but 2 were given (increment, decrement).",
+    );
+  });
+
+  it('carries the operations through updateUsersMany', async () => {
+    const res = await optIn(`mutation {
+			updateUsersMany(updates: [
+				{ where: { id: { eq: 1 } }, set: { bigint: { increment: "1" } } },
+				{ where: { id: { eq: 2 } }, set: { bigint: { set: "100" } } }
+			]) { isSuccess }
+		}`);
+
+    expect(res.errors).toBeUndefined();
+    const rows = await users();
+    expect(rows.find((u) => u.id === 1)?.bigint).toBe(BigInt(11));
+    expect(rows.find((u) => u.id === 2)?.bigint).toBe(BigInt(100));
+  });
+
+  it('returns a row count instead of the shared success flag', () => {
+    const mutations = ctx.optInSchema.getMutationType()!.getFields();
+
+    expect(String(mutations['updateUsersCount']!.type)).toBe('Int!');
+    expect(String(mutations['deleteUsersCount']!.type)).toBe('Int!');
+    // The row-returning siblings still return MySQL's success flag.
+    expect(String(mutations['updateUsers']!.type)).toBe('MutationReturn');
+    expect(ctx.schema.getMutationType()!.getFields()['updateUsersCount']).toBeUndefined();
+  });
+
+  it('counts the rows an update touched', async () => {
+    const res = await optIn(`mutation { updateUsersCount(set: { name: "Renamed" }) }`);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.['updateUsersCount']).toBe(3);
+  });
+
+  it('counts nothing when the filter matches nothing', async () => {
+    const res = await optIn(`mutation { updateUsersCount(where: { id: { eq: 999 } }, set: { name: "x" }) }`);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.['updateUsersCount']).toBe(0);
+  });
+
+  it('counts the rows a delete removed', async () => {
+    const res = await optIn(`mutation { deleteCustomersCount(where: { id: { eq: 1 } }) }`);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.['deleteCustomersCount']).toBe(1);
+    expect((await ctx.db.select().from(schema.Customers)).find((c) => c.id === 1)).toBeUndefined();
+  });
+
+  it('counts a filtered update alongside an atomic operation', async () => {
+    const res = await optIn(
+      `mutation { updateUsersCount(where: { id: { eq: 1 } }, set: { bigint: { increment: "7" } }) }`,
+    );
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.['updateUsersCount']).toBe(1);
+    expect((await users()).find((u) => u.id === 1)?.bigint).toBe(BigInt(17));
+  });
+
+  it('rejects an update with no values', async () => {
+    const res = await optIn(`mutation { updateUsersCount(set: {}) }`);
+
+    expect(res.errors?.[0]?.message).toBe('Unable to update with no values specified!');
   });
 });
