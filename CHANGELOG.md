@@ -1,3 +1,10 @@
+# [7.2.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.1.0...v7.2.0) (2026-08-27)
+
+
+### Features
+
+* exclude tables and columns from the generated schema ([58b1cd5](https://github.com/cubicecho/drizzle-graphql/commit/58b1cd5a297e0b6a87b60c59f0db494fa9262edf))
+
 # [7.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.0.0...v7.1.0) (2026-08-27)
 
 
