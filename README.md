@@ -237,6 +237,96 @@ table becomes readable but not insertable — and warns on the console, since th
 often a mistake than a plan.
 
 > `exclude` is a static decision: the column is absent for every caller. Deciding per
+> request *which fields* a caller may reach is a job for
+> [`graphql-shield`](https://the-guild.dev/graphql/shield) or an equivalent layer above the
+> schema. Deciding per request *which rows* a caller may reach is `scope`, below — that one a
+> layer above cannot do, because a nested relation field never passes through a root resolver.
+
+## Row scoping and multi-tenancy
+
+`scope` attaches a predicate, derived from the request context, to every read and write of a
+table:
+
+```Typescript
+import { and, eq } from 'drizzle-orm'
+
+const { schema } = buildSchema(db, {
+    scope: {
+        posts: (ctx, table) => eq(table.orgId, ctx.orgId),
+        // A filter object works too — same shape as the generated `where` argument:
+        comments: (ctx) => ({ post: { orgId: { eq: ctx.orgId } } }),
+    },
+})
+```
+
+Keyed by the **Drizzle schema key**. `ctx` is your GraphQL context value; `table` is the table
+the current statement runs against — for a relational read that is Drizzle's *aliased* copy, so
+always build the predicate from that argument rather than from the imported table object.
+
+The predicate is ANDed on **last**, after whatever the client sent, so a client filter can only
+narrow the scope, never widen it. It reaches every path that touches the table:
+
+| Path | Effect |
+| --- | --- |
+| `posts`, `postsSingle` | out-of-scope rows are not returned |
+| `postsAggregate`, `postsGroupBy` | counted over in-scope rows only |
+| `user.posts`, `user.postsAggregate` | scoped on both the batched and the eager (`with:`) path |
+| cursor pages | the keyset page is taken within the scope |
+| `updatePosts`, `updatePostsMany`, `deletePosts` | an out-of-scope row is simply not matched |
+| `upsertPosts` (conflict branch) | a conflicting row outside the scope is left alone, not taken over |
+| nested `connect` / `disconnect` / `set` | only in-scope rows can be attached or detached |
+
+Two things it deliberately does not do:
+
+-   **It does not refuse.** A scoped `deletePosts(where: { id: { eq: 4 } })` on another
+    tenant's row returns `[]`, the same answer as a row that does not exist. Telling the caller
+    "that row exists but is not yours" is the leak the scope is there to close.
+-   **It does not apply to a plain insert.** There is no existing row to filter. `contextValues`
+    is the write-side half.
+
+Returning `undefined` means *no restriction for this context*, so one hook can let an
+administrator through:
+
+```Typescript
+scope: {
+    posts: (ctx, table) => (ctx.isAdmin ? undefined : eq(table.orgId, ctx.orgId)),
+}
+```
+
+A table with no entry is unscoped, and a build with no `scope` at all emits exactly the SQL it
+did before.
+
+### Columns the server owns
+
+`contextValues` supplies a column's value from the request context instead of accepting it from
+the client:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    contextValues: {
+        posts: {
+            orgId: (ctx) => ctx.orgId,
+            authorId: (ctx) => ctx.userId,
+        },
+    },
+})
+```
+
+-   The column is **removed from `CreatePostsInput` and `UpdatePostsInput`**, so a client cannot
+    send it at all — the SDL itself says the column is server-owned. It stays readable on the
+    object type.
+-   Every insert stamps it, including rows created by a nested `create`.
+-   Updates never write it, so an update cannot hand a row to another owner.
+
+Together the two close the loop: `contextValues` decides which tenant a new row belongs to, and
+`scope` decides which rows a request can see and change afterwards.
+
+> **MySQL caveat.** `ON DUPLICATE KEY UPDATE` takes no predicate, so a MySQL upsert's conflict
+> branch cannot be scoped. Scope the table's `update` and rely on `contextValues` for the insert
+> half.
+
+Names that match nothing throw at build time, the same as `exclude` — a renamed column fails the
+build instead of quietly ceasing to be scoped.
 > request who may see what is a job for [`graphql-shield`](https://the-guild.dev/graphql/shield)
 > or an equivalent layer above the schema, which has the request context this library
 > does not.

@@ -353,6 +353,37 @@ describe('MySQL complexity hints', () => {
   });
 });
 
+// ── context-derived column values ─────────────────────────────────────────────
+// The MySQL generator shapes its write inputs the same way the others do: a column the
+// server supplies is not something a client may send.
+describe('MySQL context-derived column values', () => {
+  const scopedEntities = generateMySQL(mockDb, tableSchema, schema.relations, {
+    relationsDepthLimit: undefined,
+    prefixes,
+    suffixes,
+    conflictDoNothing: false,
+    shouldEagerLoad: () => true,
+    features: { aggregates: true, relationAggregates: true, distinct: true, insert: true, update: true, delete: true },
+    policies: {
+      contextValues: (tableName: string) =>
+        tableName === 'Posts' ? { authorId: (context: any) => context.userId } : undefined,
+    },
+  }) as any;
+
+  it('omits the column from the insert and update inputs', () => {
+    const insertFields = Object.keys(scopedEntities.inputs['CreatePostsInput'].getFields());
+    const updateFields = Object.keys(scopedEntities.inputs['UpdatePostsInput'].getFields());
+
+    expect(insertFields).not.toContain('authorId');
+    expect(updateFields).not.toContain('authorId');
+    expect(insertFields).toContain('content');
+  });
+
+  it('leaves a table with no policy alone', () => {
+    expect(Object.keys(scopedEntities.inputs['CreateCustomersInput'].getFields())).toContain('userId');
+  });
+});
+
 // ── the two opt-in mutation shapes ────────────────────────────────────────────
 
 describe('MySQL count mutations', () => {
