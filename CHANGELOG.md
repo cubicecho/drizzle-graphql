@@ -1,3 +1,10 @@
+# [7.5.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.4.0...v7.5.0) (2026-08-27)
+
+
+### Features
+
+* publish generated-field identity and export the selection translation ([fe75b2c](https://github.com/cubicecho/drizzle-graphql/commit/fe75b2c68501b3a51564809ffe57ffa7c21042f1)), closes [#69](https://github.com/cubicecho/drizzle-graphql/issues/69)
+
 # [7.4.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.3.0...v7.4.0) (2026-08-27)
 
 
