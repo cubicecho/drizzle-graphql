@@ -1,3 +1,10 @@
+# [7.9.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.8.0...v7.9.0) (2026-08-27)
+
+
+### Features
+
+* per-table default orderBy ([3830f15](https://github.com/cubicecho/drizzle-graphql/commit/3830f15f9500c9c781ccf1e2fd6d56b089d45018))
+
 # [7.8.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.7.0...v7.8.0) (2026-08-27)
 
 
