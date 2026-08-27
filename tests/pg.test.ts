@@ -47,7 +47,8 @@ interface Context {
 const ctx: Context = {} as any;
 
 async function createDockerDB(ctx: Context): Promise<string> {
-  const docker = (ctx.docker = new Docker());
+  ctx.docker = new Docker();
+  const docker = ctx.docker;
   const port = await getPort({ port: 5432 });
   const image = 'joshuasundance/postgis_pgvector';
 
@@ -56,7 +57,7 @@ async function createDockerDB(ctx: Context): Promise<string> {
     docker.modem.followProgress(pullStream, (err) => (err ? reject(err) : resolve(err))),
   );
 
-  const pgContainer = (ctx.pgContainer = await docker.createContainer({
+  ctx.pgContainer = await docker.createContainer({
     Image: image,
     Env: ['POSTGRES_PASSWORD=postgres', 'POSTGRES_USER=postgres', 'POSTGRES_DB=postgres'],
     name: `drizzle-graphql-pg-tests-${uuid()}`,
@@ -66,7 +67,8 @@ async function createDockerDB(ctx: Context): Promise<string> {
         '5432/tcp': [{ HostPort: `${port}` }],
       },
     },
-  }));
+  });
+  const pgContainer = ctx.pgContainer;
 
   await pgContainer.start();
 

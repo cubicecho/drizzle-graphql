@@ -3,21 +3,14 @@
   "projectTitle": "Drizzle-GraphQL",
   "description": "Automatically generate a fully-typed GraphQL schema (and customizable resolver/entity config) from a Drizzle ORM schema. Supports PostgreSQL, MySQL, and SQLite with N+1-safe relation resolving.",
   "url": "https://context7.com/vantreeseba/drizzle-graphql",
-  "public_key": "pk_n3EeElMVDKA7IZOdUTuM1"
+  "public_key": "pk_n3EeElMVDKA7IZOdUTuM1",
   "folders": [],
-  "excludeFolders": [
-    "node_modules",
-    "dist",
-    "coverage",
-    "tests",
-    ".github"
-  ],
+  "excludeFolders": ["node_modules", "dist", "coverage", "tests", ".github"],
   "excludeFiles": [
     "index.cjs",
     "index.js",
     "index.cjs.map",
     "index.js.map",
-    "index.d.ts",
     "index.d.cts",
     "package-lock.json",
     "CHANGELOG.md"

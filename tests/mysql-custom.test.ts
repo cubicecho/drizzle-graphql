@@ -26,7 +26,8 @@ interface Context {
 const ctx: Context = {} as any;
 
 async function createDockerDB(): Promise<string> {
-  const docker = (ctx.docker = new Docker());
+  ctx.docker = new Docker();
+  const docker = ctx.docker;
   const port = await getPort({ port: 3307 });
   const image = 'mysql:8';
 

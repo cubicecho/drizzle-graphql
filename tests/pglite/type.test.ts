@@ -9,17 +9,15 @@ import type {
   GraphQLSchema,
 } from 'graphql';
 import { afterAll, beforeAll, describe, expectTypeOf, it } from 'vitest';
-import {
-  type AggregateResolver,
-  buildSchema,
-  type DeleteResolver,
-  type ExtractTables,
-  type GeneratedEntities,
-  type InsertArrResolver,
-  type InsertResolver,
-  type SelectResolver,
-  type SelectSingleResolver,
-  type UpdateResolver,
+import type {
+  AggregateResolver,
+  DeleteResolver,
+  ExtractTables,
+  InsertArrResolver,
+  InsertResolver,
+  SelectResolver,
+  SelectSingleResolver,
+  UpdateResolver,
 } from '@/index';
 import type * as schema from '../schema/pg';
 import { createMinimalCtx, type MinimalContext, setupMinimal, teardownMinimal } from './common';

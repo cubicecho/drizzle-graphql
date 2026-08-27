@@ -50,16 +50,14 @@ const articleRows = async () => await db.select().from(Articles).orderBy(Article
 
 // Records what ran, through the hook's own `tx` — so a row only survives if the mutation
 // it rode along with committed.
-const record =
-  (extra?: (payload: WriteHookPayload) => string | undefined) =>
-  async (payload: WriteHookPayload) => {
-    await payload.tx.insert(Audit).values({
-      tableName: payload.table,
-      operation: payload.operation,
-      position: payload.position,
-      detail: extra ? extra(payload) : payload.rows.map((row: any) => row.id).join(','),
-    });
-  };
+const record = (extra?: (payload: WriteHookPayload) => string | undefined) => async (payload: WriteHookPayload) => {
+  await payload.tx.insert(Audit).values({
+    tableName: payload.table,
+    operation: payload.operation,
+    position: payload.position,
+    detail: extra ? extra(payload) : payload.rows.map((row: any) => row.id).join(','),
+  });
+};
 
 beforeAll(async () => {
   pglite = new PGlite(DATA_DIR);
