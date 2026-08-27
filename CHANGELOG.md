@@ -1,3 +1,34 @@
+# [8.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.9.1...v8.0.0) (2026-08-27)
+
+
+### Bug Fixes
+
+* name the real cause when a schema table is missing from the relations config ([564865d](https://github.com/cubicecho/drizzle-graphql/commit/564865dd927c964ebbf7f8a48d9804d192b4b122))
+* **nested-writes:** keep nested payload types out of the root input namespace ([6b05817](https://github.com/cubicecho/drizzle-graphql/commit/6b05817c75a94bd068b22343c500ceb357a39ad3)), closes [#95](https://github.com/cubicecho/drizzle-graphql/issues/95)
+* **soft-delete:** honour deletedValue on a nullable marker column ([91f1854](https://github.com/cubicecho/drizzle-graphql/commit/91f185447053b568665256d676d39cf6fc071588))
+* **test:** pass buildRelations a config object, not a thunk ([a6ad560](https://github.com/cubicecho/drizzle-graphql/commit/a6ad56034a5777c08443477b78d5bb032835b1d9)), closes [#98](https://github.com/cubicecho/drizzle-graphql/issues/98)
+* **types:** correct the public type surface and put tests/ under tsc ([f205642](https://github.com/cubicecho/drizzle-graphql/commit/f205642bfb0e5ff38e3102d50a199f5cdbea562e))
+
+
+### Features
+
+* **errors:** classify library errors with extensions.code and drizzle context ([c1d2eb7](https://github.com/cubicecho/drizzle-graphql/commit/c1d2eb7ff284baba9dd8bbd4f0f6b3199534982b)), closes [#92](https://github.com/cubicecho/drizzle-graphql/issues/92)
+* **filters:** case-insensitive comparisons via an `insensitive` flag ([54675d0](https://github.com/cubicecho/drizzle-graphql/commit/54675d02236dc4c1f031ad7136b950b64d5d1ac0))
+* **filters:** look a row up by a named compound unique constraint ([3f824aa](https://github.com/cubicecho/drizzle-graphql/commit/3f824aae6ac071a861419ab739f6e267dd01f462)), closes [#90](https://github.com/cubicecho/drizzle-graphql/issues/90)
+* **naming:** let every derived type name be renamed, not just table types ([f56824a](https://github.com/cubicecho/drizzle-graphql/commit/f56824a665ddadd49d1f46251e82aa7249e505e8)), closes [#93](https://github.com/cubicecho/drizzle-graphql/issues/93)
+* **soft-delete:** control whether relation fields are scoped ([78d129c](https://github.com/cubicecho/drizzle-graphql/commit/78d129c7f15b41e53b63679f49bf3022e0c54154))
+* **soft-delete:** opt-in hard delete on a soft-deleting table ([417eca4](https://github.com/cubicecho/drizzle-graphql/commit/417eca4502f5003d502119923e5d990233757af7)), closes [#100](https://github.com/cubicecho/drizzle-graphql/issues/100)
+
+
+### BREAKING CHANGES
+
+* **nested-writes:** the nested-write payload input type is renamed from
+`Create<Type><Relation>Input` to `<Type><Relation>NestedCreatePayloadInput`.
+Only builds with `features.nestedWrites` on generate it; a document that names
+the type (a variable declaration, a codegen artefact) has to be regenerated.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
 ## [7.9.1](https://github.com/cubicecho/drizzle-graphql/compare/v7.9.0...v7.9.1) (2026-08-27)
 
 
