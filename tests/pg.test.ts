@@ -10,6 +10,7 @@ import {
   GraphQLObjectType,
   GraphQLScalarType,
   GraphQLSchema,
+  graphql,
 } from 'graphql';
 import { createYoga } from 'graphql-yoga';
 import postgres, { type Sql } from 'postgres';
@@ -35,6 +36,7 @@ interface Context {
   docker: Docker;
   pgContainer: Docker.Container;
   db: PostgresJsDatabase<typeof schema>;
+  optInSchema: GraphQLSchema;
   client: Sql;
   schema: GraphQLSchema;
   entities: GeneratedEntities<PostgresJsDatabase<typeof schema>>;
@@ -118,6 +120,11 @@ beforeAll(async () => {
   const port = 4002;
   server.listen(port);
   const gql = new GraphQLClient(`http://localhost:${port}/graphql`);
+
+  // The atomic update operations and the count mutations are opt-in.
+  ctx.optInSchema = buildSchema(ctx.db, {
+    features: { fieldUpdateOperations: true, countMutations: true },
+  }).schema;
 
   ctx.schema = gqlSchema;
   ctx.entities = entities;
@@ -2819,7 +2826,7 @@ describe.sequential('Returned data tests', () => {
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
-                type: z.instanceof(GraphQLObjectType),
+                type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
             updateUsersMany: z
@@ -2834,6 +2841,8 @@ describe.sequential('Returned data tests', () => {
                   })
                   .strict(),
                 resolve: z.function(),
+                // Documents the nullable element, the one mutation whose return type differs.
+                description: z.string(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
                 type: z.instanceof(GraphQLNonNull),
@@ -2861,6 +2870,28 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
+            updateUsersSingle: z
+              .object({
+                args: z
+                  .object({
+                    set: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
             deleteUsers: z
               .object({
                 args: z
@@ -2876,6 +2907,23 @@ describe.sequential('Returned data tests', () => {
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
                 type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            deleteUsersSingle: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
             createPosts: z
@@ -2909,7 +2957,7 @@ describe.sequential('Returned data tests', () => {
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
-                type: z.instanceof(GraphQLObjectType),
+                type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
             updatePostsMany: z
@@ -2924,6 +2972,8 @@ describe.sequential('Returned data tests', () => {
                   })
                   .strict(),
                 resolve: z.function(),
+                // Documents the nullable element, the one mutation whose return type differs.
+                description: z.string(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
                 type: z.instanceof(GraphQLNonNull),
@@ -2951,6 +3001,28 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
+            updatePostsSingle: z
+              .object({
+                args: z
+                  .object({
+                    set: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
             deletePosts: z
               .object({
                 args: z
@@ -2966,6 +3038,23 @@ describe.sequential('Returned data tests', () => {
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
                 type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            deletePostsSingle: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
             createCustomers: z
@@ -2999,7 +3088,7 @@ describe.sequential('Returned data tests', () => {
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
-                type: z.instanceof(GraphQLObjectType),
+                type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
             updateCustomersMany: z
@@ -3014,6 +3103,8 @@ describe.sequential('Returned data tests', () => {
                   })
                   .strict(),
                 resolve: z.function(),
+                // Documents the nullable element, the one mutation whose return type differs.
+                description: z.string(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
                 type: z.instanceof(GraphQLNonNull),
@@ -3041,6 +3132,28 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
+            updateCustomersSingle: z
+              .object({
+                args: z
+                  .object({
+                    set: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
             deleteCustomers: z
               .object({
                 args: z
@@ -3056,6 +3169,23 @@ describe.sequential('Returned data tests', () => {
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
                 type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            deleteCustomersSingle: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
             createTags: z
@@ -3089,7 +3219,26 @@ describe.sequential('Returned data tests', () => {
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
-                type: z.instanceof(GraphQLObjectType),
+                type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            updateTagsMany: z
+              .object({
+                args: z
+                  .object({
+                    updates: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Documents the nullable element, the one mutation whose return type differs.
+                description: z.string(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
             updateTags: z
@@ -3114,6 +3263,28 @@ describe.sequential('Returned data tests', () => {
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
+            updateTagsSingle: z
+              .object({
+                args: z
+                  .object({
+                    set: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
+              })
+              .strict(),
             deleteTags: z
               .object({
                 args: z
@@ -3129,6 +3300,23 @@ describe.sequential('Returned data tests', () => {
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ complexity: z.function() }).strict().optional(),
                 type: z.instanceof(GraphQLNonNull),
+              })
+              .strict(),
+            deleteTagsSingle: z
+              .object({
+                args: z
+                  .object({
+                    where: z
+                      .object({
+                        type: z.instanceof(GraphQLNonNull),
+                      })
+                      .strict(),
+                  })
+                  .strict(),
+                resolve: z.function(),
+                // Present only on the fields that carry a complexity hint (lists and aggregates).
+                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
           })
@@ -3174,6 +3362,7 @@ describe.sequential('Returned data tests', () => {
             TagsOrderBy: z.instanceof(GraphQLInputObjectType),
             CreateTagsInput: z.instanceof(GraphQLInputObjectType),
             UpdateTagsInput: z.instanceof(GraphQLInputObjectType),
+            UpdateTagsManyInput: z.instanceof(GraphQLInputObjectType),
           })
           .strict(),
         fieldResolvers: z.record(z.string(), z.record(z.string(), z.function())).optional(),
@@ -4873,5 +5062,107 @@ describe('Insert conflict behavior (no onConflictDoNothing by default)', () => {
     // NOT silently return undefined.
     expect(res.errors).toBeDefined();
     expect(res.errors!.length).toBeGreaterThan(0);
+  });
+});
+
+describe.sequential('Atomic column updates, count mutations and relation pagination', () => {
+  const optIn = (source: string, variableValues?: Record<string, any>) =>
+    graphql({ schema: ctx.optInSchema, source, variableValues, contextValue: {} });
+  const run = (source: string, variableValues?: Record<string, any>) =>
+    graphql({ schema: ctx.schema, source, variableValues, contextValue: {} });
+
+  it('appends to an array column in the database', async () => {
+    const res = await optIn(
+      `mutation { updateUsersSingle(where: { id: { eq: 1 } }, set: { a: { push: [99] } }) { id a } }`,
+    );
+
+    expect(res.errors).toBeUndefined();
+    expect((res.data?.['updateUsersSingle'] as any)?.['a']).toStrictEqual([1, 5, 10, 25, 40, 99]);
+  });
+
+  it('replaces an array column when given set instead of push', async () => {
+    const res = await optIn(`mutation { updateUsersSingle(where: { id: { eq: 1 } }, set: { a: { set: [7] } }) { a } }`);
+
+    expect(res.errors).toBeUndefined();
+    expect((res.data?.['updateUsersSingle'] as any)?.['a']).toStrictEqual([7]);
+  });
+
+  it('rejects an operations input with no operation', async () => {
+    const res = await optIn(`mutation { updateUsersSingle(where: { id: { eq: 1 } }, set: { a: {} }) { a } }`);
+
+    expect(res.errors?.[0]?.message).toBe(
+      "Field 'a' was given no update operation. Pass exactly one of set, increment, decrement, multiply, divide, push.",
+    );
+  });
+
+  it('reads the row count out of the postgres.js result shape', async () => {
+    // node-postgres reports `rowCount`, PGlite `affectedRows`, postgres.js `count` — this is
+    // the driver the count mutations would silently return the wrong number for.
+    const res = await optIn(`mutation { updatePostsCount(where: { authorId: { eq: 1 } }, set: { content: "x" }) }`);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.['updatePostsCount']).toBe(4);
+  });
+
+  it('counts a delete and leaves no rows behind', async () => {
+    const res = await optIn(`mutation { deletePostsCount(where: { authorId: { eq: 5 } }) }`);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.['deletePostsCount']).toBe(2);
+    expect((await ctx.db.select().from(schema.Posts)).some((row) => row.authorId === 5)).toBe(false);
+  });
+
+  it('pages a to-many relation with after, per parent', async () => {
+    const first = await run(/* GraphQL */ `
+      {
+        users(where: { id: { eq: 1 } }) {
+          posts(orderBy: { id: { priority: 1, direction: asc } }, limit: 2) {
+            id
+            cursor
+          }
+        }
+      }
+    `);
+
+    expect(first.errors).toBeUndefined();
+    const page = (first.data?.['users'] as any[])[0]!['posts'];
+    expect(page.map((row: any) => row['id'])).toStrictEqual([1, 2]);
+
+    const second = await run(
+      /* GraphQL */ `
+        query ($after: String) {
+          users(where: { id: { eq: 1 } }) {
+            posts(orderBy: { id: { priority: 1, direction: asc } }, after: $after) {
+              id
+            }
+          }
+        }
+      `,
+      { after: page[1]['cursor'] },
+    );
+
+    expect(second.errors).toBeUndefined();
+    expect(((second.data?.['users'] as any[])[0]!['posts'] as any[]).map((row) => row['id'])).toStrictEqual([3, 6]);
+  });
+
+  it('keeps one row per distinct value within each parent', async () => {
+    const res = await run(/* GraphQL */ `
+      {
+        users(orderBy: { id: { priority: 1, direction: asc } }) {
+          id
+          posts(distinct: [content], orderBy: { id: { priority: 1, direction: asc } }) {
+            id
+            content
+          }
+        }
+      }
+    `);
+
+    expect(res.errors).toBeUndefined();
+    const byUser = Object.fromEntries(
+      (res.data?.['users'] as any[]).map((user) => [user['id'], user['posts'].map((post: any) => post['id'])]),
+    );
+    // User 1 wrote 1MESSAGE, 2MESSAGE, 3MESSAGE and 4MESSAGE — all distinct, so all survive.
+    expect(byUser[1]).toStrictEqual([1, 2, 3, 6]);
   });
 });
