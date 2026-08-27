@@ -302,6 +302,14 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     if (config?.features?.groupBy !== undefined && tableFeatures.groupBy && !tableFeatures.aggregates) {
       noteConflict('groupBy is on while aggregates is off, so no grouped query is generated', tableName);
     }
+    // The count mutations mirror the plural write they count, so they need at least one of the
+    // two to be generated at all.
+    if (tableFeatures.countMutations && !tableFeatures.update && !tableFeatures.delete) {
+      noteConflict(
+        'countMutations is on while update and delete are both off, so no count mutation is generated',
+        tableName,
+      );
+    }
   }
   for (const [message, tables] of featureConflicts) {
     const listed =

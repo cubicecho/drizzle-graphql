@@ -68,6 +68,27 @@ const upsertEntities = generateMySQL(mockDb, tableSchema, schema.relations, {
   },
 }) as any;
 
+// The two flags this file's main generation leaves off, so their shapes can be inspected
+// against MySQL's otherwise uniform mutation return type.
+const optInEntities = generateMySQL(mockDb, tableSchema, schema.relations, {
+  relationsDepthLimit: undefined,
+  prefixes,
+  suffixes,
+  conflictDoNothing: false,
+  shouldEagerLoad: () => true,
+  features: {
+    aggregates: true,
+    relationAggregates: true,
+    distinct: true,
+    insert: true,
+    update: true,
+    delete: true,
+    upsert: false,
+    fieldUpdateOperations: true,
+    countMutations: true,
+  },
+}) as any;
+
 // ── query structure ───────────────────────────────────────────────────────────
 
 describe('MySQL generated queries', () => {
@@ -329,5 +350,40 @@ describe('MySQL complexity hints', () => {
   it('leaves single queries flat', () => {
     // The identity block is always published; a single query just has no cost hint beside it.
     expect(entities.queries['usersSingle'].extensions['complexity']).toBeUndefined();
+  });
+});
+
+// ── the two opt-in mutation shapes ────────────────────────────────────────────
+
+describe('MySQL count mutations', () => {
+  it('are absent unless the feature is on', () => {
+    expect(entities.mutations['updateUsersCount']).toBeUndefined();
+    expect(entities.mutations['deleteUsersCount']).toBeUndefined();
+  });
+
+  it('return Int! — the one mutation pair that is not MutationReturn', () => {
+    expect(String(optInEntities.mutations['updateUsersCount'].type)).toBe('Int!');
+    expect(String(optInEntities.mutations['deleteUsersCount'].type)).toBe('Int!');
+    // Which is the point: MySQL's writes report nothing but success, so a count is the only
+    // way to learn how many rows a bulk write touched.
+    expect(optInEntities.mutations['updateUsers'].type).toBe(optInEntities.types['MutationReturn']);
+  });
+
+  it('take the same arguments as the writes they mirror', () => {
+    expect(Object.keys(optInEntities.mutations['updateUsersCount'].args)).toEqual(['set', 'where']);
+    expect(Object.keys(optInEntities.mutations['deleteUsersCount'].args)).toEqual(['where']);
+  });
+});
+
+describe('MySQL field update operations', () => {
+  it("replaces a numeric column's update field with an operations input", () => {
+    const fields = optInEntities.inputs['UpdateUsersInput'].getFields();
+
+    expect(String(fields['id'].type)).toBe('IntFieldUpdate');
+    expect(String(fields['name'].type)).toBe('String');
+  });
+
+  it('leaves the update input set-only when the flag is off', () => {
+    expect(String(entities.inputs['UpdateUsersInput'].getFields()['id'].type)).toBe('Int');
   });
 });

@@ -15,11 +15,6 @@ Supabase's `pg_graphql`. Roughly ordered within each group; nothing here is comm
 
 ## Medium priority
 
-- **Multi-mutation transactions** — a caller can now run a whole request on one transaction
-  by putting it on the GraphQL context under `drizzleExecutorKey`; every resolver reads it at
-  resolve time. What is left is doing it automatically: wrapping a request that fires several
-  mutations in a transaction the library opens itself, without the caller wiring up the
-  context.
 - **Full-text search** — Postgres `tsvector` / `websearch_to_tsquery`, MySQL `MATCH … AGAINST`,
   SQLite FTS5. Would slot in as an operator on the filter input for qualifying columns.
 
@@ -27,18 +22,24 @@ Supabase's `pg_graphql`. Roughly ordered within each group; nothing here is comm
 
 - **Views and computed fields** — Drizzle views are not picked up, and there is no way to add
   a derived field backed by SQL. Reachable now by composing a custom schema.
-- **Relay connections** — `Node` interface, global IDs, `PageInfo`, cursor pagination. A large
-  surface, and the current `limit`/`offset` covers most uses; worth doing only if a client
-  framework demands it.
+- **Relay connections** — `Node` interface, global IDs, `PageInfo`, `edges`/`node` wrappers.
+  Keyset pagination itself has landed (`cursor` + `after`, on list queries and on to-many
+  relation fields alike); what is left is the Relay *shape* around it, which is a large
+  surface and worth doing only if a client framework demands it.
 - **Subscriptions / live queries** — needs a change-feed (`LISTEN`/`NOTIFY`, binlog, polling)
   that this library does not have and cannot fake cheaply.
-- **`affected_rows` on mutation payloads** — Hasura exposes it, and MySQL's returnless
-  mutations would benefit most. (Descriptions and deprecations themselves have landed as the
-  `describeColumn` / `describeTable` / `describeRelation` / `deprecateColumn` hooks; reading
-  them out of database comments automatically is still open, and needs a catalogue query
-  drizzle does not expose.)
-- **Many-to-many relation filters** — relations declared with `.through()` are currently left
-  out of the filter input entirely. Same gap exists for relation aggregates.
+- **Reading descriptions out of database comments** — the description and deprecation hooks
+  themselves have landed (`describeColumn` / `describeTable` / `describeRelation` /
+  `deprecateColumn`); populating them automatically from column and table comments is still
+  open, and needs a catalogue query drizzle does not expose.
+- **`affected_rows` on the row-returning mutation payloads** — `features.countMutations` adds
+  `update<Table>Count` / `delete<Table>Count`, which answer the same question, but a caller
+  who wants the rows *and* the count still needs two fields. Hasura returns both in one
+  payload; doing the same here means a wrapper object type per table, which is a much larger
+  schema change than the count mutations were.
+- **Many-to-many in `orderBy` and nested writes** — relation *filters* handle `.through()`
+  (including inside aggregate queries), but a junction relation cannot back an `orderBy` hop,
+  and nested writes do not write through one.
 
 ## Deliberately not doing
 
@@ -48,3 +49,6 @@ Supabase's `pg_graphql`. Roughly ordered within each group; nothing here is comm
   request context this library does not.
 - **Per-request authorization hooks** — same reasoning: auth middleware sits above the schema
   and has the request context it needs.
+- **Document-level limits** — depth, alias, directive and token caps, and a static cost
+  ceiling. `@escape.tech/graphql-armor` does all of it at the edge; this library's job stops
+  at the `complexity` hints, which price rows rather than document shape.
