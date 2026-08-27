@@ -245,7 +245,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
         )
       : undefined;
     const nestedTypes = nestedPlans
-      ? createNestedWriteTypes({ plans: nestedPlans, cacheCtx, typeNameMapper, insertPrefix: prefixes.insert })
+      ? createNestedWriteTypes({ plans: nestedPlans, cacheCtx, typeNameMapper })
       : undefined;
     const nestedRuntime = nestedPlans
       ? createNestedWriteRuntime({

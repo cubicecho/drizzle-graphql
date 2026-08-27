@@ -1294,6 +1294,11 @@ mutation {
     `author: { create: … }` available, `authorId` is one of two ways to supply it
 -   Nesting is one level deep: the row a nested `create` inserts takes columns only, and the
     join column is left off, since the write it is part of sets it
+-   The generated input types are `<Type><Relation>NestedCreateInput` and
+    `<Type><Relation>NestedUpdateInput` for the operations, and
+    `<Type><Relation>NestedCreatePayloadInput` for the row a `create` inserts — all named
+    outside the root input namespace, so a relation whose name spells a sibling table's
+    (`item.type` beside a table named `itemType`) is not a collision
 -   Many-to-many (`.through()`) relations are written through their junction table — see
     below
 -   The whole tree runs in one transaction — a savepoint when the request already carries one

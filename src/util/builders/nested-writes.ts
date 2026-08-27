@@ -361,17 +361,22 @@ export const createNestedWriteTypes = (params: {
   plans: NestedWritePlans;
   cacheCtx: TypeCacheCtx;
   typeNameMapper: TypeNameMapper | undefined;
-  insertPrefix: string;
 }): NestedWriteTypes => {
-  const { plans, cacheCtx, typeNameMapper, insertPrefix } = params;
+  const { plans, cacheCtx, typeNameMapper } = params;
   const wrapperCache = new Map<string, GraphQLInputObjectType>();
   const payloadCache = new Map<string, GraphQLInputObjectType>();
 
   /**
-   * `Create<Type><Relation>Input` — the row a nested `create` inserts. Built from the target's
-   * columns rather than from its create input: the join column this relation fills in is left
-   * out (setting it by hand could point the new row somewhere other than its parent), and the
-   * nesting stops here, so the type carries no relation fields of its own.
+   * `<Type><Relation>NestedCreatePayloadInput` — the row a nested `create` inserts. Built from
+   * the target's columns rather than from its create input: the join column this relation
+   * fills in is left out (setting it by hand could point the new row somewhere other than its
+   * parent), and the nesting stops here, so the type carries no relation fields of its own.
+   *
+   * The name shares the wrapper's `<Type><Relation>Nested…` segment rather than reading
+   * `Create<Type><Relation>Input`, which lands in the same namespace as a table's own create
+   * input: `item.type` spells `CreateItemTypeInput`, and so does a sibling table named
+   * `itemType`. Two types of that name is a schema that cannot be built at all, and
+   * `nestedWrites` is a whole-schema flag, so one such pair made it unusable.
    */
   const payloadType = (tableName: string, typeName: string, plan: NestedRelationPlan): GraphQLInputObjectType => {
     const key = `${tableName}.${plan.relationName}`;
@@ -394,7 +399,7 @@ export const createNestedWriteTypes = (params: {
     );
 
     const type = new GraphQLInputObjectType({
-      name: `${capitalize(insertPrefix)}${typeName}${capitalize(plan.relationName)}Input`,
+      name: `${typeName}${capitalize(plan.relationName)}NestedCreatePayloadInput`,
       description:
         omitted === undefined
           ? `A new ${resolveTypeName(plan.targetTableName, typeNameMapper)} row for ${typeName}.${plan.relationName}`

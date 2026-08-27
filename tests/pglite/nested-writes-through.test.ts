@@ -149,7 +149,7 @@ describe.sequential('nested writes through a junction table: generated surface',
 
   it('offers no create, and so generates no row payload for the relation', () => {
     expect(inFields('PostsTagsNestedUpdateInput')['create']).toBeUndefined();
-    expect(gqlSchema.getType('CreatePostsTagsInput')).toBeUndefined();
+    expect(gqlSchema.getType('PostsTagsNestedCreatePayloadInput')).toBeUndefined();
   });
 
   it('offers the relation from both ends', () => {

@@ -112,7 +112,7 @@ describe.sequential('nested writes: generated surface', () => {
 
     const ops = inFields('AuthorsPostsNestedCreateInput');
     expect(Object.keys(ops).sort()).toEqual(['connect', 'create']);
-    expect(String(ops['create']!.type)).toBe('[CreateAuthorsPostsInput!]');
+    expect(String(ops['create']!.type)).toBe('[AuthorsPostsNestedCreatePayloadInput!]');
     expect(String(ops['connect']!.type)).toBe('[PostsFilters!]');
   });
 
@@ -132,7 +132,7 @@ describe.sequential('nested writes: generated surface', () => {
   it('takes a single row, not a list, for a to-one relation', () => {
     const ops = inFields('PostsAuthorNestedUpdateInput');
 
-    expect(String(ops['create']!.type)).toBe('CreatePostsAuthorInput');
+    expect(String(ops['create']!.type)).toBe('PostsAuthorNestedCreatePayloadInput');
     expect(String(ops['connect']!.type)).toBe('AuthorsFilters');
     expect(String(ops['disconnect']!.type)).toBe('Boolean');
   });
@@ -140,13 +140,44 @@ describe.sequential('nested writes: generated surface', () => {
   it('leaves the join column out of the payload the child side inserts', () => {
     // The row is attached to the parent being written, so pointing it elsewhere by hand
     // would contradict the write it is part of.
-    expect(inFields('CreateAuthorsPostsInput')['authorId']).toBeUndefined();
-    expect(inFields('CreateAuthorsPostsInput')['title']).toBeDefined();
+    expect(inFields('AuthorsPostsNestedCreatePayloadInput')['authorId']).toBeUndefined();
+    expect(inFields('AuthorsPostsNestedCreatePayloadInput')['title']).toBeDefined();
   });
 
   it('keeps the join column on a parent-side payload, which writes a different table', () => {
-    expect(inFields('CreatePostsAuthorInput')['name']).toBeDefined();
-    expect(inFields('CreatePostsAuthorInput')['id']).toBeDefined();
+    expect(inFields('PostsAuthorNestedCreatePayloadInput')['name']).toBeDefined();
+    expect(inFields('PostsAuthorNestedCreatePayloadInput')['id']).toBeDefined();
+  });
+
+  it('keeps the payload out of the root input namespace', () => {
+    // `item.type` used to spell `CreateItemTypeInput`, which is also the create input of a
+    // sibling table named `itemType` — two types of one name, and a schema that cannot be
+    // built. `nestedWrites` is a whole-schema flag, so one such pair made it unusable.
+    const ItemType = pgTable('item_type', {
+      id: text('id').primaryKey(),
+      label: text('label').notNull(),
+    });
+    const Item = pgTable('item', {
+      id: text('id').primaryKey(),
+      typeId: text('type_id').notNull(),
+    });
+    const rel = createRelationsHelper({ Item, ItemType });
+    const collidingRelations = buildRelations(
+      { Item, ItemType },
+      {
+        ItemType: { items: rel.many.Item({ from: rel.ItemType.id, to: rel.Item.typeId }) },
+        Item: { type: rel.one.ItemType({ from: rel.Item.typeId, to: rel.ItemType.id, optional: false }) },
+      },
+    );
+    const collidingSchema = { Item, ItemType, relations: collidingRelations };
+    const collidingDb = (drizzle as any)({ client: pglite, schema: collidingSchema, relations: collidingRelations });
+
+    const built = buildSchema(collidingDb, { features: { nestedWrites: true } }).schema;
+
+    expect(built.getType('ItemTypeNestedCreatePayloadInput')).toBeDefined();
+    // The table's own create input is a different type, and still its own.
+    const rootInput = built.getType('CreateItemTypeInput') as GraphQLInputObjectType;
+    expect(Object.keys(rootInput.getFields()).sort()).toEqual(['id', 'items', 'label']);
   });
 
   it('relaxes a required join column the relation can fill in instead', () => {

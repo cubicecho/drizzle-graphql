@@ -200,7 +200,7 @@ describe.sequential('schema exclusions', () => {
     it('hides the column on a nested-write payload too', () => {
       const gqlSchema = buildWith(exclude);
       // Users.posts nested create builds its own payload input from the target table.
-      expect(fieldNames(gqlSchema, 'CreateUsersPostsInput')).not.toContain('content');
+      expect(fieldNames(gqlSchema, 'UsersPostsNestedCreatePayloadInput')).not.toContain('content');
     });
   });
 
