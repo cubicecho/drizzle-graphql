@@ -2,8 +2,8 @@ import type { SchemaFeatures } from '../types.ts';
 import type { TableFeatures } from './builders/types.ts';
 
 /**
- * What a table generates when the config says nothing. Everything is on except the two
- * opt-in features, so a build with no `features` block generates what it always did.
+ * What a table generates when the config says nothing. Everything is on except the opt-in
+ * features, so a build with no `features` block generates what it always did.
  */
 export const featureDefaults: TableFeatures = {
   aggregates: true,
@@ -15,6 +15,8 @@ export const featureDefaults: TableFeatures = {
   updateMany: true,
   delete: true,
   upsert: false,
+  fieldUpdateOperations: false,
+  countMutations: false,
   requireWhere: false,
 };
 
