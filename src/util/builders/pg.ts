@@ -1,8 +1,7 @@
 import { and, getColumns, type Table } from 'drizzle-orm';
 import type { RelationalQueryBuilder } from 'drizzle-orm/mysql-core/query-builders/query';
 import { getTableConfig, type PgAsyncDatabase, type PgColumn, PgTable } from 'drizzle-orm/pg-core';
-import type { GraphQLFieldConfigArgumentMap } from 'graphql';
-import { GraphQLError, type GraphQLInputObjectType, GraphQLList, GraphQLNonNull } from 'graphql';
+import { GraphQLError, type GraphQLInputObjectType } from 'graphql';
 import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import type { GeneratedEntities } from '../../types.ts';
@@ -15,7 +14,6 @@ import {
   cursorOrderingEntries,
   type DeletedMode,
   decodeCursor,
-  eagerLoadMutationRelations,
   extractFilters,
   extractOrderBy,
   extractSelectedColumnsFromTreeSQLFormat,
@@ -23,22 +21,17 @@ import {
   getPrimaryKeyPropNamesFromConfig,
   isCursorFieldSelected,
   type LimitPolicyFor,
-  type MutationTxCtx,
   orderByCursorObstacle,
-  prepareMutationRelationColumns,
   primaryKeyOrderExprs,
   primaryKeyRestriction,
   type RelationFilterBase,
   type ResolverPolicies,
   relationFilterCtx,
   resolveQueryExecutor,
-  runMutation,
   runRelationalSelect,
-  runWriteHook,
   selectArrayArgs,
   selectDistinctKeys,
   selectSingleArgs,
-  stripContextValues,
   type TablesRelationalConfig,
   type TypeNameMapper,
   toGraphQLError,
@@ -46,16 +39,9 @@ import {
   withScope,
 } from '../builders/common.ts';
 import { remapToGraphQLArrayOutput, remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
-import { remapUpdateInput } from './field-updates.ts';
-import { mergedOps, type NestedWriteRuntime } from './nested-writes.ts';
 import { createSchemaDataGenerator } from './schema-data.ts';
-import type {
-  CreatedResolver,
-  Filters,
-  SchemaGeneratorOptions,
-  TableNamedRelations,
-  TableSelectArgs,
-} from './types.ts';
+import type { CreatedResolver, SchemaGeneratorOptions, TableNamedRelations, TableSelectArgs } from './types.ts';
+import { createUpdateManyGenerator } from './update-many.ts';
 
 const generateSelectArray = (
   db: PgAsyncDatabase<any, any>,
@@ -340,195 +326,7 @@ const generateSelectSingle = (
 /** Primary-key property names for a PG table, including table-level composite keys. */
 const pgPrimaryKeyPropNames = (table: PgTable): string[] => getPrimaryKeyPropNamesFromConfig(table, getTableConfig);
 
-/**
- * `update<Table>Many` — batch update with a per-entry `set` and `where`.
- *
- * The entries run as one UPDATE statement each, in input order, inside a single
- * transaction (a savepoint when the request context already carries one), so a failing
- * entry rolls the whole batch back and a row matched by several entries sees them applied
- * in order. The result lists each entry's updated rows in entry order, with `null`
- * standing in for an entry whose `where` matched no rows, so the common one-row-per-entry
- * case stays aligned with the input.
- */
-const generateUpdateMany = (
-  db: PgAsyncDatabase<any, any>,
-  tableName: string,
-  table: PgTable,
-  tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  updateManyInput: GraphQLInputObjectType,
-  fieldName: string,
-  typeName: string,
-  typeNameMapper?: TypeNameMapper,
-  filterCtx?: RelationFilterBase,
-  txCtx?: MutationTxCtx,
-  nested?: NestedWriteRuntime,
-  limits?: LimitPolicyFor,
-  policies?: ResolverPolicies,
-): CreatedResolver => {
-  const queryArgs = {
-    updates: {
-      type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(updateManyInput))),
-    },
-  } as const satisfies GraphQLFieldConfigArgumentMap;
-
-  // Derived once at build time — PK prop names don't change per request.
-  const pkNames = pgPrimaryKeyPropNames(table);
-  const hooks = policies?.onWrite?.(tableName, 'updateMany');
-
-  return {
-    name: fieldName,
-    resolver: async (
-      _source,
-      args: { updates: { where?: Filters<Table>; set: Record<string, any> }[] },
-      context,
-      info,
-    ) => {
-      try {
-        return await runMutation(
-          db,
-          context,
-          info,
-          txCtx,
-          async (executor) => {
-            const { updates } = args;
-            if (!updates.length) {
-              throw new GraphQLError('No updates were provided!');
-            }
-            await runWriteHook(hooks, 'before', {
-              table: tableName,
-              operation: 'updateMany',
-              single: false,
-              args,
-              context,
-              info,
-              tx: executor,
-            });
-            const scope = policies?.scope?.(context);
-            const contextColumns = policies?.contextValues?.(tableName);
-
-            const parsedInfo = parseResolveInfo(info, {
-              deep: true,
-            }) as ResolveTree;
-
-            const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
-              relationMap,
-              tables,
-              tableName,
-              typeName,
-              typeNameMapper,
-              table,
-              pkNames,
-              parsedInfo,
-              limits,
-              scope,
-              defaultOrderBy: policies?.defaultOrderBy,
-            });
-
-            // Remap and validate every entry before the transaction opens, so a malformed
-            // entry rejects the request instead of rolling back mid-batch.
-            const entries = updates.map(({ where, set }) => {
-              const split = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
-              const ops = split && nested!.hasOps(split.ops) ? split.ops : undefined;
-              const input = stripContextValues(
-                remapUpdateInput(split ? split.columns : set, table, tableName),
-                contextColumns,
-              );
-              // An entry that only writes through a relation still has work to do.
-              if (!Object.keys(input).length && !ops) {
-                throw new GraphQLError('Unable to update with no values specified!');
-              }
-              return {
-                set: input,
-                ops,
-                filters: withScope(
-                  scope,
-                  tableName,
-                  table,
-                  where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
-                ),
-              };
-            });
-
-            const returning = entries.some((entry) => entry.ops)
-              ? nested!.withJoinColumns(
-                  tableName,
-                  mergedOps(entries.map((entry) => ({ ops: entry.ops ?? {} }))),
-                  {
-                    ...columns,
-                  },
-                  table,
-                )
-              : columns;
-
-            // On a caller-supplied transaction — or the shared multi-mutation transaction
-            // opened by `runMutation` — this opens a savepoint, so the batch stays atomic
-            // without breaking the outer transaction.
-            const perEntry: Record<string, any>[][] = await executor.transaction(async (tx: any) => {
-              const results: Record<string, any>[][] = [];
-              for (const entry of entries) {
-                const values = entry.ops
-                  ? { ...entry.set, ...(await nested!.applyParentSide(tx, tableName, entry.ops, context)) }
-                  : entry.set;
-
-                // Same as the single update: an entry with no column values reads the rows its
-                // `where` matched so the nested operations have something to attach to.
-                const writes = Object.keys(values).length > 0;
-                let query = writes ? tx.update(table).set(values) : tx.select(returning).from(table);
-                if (entry.filters) {
-                  query = query.where(entry.filters) as any;
-                }
-                const rows = (await (writes ? (query.returning(returning) as any) : query)) as Record<string, any>[];
-
-                if (entry.ops) {
-                  await nested!.applyChildSide(tx, tableName, entry.ops, rows, context);
-                }
-                results.push(rows);
-              }
-              return results;
-            });
-
-            const flatRows = perEntry.flat();
-            await runWriteHook(hooks, 'after', {
-              table: tableName,
-              operation: 'updateMany',
-              single: false,
-              args,
-              rows: flatRows,
-              context,
-              info,
-              tx: executor,
-            });
-
-            const enriched = hasRelations
-              ? await eagerLoadMutationRelations(executor, tableName, flatRows, pkNames, withParams)
-              : flatRows;
-
-            // Rebuild the per-entry slots: a no-match entry contributes `null`, a multi-match
-            // entry contributes each of its rows.
-            const output: (Record<string, any> | null)[] = [];
-            let offset = 0;
-            for (const rows of perEntry) {
-              if (!rows.length) {
-                output.push(null);
-                continue;
-              }
-              for (let i = 0; i < rows.length; i++) {
-                output.push(remapToGraphQLSingleOutput(enriched[offset + i], tableName, table, relationMap));
-              }
-              offset += rows.length;
-            }
-            return output;
-          },
-          !!hooks,
-        );
-      } catch (e) {
-        throw toGraphQLError(e);
-      }
-    },
-    args: queryArgs,
-  };
-};
+const generateUpdateMany = createUpdateManyGenerator(pgPrimaryKeyPropNames);
 
 const pgSchemaData = createSchemaDataGenerator({
   tableClass: PgTable,
