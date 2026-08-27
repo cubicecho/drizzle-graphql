@@ -175,9 +175,7 @@ export type SelectResolver<
               : TRelations[K] extends Many<infer TTargetName>
                 ? Array<
                     GetRemappedTableDataType<
-                      ExtractTableByName<TTables, TTargetName> extends infer T
-                        ? T[keyof T]
-                        : never
+                      ExtractTableByName<TTables, TTargetName> extends infer T ? T[keyof T] : never
                     >
                   >
                 : never;
@@ -207,9 +205,7 @@ export type SelectSingleResolver<
               : TRelations[K] extends Many<infer TTargetName>
                 ? Array<
                     GetRemappedTableDataType<
-                      ExtractTableByName<TTables, TTargetName> extends infer T
-                        ? T[keyof T]
-                        : never
+                      ExtractTableByName<TTables, TTargetName> extends infer T ? T[keyof T] : never
                     >
                   >
                 : never;
