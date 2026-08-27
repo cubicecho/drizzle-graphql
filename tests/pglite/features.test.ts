@@ -243,3 +243,162 @@ describe('features: everything optional turned off', () => {
     expect(gqlSchema.getMutationType()).toBeUndefined();
   });
 });
+
+// ── per-table selection ─────────────────────────────────────────────────────────
+
+describe('features: per-table predicates', () => {
+  it('generates a mutation for the tables the predicate allows and no others', () => {
+    const mutations = build({ delete: (table) => table !== 'Users' })
+      .schema.getMutationType()!
+      .getFields();
+
+    expect(mutations['deleteUsers']).toBeUndefined();
+    expect(mutations['deleteUsersSingle']).toBeUndefined();
+    expect(mutations['deletePosts']).toBeDefined();
+    expect(mutations['deleteCustomers']).toBeDefined();
+    // The table itself is untouched — it still reads and still writes the other ways.
+    expect(queryFields(build({ delete: (table) => table !== 'Users' }).schema)['users']).toBeDefined();
+    expect(mutations['updateUsers']).toBeDefined();
+  });
+
+  it('is asked with the Drizzle schema key, not the generated GraphQL name', () => {
+    const seen: string[] = [];
+    build({
+      update: (table) => {
+        seen.push(table);
+        return true;
+      },
+    });
+
+    expect([...new Set(seen)].sort()).toEqual(['Customers', 'Posts', 'Tags', 'Users']);
+  });
+
+  it('turns a query-side feature off for one table only', () => {
+    const gqlSchema = build({ aggregates: (table) => table === 'Posts' }).schema;
+
+    expect(queryFields(gqlSchema)['postsAggregate']).toBeDefined();
+    expect(queryFields(gqlSchema)['usersAggregate']).toBeUndefined();
+    expect(gqlSchema.getType('PostsAggregate')).toBeDefined();
+    expect(gqlSchema.getType('UsersAggregate')).toBeUndefined();
+  });
+
+  it('scopes relation aggregate fields to the table that owns them', () => {
+    const gqlSchema = build({ relationAggregates: (table) => table !== 'Users' }).schema;
+
+    expect(userFields(gqlSchema)['postsAggregate']).toBeUndefined();
+    // Customers still carries its own, over the same relation target whose owner lost them.
+    expect((gqlSchema.getType('Customers') as GraphQLObjectType).getFields()['postsAggregate']).toBeDefined();
+  });
+
+  it('opts one table in to upsert without giving the rest of the schema one', () => {
+    const mutations = build({ upsert: (table) => table === 'Users' })
+      .schema.getMutationType()!
+      .getFields();
+
+    expect(mutations['upsertUsers']).toBeDefined();
+    expect(mutations['upsertPosts']).toBeUndefined();
+  });
+
+  it('applies requireWhere per table', () => {
+    const mutations = build({ requireWhere: (table) => table === 'Users' })
+      .schema.getMutationType()!
+      .getFields();
+
+    expect(String(mutations['deleteUsers']!.args.find((arg) => arg.name === 'where')!.type)).toBe('UsersFilters!');
+    expect(String(mutations['deletePosts']!.args.find((arg) => arg.name === 'where')!.type)).toBe('PostsFilters');
+  });
+
+  it('drops the distinct argument per table', () => {
+    const gqlSchema = build({ distinct: (table) => table !== 'Users' }).schema;
+
+    expect(queryFields(gqlSchema)['users']!.args.map((arg) => arg.name)).not.toContain('distinct');
+    expect(queryFields(gqlSchema)['posts']!.args.map((arg) => arg.name)).toContain('distinct');
+  });
+
+  it('opts one table in to the count mutations', () => {
+    const mutations = build({ countMutations: (table) => table === 'Users' })
+      .schema.getMutationType()!
+      .getFields();
+
+    expect(mutations['updateUsersCount']).toBeDefined();
+    expect(mutations['deleteUsersCount']).toBeDefined();
+    expect(mutations['updatePostsCount']).toBeUndefined();
+  });
+
+  it('opts one table in to the atomic update operations', () => {
+    const gqlSchema = build({ fieldUpdateOperations: (table) => table === 'Posts' }).schema;
+    const postFields = (gqlSchema.getType('UpdatePostsInput') as GraphQLInputObjectType).getFields();
+    const userFields = (gqlSchema.getType('UpdateUsersInput') as GraphQLInputObjectType).getFields();
+
+    // Only the opted-in table's numeric columns take an operations input instead of the scalar.
+    expect(String(postFields['id']!.type)).toBe('IntFieldUpdate');
+    expect(String(userFields['id']!.type)).toBe('Int');
+  });
+
+  it('omits the Mutation type when no table generates one', () => {
+    const gqlSchema = build({ insert: () => false, update: () => false, delete: () => false }).schema;
+
+    expect(gqlSchema.getMutationType()).toBeUndefined();
+  });
+
+  it('keeps the Mutation type when a single table still writes', () => {
+    const gqlSchema = build({
+      insert: (table) => table === 'Posts',
+      update: () => false,
+      delete: () => false,
+    }).schema;
+
+    expect(Object.keys(gqlSchema.getMutationType()!.getFields()).sort()).toEqual(['createPosts', 'createPostsSingle']);
+  });
+});
+
+describe('features: implication warnings', () => {
+  const captureWarnings = (features: SchemaFeatures): string[] => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (message: string) => warnings.push(message);
+    try {
+      build(features);
+    } finally {
+      console.warn = original;
+    }
+    return warnings;
+  };
+
+  it('warns when a table upserts but cannot insert, naming the table', () => {
+    const warnings = captureWarnings({ upsert: (table) => table === 'Users', insert: (table) => table !== 'Users' });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('upsert is on while insert is off');
+    expect(warnings[0]).toContain('Users');
+    expect(warnings[0]).not.toContain('Posts');
+  });
+
+  it('names both missing operations in one warning', () => {
+    const warnings = captureWarnings({ upsert: true, insert: false, update: false });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('insert and update');
+  });
+
+  it('collapses the same conflict across tables into one line', () => {
+    const warnings = captureWarnings({ upsert: true, insert: false });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('Users');
+    expect(warnings[0]).toContain('Posts');
+  });
+
+  it('stays quiet when the flags are consistent', () => {
+    expect(captureWarnings({ upsert: true })).toEqual([]);
+    expect(captureWarnings({ delete: false, update: false })).toEqual([]);
+    // updateMany and groupBy default to on, so turning off what they build on is the
+    // ordinary way to remove them and says nothing.
+    expect(captureWarnings({ update: false, aggregates: false })).toEqual([]);
+  });
+
+  it('warns only when the dependent feature was actually asked for', () => {
+    expect(captureWarnings({ update: false, updateMany: true })[0]).toContain('updateMany is on while update is off');
+    expect(captureWarnings({ aggregates: false, groupBy: true })[0]).toContain('groupBy is on while aggregates is off');
+  });
+});

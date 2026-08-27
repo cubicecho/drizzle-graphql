@@ -93,12 +93,12 @@ import type {
   FiltersCore,
   GeneratedTableTypes,
   GeneratedTableTypesOutputs,
-  GeneratorFeatures,
   OrderByArgs,
   ProcessedTableSelectArgs,
   SelectData,
   SelectedColumnsRaw,
   SelectedSQLColumns,
+  TableFeatures,
   TableNamedRelations,
   TableSelectArgs,
 } from './types.ts';
@@ -972,10 +972,13 @@ export interface TypeCacheCtx {
    */
   limits: LimitPolicyFor | undefined;
   /**
-   * The build's resolved feature flags. Like `complexity` and `docs`, not a cache — the type
-   * builders are several calls deep and this context is already threaded through them.
+   * This build's feature flags, resolved for one table. Like `complexity` and `docs`, not a
+   * cache — the type builders are several calls deep and this context is already threaded
+   * through them. A lookup rather than a flat object because a flag may be a per-table
+   * predicate, and because the table a builder is asked about is not always the one whose
+   * type it is building: a relation field reads the flags of the table it points at.
    */
-  features: GeneratorFeatures;
+  featureOf: (tableName: string) => TableFeatures;
 }
 
 /**
@@ -2289,7 +2292,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
       // two drizzle's `with:` clause cannot express, so a request that passes either drops
       // the relation out of the eager fetch and resolves it through the batch loader, which
       // implements both — see extractRelationsParamsInner.
-      const targetDistinctEnum = cacheCtx.features.distinct
+      const targetDistinctEnum = cacheCtx.featureOf(targetTableName).distinct
         ? generateDistinctEnum(tables[targetTableName]!, resolveTypeName(targetTableName, typeNameMapper))
         : undefined;
 
@@ -2444,7 +2447,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
       const converted = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, true);
       // A numeric or array column takes an operations input instead of the bare scalar, so
       // it can be changed relative to its current value rather than only replaced.
-      const operations = cacheCtx.features.fieldUpdateOperations
+      const operations = cacheCtx.featureOf(tableName).fieldUpdateOperations
         ? fieldUpdateInputType(column, columnName, tableName)
         : undefined;
       const field = operations ? { ...converted, type: operations } : converted;

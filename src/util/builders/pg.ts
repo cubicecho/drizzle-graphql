@@ -77,6 +77,7 @@ import {
   remapToGraphQLArrayOutput,
   remapToGraphQLSingleOutput,
 } from '../data-mappers/index.ts';
+import { resolveTableFeatures } from '../features.ts';
 import { registerEnumConfig, registerScalarOverrides } from '../type-converter/index.ts';
 import {
   createRelationAggregateFactory,
@@ -101,6 +102,7 @@ import type {
   CreatedResolver,
   Filters,
   SchemaGeneratorOptions,
+  TableFeatures,
   TableNamedRelations,
   TableSelectArgs,
 } from './types.ts';
@@ -1066,6 +1068,12 @@ export function generateSchemaData<
   ][];
   const tables = Object.fromEntries(tableEntries) as Record<string, PgTable>;
 
+  // A feature flag may be a per-table predicate, so every flag is resolved against the table
+  // it applies to. `anyTable` answers the build-wide question — whether machinery shared
+  // across tables is worth constructing at all.
+  const featureOf = resolveTableFeatures(features);
+  const anyTable = (feature: keyof TableFeatures) => tableEntries.some(([name]) => featureOf(name)[feature]);
+
   if (!tableEntries.length) {
     throw new Error(
       "Drizzle-GraphQL Error: No tables detected in Drizzle-ORM's database instance. Did you forget to pass schema to drizzle constructor?",
@@ -1126,7 +1134,7 @@ export function generateSchemaData<
     complexity,
     limits,
     docs: options.docs ?? {},
-    features,
+    featureOf,
   };
 
   // Nested writes: the plans decide which relations are writable at all, the types add their
@@ -1146,9 +1154,10 @@ export function generateSchemaData<
     : undefined;
   const nestedRuntime = nestedPlans ? createNestedWriteRuntime({ plans: nestedPlans, filterCtx }) : undefined;
 
-  // Left undefined when the feature is off — generateTableTypes then emits no
-  // `${relation}Aggregate` fields at all.
-  const relationAggregateFactory: RelationAggregateFactory | undefined = features.relationAggregates
+  // Built when at least one table wants relation aggregates; a table that has them off is
+  // handed `undefined` below, so `generateTableTypes` emits no `${relation}Aggregate` fields
+  // on its object type.
+  const relationAggregateFactory: RelationAggregateFactory | undefined = anyTable('relationAggregates')
     ? createRelationAggregateFactory(db, tables, cacheCtx, typeNameMapper, filterCtx)
     : undefined;
 
@@ -1173,7 +1182,7 @@ export function generateSchemaData<
         prefixes.insert,
         prefixes.update,
         resolverFactory,
-        relationAggregateFactory,
+        featureOf(tableName).relationAggregates ? relationAggregateFactory : undefined,
         nestedTypes,
       ),
     ]),
@@ -1183,6 +1192,8 @@ export function generateSchemaData<
   const outputs: Record<string, GraphQLObjectType> = {};
 
   for (const [tableName, tableTypes] of Object.entries(gqlSchemaTypes)) {
+    // Everything this table generates, with any per-table predicate already run.
+    const tableFeatures = featureOf(tableName);
     const { insertInput, updateInput, tableFilters, tableOrder } = tableTypes.inputs;
     const { selectSingleOutput, selectArrOutput, singleTableItemOutput, arrTableItemOutput } = tableTypes.outputs;
 
@@ -1217,7 +1228,7 @@ export function generateSchemaData<
       typeName,
       typeNameMapper,
       filterCtx,
-      features.distinct,
+      tableFeatures.distinct,
       limits,
     );
     const selectSingleGenerated = generateSelectSingle(
@@ -1233,7 +1244,7 @@ export function generateSchemaData<
       filterCtx,
       limits,
     );
-    const insertArrGenerated = features.insert
+    const insertArrGenerated = tableFeatures.insert
       ? generateInsertArray(
           db,
           tableName,
@@ -1250,7 +1261,7 @@ export function generateSchemaData<
           limits,
         )
       : undefined;
-    const insertSingleGenerated = features.insert
+    const insertSingleGenerated = tableFeatures.insert
       ? generateInsertSingle(
           db,
           tableName,
@@ -1269,8 +1280,8 @@ export function generateSchemaData<
       : undefined;
     // An upsert needs something to conflict on, so a table with no primary key and no
     // unique constraint gets no upsert mutations rather than ones that always fail.
-    const uniqueSets = features.upsert ? getUniqueColumnSets(schema[tableName] as PgTable, getTableConfig) : [];
-    const onConflictInput = features.upsert
+    const uniqueSets = tableFeatures.upsert ? getUniqueColumnSets(schema[tableName] as PgTable, getTableConfig) : [];
+    const onConflictInput = tableFeatures.upsert
       ? generateOnConflictInput({
           table: schema[tableName] as PgTable,
           typeName,
@@ -1319,7 +1330,7 @@ export function generateSchemaData<
           limits,
         )
       : undefined;
-    const updateGenerated = features.update
+    const updateGenerated = tableFeatures.update
       ? generateUpdate(
           db,
           tableName,
@@ -1331,7 +1342,7 @@ export function generateSchemaData<
           updateFieldName,
           typeName,
           false,
-          features.requireWhere,
+          tableFeatures.requireWhere,
           typeNameMapper,
           filterCtx,
           mutationTxCtx,
@@ -1339,7 +1350,7 @@ export function generateSchemaData<
           limits,
         )
       : undefined;
-    const updateSingleGenerated = features.update
+    const updateSingleGenerated = tableFeatures.update
       ? generateUpdate(
           db,
           tableName,
@@ -1351,7 +1362,7 @@ export function generateSchemaData<
           updateSingleFieldName,
           typeName,
           true,
-          features.requireWhere,
+          tableFeatures.requireWhere,
           typeNameMapper,
           filterCtx,
           mutationTxCtx,
@@ -1361,7 +1372,7 @@ export function generateSchemaData<
       : undefined;
     // The batch update reuses the update `set` input, so it needs `update` on too.
     const updateManyInput =
-      features.update && features.updateMany
+      tableFeatures.update && tableFeatures.updateMany
         ? generateUpdateManyInput({ typeName, updatePrefix: prefixes.update, updateInput, tableFilters })
         : undefined;
     const updateManyGenerated = updateManyInput
@@ -1381,7 +1392,7 @@ export function generateSchemaData<
           limits,
         )
       : undefined;
-    const deleteGenerated = features.delete
+    const deleteGenerated = tableFeatures.delete
       ? generateDelete(
           db,
           tableName,
@@ -1390,13 +1401,13 @@ export function generateSchemaData<
           deleteFieldName,
           typeName,
           false,
-          features.requireWhere,
+          tableFeatures.requireWhere,
           filterCtx,
           { tableName, relationMap: namedRelations, tables },
           mutationTxCtx,
         )
       : undefined;
-    const deleteSingleGenerated = features.delete
+    const deleteSingleGenerated = tableFeatures.delete
       ? generateDelete(
           db,
           tableName,
@@ -1405,7 +1416,7 @@ export function generateSchemaData<
           deleteSingleFieldName,
           typeName,
           true,
-          features.requireWhere,
+          tableFeatures.requireWhere,
           filterCtx,
           { tableName, relationMap: namedRelations, tables },
           mutationTxCtx,
@@ -1414,7 +1425,7 @@ export function generateSchemaData<
     // The count variants are the plural write with its payload left off, so each follows the
     // same feature switch as the write it mirrors.
     const updateCountGenerated =
-      features.update && features.countMutations
+      tableFeatures.update && tableFeatures.countMutations
         ? generateWriteCount({
             db,
             tableName,
@@ -1423,14 +1434,14 @@ export function generateSchemaData<
             setArgs: updateInput,
             filterArgs: tableFilters,
             fieldName: updateCountFieldName,
-            requireWhere: features.requireWhere,
+            requireWhere: tableFeatures.requireWhere,
             filterCtx,
             txCtx: mutationTxCtx,
             nested: nestedRuntime,
           })
         : undefined;
     const deleteCountGenerated =
-      features.delete && features.countMutations
+      tableFeatures.delete && tableFeatures.countMutations
         ? generateWriteCount({
             db,
             tableName,
@@ -1438,15 +1449,15 @@ export function generateSchemaData<
             kind: 'delete',
             filterArgs: tableFilters,
             fieldName: deleteCountFieldName,
-            requireWhere: features.requireWhere,
+            requireWhere: tableFeatures.requireWhere,
             filterCtx,
             txCtx: mutationTxCtx,
           })
         : undefined;
-    const aggregateType = features.aggregates
+    const aggregateType = tableFeatures.aggregates
       ? generateAggregateTypes(schema[tableName] as PgTable, tableName, typeName, cacheCtx)
       : undefined;
-    const aggregateGenerated = features.aggregates
+    const aggregateGenerated = tableFeatures.aggregates
       ? generateAggregate(
           db,
           tableName,
@@ -1460,7 +1471,7 @@ export function generateSchemaData<
 
     // The grouped result reuses the aggregate output types, so it only exists alongside them.
     const groupByType =
-      features.aggregates && features.groupBy
+      tableFeatures.aggregates && tableFeatures.groupBy
         ? generateGroupByType(schema[tableName] as PgTable, tableName, typeName, cacheCtx)
         : undefined;
     const groupByEnum = groupByType
@@ -1603,9 +1614,9 @@ export function generateSchemaData<
     // only reach the schema's type map when a mutation actually references them.
     const activeInputs = [
       // The insert input types the upsert mutations too, so either feature keeps it.
-      ...(features.insert || onConflictInput ? [insertInput] : []),
+      ...(tableFeatures.insert || onConflictInput ? [insertInput] : []),
       ...(onConflictInput ? [onConflictInput] : []),
-      ...(features.update ? [updateInput] : []),
+      ...(tableFeatures.update ? [updateInput] : []),
       ...(updateManyInput ? [updateManyInput] : []),
       tableFilters,
       tableOrder,
