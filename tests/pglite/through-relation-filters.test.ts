@@ -102,7 +102,7 @@ describe.sequential('through-relation filters', () => {
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.users).toEqual([{ id: 1 }]);
+    expect(result.data?.['users']).toEqual([{ id: 1 }]);
   });
 
   it('`some: {}` matches rows with at least one related row', async () => {
@@ -111,7 +111,7 @@ describe.sequential('through-relation filters', () => {
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.users).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    expect(result.data?.['users']).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
   });
 
   it('filters a table by a through-relation with `none`', async () => {
@@ -122,7 +122,7 @@ describe.sequential('through-relation filters', () => {
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.users).toEqual([{ id: 2 }, { id: 3 }, { id: 4 }]);
+    expect(result.data?.['users']).toEqual([{ id: 2 }, { id: 3 }, { id: 4 }]);
   });
 
   it('`none: {}` matches rows with no related rows at all', async () => {
@@ -131,7 +131,7 @@ describe.sequential('through-relation filters', () => {
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.users).toEqual([{ id: 4 }]);
+    expect(result.data?.['users']).toEqual([{ id: 4 }]);
   });
 
   it('filters a table by a through-relation with `every`', async () => {
@@ -143,7 +143,7 @@ describe.sequential('through-relation filters', () => {
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.users).toEqual([{ id: 2 }, { id: 4 }]);
+    expect(result.data?.['users']).toEqual([{ id: 2 }, { id: 4 }]);
   });
 
   it('combines several match modes on one through-relation', async () => {
@@ -157,7 +157,7 @@ describe.sequential('through-relation filters', () => {
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.users).toEqual([{ id: 2 }]);
+    expect(result.data?.['users']).toEqual([{ id: 2 }]);
   });
 
   it('filters from the reverse side of the junction', async () => {
@@ -168,7 +168,7 @@ describe.sequential('through-relation filters', () => {
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.roles).toEqual([{ id: 1 }, { id: 2 }]);
+    expect(result.data?.['roles']).toEqual([{ id: 1 }, { id: 2 }]);
   });
 
   it('ANDs a through-relation filter with column filters', async () => {
@@ -178,7 +178,7 @@ describe.sequential('through-relation filters', () => {
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.users).toEqual([{ id: 2 }]);
+    expect(result.data?.['users']).toEqual([{ id: 2 }]);
   });
 
   it('supports through-relation filters inside OR', async () => {
@@ -190,7 +190,7 @@ describe.sequential('through-relation filters', () => {
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.users).toEqual([{ id: 1 }, { id: 3 }]);
+    expect(result.data?.['users']).toEqual([{ id: 1 }, { id: 3 }]);
   });
 
   it('nests a through-relation filter inside another through-relation filter', async () => {
@@ -204,7 +204,7 @@ describe.sequential('through-relation filters', () => {
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.users).toEqual([{ id: 1 }, { id: 2 }]);
+    expect(result.data?.['users']).toEqual([{ id: 1 }, { id: 2 }]);
   });
 
   it('applies through-relation filters to aggregate queries', async () => {
@@ -213,7 +213,7 @@ describe.sequential('through-relation filters', () => {
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.usersAggregate).toEqual({ count: 2 });
+    expect(result.data?.['usersAggregate']).toEqual({ count: 2 });
   });
 
   describe('schema shape', () => {

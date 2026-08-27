@@ -34,7 +34,7 @@ let client: Client;
 let db: any;
 
 const buildWith = (config: Partial<BuildSchemaConfig>): GraphQLSchema =>
-  buildSchema(db, { onError: (error) => error as Error, ...config } as any).schema;
+  buildSchema(db, { onError: (error: unknown) => error as Error, ...config } as any).schema;
 
 const run = (gqlSchema: GraphQLSchema, source: string) => graphql({ schema: gqlSchema, source, contextValue: {} });
 

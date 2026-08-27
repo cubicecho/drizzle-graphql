@@ -45,7 +45,7 @@ const softDelete: Partial<BuildSchemaConfig> = {
 };
 
 const buildWith = (config: Partial<BuildSchemaConfig>): GraphQLSchema =>
-  buildSchema(db, { onError: (error) => error as Error, ...config } as any).schema;
+  buildSchema(db, { onError: (error: unknown) => error as Error, ...config } as any).schema;
 
 const run = (gqlSchema: GraphQLSchema, source: string, contextValue: Record<string, any> = {}) =>
   graphql({ schema: gqlSchema, source, contextValue: { ...contextValue } });

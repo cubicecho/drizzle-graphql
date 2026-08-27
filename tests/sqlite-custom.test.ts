@@ -12,7 +12,7 @@ import * as schema from './schema/sqlite';
 import { GraphQLClient } from './util/query';
 
 interface Context {
-  db: BaseSQLiteDatabase<'async', any, typeof schema>;
+  db: BaseSQLiteDatabase<'async', any, typeof schema, typeof schema.relations>;
   client: Client;
   schema: GraphQLSchema;
   entities: GeneratedEntities<BaseSQLiteDatabase<'async', any, typeof schema>>;
@@ -51,7 +51,7 @@ beforeAll(async () => {
     client: ctx.client,
     schema,
     relations: schema.relations,
-    logger: !!process.env.LOG_SQL,
+    logger: !!process.env['LOG_SQL'],
   });
 
   const { entities } = buildSchema(ctx.db);

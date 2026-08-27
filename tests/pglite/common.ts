@@ -11,20 +11,28 @@ import { GraphQLClient } from '../util/query';
 
 export { sql, schema };
 
+/**
+ * drizzle-orm v1's database generic is the relations config produced by `buildRelations`,
+ * not the schema module — `PgliteDatabase<typeof schema>` silently degraded every derived
+ * entity type to `never`, which is why the `expectTypeOf` assertions below were meaningless
+ * until the suite was brought under `tsc`.
+ */
+export type TestDatabase = PgliteDatabase<typeof schema.relations>;
+
 export interface Context {
   pglite: PGlite;
-  db: PgliteDatabase<typeof schema>;
+  db: TestDatabase;
   schema: GraphQLSchema;
-  entities: GeneratedEntities<PgliteDatabase<typeof schema>>;
+  entities: GeneratedEntities<TestDatabase>;
   server: Server;
   gql: GraphQLClient;
 }
 
 export interface MinimalContext {
   pglite: PGlite;
-  db: PgliteDatabase<typeof schema>;
+  db: TestDatabase;
   schema: GraphQLSchema;
-  entities: GeneratedEntities<PgliteDatabase<typeof schema>>;
+  entities: GeneratedEntities<TestDatabase>;
 }
 
 export const createCtx = (): Context => ({}) as any;
@@ -36,9 +44,8 @@ export const setupServer = async (ctx: Context, port: number, dataDir: string): 
 
   ctx.db = drizzle({
     client: ctx.pglite,
-    schema,
     relations: schema.relations,
-    logger: !!process.env.LOG_SQL,
+    logger: !!process.env['LOG_SQL'],
   });
 
   const { schema: gqlSchema, entities } = buildSchema(ctx.db, {
@@ -88,7 +95,6 @@ export const setupMinimal = async (ctx: MinimalContext, dataDir: string): Promis
 
   ctx.db = drizzle({
     client: ctx.pglite,
-    schema,
     relations: schema.relations,
     logger: !!process.env['LOG_SQL'],
   });

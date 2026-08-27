@@ -22,7 +22,7 @@ afterAll(async () => {
 
 describe('printSchema', () => {
   it('prints a non-empty GraphQL SDL from buildSchema', () => {
-    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const db = drizzle({ client: pglite, relations: schema.relations });
     const { schema: gqlSchema } = buildSchema(db, {
       typeNameMapper: (name) => {
         const map: Record<string, { singular: string; plural: string }> = {

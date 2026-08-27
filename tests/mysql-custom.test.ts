@@ -84,7 +84,7 @@ beforeAll(async (_t) => {
     client: ctx.client,
     schema,
     relations: schema.relations,
-    logger: !!process.env.LOG_SQL,
+    logger: !!process.env['LOG_SQL'],
     mode: 'default',
   });
 

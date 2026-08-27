@@ -31,6 +31,8 @@ import {
   type UpdateManyResolver,
   type UpdateResolver,
   type UpdateSingleResolver,
+  type UpsertArrResolver,
+  type UpsertResolver,
 } from '@/index';
 import * as schema from './schema/sqlite';
 import { GraphQLClient } from './util/query';
@@ -75,7 +77,7 @@ beforeAll(async () => {
     client: ctx.client,
     schema,
     relations: schema.relations,
-    logger: !!process.env.LOG_SQL,
+    logger: !!process.env['LOG_SQL'],
   });
 
   const { schema: gqlSchema, entities } = buildSchema(ctx.db);
@@ -3438,87 +3440,63 @@ describe.sequential('Type tests', () => {
         readonly customers: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
-            orderBy: { type: GraphQLInputObjectType };
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
+            orderBy: { type: GraphQLInputObjectType };
             where: { type: GraphQLInputObjectType };
             distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
-          resolve: SelectResolver<
-            typeof schema.Customers,
-            ExtractTables<typeof schema>,
-            typeof schema.customersRelations extends Relations<any, infer RelConf> ? RelConf : never
-          >;
+          resolve: SelectResolver<typeof schema.Customers, ExtractTables<typeof schema>, never>;
         };
         readonly posts: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
-            orderBy: { type: GraphQLInputObjectType };
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
+            orderBy: { type: GraphQLInputObjectType };
             where: { type: GraphQLInputObjectType };
             distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
-          resolve: SelectResolver<
-            typeof schema.Posts,
-            ExtractTables<typeof schema>,
-            typeof schema.postsRelations extends Relations<any, infer RelConf> ? RelConf : never
-          >;
+          resolve: SelectResolver<typeof schema.Posts, ExtractTables<typeof schema>, never>;
         };
         readonly users: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
-            orderBy: { type: GraphQLInputObjectType };
             offset: { type: GraphQLScalarType<number, number> };
             limit: { type: GraphQLScalarType<number, number> };
+            orderBy: { type: GraphQLInputObjectType };
             where: { type: GraphQLInputObjectType };
             distinct: { type: GraphQLList<GraphQLNonNull<GraphQLEnumType>> };
           };
-          resolve: SelectResolver<
-            typeof schema.Users,
-            ExtractTables<typeof schema>,
-            typeof schema.usersRelations extends Relations<any, infer RelConf> ? RelConf : never
-          >;
+          resolve: SelectResolver<typeof schema.Users, ExtractTables<typeof schema>, never>;
         };
       } & {
         readonly customersSingle: {
           type: GraphQLObjectType;
           args: {
-            orderBy: { type: GraphQLInputObjectType };
             offset: { type: GraphQLScalarType<number, number> };
+            orderBy: { type: GraphQLInputObjectType };
             where: { type: GraphQLInputObjectType };
           };
-          resolve: SelectSingleResolver<
-            typeof schema.Customers,
-            ExtractTables<typeof schema>,
-            typeof schema.customersRelations extends Relations<any, infer RelConf> ? RelConf : never
-          >;
+          resolve: SelectSingleResolver<typeof schema.Customers, ExtractTables<typeof schema>, never>;
         };
         readonly postsSingle: {
           type: GraphQLObjectType;
           args: {
-            orderBy: { type: GraphQLInputObjectType };
             offset: { type: GraphQLScalarType<number, number> };
+            orderBy: { type: GraphQLInputObjectType };
             where: { type: GraphQLInputObjectType };
           };
-          resolve: SelectSingleResolver<
-            typeof schema.Posts,
-            ExtractTables<typeof schema>,
-            typeof schema.postsRelations extends Relations<any, infer RelConf> ? RelConf : never
-          >;
+          resolve: SelectSingleResolver<typeof schema.Posts, ExtractTables<typeof schema>, never>;
         };
         readonly usersSingle: {
           type: GraphQLObjectType;
           args: {
-            orderBy: { type: GraphQLInputObjectType };
             offset: { type: GraphQLScalarType<number, number> };
+            orderBy: { type: GraphQLInputObjectType };
             where: { type: GraphQLInputObjectType };
           };
-          resolve: SelectSingleResolver<
-            typeof schema.Users,
-            ExtractTables<typeof schema>,
-            typeof schema.usersRelations extends Relations<any, infer RelConf> ? RelConf : never
-          >;
+          resolve: SelectSingleResolver<typeof schema.Users, ExtractTables<typeof schema>, never>;
         };
       } & {
         readonly customersAggregate: {
@@ -3603,6 +3581,68 @@ describe.sequential('Type tests', () => {
             };
           };
           resolve: InsertResolver<typeof schema.Users, false>;
+        };
+      } & {
+        readonly upsertCustomers?: {
+          type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
+          args: {
+            values: {
+              type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLInputObjectType>>>;
+            };
+            onConflict: { type: GraphQLInputObjectType };
+          };
+          resolve: UpsertArrResolver<typeof schema.Customers, false>;
+        };
+        readonly upsertPosts?: {
+          type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
+          args: {
+            values: {
+              type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLInputObjectType>>>;
+            };
+            onConflict: { type: GraphQLInputObjectType };
+          };
+          resolve: UpsertArrResolver<typeof schema.Posts, false>;
+        };
+        readonly upsertUsers?: {
+          type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
+          args: {
+            values: {
+              type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLInputObjectType>>>;
+            };
+            onConflict: { type: GraphQLInputObjectType };
+          };
+          resolve: UpsertArrResolver<typeof schema.Users, false>;
+        };
+      } & {
+        readonly upsertCustomersSingle?: {
+          type: GraphQLObjectType;
+          args: {
+            values: {
+              type: GraphQLNonNull<GraphQLInputObjectType>;
+            };
+            onConflict: { type: GraphQLInputObjectType };
+          };
+          resolve: UpsertResolver<typeof schema.Customers, false>;
+        };
+        readonly upsertPostsSingle?: {
+          type: GraphQLObjectType;
+          args: {
+            values: {
+              type: GraphQLNonNull<GraphQLInputObjectType>;
+            };
+            onConflict: { type: GraphQLInputObjectType };
+          };
+          resolve: UpsertResolver<typeof schema.Posts, false>;
+        };
+        readonly upsertUsersSingle?: {
+          type: GraphQLObjectType;
+          args: {
+            values: {
+              type: GraphQLNonNull<GraphQLInputObjectType>;
+            };
+            onConflict: { type: GraphQLInputObjectType };
+          };
+          resolve: UpsertResolver<typeof schema.Users, false>;
         };
       } & {
         readonly updateCustomers: {
@@ -3749,13 +3789,13 @@ describe.sequential('Type tests', () => {
         readonly Posts: GraphQLObjectType;
         readonly Users: GraphQLObjectType;
       } & {
-        readonly Customers: GraphQLObjectType;
-        readonly Posts: GraphQLObjectType;
-        readonly Users: GraphQLObjectType;
-      } & {
         readonly CustomersAggregate: GraphQLObjectType;
         readonly PostsAggregate: GraphQLObjectType;
         readonly UsersAggregate: GraphQLObjectType;
+      } & {
+        readonly Customers: GraphQLObjectType;
+        readonly Posts: GraphQLObjectType;
+        readonly Users: GraphQLObjectType;
       }
     >();
   });
@@ -3763,25 +3803,25 @@ describe.sequential('Type tests', () => {
   it('Inputs', () => {
     expectTypeOf(ctx.entities.inputs).toEqualTypeOf<
       {
-        readonly UsersFilters: GraphQLInputObjectType;
-        readonly CustomersFilters: GraphQLInputObjectType;
-        readonly PostsFilters: GraphQLInputObjectType;
-      } & {
-        readonly UsersOrderBy: GraphQLInputObjectType;
-        readonly CustomersOrderBy: GraphQLInputObjectType;
-        readonly PostsOrderBy: GraphQLInputObjectType;
-      } & {
-        readonly CreateUsersInput: GraphQLInputObjectType;
         readonly CreateCustomersInput: GraphQLInputObjectType;
         readonly CreatePostsInput: GraphQLInputObjectType;
+        readonly CreateUsersInput: GraphQLInputObjectType;
       } & {
-        readonly UpdateUsersInput: GraphQLInputObjectType;
         readonly UpdateCustomersInput: GraphQLInputObjectType;
         readonly UpdatePostsInput: GraphQLInputObjectType;
+        readonly UpdateUsersInput: GraphQLInputObjectType;
       } & {
-        readonly UpdateUsersManyInput: GraphQLInputObjectType;
         readonly UpdateCustomersManyInput: GraphQLInputObjectType;
         readonly UpdatePostsManyInput: GraphQLInputObjectType;
+        readonly UpdateUsersManyInput: GraphQLInputObjectType;
+      } & {
+        readonly CustomersOrderBy: GraphQLInputObjectType;
+        readonly PostsOrderBy: GraphQLInputObjectType;
+        readonly UsersOrderBy: GraphQLInputObjectType;
+      } & {
+        readonly CustomersFilters: GraphQLInputObjectType;
+        readonly PostsFilters: GraphQLInputObjectType;
+        readonly UsersFilters: GraphQLInputObjectType;
       }
     >();
   });

@@ -16,7 +16,7 @@ import { setupTables } from './common';
 const makeDb = async (dataDir: string) => {
   const pglite = new PGlite(dataDir);
   await pglite.waitReady;
-  const db = drizzle({ client: pglite, schema, relations: schema.relations });
+  const db = drizzle({ client: pglite, relations: schema.relations });
   await db.execute(
     sql`DO $$ BEGIN CREATE TYPE "role" AS ENUM('admin','user'); EXCEPTION WHEN duplicate_object THEN null; END $$;`,
   );
@@ -43,7 +43,7 @@ describe('relationsDepthLimit: 0 — no relation fields generated', () => {
   });
 
   it('generated User type has no relation fields', () => {
-    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const db = drizzle({ client: pglite, relations: schema.relations });
     const { entities } = buildSchema(db, { relationsDepthLimit: 0 });
     const types = entities.types as Record<string, GraphQLObjectType>;
     const usersType = types['Users'] ?? types['User'];
@@ -57,7 +57,7 @@ describe('relationsDepthLimit: 0 — no relation fields generated', () => {
   });
 
   it('Posts type also has no relation fields with depth limit 0', () => {
-    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const db = drizzle({ client: pglite, relations: schema.relations });
     const { entities } = buildSchema(db, { relationsDepthLimit: 0 });
     const types = entities.types as Record<string, GraphQLObjectType>;
     const postsType = types['Posts'] ?? types['Post'];
@@ -81,7 +81,7 @@ describe('relationsDepthLimit: 1 — direct relations present, no additional nes
   });
 
   it('User type has direct relation fields at depth 1', () => {
-    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const db = drizzle({ client: pglite, relations: schema.relations });
     const { entities } = buildSchema(db, { relationsDepthLimit: 1 });
     const types = entities.types as Record<string, GraphQLObjectType>;
     const usersType = types['Users'] ?? types['User'];
@@ -102,7 +102,7 @@ describe('custom prefixes and suffixes', () => {
 
   beforeAll(async () => {
     ({ pglite } = await makeDb(dataDir));
-    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const db = drizzle({ client: pglite, relations: schema.relations });
     const { schema: gqlSchema } = buildSchema(db, {
       prefixes: { insert: 'add', delete: 'remove', update: 'patch' },
       suffixes: { list: 'List', single: 'One' },
@@ -158,7 +158,7 @@ describe('conflictDoNothing: true', () => {
 
   beforeAll(async () => {
     ({ pglite } = await makeDb(dataDir));
-    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const db = drizzle({ client: pglite, relations: schema.relations });
     const { schema: gqlSchema } = buildSchema(db, {
       typeNameMapper: (name) => {
         const map: Record<string, { singular: string; plural: string }> = {
@@ -224,7 +224,7 @@ describe('typeNameMapper — generated query and mutation names', () => {
 
   it('list/single query names use mapped names', () => {
     // With mapper: list='user' + ''='user', single='user' (no suffix since mapper provides singular)
-    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const db = drizzle({ client: pglite, relations: schema.relations });
     const { entities } = buildSchema(db, {
       typeNameMapper: (name) => {
         const map: Record<string, { singular: string; plural: string }> = {
@@ -240,7 +240,7 @@ describe('typeNameMapper — generated query and mutation names', () => {
   });
 
   it('insert-single mutation uses mapped singular name', () => {
-    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const db = drizzle({ client: pglite, relations: schema.relations });
     const { entities } = buildSchema(db, {
       typeNameMapper: (name) => {
         const map: Record<string, { singular: string; plural: string }> = {
@@ -256,7 +256,7 @@ describe('typeNameMapper — generated query and mutation names', () => {
   });
 
   it('insert-array mutation uses mapped plural name', () => {
-    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const db = drizzle({ client: pglite, relations: schema.relations });
     const { entities } = buildSchema(db, {
       typeNameMapper: (name) => {
         const map: Record<string, { singular: string; plural: string }> = {
@@ -269,7 +269,7 @@ describe('typeNameMapper — generated query and mutation names', () => {
   });
 
   it('generated type names use mapped singular', () => {
-    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const db = drizzle({ client: pglite, relations: schema.relations });
     const { entities } = buildSchema(db, {
       typeNameMapper: (name) => {
         const map: Record<string, { singular: string; plural: string }> = {
@@ -284,7 +284,7 @@ describe('typeNameMapper — generated query and mutation names', () => {
   });
 
   it('without typeNameMapper (default) names use table key', () => {
-    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const db = drizzle({ client: pglite, relations: schema.relations });
     const { entities } = buildSchema(db);
     const queryKeys = Object.keys(entities.queries);
     expect(queryKeys).toContain('users');
@@ -311,7 +311,7 @@ describe("typeNameMapper: 'singularize'", () => {
   });
 
   const built = () => {
-    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const db = drizzle({ client: pglite, relations: schema.relations });
     return buildSchema(db, { typeNameMapper: 'singularize' }).entities;
   };
 
@@ -334,7 +334,7 @@ describe("typeNameMapper: 'singularize'", () => {
   });
 
   it('is the same function as the exported singularizeMapper', () => {
-    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const db = drizzle({ client: pglite, relations: schema.relations });
     const byPreset = Object.keys(buildSchema(db, { typeNameMapper: 'singularize' }).entities.queries).sort();
     const byExport = Object.keys(buildSchema(db, { typeNameMapper: singularizeMapper }).entities.queries).sort();
 
@@ -342,7 +342,7 @@ describe("typeNameMapper: 'singularize'", () => {
   });
 
   it('can be wrapped to leave one table with its default names', () => {
-    const db = drizzle({ client: pglite, schema, relations: schema.relations });
+    const db = drizzle({ client: pglite, relations: schema.relations });
     const { entities } = buildSchema(db, {
       typeNameMapper: (table) => (table === 'Tags' ? undefined : singularizeMapper(table)),
     });

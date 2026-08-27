@@ -8,7 +8,7 @@ import * as schema from '../schema/pg';
 // buildSchema only reads the drizzle metadata, so these tests never touch the database:
 // one in-memory client is enough to build as many schemas as we like.
 let pglite: PGlite;
-let db: PgliteDatabase<typeof schema>;
+let db: PgliteDatabase<typeof schema.relations>;
 
 const build = (features?: SchemaFeatures) => buildSchema(db, features ? { features } : undefined);
 
@@ -18,7 +18,7 @@ const userFields = (gqlSchema: GraphQLSchema) => (gqlSchema.getType('Users') as 
 beforeAll(async () => {
   pglite = new PGlite();
   await pglite.waitReady;
-  db = drizzle({ client: pglite, schema, relations: schema.relations });
+  db = drizzle({ client: pglite, relations: schema.relations });
 });
 
 afterAll(async () => {
@@ -208,7 +208,7 @@ describe('features: upsert', () => {
     expect(mutations['upsertUsers']).toBeDefined();
     expect(mutations['upsertUsersSingle']).toBeDefined();
     expect(gqlSchema.getType('UsersOnConflict')).toBeDefined();
-    expect(entities.inputs['UsersOnConflict']).toBeDefined();
+    expect((entities.inputs as Record<string, unknown>)['UsersOnConflict']).toBeDefined();
   });
 
   it('keeps the insert input, which types the upsert values, even with insert off', () => {
