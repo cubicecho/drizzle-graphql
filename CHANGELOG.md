@@ -1,3 +1,10 @@
+# [7.4.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.3.0...v7.4.0) (2026-08-27)
+
+
+### Features
+
+* per-table operation selection and a 'singularize' typeNameMapper preset ([db18b2d](https://github.com/cubicecho/drizzle-graphql/commit/db18b2d32b20acefa36a03065242371fbe8f8fdb))
+
 # [7.3.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.2.0...v7.3.0) (2026-08-27)
 
 
