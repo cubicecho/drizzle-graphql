@@ -105,6 +105,8 @@ const { schema } = buildSchema(db, {
         delete: false,            // delete<Table> / delete<Table>Single mutations
         upsert: true,             // upsert<Table> / upsert<Table>Single mutations (off by default)
         nestedWrites: true,       // relation fields on the create/update inputs (off by default)
+        fieldUpdateOperations: true, // increment/push operations on the update input (off by default)
+        countMutations: true,     // update<Table>Count / delete<Table>Count mutations (off by default)
         requireWhere: true,       // make `where` non-null on plural update/delete (off by default)
     },
 })
@@ -112,8 +114,8 @@ const { schema } = buildSchema(db, {
 
 -   Any flag left out keeps its default of `true`, so `{ features: { delete: false } }`
     changes nothing else
--   `upsert` and `nestedWrites` are the exceptions: both default to `false`, so the upsert
-    mutations and the relation fields on the write inputs only exist if you ask for them
+-   `upsert`, `nestedWrites`, `fieldUpdateOperations` and `countMutations` are the
+    exceptions: all four default to `false`, so they only exist if you ask for them
 -   `groupBy` needs `aggregates`: it reuses those output types, so turning `aggregates` off
     turns the group-by queries off with it
 -   Turning off `insert` or `update` also drops the input type that only that mutation
@@ -519,7 +521,10 @@ enum. Rows sharing the same combination of those columns collapse to one:
 -   `where` is applied **before** rows are collapsed; `limit` and `offset` are applied
     **after**, so `limit: 10` returns ten distinct rows
 -   Several columns are treated as one combined key, not as independent ones
--   `distinct` is available on list queries only — a single query returns one row either way
+-   `distinct` is also available on to-many relation fields, where it means one row per
+    distinct value **per parent** — the window is partitioned by the foreign key as well as
+    the requested columns
+-   `distinct` is not on single queries — those return one row either way
 
 It runs as an extra `row_number() over (partition by …)` query that picks the surviving
 rows' primary keys, after which the main query is narrowed to them — so it needs the same
@@ -587,6 +592,32 @@ field, and passing it back as `after` resumes strictly after that row.
     cursor pagination (its `cursor` field resolves to `null`)
 -   If a table has a real column named `cursor`, the column wins and the meta field is
     skipped
+
+To-many relation fields take `after` and `distinct` too, with the same meaning they have on
+a root list of the same table — a relation field is a list of the target table, so it gets
+that table's whole pagination surface:
+
+```graphql
+{
+    users {
+        id
+        posts(orderBy: { createdAt: { direction: desc, priority: 1 } }, limit: 10, after: "…") {
+            id
+            cursor
+        }
+    }
+}
+```
+
+Drizzle's `with:` clause cannot express either one — keyset needs a predicate over the
+request's own total order, `distinct` needs a window pass, and a `cursor` has to be computed
+from the raw row. So a relation field that is passed `after` or `distinct`, or that selects
+`cursor`, drops out of the eager fetch and resolves through the request-scoped batch loader
+instead, which implements all three. That is still **one query per relation** across every
+parent in the batch (`distinct` adds its key-selection pass, as on a root list) — never one
+per parent. Nothing about the arguments changes; only how many round-trips the request
+costs.
+
 
 ## Upsert
 
@@ -712,6 +743,71 @@ and interleaves awaited statements inside a transaction, which a synchronous SQL
 cannot do — `buildSchema` rejects both combinations rather than generating something that
 half-works.
 
+## Atomic column updates
+
+`Update<Table>Input` sets columns to values, so "increment the view count" is a read followed
+by a write of the number the read returned — two round-trips, and a lost update whenever two
+clients read the same number. `features.fieldUpdateOperations` replaces qualifying columns'
+update fields with an operations input, so the arithmetic happens in the database:
+
+```graphql
+mutation {
+    updatePostsSingle(where: { id: { eq: 1 } }, set: { views: { increment: 1 } }) {
+        views
+    }
+}
+```
+
+compiles to `SET views = views + 1`. The flag changes the update inputs only; insert inputs
+are untouched.
+
+-   **Numeric columns** (`Int`, `Float`, `BigInt`, `Decimal`) take
+    `set` / `increment` / `decrement` / `multiply` / `divide`
+-   **Array columns** take `set` / `push`, where `push` appends to the existing array
+-   Exactly one operation per column. Passing two, or `{}`, is a `GraphQLError` naming the
+    column — graphql-js has no `@oneOf` on the version range this library supports, so it is
+    enforced at resolve time rather than by the type
+-   `set` is the explicit spelling of the plain assignment the field had before the flag, so
+    every existing update has a one-key rewrite: `{ views: 5 }` → `{ views: { set: 5 } }`
+-   The input types are named for the **scalar**, not the column — every `Int` column in the
+    schema shares one `IntFieldUpdate` — and a column claimed by a `scalarOverrides` entry
+    keeps its plain field, since the override decides what that column accepts
+
+Two things follow the database's own semantics rather than being guarded:
+
+-   `increment`/`multiply` on an integer column can overflow, and `divide` on one **rounds**
+    the way the dialect rounds (PostgreSQL truncates toward zero; use a `Float` or `Decimal`
+    column if you need the fraction)
+-   `divide: 0` raises the driver's division-by-zero error, surfaced as a `GraphQLError`
+
+## Row counts instead of rows
+
+The plural `update<Table>` / `delete<Table>` mutations always `RETURNING *`, which is wasted
+work — and wasted bandwidth — when a client only wants to know how many rows were touched.
+`features.countMutations` adds a count-returning variant of each:
+
+```graphql
+mutation {
+    deletePostsCount(where: { status: { eq: "spam" } })
+    updatePostsCount(where: { draft: { eq: true } }, set: { draft: false })
+}
+```
+
+-   Both return `Int!` — the number of rows the write affected — and add no new output type
+    to the schema
+-   Arguments are exactly the plural mutation's, so a client swaps one field name for the
+    other; `features.requireWhere` applies to them the same way
+-   They follow the feature switch of the write they mirror: `updateCount` needs
+    `features.update`, `deleteCount` needs `features.delete`
+-   **MySQL** gets them too, and they are arguably most useful there: MySQL's other mutations
+    return only `MutationReturn { isSuccess }`, so a row count is strictly more information
+-   `update<Table>Count` **rejects** nested writes with a `GraphQLError` — a nested write
+    needs the parent rows this mutation deliberately does not read back. Use the plural
+    mutation for those
+-   The count is read from whichever field the driver reports it in (`rowCount`,
+    `affectedRows`, `rowsAffected`, `changes`, `count`); a driver that reports none is a
+    `GraphQLError` rather than a silent `0`
+
 ## Single-row update & delete
 
 Alongside the plural `update<Table>` / `delete<Table>` mutations, every table gets an
@@ -737,6 +833,17 @@ mutation {
     MySQL mutation
 -   The variants are generated under `features.update` / `features.delete`, share the plural
     mutations' input types, and appear in `entities.mutations` for custom schemas
+
+### Mutation return shapes
+
+Every mutation that returns rows returns them non-null, with two exceptions that are
+deliberate rather than accidental:
+
+| Mutation | Returns | Why |
+| --- | --- | --- |
+| `create<Table>Single` | `Table!`, or `Table` under `conflictDoNothing` | An insert of one row returns that row. It can only fail to produce one when the `conflictDoNothing` build option swallows a conflict, so it is nullable exactly when that option is set |
+| `update<Table>Many` | `[Table]!` | Each entry's updated rows **in entry order**. An entry whose `where` matched nothing contributes `null` in its slot, so the response lines up with the request positionally — the nullable element is the whole point |
+| everything else | `[Table!]!` / `Table!` / `Table` | — |
 
 The plural mutations still accept a missing `where` (a full-table write) by default. To rule
 that out at the type level, `features: { requireWhere: true }` makes `where` non-null on

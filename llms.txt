@@ -36,8 +36,11 @@ For each table, `buildSchema` generates:
 - **Insert** mutations (single + array), default-prefixed `create` (e.g. `createUsers`).
 - An **update** mutation, default-prefixed `update`.
 - A **delete** mutation, default-prefixed `delete`.
+- Under `features.countMutations`, `update<Table>Count` / `delete<Table>Count` variants returning `Int!` — the number of rows affected — with the plural mutation's arguments and no row payload.
 
-> MySQL mutations return only a success flag (`{ isSuccess }`), no row payload. PostgreSQL and SQLite mutations return the affected rows.
+> MySQL mutations return only a success flag (`{ isSuccess }`), no row payload. PostgreSQL and SQLite mutations return the affected rows. Two return shapes are deliberate exceptions to non-null rows: `create<Table>Single` is nullable only under the `conflictDoNothing` option, and `update<Table>Many` returns `[Table]!` because an entry whose `where` matched nothing contributes `null` in its slot, keeping the response positionally aligned with the request.
+
+> `features.fieldUpdateOperations` turns a numeric column's update field into `{ set | increment | decrement | multiply | divide }` and an array column's into `{ set | push }`, so the arithmetic runs in the database (`SET views = views + 1`). Exactly one operation per column, enforced at resolve time. Insert inputs are unchanged.
 
 ## Custom schemas with `entities`
 
@@ -73,6 +76,7 @@ const schema = new GraphQLSchema({
 ## Relations & N+1 handling
 
 - **Root queries** (`entities.queries.*`) eagerly load every requested relation in a single round-trip via Drizzle's relational query builder (`with:`), including nested relations and per-relation `where` / `orderBy` / `limit` / `offset`.
+- A to-many relation field also takes `after` (keyset cursor) and `distinct`, matching a root list of the target table; `distinct` there means one row per distinct value **per parent**. Drizzle's `with:` cannot express either, so a relation passed `after` or `distinct` — or selecting the `cursor` meta field — drops out of the eager fetch and resolves through the batch loader, still one query per relation across the whole batch rather than one per parent.
 - **Mutations (PostgreSQL & SQLite)** re-fetch affected rows by primary key (single or composite) through one relational query when the selection set includes relation fields. `delete` mutations use the request-scoped batch loader instead. MySQL mutations return only a success flag, so this does not apply.
 - **Custom schemas** can use standalone, request-batched relation resolvers exported as `entities.fieldResolvers[TableName][relationName]`. These dedupe all sibling loads in a request into one `IN (...)` query (keyed on the GraphQL `context`). Per-parent `limit`/`offset` on a to-many relation is applied across the whole batch with a `ROW_NUMBER() OVER (PARTITION BY ...)` window function — still one query.
 
@@ -114,7 +118,7 @@ Second argument to `buildSchema(db, config?)`:
 - `suffixes?: { list?; single? }` — customize query name suffixes. Default `{ list: '', single: 'Single' }`. List and single suffixes cannot be identical unless a `typeNameMapper` is provided.
 - `conflictDoNothing?: boolean` — (PostgreSQL only) apply `ON CONFLICT DO NOTHING` to inserts. Default `false`.
 - `typeNameMapper?: (tableName: string) => { singular: string; plural: string } | undefined` — customize generated type/field names per table.
-- `features?: { aggregates?; groupBy?; relationAggregates?; distinct?; insert?; update?; updateMany?; delete?; upsert?; nestedWrites?; requireWhere? }` — which operations to generate. Everything defaults to `true` except `upsert`, `nestedWrites` and `requireWhere`, which default to `false`.
+- `features?: { aggregates?; groupBy?; relationAggregates?; distinct?; insert?; update?; updateMany?; delete?; upsert?; nestedWrites?; fieldUpdateOperations?; countMutations?; requireWhere? }` — which operations to generate. Everything defaults to `true` except `upsert`, `nestedWrites`, `fieldUpdateOperations`, `countMutations` and `requireWhere`, which default to `false`.
 - `enumNameMapper?: ({ enumName, schema, tableName, columnName, values }) => string | undefined` — name the GraphQL enum a column maps to. By default a declared database enum becomes one shared `<EnumName>Enum` across every column that uses it; an inline value list stays per-column (`<Table><Column>Enum`). Returning `undefined` keeps the default.
 - `describeColumn?: (column, { tableName, columnName }) => string | undefined` — description for a column, applied to its object-type field, create/update input fields, filter field, min/max aggregates and group keys.
 - `describeTable?: (tableName) => string | undefined` / `describeRelation?: (tableName, relationName) => string | undefined` — descriptions for the table's object type and its relation fields.
@@ -135,7 +139,7 @@ The generated schema carries no authorization and no document-level limits — `
 
 From `drizzle-graphql`:
 - `buildSchema(db, config?)` — main entry point.
-- `createRelationResolverFactory`, `extractFilters`, `extractOrderBy`, `extractRelationJoinColumns` — helpers for custom relation resolvers.
+- `createRelationResolverFactory(db, tables, nullOrdering, filterCtx?)`, `extractFilters`, `extractOrderBy`, `extractRelationJoinColumns` — helpers for custom relation resolvers. `nullOrdering` is the dialect's native `ORDER BY` placement for `NULL` — `'nulls-largest'` for PostgreSQL, `'nulls-smallest'` for MySQL and SQLite — and the keyset predicate behind a relation's `after` argument must match it.
 - Types: `AnyDrizzleDB`, `BuildSchemaConfig`, `GeneratedData`, `GeneratedEntities`, `GeneratedInputs`, `GeneratedOutputs`, `QueriesCore`, `MutationsCore`, `MutationReturnlessResult`, `SelectResolver`, `SelectSingleResolver`, `InsertResolver`, `InsertArrResolver`, `UpdateResolver`, `DeleteResolver`, `RelationResolverFactory`, `TableNamedRelations`, and Drizzle schema-extraction utility types (`ExtractTables`, `ExtractRelations`, `ExtractTableRelations`, `ExtractTableByName`).
 
 ## Optional
