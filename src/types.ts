@@ -665,7 +665,9 @@ export type FeatureSwitch = boolean | ((tableName: string) => boolean);
 
 /**
  * Per-feature switches for what `buildSchema` generates. Every flag defaults to `true` except
- * `upsert` and `nestedWrites`. Each one takes a boolean or a per-table predicate.
+ * `upsert`, `nestedWrites`, `fieldUpdateOperations`, `countMutations` and `requireWhere`.
+ * Each one takes a boolean or a per-table predicate, apart from `nestedWrites`, which is
+ * build-wide.
  * See {@link BuildSchemaConfig.features}.
  */
 export type SchemaFeatures = {
@@ -736,6 +738,51 @@ export type SchemaFeatures = {
    * @default false
    */
   nestedWrites?: boolean;
+  /**
+   * Operation inputs on the update `set`, so a column can be changed relative to its current
+   * value instead of only replaced.
+   *
+   * ```graphql
+   * updatePostsSingle(where: { id: { eq: "p1" } }, set: { views: { increment: 1 } }) { views }
+   * ```
+   *
+   * Every numeric column's field on `Update<Table>Input` becomes a `<Scalar>FieldUpdate`
+   * input carrying `set`, `increment`, `decrement`, `multiply` and `divide`; every array
+   * column's becomes a `<Scalar>ListFieldUpdate` carrying `set` and `push`. Exactly one
+   * operation per field, checked at resolve time. `set` is the explicit spelling of what the
+   * field did before, so `set: { views: 42 }` becomes `set: { views: { set: 42 } }`.
+   *
+   * The arithmetic happens in the database (`SET views = views + 1`), so a counter no longer
+   * needs a read-modify-write round trip and no longer loses concurrent updates. Rounding on
+   * an integer column, and division by zero, follow the database's own rules rather than
+   * being guarded here. Columns owned by a scalar override keep their plain type — an
+   * override owns what the column accepts.
+   *
+   * Off by default: it changes the type of every numeric and array field on every update
+   * input, which no existing document is written against.
+   *
+   * @default false
+   */
+  fieldUpdateOperations?: FeatureSwitch;
+  /**
+   * `update<Table>Count` / `delete<Table>Count` mutations — the same write as the plural
+   * `update<Table>` / `delete<Table>`, returning the number of rows affected instead of the
+   * rows themselves.
+   *
+   * ```graphql
+   * deletePostsCount(where: { published: { eq: false } })   # Int!
+   * ```
+   *
+   * A mass update or delete otherwise has to `RETURNING *` every row it touched purely so
+   * the caller can count them, which crosses the driver and is serialized through GraphQL
+   * for nothing. Each mutation is generated only when its plural counterpart is
+   * (`features.update` / `features.delete`), and honours `features.requireWhere`.
+   *
+   * Off unless asked for, so an existing schema does not grow new mutations on upgrade.
+   *
+   * @default false
+   */
+  countMutations?: FeatureSwitch;
   /**
    * Makes `where` non-null on the plural `update<Table>` / `delete<Table>` mutations, and
    * rejects a `where` that collapses to no filters (e.g. `where: {}`), so a schema can rule

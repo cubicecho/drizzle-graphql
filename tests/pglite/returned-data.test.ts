@@ -536,7 +536,7 @@ describe.sequential('Returned data tests', () => {
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() }).strict(),
-                type: z.instanceof(GraphQLObjectType),
+                type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
             updateUsersMany: z
@@ -551,6 +551,8 @@ describe.sequential('Returned data tests', () => {
                   })
                   .strict(),
                 resolve: z.function(),
+                // Documents the nullable element, the one mutation whose return type differs.
+                description: z.string(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() }).strict(),
                 type: z.instanceof(GraphQLNonNull),
@@ -665,7 +667,7 @@ describe.sequential('Returned data tests', () => {
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() }).strict(),
-                type: z.instanceof(GraphQLObjectType),
+                type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
             updatePostsMany: z
@@ -680,6 +682,8 @@ describe.sequential('Returned data tests', () => {
                   })
                   .strict(),
                 resolve: z.function(),
+                // Documents the nullable element, the one mutation whose return type differs.
+                description: z.string(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() }).strict(),
                 type: z.instanceof(GraphQLNonNull),
@@ -794,7 +798,7 @@ describe.sequential('Returned data tests', () => {
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() }).strict(),
-                type: z.instanceof(GraphQLObjectType),
+                type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
             updateCustomersMany: z
@@ -809,6 +813,8 @@ describe.sequential('Returned data tests', () => {
                   })
                   .strict(),
                 resolve: z.function(),
+                // Documents the nullable element, the one mutation whose return type differs.
+                description: z.string(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() }).strict(),
                 type: z.instanceof(GraphQLNonNull),
@@ -923,7 +929,7 @@ describe.sequential('Returned data tests', () => {
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() }).strict(),
-                type: z.instanceof(GraphQLObjectType),
+                type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
             updateTagsMany: z
@@ -938,6 +944,8 @@ describe.sequential('Returned data tests', () => {
                   })
                   .strict(),
                 resolve: z.function(),
+                // Documents the nullable element, the one mutation whose return type differs.
+                description: z.string(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
                 extensions: z.object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() }).strict(),
                 type: z.instanceof(GraphQLNonNull),
@@ -1026,12 +1034,8 @@ describe.sequential('Returned data tests', () => {
         types: z
           .object({
             User: z.instanceof(GraphQLObjectType),
-            User: z.instanceof(GraphQLObjectType),
-            Post: z.instanceof(GraphQLObjectType),
             Post: z.instanceof(GraphQLObjectType),
             Customer: z.instanceof(GraphQLObjectType),
-            Customer: z.instanceof(GraphQLObjectType),
-            Tag: z.instanceof(GraphQLObjectType),
             Tag: z.instanceof(GraphQLObjectType),
             UserAggregate: z.instanceof(GraphQLObjectType),
             UserGroupBy: z.instanceof(GraphQLObjectType),
