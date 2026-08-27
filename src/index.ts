@@ -12,6 +12,7 @@ import {
 import type { AnyDrizzleDB, BuildSchemaConfig, GeneratedData, TableLimitPolicy } from './types.ts';
 import {
   applyErrorMapper,
+  DEFAULT_TRANSACTION_TIMEOUT_MS,
   type DefaultOrderByFor,
   defaultErrorMapper,
   type LimitPolicyFor,
@@ -199,7 +200,10 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
   const transactions =
     transactionsOpt === undefined || transactionsOpt === 'none'
       ? undefined
-      : { timeoutMs: (transactionsOpt === 'auto' ? undefined : transactionsOpt.timeoutMs) ?? 30_000 };
+      : {
+          timeoutMs:
+            (transactionsOpt === 'auto' ? undefined : transactionsOpt.timeoutMs) ?? DEFAULT_TRANSACTION_TIMEOUT_MS,
+        };
 
   // A limit policy is only built when the caller configured one; otherwise `limits` stays
   // undefined and every list keeps its unbounded behavior. Policies are resolved once per

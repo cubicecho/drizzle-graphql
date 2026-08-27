@@ -1920,6 +1920,7 @@ that explains it, where there is one.
 | --- | --- | --- |
 | `mutations` | `true` | `false` omits the `Mutation` type entirely |
 | `features` | see [Choosing what gets generated](#choosing-what-gets-generated) | which operations are generated, per operation |
+| `exclude` | none | [tables and columns left out](#excluding-tables-and-columns) of the generated schema entirely |
 | `relationsDepthLimit` | unlimited | how deep relation fields are generated; `0` gives a flat, columns-only schema |
 | `prefixes` / `suffixes` / `typeNameMapper` | see [Naming](#naming) | operation and type names |
 | `scalars` / `mapColumnType` | built-in detection | [override a column's GraphQL type](#overriding-a-columns-scalar), by name or by rule |
@@ -1929,5 +1930,11 @@ that explains it, where there is one.
 | `conflictDoNothing` | `false` | PostgreSQL only — `ON CONFLICT DO NOTHING` on inserts, which makes `create<Table>Single` nullable |
 | `complexity` | on | [cost hints](#query-cost) in field extensions; `false` turns them off |
 | `transactions` | `'none'` | `'auto'` wraps a multi-mutation request in one [transaction](#transactions) |
+| `limits` | unbounded | [default and maximum page size](#bounding-page-size), globally or per table |
+| `defaults` | none | [per-table default `orderBy`](#default-ordering) for requests that omit one |
+| `scope` | none | [row-level predicate](#row-scoping-and-multi-tenancy) every read and write of a table is confined to |
+| `contextValues` | none | [columns the server stamps from context](#columns-the-server-owns) instead of accepting from the client |
+| `softDelete` | none | [tables that mark rows deleted](#soft-delete) instead of removing them |
+| `onWrite` | none | [hook that runs inside the mutation's own transaction](#write-hooks) |
 | `onError` | replaces driver errors | [error handling](#error-handling) hook — log, or surface a different error |
 | `eagerLoadRelations` | `true` | [which relations are pre-fetched](#overriding-a-relations-resolver-without-overfetching) with the parent query |

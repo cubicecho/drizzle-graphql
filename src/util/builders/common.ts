@@ -1155,7 +1155,7 @@ const inputFieldDocs = (
 };
 
 /** The shape `graphql-query-complexity`'s `fieldExtensionsEstimator` hands to a field's hint. */
-export type ComplexityEstimatorArgs = { args: Record<string, any>; childComplexity: number };
+type ComplexityEstimatorArgs = { args: Record<string, any>; childComplexity: number };
 
 /** A field's cost hint, published as `extensions.complexity` on the generated field config. */
 export type ComplexityEstimator = (options: ComplexityEstimatorArgs) => number;
@@ -3663,7 +3663,7 @@ export const extractFilters = <TTable extends Table>(
  * `where`) sidesteps aliasing entirely, and is the only form that can reach through a
  * relation — which is what ownership through a join table needs.
  */
-export type ScopeHook<TContext = any> = (context: TContext, table: any) => SQL | Record<string, any> | undefined | null;
+type ScopeHook<TContext = any> = (context: TContext, table: any) => SQL | Record<string, any> | undefined | null;
 
 /** Build-time lookup: the scope configured for a table, if any. */
 export type ScopeFor = (tableName: string) => ScopeHook | undefined;
