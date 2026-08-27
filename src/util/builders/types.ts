@@ -17,7 +17,7 @@ import type {
   ScalarOverridesConfig,
   SchemaDocs,
 } from '../type-converter/types.ts';
-import type { ResolvedComplexityOptions } from './common.ts';
+import type { LimitPolicyFor, ResolvedComplexityOptions } from './common.ts';
 // import type {
 //   ConvertedColumn,
 //   ConvertedRelationColumnWithArgs,
@@ -73,6 +73,11 @@ export type SchemaGeneratorOptions = {
    * multi-mutation transactions are off.
    */
   transactions: { timeoutMs: number } | undefined;
+  /**
+   * Resolved `BuildSchemaConfig.limits`: given a table key, the policy that applies to lists of
+   * that table. `undefined` when no policy was configured at all.
+   */
+  limits: LimitPolicyFor | undefined;
 };
 
 export type TableNamedRelations = {
