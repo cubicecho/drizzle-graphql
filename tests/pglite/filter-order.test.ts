@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
@@ -46,6 +47,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await pglite?.close().catch(() => {});
+  await rm(DATA_DIR, { recursive: true, force: true }).catch(() => {});
 });
 
 // Seed recap: users 1, 2 and 5; posts 1,2,3,6 belong to user 1 and posts 4,5 to user 5.

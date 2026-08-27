@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { buildRelations, sql } from 'drizzle-orm';
 import { bigint, jsonb, pgTable, text, uuid } from 'drizzle-orm/pg-core';
@@ -54,6 +55,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await pglite?.close().catch(() => {});
+  await rm(DATA_DIR, { recursive: true, force: true }).catch(() => {});
 });
 
 describe.sequential('scalar schema shape', () => {

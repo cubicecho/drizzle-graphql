@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { buildRelations, sql } from 'drizzle-orm';
 import { decimal as mysqlDecimal, mysqlTable, varchar } from 'drizzle-orm/mysql-core';
@@ -56,6 +57,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await pglite?.close().catch(() => {});
+  await rm(DATA_DIR, { recursive: true, force: true }).catch(() => {});
 });
 
 describe.sequential('Decimal schema shape', () => {
