@@ -24,6 +24,7 @@ import type {
   GraphQLSchema,
 } from 'graphql';
 
+import type { WriteHooks } from './util/builders/common.ts';
 import type {
   Filters,
   GetRemappedTableDataType,
@@ -850,6 +851,25 @@ export type SoftDeleteColumn =
     };
 
 /**
+ * The write-hook types, re-exported from the builder that defines them so a consumer can type
+ * a hook without reaching into the package's internals. See {@link BuildSchemaConfig.onWrite}.
+ */
+export type {
+  WriteHook,
+  WriteHookPayload,
+  WriteHookPositions,
+  WriteHooks,
+  WriteOperation,
+} from './util/builders/common.ts';
+
+/**
+ * Write hooks, either applied to every table (a bare function, or an object naming the
+ * positions) or registered per table by Drizzle schema key. See
+ * {@link BuildSchemaConfig.onWrite}.
+ */
+export type OnWriteConfig = WriteHooks | Record<string, WriteHooks>;
+
+/**
  * Per-table soft-delete declarations, either keyed by Drizzle schema key or as a rule applied
  * to every table. See {@link BuildSchemaConfig.softDelete}.
  */
@@ -1193,6 +1213,39 @@ export type BuildSchemaConfig = {
    * Marking a parent deleted does not mark its children — a cascade is a schema decision.
    */
   softDelete?: SoftDeleteConfig;
+  /**
+   * A hook that runs **inside the mutation's transaction**, so its writes commit or roll back
+   * with the mutation itself — the position an audit row, an outbox row, or a denormalized
+   * counter needs, and the one a `graphql-middleware` wrapper cannot occupy.
+   *
+   * ```ts
+   * buildSchema(db, {
+   *   onWrite: {
+   *     posts: async ({ table, operation, rows, tx }) => {
+   *       await tx.insert(auditLog).values(rows.map((row) => ({ table, operation, rowId: row.id })));
+   *     },
+   *   },
+   * });
+   * ```
+   *
+   * A bare function is the **`after`** hook — the position that has rows. `{ before, after }`
+   * names them explicitly; `before` receives the field's args ahead of the statement, for a
+   * check that has to read inside the same snapshot. Registering a bare function (or a
+   * positions object) at the top level applies it to every table; anything else is read as a
+   * table map keyed by Drizzle schema key, and an unknown name fails the build.
+   *
+   * - **`tx` is the executor the mutation ran on** — a caller-supplied executor under
+   *   `drizzleExecutorKey`, the request's auto-transaction, or, for a field that would
+   *   otherwise have run unwrapped, a transaction opened for it because the hook is there.
+   * - **Throwing rolls the mutation back.** That is the point of the position.
+   * - **`rows` are the post-write rows as the database returned them**, before the output
+   *   mapper. Empty at the `before` position, and on MySQL, whose mutations return no rows.
+   * - The hook fires for the **mutation field's own table**. Rows a nested write creates in
+   *   another table do not fire that table's hook.
+   *
+   * Off by default, and a build without it opens exactly the transactions it did before.
+   */
+  onWrite?: OnWriteConfig;
   /**
    * Tables and columns to leave out of the generated schema entirely.
    *
