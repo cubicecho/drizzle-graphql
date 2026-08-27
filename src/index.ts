@@ -141,6 +141,8 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     delete: config?.features?.delete ?? true,
     upsert: config?.features?.upsert ?? false,
     nestedWrites: config?.features?.nestedWrites ?? false,
+    fieldUpdateOperations: config?.features?.fieldUpdateOperations ?? false,
+    countMutations: config?.features?.countMutations ?? false,
     requireWhere: config?.features?.requireWhere ?? false,
   };
 
