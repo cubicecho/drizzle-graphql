@@ -20,6 +20,7 @@ import {
   attachTargetPrimaryKeys,
   bindPolicies,
   buildNamedRelations,
+  buildUniqueKeyMap,
   computeResolverFieldNames,
   createMutationTxCtx,
   createRelationResolverFactory,
@@ -42,6 +43,8 @@ import {
   type TablesRelationalConfig,
   type TypeCacheCtx,
   type TypeNameMapper,
+  type UniqueKeyMap,
+  visibleColumns,
 } from '../builders/common.ts';
 import { tableFieldExtensions } from '../extensions.ts';
 import { resolveTableFeatures } from '../features.ts';
@@ -189,7 +192,24 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
     // fields still exist and resolve lazily.
     const eagerRelations = pruneNonEagerRelations(namedRelations, shouldEagerLoad);
 
-    const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations };
+    // A `where` field per compound unique constraint, for the tables that asked for one. Built
+    // once and shared by the input types and the resolvers: the fields a request may spell and
+    // the fields a resolver understands are the same map, so neither can drift from the other.
+    const uniqueKeys: Record<string, UniqueKeyMap> = {};
+    for (const [tableName, table] of tableEntries) {
+      if (!featureOf(tableName).uniqueKeyFilters) {
+        continue;
+      }
+      // Whatever the filter input already offers under a name keeps it — columns are added
+      // first, then relations, and a key field last.
+      const taken = new Set([...Object.keys(visibleColumns(table)), ...Object.keys(namedRelations[tableName] ?? {})]);
+      const map = buildUniqueKeyMap(uniqueColumnSets(table), taken);
+      if (Object.keys(map).length) {
+        uniqueKeys[tableName] = map;
+      }
+    }
+
+    const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations, uniqueKeys };
 
     // The row scope compiled against this build's relation graph, plus the columns whose value
     // the server supplies. Both stay undefined unless configured.
@@ -228,6 +248,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
       contextValuesOf,
       softDeleteOf,
       featureOf,
+      uniqueKeysOf: (tableName) => uniqueKeys[tableName],
     };
 
     adapter.preflight?.(db, options);

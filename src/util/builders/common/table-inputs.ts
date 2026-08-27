@@ -16,6 +16,7 @@ import type { TypeNameMapper } from './naming.ts';
 import { resolveTypeName } from './naming.ts';
 import { isFilterableRelation } from './relations.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
+import { generateUniqueKeyFilterFields } from './unique-keys.ts';
 
 const orderMap = new WeakMap<object, Record<string, ConvertedInputColumn>>();
 const generateTableOrderCached = (table: Table) => {
@@ -305,9 +306,13 @@ export const generateTableFilterTypeCached = (
   // (and eventually this one again), are only resolved after this type is in the cache.
   const buildFields = () => {
     const filterColumns = generateTableFilterValuesCached(table, tableName, cacheCtx);
+    const uniqueKeys = cacheCtx.uniqueKeysOf?.(tableName);
     return {
       ...filterColumns,
       ...generateRelationFilterFields(tableName, cacheCtx, typeNameMapper, filterColumns, relationMap, tables),
+      // Last, and already filtered against both — a key field only exists under a name no
+      // column and no relation claimed.
+      ...(uniqueKeys ? generateUniqueKeyFilterFields(table, tableName, uniqueKeys, typeNameMapper) : {}),
     };
   };
 

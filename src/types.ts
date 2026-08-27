@@ -691,7 +691,8 @@ export type FeatureSwitch = boolean | ((tableName: string) => boolean);
 
 /**
  * Per-feature switches for what `buildSchema` generates. Every flag defaults to `true` except
- * `upsert`, `nestedWrites`, `fieldUpdateOperations`, `countMutations` and `requireWhere`.
+ * `upsert`, `nestedWrites`, `fieldUpdateOperations`, `countMutations`, `requireWhere` and
+ * `uniqueKeyFilters`.
  * Each one takes a boolean or a per-table predicate, apart from `nestedWrites`, which is
  * build-wide.
  * See {@link BuildSchemaConfig.features}.
@@ -826,6 +827,29 @@ export type SchemaFeatures = {
    * @default false
    */
   requireWhere?: FeatureSwitch;
+  /**
+   * One `where` field per compound unique constraint, so a lookup by a natural key names the
+   * key instead of restating its columns:
+   *
+   * ```graphql
+   * stockSingle(where: { itemId_locationId: { itemId: "i1", locationId: "l1" } }) { quantity }
+   * ```
+   *
+   * The field is named after its member columns and every member is non-null, so a half-
+   * supplied key fails query validation rather than becoming a broader filter that returns
+   * whichever row happens to come first. It compiles to the same equalities the columns would
+   * have — the guarantee is in the input type.
+   *
+   * Single-column constraints get no field (`eq` on the column already says it), and a
+   * constraint whose field name is taken by a column or a relation is skipped. The fields live
+   * on `<Type>Filters`, so they are accepted wherever a filter is: the `Single` reads and
+   * writes they are meant for, but also list queries, relation filters and `onConflict.where`.
+   *
+   * Off unless asked for: it adds an input type per compound constraint.
+   *
+   * @default false
+   */
+  uniqueKeyFilters?: FeatureSwitch;
 };
 
 /**

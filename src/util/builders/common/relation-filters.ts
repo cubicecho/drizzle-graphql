@@ -20,6 +20,8 @@ import {
 import type { FilterColumnOperatorsCore, Filters, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
 import { extractFiltersColumn } from './filters.ts';
+import type { UniqueKeyMap } from './unique-keys.ts';
+import { extractUniqueKeyFilter } from './unique-keys.ts';
 
 /**
  * Everything `extractFilters` needs to turn a relation key in a `where` argument into a
@@ -38,13 +40,19 @@ export interface RelationFilterContext {
   tableKey: string;
   /** Shared counter making every subquery alias unique within one extraction. */
   aliases?: { n: number };
+  /**
+   * The compound-unique-key `where` fields of each table, keyed by table schema key. Only
+   * populated when `features.uniqueKeyFilters` generated them — a key field the build did not
+   * generate is an unknown filter key like any other.
+   */
+  uniqueKeys?: Record<string, UniqueKeyMap>;
 }
 
 /**
  * The build-scoped half of {@link RelationFilterContext}. Created once per generated schema and
  * handed to every resolver, which adds the table it is filtering.
  */
-export type RelationFilterBase = Pick<RelationFilterContext, 'tables' | 'relationMap'>;
+export type RelationFilterBase = Pick<RelationFilterContext, 'tables' | 'relationMap' | 'uniqueKeys'>;
 
 /** Narrows the build-scoped relation filter context to the table a resolver is filtering. */
 export const relationFilterCtx = (
@@ -334,18 +342,23 @@ export const extractFilters = <TTable extends Table>(
     }
 
     const column = columns[fieldName];
+    // Resolved in the order the fields were generated in: a column keeps its name, then a
+    // relation, and a unique-key field only exists where neither claimed it.
+    const uniqueKey = column ? undefined : relationCtx?.uniqueKeys?.[relationCtx.tableKey]?.[fieldName];
 
-    // A key that is neither a column nor a filterable relation must throw rather than be
-    // dropped: when the generated schema is stitched/merged with another schema, same-named
-    // inputs can contribute foreign keys that pass input validation, and a where that loses
-    // all of its keys silently becomes an unbounded select/update/delete.
-    if (!column && !(relations?.[fieldName] && relationCtx)) {
+    // A key that is none of the three must throw rather than be dropped: when the generated
+    // schema is stitched/merged with another schema, same-named inputs can contribute foreign
+    // keys that pass input validation, and a where that loses all of its keys silently becomes
+    // an unbounded select/update/delete.
+    if (!column && !uniqueKey && !(relations?.[fieldName] && relationCtx)) {
       throw drizzleError(`WHERE ${tableName}: Unknown filter key: ${fieldName}`, { code: 'DRIZZLE_INVALID_FILTER' });
     }
 
     const extracted = column
       ? extractFiltersColumn(column, fieldName, operators)
-      : extractRelationFilter(table, fieldName, relations![fieldName]!, operators as any, relationCtx!);
+      : uniqueKey
+        ? extractUniqueKeyFilter(table, tableName, fieldName, uniqueKey, operators as any)
+        : extractRelationFilter(table, fieldName, relations![fieldName]!, operators as any, relationCtx!);
 
     if (extracted) {
       variants.push(extracted);

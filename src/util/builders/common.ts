@@ -134,6 +134,7 @@ export { generateTableTypes } from './common/table-types.ts';
 export type { MutationTxCtx } from './common/transactions.ts';
 export { createMutationTxCtx, DEFAULT_TRANSACTION_TIMEOUT_MS, runMutation } from './common/transactions.ts';
 export type { TypeCacheCtx } from './common/type-cache.ts';
+export { buildUniqueKeyMap, type UniqueKeyMap, uniqueKeyFieldName } from './common/unique-keys.ts';
 export type {
   ResolvedWriteHooks,
   WriteHook,

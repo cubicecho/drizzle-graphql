@@ -41,6 +41,7 @@ export type TableFeatures = {
   fieldUpdateOperations: boolean;
   countMutations: boolean;
   requireWhere: boolean;
+  uniqueKeyFilters: boolean;
 };
 
 /**

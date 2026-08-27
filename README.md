@@ -141,14 +141,16 @@ const { schema } = buildSchema(db, {
         fieldUpdateOperations: true, // increment/push operations on the update input (off by default)
         countMutations: true,     // update<Table>Count / delete<Table>Count mutations (off by default)
         requireWhere: true,       // make `where` non-null on plural update/delete (off by default)
+        uniqueKeyFilters: true,   // a `where` field per compound unique constraint (off by default)
     },
 })
 ```
 
 -   Any flag left out keeps its default of `true`, so `{ features: { delete: false } }`
     changes nothing else
--   `upsert`, `nestedWrites`, `fieldUpdateOperations` and `countMutations` are the
-    exceptions: all four default to `false`, so they only exist if you ask for them
+-   `upsert`, `nestedWrites`, `fieldUpdateOperations`, `countMutations`, `requireWhere` and
+    `uniqueKeyFilters` are the exceptions: they default to `false`, so they only exist if you
+    ask for them
 -   `groupBy` needs `aggregates`: it reuses those output types, so turning `aggregates` off
     turns the group-by queries off with it
 -   Turning off `insert` or `update` also drops the input type that only that mutation
@@ -708,6 +710,41 @@ A **to-many** relation takes a `some` / `none` / `every` wrapper
     subquery joins the junction table to the target, so
     `users(where: { roles: { some: { name: { eq: "admin" } } } })` works the same as a direct
     to-many relation
+
+## Lookup by a unique key
+
+A row with a two-column natural key — a stock line identified by item and location, a
+membership identified by user and team — has to be spelled as two ordinary filters that
+happen to match one row. Nothing says they belong together, and the query stays valid when
+half of it goes missing. `features: { uniqueKeyFilters: true }` adds one `where` field per
+compound unique constraint, named after its columns:
+
+```graphql
+{
+    stockSingle(where: { itemId_locationId: { itemId: "widget", locationId: "eu" } }) {
+        quantity
+    }
+}
+```
+
+```graphql
+input StockItemIdLocationIdKey {
+    itemId: String!
+    locationId: String!
+}
+```
+
+-   Every member is non-null, so a half-supplied key is a query-validation error rather than
+    a filter that quietly matches more rows than you meant
+-   The field lives on the table's `Filters` input, so it is accepted anywhere a filter is —
+    list and single queries, aggregates, `update<Table>Single` / `delete<Table>Single` — and
+    composes with column filters, relation filters, `OR` / `AND` / `NOT`
+-   Composite primary keys get a field like any other unique constraint
+-   Single-column constraints do not: `eq` on the column already names the row
+-   A field name a column or relation already holds is skipped, the same way a relation
+    yields to a same-named column
+-   It compiles to exactly the equalities you would have written by hand; the guarantee is in
+    the input type, not in the SQL
 
 ## Case-insensitive matching
 
