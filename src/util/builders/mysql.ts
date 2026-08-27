@@ -76,6 +76,7 @@ import {
   generateGroupByType,
   generateHavingInput,
 } from './aggregates.ts';
+import { missingQueryBuilderError } from './errors.ts';
 import { remapUpdateInput } from './field-updates.ts';
 import type {
   CreatedResolver,
@@ -105,9 +106,7 @@ const generateSelectArray = (
     | RelationalQueryBuilder<any, any, any>
     | undefined;
   if (!queryBase) {
-    throw new Error(
-      `Drizzle-GraphQL Error: Table ${tableName} not found in drizzle instance. Did you forget to pass schema to drizzle constructor?`,
-    );
+    throw missingQueryBuilderError(tableName);
   }
 
   const table = tables[tableName]!;
@@ -178,9 +177,7 @@ const generateSelectSingle = (
     | RelationalQueryBuilder<any, any, any>
     | undefined;
   if (!queryBase) {
-    throw new Error(
-      `Drizzle-GraphQL Error: Table ${tableName} not found in drizzle instance. Did you forget to pass schema to drizzle constructor?`,
-    );
+    throw missingQueryBuilderError(tableName);
   }
 
   const queryArgs = selectSingleArgs(orderArgs, filterArgs, policies?.softDelete, tableName);

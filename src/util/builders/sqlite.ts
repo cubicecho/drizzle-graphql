@@ -22,6 +22,7 @@ import {
   toGraphQLError,
   withDefaultOrderBy,
 } from '../builders/common.ts';
+import { missingQueryBuilderError } from './errors.ts';
 import { createSchemaDataGenerator } from './schema-data.ts';
 import type { CreatedResolver, SchemaGeneratorOptions, TableNamedRelations, TableSelectArgs } from './types.ts';
 import { createUpdateManyGenerator, type UpdateManyBatchRunner, type UpdateManyEntry } from './update-many.ts';
@@ -45,9 +46,7 @@ const generateSelectArray = (
     | RelationalQueryBuilder<any, any, any>
     | undefined;
   if (!queryBase) {
-    throw new Error(
-      `Drizzle-GraphQL Error: Table ${tableName} not found in drizzle instance. Did you forget to pass schema to drizzle constructor?`,
-    );
+    throw missingQueryBuilderError(tableName);
   }
 
   const table = tables[tableName]!;
@@ -118,9 +117,7 @@ const generateSelectSingle = (
     | RelationalQueryBuilder<any, any, any>
     | undefined;
   if (!queryBase) {
-    throw new Error(
-      `Drizzle-GraphQL Error: Table ${tableName} not found in drizzle instance. Did you forget to pass schema to drizzle constructor?`,
-    );
+    throw missingQueryBuilderError(tableName);
   }
 
   const queryArgs = selectSingleArgs(orderArgs, filterArgs, policies?.softDelete, tableName);
