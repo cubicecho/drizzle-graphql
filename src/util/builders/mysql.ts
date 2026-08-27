@@ -56,6 +56,7 @@ import {
   toGraphQLError,
 } from '../builders/common.ts';
 import { remapFromGraphQLArrayInput, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
+import { type DrizzleMutationMeta, tableFieldExtensions } from '../extensions.ts';
 import { resolveTableFeatures } from '../features.ts';
 import { registerEnumConfig, registerScalarOverrides } from '../type-converter/index.ts';
 import {
@@ -625,6 +626,7 @@ export const generateSchemaData = <
     complexity,
     limits,
     docs: options.docs ?? {},
+    primaryKeyOf: (name) => (tables[name] ? mysqlPrimaryKeyPropNames(tables[name] as MySqlTable) : []),
     featureOf,
   };
 
@@ -679,6 +681,9 @@ export const generateSchemaData = <
   for (const [tableName, tableTypes] of Object.entries(gqlSchemaTypes)) {
     // Everything this table generates, with any per-table predicate already run.
     const tableFeatures = featureOf(tableName);
+    // What every field this table generates publishes about itself under `extensions.drizzle`,
+    // so a wrapper can read a field's identity instead of parsing its configurable name.
+    const drizzleMeta = tableFieldExtensions(tableName, mysqlPrimaryKeyPropNames(schema[tableName] as MySqlTable));
     const { insertInput, updateInput, tableFilters, tableOrder } = tableTypes.inputs;
     const { selectSingleOutput, selectArrOutput } = tableTypes.outputs;
 
@@ -928,19 +933,28 @@ export const generateSchemaData = <
       type: selectArrOutput,
       args: selectArrGenerated.args,
       resolve: selectArrGenerated.resolver,
-      ...(complexity ? { extensions: { complexity: listFieldComplexity(complexity, limits?.(tableName)) } } : {}),
+      extensions: {
+        drizzle: drizzleMeta({ kind: 'query', operation: 'select', single: false, targetArg: 'where' }),
+        ...(complexity ? { complexity: listFieldComplexity(complexity, limits?.(tableName)) } : {}),
+      },
     };
     queries[selectSingleGenerated.name] = {
       type: selectSingleOutput,
       args: selectSingleGenerated.args,
       resolve: selectSingleGenerated.resolver,
+      extensions: {
+        drizzle: drizzleMeta({ kind: 'query', operation: 'select', single: true, targetArg: 'where' }),
+      },
     };
     if (aggregateGenerated && aggregateType) {
       queries[aggregateGenerated.name] = {
         type: new GraphQLNonNull(aggregateType),
         args: aggregateGenerated.args,
         resolve: aggregateGenerated.resolver,
-        ...(complexity ? { extensions: { complexity: aggregateFieldComplexity(complexity) } } : {}),
+        extensions: {
+          drizzle: drizzleMeta({ kind: 'aggregate', operation: 'aggregate', single: true, targetArg: 'where' }),
+          ...(complexity ? { complexity: aggregateFieldComplexity(complexity) } : {}),
+        },
       };
     }
     if (groupByGenerated && groupByType) {
@@ -948,25 +962,32 @@ export const generateSchemaData = <
         type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(groupByType))),
         args: groupByGenerated.args,
         resolve: groupByGenerated.resolver,
-        ...(complexity ? { extensions: { complexity: aggregateFieldComplexity(complexity) } } : {}),
+        extensions: {
+          drizzle: drizzleMeta({ kind: 'aggregate', operation: 'groupBy', single: false, targetArg: 'where' }),
+          ...(complexity ? { complexity: aggregateFieldComplexity(complexity) } : {}),
+        },
       };
     }
-    for (const generated of [
-      insertArrGenerated,
-      insertSingleGenerated,
-      upsertArrGenerated,
-      upsertSingleGenerated,
-      updateGenerated,
-      updateManyGenerated,
-      updateSingleGenerated,
-      deleteGenerated,
-      deleteSingleGenerated,
-    ]) {
+    // Each mutation is paired with the identity it publishes on `extensions.drizzle`, so a
+    // consumer can tell an insert from an upsert without unpicking the configured prefixes.
+    const generatedMutations: [typeof insertArrGenerated, DrizzleMutationMeta][] = [
+      [insertArrGenerated, { operation: 'insert', single: false, targetArg: 'values' }],
+      [insertSingleGenerated, { operation: 'insert', single: true, targetArg: 'values' }],
+      [upsertArrGenerated, { operation: 'upsert', single: false, targetArg: 'values' }],
+      [upsertSingleGenerated, { operation: 'upsert', single: true, targetArg: 'values' }],
+      [updateGenerated, { operation: 'update', single: false, targetArg: 'where' }],
+      [updateManyGenerated, { operation: 'updateMany', single: false, targetArg: 'updates' }],
+      [updateSingleGenerated, { operation: 'update', single: true, targetArg: 'where' }],
+      [deleteGenerated, { operation: 'delete', single: false, targetArg: 'where' }],
+      [deleteSingleGenerated, { operation: 'delete', single: true, targetArg: 'where' }],
+    ];
+    for (const [generated, meta] of generatedMutations) {
       if (generated) {
         mutations[generated.name] = {
           type: mutationReturnType,
           args: generated.args,
           resolve: generated.resolver,
+          extensions: { drizzle: drizzleMeta({ kind: 'mutation', ...meta }) },
         };
       }
     }

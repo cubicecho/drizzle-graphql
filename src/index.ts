@@ -70,6 +70,16 @@ export {
 } from './util/builders/common.ts';
 export type { TableNamedRelations } from './util/builders/types.ts';
 export { singularizeMapper } from './util/case-ops/index.ts';
+export type {
+  DrizzleExtension,
+  DrizzleFieldExtension,
+  DrizzleFieldKind,
+  DrizzleFieldOperation,
+  DrizzleTargetArg,
+  DrizzleTypeExtension,
+  IdentifiedRows,
+} from './util/extensions.ts';
+export { drizzleExtension, identifyRows, isDrizzleFieldExtension } from './util/extensions.ts';
 export {
   GraphQLBigIntString,
   GraphQLDate,
@@ -78,6 +88,8 @@ export {
   GraphQLJSON,
   GraphQLUUID,
 } from './util/scalars/index.ts';
+export type { ResolveSelectionOptions, SelectionOptions } from './util/selection.ts';
+export { resolveSelection, selectionToWith } from './util/selection.ts';
 export type {
   ColumnDeprecator,
   ColumnDescriber,

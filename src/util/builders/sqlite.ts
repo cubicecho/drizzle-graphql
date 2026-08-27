@@ -66,6 +66,7 @@ import {
   remapToGraphQLArrayOutput,
   remapToGraphQLSingleOutput,
 } from '../data-mappers/index.ts';
+import { tableFieldExtensions } from '../extensions.ts';
 import { resolveTableFeatures } from '../features.ts';
 import { registerEnumConfig, registerScalarOverrides } from '../type-converter/index.ts';
 import {
@@ -1031,6 +1032,7 @@ export const generateSchemaData = <
     complexity,
     limits,
     docs: options.docs ?? {},
+    primaryKeyOf: (name) => (tables[name] ? sqlitePrimaryKeyPropNames(tables[name] as SQLiteTable) : []),
     featureOf,
   };
 
@@ -1106,6 +1108,9 @@ export const generateSchemaData = <
   for (const [tableName, tableTypes] of Object.entries(gqlSchemaTypes)) {
     // Everything this table generates, with any per-table predicate already run.
     const tableFeatures = featureOf(tableName);
+    // What every field this table generates publishes about itself under `extensions.drizzle`,
+    // so a wrapper can read a field's identity instead of parsing its configurable name.
+    const drizzleMeta = tableFieldExtensions(tableName, sqlitePrimaryKeyPropNames(schema[tableName] as SQLiteTable));
     const { insertInput, updateInput, tableFilters, tableOrder } = tableTypes.inputs;
     const { selectSingleOutput, selectArrOutput, singleTableItemOutput, arrTableItemOutput } = tableTypes.outputs;
 
@@ -1413,19 +1418,28 @@ export const generateSchemaData = <
       type: selectArrOutput,
       args: selectArrGenerated.args,
       resolve: selectArrGenerated.resolver,
-      ...(complexity ? { extensions: { complexity: listFieldComplexity(complexity, limits?.(tableName)) } } : {}),
+      extensions: {
+        drizzle: drizzleMeta({ kind: 'query', operation: 'select', single: false, targetArg: 'where' }),
+        ...(complexity ? { complexity: listFieldComplexity(complexity, limits?.(tableName)) } : {}),
+      },
     };
     queries[selectSingleGenerated.name] = {
       type: selectSingleOutput,
       args: selectSingleGenerated.args,
       resolve: selectSingleGenerated.resolver,
+      extensions: {
+        drizzle: drizzleMeta({ kind: 'query', operation: 'select', single: true, targetArg: 'where' }),
+      },
     };
     if (aggregateGenerated && aggregateType) {
       queries[aggregateGenerated.name] = {
         type: new GraphQLNonNull(aggregateType),
         args: aggregateGenerated.args,
         resolve: aggregateGenerated.resolver,
-        ...(complexity ? { extensions: { complexity: aggregateFieldComplexity(complexity) } } : {}),
+        extensions: {
+          drizzle: drizzleMeta({ kind: 'aggregate', operation: 'aggregate', single: true, targetArg: 'where' }),
+          ...(complexity ? { complexity: aggregateFieldComplexity(complexity) } : {}),
+        },
       };
     }
     if (groupByGenerated && groupByType) {
@@ -1433,7 +1447,10 @@ export const generateSchemaData = <
         type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(groupByType))),
         args: groupByGenerated.args,
         resolve: groupByGenerated.resolver,
-        ...(complexity ? { extensions: { complexity: aggregateFieldComplexity(complexity) } } : {}),
+        extensions: {
+          drizzle: drizzleMeta({ kind: 'aggregate', operation: 'groupBy', single: false, targetArg: 'where' }),
+          ...(complexity ? { complexity: aggregateFieldComplexity(complexity) } : {}),
+        },
       };
     }
     if (insertArrGenerated) {
@@ -1441,6 +1458,9 @@ export const generateSchemaData = <
         type: arrTableItemOutput,
         args: insertArrGenerated.args,
         resolve: insertArrGenerated.resolver,
+        extensions: {
+          drizzle: drizzleMeta({ kind: 'mutation', operation: 'insert', single: false, targetArg: 'values' }),
+        },
       };
     }
     if (insertSingleGenerated) {
@@ -1450,6 +1470,9 @@ export const generateSchemaData = <
         type: conflictDoNothing ? singleTableItemOutput : new GraphQLNonNull(singleTableItemOutput),
         args: insertSingleGenerated.args,
         resolve: insertSingleGenerated.resolver,
+        extensions: {
+          drizzle: drizzleMeta({ kind: 'mutation', operation: 'insert', single: true, targetArg: 'values' }),
+        },
       };
     }
     if (upsertArrGenerated) {
@@ -1457,6 +1480,9 @@ export const generateSchemaData = <
         type: arrTableItemOutput,
         args: upsertArrGenerated.args,
         resolve: upsertArrGenerated.resolver,
+        extensions: {
+          drizzle: drizzleMeta({ kind: 'mutation', operation: 'upsert', single: false, targetArg: 'values' }),
+        },
       };
     }
     if (upsertSingleGenerated) {
@@ -1464,6 +1490,9 @@ export const generateSchemaData = <
         type: singleTableItemOutput,
         args: upsertSingleGenerated.args,
         resolve: upsertSingleGenerated.resolver,
+        extensions: {
+          drizzle: drizzleMeta({ kind: 'mutation', operation: 'upsert', single: true, targetArg: 'values' }),
+        },
       };
     }
     if (updateGenerated) {
@@ -1471,6 +1500,9 @@ export const generateSchemaData = <
         type: arrTableItemOutput,
         args: updateGenerated.args,
         resolve: updateGenerated.resolver,
+        extensions: {
+          drizzle: drizzleMeta({ kind: 'mutation', operation: 'update', single: false, targetArg: 'where' }),
+        },
       };
     }
     if (updateManyGenerated) {
@@ -1478,6 +1510,9 @@ export const generateSchemaData = <
         type: new GraphQLNonNull(new GraphQLList(singleTableItemOutput)),
         args: updateManyGenerated.args,
         resolve: updateManyGenerated.resolver,
+        extensions: {
+          drizzle: drizzleMeta({ kind: 'mutation', operation: 'updateMany', single: false, targetArg: 'updates' }),
+        },
         // The nullable element is deliberate, and the reason this mutation's return type
         // differs from every sibling's: the result is aligned with the input, one slot per
         // entry, so an entry that matched nothing has to be able to say so.
@@ -1490,6 +1525,9 @@ export const generateSchemaData = <
         type: singleTableItemOutput,
         args: updateSingleGenerated.args,
         resolve: updateSingleGenerated.resolver,
+        extensions: {
+          drizzle: drizzleMeta({ kind: 'mutation', operation: 'update', single: true, targetArg: 'where' }),
+        },
       };
     }
     if (deleteGenerated) {
@@ -1497,6 +1535,9 @@ export const generateSchemaData = <
         type: arrTableItemOutput,
         args: deleteGenerated.args,
         resolve: deleteGenerated.resolver,
+        extensions: {
+          drizzle: drizzleMeta({ kind: 'mutation', operation: 'delete', single: false, targetArg: 'where' }),
+        },
       };
     }
     if (deleteSingleGenerated) {
@@ -1504,6 +1545,9 @@ export const generateSchemaData = <
         type: singleTableItemOutput,
         args: deleteSingleGenerated.args,
         resolve: deleteSingleGenerated.resolver,
+        extensions: {
+          drizzle: drizzleMeta({ kind: 'mutation', operation: 'delete', single: true, targetArg: 'where' }),
+        },
       };
     }
     if (updateCountGenerated) {

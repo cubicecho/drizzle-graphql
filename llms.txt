@@ -114,6 +114,45 @@ const finalSchema = addResolversToSchema({
 
 Opting a relation out does not remove the field — it keeps resolving lazily via the request-scoped batch loader. Table/relation names are the Drizzle schema keys, matching the keys of `entities.fieldResolvers`.
 
+## Writing your own resolver over a generated type
+
+A resolver that replaces a generated one has to return a row shaped like the type it replaced — relation field resolvers only fill in relations the parent did not already provide. Two exports do the selection translation:
+
+```typescript
+import { resolveSelection, selectionToWith } from 'drizzle-graphql'
+
+// The whole read, against any executor.
+const rows = await resolveSelection(info, { db, table: 'Users', where: { id: { eq } }, executor: tx })
+
+// Or just the `with:` tree.
+const withTree = selectionToWith(info, { db, table: 'Users' })
+```
+
+- `selectionToWith(info, { db, table, typeNameMapper? })` resolves fragments and inline fragments, intersects the selection against the relations config (scalars and consumer-added fields drop out instead of becoming invalid `with:` keys), follows aliases, compiles each relation's `where` / `orderBy` / `limit` / `offset` into its nested entry, and leaves `<relation>Aggregate` selections out. Returns `undefined` when no relations are selected.
+- `resolveSelection(info, { db, table, executor?, single?, where?, orderBy?, limit?, offset?, after?, typeNameMapper? })` runs the generated select resolver's body — columns, relation arguments, eager loading, cursor pagination, transport remapping — against `executor` (default `db`), so an override that opened its own transaction sees its own writes.
+- If the schema was built with a `typeNameMapper`, pass the same function: the translation matches selections against GraphQL type names.
+
+## Identifying generated fields (`extensions.drizzle`)
+
+Every generated field and object type publishes its identity under `extensions.drizzle`, so wrappers (`graphql-middleware`, envelop, `graphql-shield`, audit logs, cache invalidators) never parse field names — which is ambiguous anyway once `prefixes` / `suffixes` / `typeNameMapper` are configured. The shape is stable API: fields are added, never removed or repurposed.
+
+```typescript
+import { drizzleExtension, identifyRows } from 'drizzle-graphql'
+
+const field = info.parentType.getFields()[info.fieldName]
+const meta = drizzleExtension(field)
+// { table, kind, operation, single, targetArg, primaryKey, relation?, parentTable? }
+if (meta?.kind === 'mutation') await audit(meta.table, meta.operation, args[meta.targetArg])
+```
+
+- `table` is the Drizzle schema key; `kind` is `'query' | 'mutation' | 'relation' | 'aggregate' | 'type'`; `operation` is `'select' | 'insert' | 'update' | 'updateMany' | 'upsert' | 'delete' | 'aggregate' | 'groupBy' | 'relation' | 'relationAggregate'`, with arity carried separately by `single`.
+- `targetArg` names the argument the rows live in: `'where'` for select/update/delete/aggregate, `'values'` for insert/upsert, `'updates'` for the batch update.
+- `primaryKey` lists the key columns of `table` in schema order (empty when the table has none).
+- Relation fields (and `<relation>Aggregate` fields) add `relation` and `parentTable`, with `table` naming the relation's **target**: `Users.posts` reads as `{ table: 'Posts', parentTable: 'Users', relation: 'posts' }`.
+- Object types carry `{ table, kind: 'type', primaryKey }`.
+- `drizzleExtension(fieldOrType)` returns `undefined` for anything the library did not generate.
+- `identifyRows(field, args)` returns `{ table, primaryKey, rows, complete }` — the primary-key values the arguments name, read out of whichever argument applies (`values` as object or list, `where` via `eq` / `inArray` / an equality on every column of a composite key, and the per-entry `where` inside `updates`). `complete` is `false` when the arguments do not pin the rows down (a generated key, a non-key filter, an unbounded write, no primary key).
+
 ## Configuration (`BuildSchemaConfig`)
 
 Second argument to `buildSchema(db, config?)`:
@@ -148,8 +187,10 @@ The generated schema carries no authorization and no document-level limits — `
 From `drizzle-graphql`:
 - `buildSchema(db, config?)` — main entry point.
 - `createRelationResolverFactory(db, tables, nullOrdering, filterCtx?)`, `extractFilters`, `extractOrderBy`, `extractRelationJoinColumns` — helpers for custom relation resolvers. `nullOrdering` is the dialect's native `ORDER BY` placement for `NULL` — `'nulls-largest'` for PostgreSQL, `'nulls-smallest'` for MySQL and SQLite — and the keyset predicate behind a relation's `after` argument must match it.
+- `selectionToWith(info, options)`, `resolveSelection(info, options)` — selection-set translation for a hand-written resolver over a generated type.
+- `drizzleExtension(fieldOrType)`, `isDrizzleFieldExtension(value)`, `identifyRows(field, args)` — read the `extensions.drizzle` identity block.
 - `singularizeMapper(tableName)` — the `typeNameMapper: 'singularize'` preset, exported for wrapping.
-- Types: `AnyDrizzleDB`, `BuildSchemaConfig`, `FeatureSwitch`, `GeneratedData`, `GeneratedEntities`, `GeneratedInputs`, `GeneratedOutputs`, `QueriesCore`, `MutationsCore`, `MutationReturnlessResult`, `LimitsConfig`, `TableLimitPolicy`, `SchemaExclusions`, `SelectResolver`, `SelectSingleResolver`, `InsertResolver`, `InsertArrResolver`, `UpdateResolver`, `DeleteResolver`, `RelationResolverFactory`, `TableNamedRelations`, and Drizzle schema-extraction utility types (`ExtractTables`, `ExtractRelations`, `ExtractTableRelations`, `ExtractTableByName`).
+- Types: `AnyDrizzleDB`, `BuildSchemaConfig`, `FeatureSwitch`, `GeneratedData`, `GeneratedEntities`, `GeneratedInputs`, `GeneratedOutputs`, `QueriesCore`, `MutationsCore`, `MutationReturnlessResult`, `LimitsConfig`, `TableLimitPolicy`, `SchemaExclusions`, `SelectResolver`, `SelectSingleResolver`, `InsertResolver`, `InsertArrResolver`, `UpdateResolver`, `DeleteResolver`, `RelationResolverFactory`, `TableNamedRelations`, `DrizzleExtension`, `DrizzleFieldExtension`, `DrizzleTypeExtension`, `DrizzleFieldKind`, `DrizzleFieldOperation`, `DrizzleTargetArg`, `IdentifiedRows`, `SelectionOptions`, `ResolveSelectionOptions`, and Drizzle schema-extraction utility types (`ExtractTables`, `ExtractRelations`, `ExtractTableRelations`, `ExtractTableByName`).
 
 ## Optional
 
