@@ -42,6 +42,12 @@ For each table, `buildSchema` generates:
 
 > `features.fieldUpdateOperations` turns a numeric column's update field into `{ set | increment | decrement | multiply | divide }` and an array column's into `{ set | push }`, so the arithmetic runs in the database (`SET views = views + 1`). Exactly one operation per column, enforced at resolve time. Insert inputs are unchanged.
 
+## Filter and ordering notes
+
+- `inArray: []` matches nothing and `notInArray: []` matches everything, rather than erroring; likewise `hasSome: []` (nothing) and `hasEvery: []` (everything) on Postgres array columns.
+- An `orderBy` entry may set `matchFilterOrder: true` to sort by the row's position in the same column's top-level `inArray` list instead of by the column's value (`asc` keeps the list order, `desc` reverses it). Compiles to a portable `CASE` ladder; interleaves with other entries by `priority`; cannot be combined with `after` or `distinct` (selecting `cursor` under it yields `null`).
+- `json` / `jsonb` columns carry a `path: [JSONPathFilter!]` operator that compares the value at one path inside the document (`{ path: ["profile", "level"], gt: 2 }`). An all-digits key indexes an array; several entries are ANDed. Operators: `eq`/`ne`/`lt`/`lte`/`gt`/`gte`, `startsWith`/`endsWith`/`contains` and their `i`-prefixed forms, `isNull`/`isNotNull`. The comparison type follows the operand (number → numeric, boolean → boolean, else text) unless `as: TEXT | NUMBER | BOOLEAN` overrides it; a value of the wrong shape never matches rather than erroring. Compiles to `#>>` on Postgres, `JSON_UNQUOTE(JSON_EXTRACT(…))` on MySQL and `json_extract` on SQLite.
+
 ## Custom schemas with `entities`
 
 Use `entities` to cherry-pick generated fields, reuse generated types/inputs, and add custom resolvers:

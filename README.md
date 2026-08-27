@@ -402,6 +402,124 @@ A **to-many** relation takes a `some` / `none` / `every` wrapper
     `users(where: { roles: { some: { name: { eq: "admin" } } } })` works the same as a direct
     to-many relation
 
+## Matching lists of values
+
+`inArray` / `notInArray` take a list of candidate values and compile to SQL `IN` / `NOT IN`.
+Two things about them are worth stating explicitly.
+
+**An empty list is answered, not rejected.** A caller building a filter from a variable often
+ends up with an empty list, and that list has a well-defined meaning: nothing is `IN ()` and
+everything is `NOT IN ()`.
+
+```graphql
+{
+    # no rows
+    posts(where: { id: { inArray: [] } }) {
+        id
+    }
+
+    # every row
+    posts(where: { id: { notInArray: [] } }) {
+        id
+    }
+}
+```
+
+The same rule applies to the Postgres array-column operators: `hasSome: []` matches nothing
+(overlapping with no elements is never true) and `hasEvery: []` matches everything (every
+array contains all zero of them).
+
+**The list's own order can be the sort order.** SQL returns `IN` matches in whatever order it
+likes, so a caller that fetches rows by a ranked list of ids normally has to re-sort them
+client-side. Setting `matchFilterOrder` on an `orderBy` entry sorts by the row's position in
+that column's `inArray` list instead of by the column's value:
+
+```graphql
+{
+    posts(
+        where: { id: { inArray: [7, 3, 12] } }
+        orderBy: { id: { direction: asc, priority: 1, matchFilterOrder: true } }
+    ) {
+        id # → 7, 3, 12
+    }
+}
+```
+
+-   `direction: asc` keeps the list's order; `desc` reverses it
+-   It needs an `inArray` filter on the same column, at the top level of `where` — an
+        `inArray` buried inside an `OR` branch raises an error rather than being guessed at
+-   It interleaves with the other `orderBy` entries by `priority` like any ordering key, and
+        works on relation fields as well as root lists
+-   It compiles to a `CASE` ladder over the list values, so it behaves identically on all
+        three dialects and every value stays a bound parameter
+-   It cannot be combined with `after` or `distinct`: a row's position in the request's own
+        filter list is not a value of the row, so it cannot be encoded into a cursor or rebuilt
+        against a subquery. Selecting `cursor` under it yields `null` rather than an error
+
+## Filtering inside JSON documents
+
+`json` / `jsonb` columns get a `path` filter that compares the value at one path inside the
+document, alongside the whole-document `eq` / `ne` / `contains` operators:
+
+```graphql
+{
+    users(where: { meta: { path: { path: ["profile", "level"], gt: 2 } } }) {
+        id
+    }
+}
+```
+
+`path` walks the document key by key from the root; an all-digits key indexes an array
+(`["tags", "0"]`). Several predicates may be given at once and are `AND`ed:
+
+```graphql
+{
+    users(
+        where: {
+            meta: {
+                path: [
+                    { path: ["profile", "role"], eq: "admin" }
+                    { path: ["profile", "level"], gte: 3 }
+                ]
+            }
+        }
+    ) {
+        id
+    }
+}
+```
+
+Available operators are `eq` / `ne` / `lt` / `lte` / `gt` / `gte`, the safe string matchers
+`startsWith` / `endsWith` / `contains` (plus their case-insensitive `i`-prefixed forms), and
+`isNull` / `isNotNull`. A missing key and a JSON `null` both read as null.
+
+**How the value is compared** is decided by the operand: a GraphQL number compares
+numerically, a boolean as a boolean, and anything else as text. Pass `as: TEXT | NUMBER |
+BOOLEAN` when the operand's type doesn't match the document's — comparing a numeric field
+against a `String` variable, say:
+
+```graphql
+{
+    users(where: { meta: { path: { path: ["profile", "level"], as: NUMBER, eq: "3" } } }) {
+        id
+    }
+}
+```
+
+A value of the wrong shape never matches rather than failing the query: `gt: 0` against a
+document whose path holds `"admin"` returns no rows on every dialect. That takes a guard on
+each one — Postgres errors outright on a bad `::numeric`, MySQL quietly casts a non-numeric
+string to `0`, and SQLite's cross-type ordering would otherwise sort every string above every
+number.
+
+Note that `contains` means different things at the two levels, because a path names a scalar:
+on the column it is structural JSON containment (Postgres `@>` / MySQL `JSON_CONTAINS`),
+inside a `path` filter it is substring matching on the extracted value.
+
+Path filters combine with `AND` / `OR` / `NOT` like any other operator, and are accepted
+everywhere a filter is — list, single and aggregate queries, `update` / `delete`, and the
+`where` argument on a relation field.
+
 ## Aggregate queries
 
 Every table also gets an aggregate query field — `<tableName>Aggregate` (e.g. `usersAggregate`),
@@ -642,8 +760,8 @@ field, and passing it back as `after` resumes strictly after that row.
 -   Dates and bigints round-trip losslessly through the cursor
 -   A cursor is only valid under the ordering it was issued for — reusing it with a
     different `orderBy` (or a malformed/corrupted cursor) returns a `GraphQLError`
--   `after` cannot be combined with `distinct`, and a table with no primary key cannot use
-    cursor pagination (its `cursor` field resolves to `null`)
+-   `after` cannot be combined with `distinct` or with `matchFilterOrder`, and a table with
+    no primary key cannot use cursor pagination (its `cursor` field resolves to `null`)
 -   If a table has a real column named `cursor`, the column wins and the meta field is
     skipped
 

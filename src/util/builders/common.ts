@@ -663,6 +663,7 @@ const batchedPaginatedRelationQuery = async (
   offset: number | null,
   pkNames: readonly string[],
   orderCtx?: RelationFilterContext,
+  whereArgs?: Record<string, any>,
 ): Promise<any[]> => {
   const cols = getColumns(targetTable);
 
@@ -670,7 +671,7 @@ const batchedPaginatedRelationQuery = async (
   // slices are deterministic even when the client supplies no (or a non-unique) orderBy.
   // pkNames is resolved at build time and includes composite keys.
   const orderExprs = [
-    ...(orderByArg ? extractOrderBy(targetTable, orderByArg, orderCtx) : []),
+    ...(orderByArg ? extractOrderBy(targetTable, orderByArg, orderCtx, whereArgs) : []),
     ...primaryKeyOrderExprs(targetTable, pkNames),
   ];
   const orderClause = orderExprs.length ? sql` order by ${sql.join(orderExprs, sql`, `)}` : sql``;
@@ -859,6 +860,7 @@ export const createRelationResolverFactory =
             offset ?? null,
             targetPkNames,
             relationFilterCtx(filterCtx, targetTableName),
+            whereArg,
           );
         } else {
           // Use plain db.select() so column refs are never aliased — avoids drizzle-orm v1
@@ -867,7 +869,7 @@ export const createRelationResolverFactory =
           const orderExprs = cursorEntries
             ? cursorOrderExprs(targetTable, cursorEntries)
             : orderByArg
-              ? extractOrderBy(targetTable, orderByArg, relationFilterCtx(filterCtx, targetTableName))
+              ? extractOrderBy(targetTable, orderByArg, relationFilterCtx(filterCtx, targetTableName), whereArg)
               : [];
           if (orderExprs.length) {
             q = q.orderBy(...orderExprs);
@@ -1375,6 +1377,11 @@ export const innerOrder = new GraphQLInputObjectType({
       description:
         "Where NULL values sort. Defaults to the database's own rule (PostgreSQL: last on asc, first on desc; MySQL/SQLite: first on asc, last on desc)",
     },
+    matchFilterOrder: {
+      type: GraphQLBoolean,
+      description:
+        "Sort by this column's position in the `inArray` list the same request's `where` gives it, rather than by the column's own value — `direction: asc` keeps the list's order, `desc` reverses it. Requires an `inArray` filter on the same column at the top level of `where`, and cannot be combined with `after` or `distinct`.",
+    },
   } as const,
 });
 
@@ -1493,10 +1500,79 @@ const jsonFilterFields = (column: Column, colType: ReturnType<typeof drizzleColu
           },
         }
       : {}),
+    path: {
+      type: new GraphQLList(new GraphQLNonNull(jsonPathFilter)),
+      description:
+        'Compares the value at one path inside the document. Several entries are ANDed; a single object may be passed without the list brackets.',
+    },
     isNull: { type: GraphQLBoolean },
     isNotNull: { type: GraphQLBoolean },
   };
 };
+
+/**
+ * How the value at a JSON path is read before it is compared. Left unset, the operand
+ * decides: a GraphQL number compares numerically, a boolean as a boolean, anything else as
+ * text. Set it when the operand's type does not match the document's — comparing a numeric
+ * field against a `String` variable, say.
+ */
+const jsonPathCast = new GraphQLEnumType({
+  name: 'JSONPathCast',
+  description: 'How to read the value at a JSON path before comparing it',
+  values: {
+    TEXT: { value: 'text', description: 'Compare as text (lexicographic ordering)' },
+    NUMBER: { value: 'number', description: 'Compare as a number; a non-numeric value never matches' },
+    BOOLEAN: { value: 'boolean', description: 'Compare as a boolean' },
+  },
+});
+
+/**
+ * One predicate on the value at a path inside a json/jsonb column. `path` walks the document
+ * key by key (an all-digits element indexes an array), and the remaining operators compare
+ * whatever sits there. Operands are `JSON` so a single input type serves string, number and
+ * boolean fields; see {@link jsonPathCast} for how the comparison type is chosen.
+ *
+ * Note that `contains` here is substring matching on the extracted value — unlike `contains`
+ * on the column itself, which is structural JSON containment. A path names a scalar, so the
+ * string reading is the useful one.
+ */
+const jsonPathFilter = new GraphQLInputObjectType({
+  name: 'JSONPathFilter',
+  fields: {
+    path: {
+      type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(GraphQLString))),
+      description:
+        'Keys to walk from the document root, e.g. `["profile", "level"]`. An all-digits key indexes an array.',
+    },
+    as: { type: jsonPathCast, description: 'Overrides how the value is read before comparing' },
+    eq: { type: GraphQLJSON, description: 'Equal to' },
+    ne: { type: GraphQLJSON, description: 'Not equal to' },
+    lt: { type: GraphQLJSON, description: 'Less than' },
+    lte: { type: GraphQLJSON, description: 'Less than or equal to' },
+    gt: { type: GraphQLJSON, description: 'Greater than' },
+    gte: { type: GraphQLJSON, description: 'Greater than or equal to' },
+    startsWith: {
+      type: GraphQLString,
+      description: 'Extracted value starts with this string. `%`, `_` and `\\` are matched literally.',
+    },
+    endsWith: {
+      type: GraphQLString,
+      description: 'Extracted value ends with this string. `%`, `_` and `\\` are matched literally.',
+    },
+    contains: {
+      type: GraphQLString,
+      description: 'Extracted value contains this string. `%`, `_` and `\\` are matched literally.',
+    },
+    iStartsWith: { type: GraphQLString, description: 'Case-insensitive `startsWith`.' },
+    iEndsWith: { type: GraphQLString, description: 'Case-insensitive `endsWith`.' },
+    iContains: { type: GraphQLString, description: 'Case-insensitive `contains`.' },
+    isNull: {
+      type: GraphQLBoolean,
+      description: 'When true, matches rows where the path is missing or holds JSON null',
+    },
+    isNotNull: { type: GraphQLBoolean, description: 'When true, matches rows where the path holds a value' },
+  },
+});
 
 /**
  * `inArray` / `notInArray` take a list of candidate values and compile to SQL `IN` /
@@ -2470,6 +2546,11 @@ export const orderByEntries = (
       if (typeof config === 'object' && config.direction === undefined) {
         throw new GraphQLError(`ORDER BY ${column}: ordering through a relation is not supported in this query`);
       }
+      // Same reason as above: the sort key is not a value of the row, so it cannot be
+      // rebuilt against a subquery's fields or encoded into a cursor.
+      if (config.matchFilterOrder) {
+        throw new GraphQLError(`ORDER BY ${column}: 'matchFilterOrder' is not supported in this query`);
+      }
       return [column, config.direction, config.nulls ?? undefined];
     });
 
@@ -2570,6 +2651,36 @@ const extendRelationOrderChain = (
 };
 
 /**
+ * The sort key behind `matchFilterOrder`: the column's position in the `inArray` list that
+ * the same request's `where` gives it, as a `CASE` ladder over that list.
+ *
+ * A ladder rather than a dialect array function (`array_position` on Postgres, `FIELD()` on
+ * MySQL, neither on SQLite) because it is the one form all three share, and because every
+ * list value stays a bound parameter. The branch indices are library-generated integers, so
+ * they are written into the SQL text — a bound parameter there would leave Postgres unable
+ * to infer the CASE result type. Values outside the list sort after every listed one.
+ */
+const filterOrderExpression = (column: Column, columnName: string, whereArgs: Record<string, any> | undefined): SQL => {
+  const values = whereArgs?.[columnName]?.inArray as unknown;
+  if (!Array.isArray(values)) {
+    throw new GraphQLError(
+      `ORDER BY ${columnName}: 'matchFilterOrder' needs an 'inArray' filter on the same column in this query's 'where'`,
+    );
+  }
+  if (!values.length) {
+    // An empty `inArray` matches no rows at all, so every row would sort the same anyway;
+    // a constant keeps the expression valid without a ladder that has no branches.
+    return sql`0`;
+  }
+
+  const branches = values.map(
+    (value, index) =>
+      sql`when ${column} = ${remapFromGraphQLCore(value, column, columnName)} then ${sql.raw(String(index))}`,
+  );
+  return sql`case ${sql.join(branches, sql` `)} else ${sql.raw(String(values.length))} end`;
+};
+
+/**
  * Flattens one level of an `orderBy` argument into `out`. A column key becomes an entry
  * directly (wrapped in a correlated subquery when reached through a relation chain); a
  * to-one relation key recurses with the chain extended by that hop. Priorities live in one
@@ -2582,6 +2693,7 @@ const collectOrderEntries = (
   ctx: RelationFilterContext | undefined,
   chain: RelationOrderChain | undefined,
   out: FlatOrderEntry[],
+  whereArgs: Record<string, any> | undefined,
 ): void => {
   const columns = getColumns(table);
   const relations = ctx?.relationMap[tableKey];
@@ -2593,10 +2705,15 @@ const collectOrderEntries = (
 
     const column = columns[key];
     if (column) {
+      if (config.matchFilterOrder && chain) {
+        throw new GraphQLError(`ORDER BY ${key}: 'matchFilterOrder' is not supported through a relation`);
+      }
       out.push({
-        expression: chain
-          ? sql`(select ${column} from ${sql.join(chain.fromParts, sql`, `)} where ${and(...chain.conditions)})`
-          : column,
+        expression: config.matchFilterOrder
+          ? filterOrderExpression(column, key, whereArgs)
+          : chain
+            ? sql`(select ${column} from ${sql.join(chain.fromParts, sql`, `)} where ${and(...chain.conditions)})`
+            : column,
         column,
         direction: config.direction,
         nulls: config.nulls ?? undefined,
@@ -2611,7 +2728,7 @@ const collectOrderEntries = (
     }
 
     const nextChain = extendRelationOrderChain(chain?.table ?? table, key, relEntry, ctx, chain);
-    collectOrderEntries(nextChain.table, relEntry.targetTableName, config, ctx, nextChain, out);
+    collectOrderEntries(nextChain.table, relEntry.targetTableName, config, ctx, nextChain, out, undefined);
   }
 };
 
@@ -2626,6 +2743,9 @@ const collectOrderEntries = (
  * across relation boundaries. Each entry may also carry `nulls: first | last`
  * (see {@link orderExpressions} for how MySQL emulates it).
  *
+ * An entry may instead set `matchFilterOrder`, which sorts by the column's position in the
+ * `inArray` list the same request's `where` gives it — `whereArgs` is that `where`.
+ *
  * `ctx` supplies the tables and relation map that relation ordering needs; callers whose
  * inputs cannot contain relation keys may omit it.
  */
@@ -2633,9 +2753,10 @@ export const extractOrderBy = <TTable extends Table, TArgs extends OrderByArgs<a
   table: TTable,
   orderArgs: TArgs,
   ctx?: RelationFilterContext,
+  whereArgs?: Record<string, any>,
 ): SQL[] => {
   const entries: FlatOrderEntry[] = [];
-  collectOrderEntries(table, ctx?.tableKey ?? '', orderArgs, ctx, undefined, entries);
+  collectOrderEntries(table, ctx?.tableKey ?? '', orderArgs, ctx, undefined, entries, whereArgs);
 
   return entries
     .sort((a, b) => b.priority - a.priority)
@@ -2715,6 +2836,170 @@ const jsonContains = (column: Column, columnName: string, value: any): SQL => {
   }
 };
 
+/**
+ * Constant predicates, used where an operator's operand list is empty and the answer is
+ * therefore known without touching the column. Written as `1 = 0` / `1 = 1` rather than the
+ * `FALSE` / `TRUE` keywords so they compile identically on all three dialects. Built fresh
+ * per call because a `SQL` object is spliced into whatever query consumes it.
+ */
+const sqlFalse = (): SQL => sql`1 = 0`;
+const sqlTrue = (): SQL => sql`1 = 1`;
+
+/**
+ * A MySQL / SQLite JSON path expression for the given key walk. Bound as a query parameter,
+ * never spliced into the SQL text; an all-digits key becomes an array index, and quotes and
+ * backslashes inside a key are escaped so a key can never end the path segment early.
+ */
+const jsonPathString = (path: string[]): string =>
+  `$${path.map((part) => (/^\d+$/.test(part) ? `[${part}]` : `."${part.replace(/(["\\])/g, '\\$1')}"`)).join('')}`;
+
+/**
+ * Matches the text forms a database will accept as a number. Used to guard both numeric casts —
+ * Postgres has no TRY_CAST and errors outright on a bad `::numeric`, while MySQL quietly casts
+ * a non-numeric string to 0; neither is what a non-matching row should do.
+ */
+const NUMERIC_TEXT_PATTERN = '^\\s*-?(\\d+\\.?\\d*|\\.\\d+)([eE][-+]?\\d+)?\\s*$';
+
+/**
+ * The value at a JSON path, as the expressions a comparison can be built on: read as text,
+ * read as a number, and read as the dialect spells a boolean. Each dialect extracts
+ * differently, and each needs its own guard so a value of the wrong shape answers "no match"
+ * rather than erroring or comparing by some unrelated rule:
+ *
+ * - **Postgres** — `#>>` with a bound `text[]` path, which works on `json` and `jsonb` alike.
+ *   `::numeric` on a non-numeric string is a hard error, so the numeric read is guarded by a
+ *   pattern test.
+ * - **MySQL** — `JSON_UNQUOTE(JSON_EXTRACT(col, ?))`, so a JSON string arrives without its
+ *   quotes. Unquoting a JSON *null* would otherwise yield the string `'null'`, so it is mapped
+ *   back to SQL NULL first. `CAST` quietly turns a non-numeric string into 0, hence the same
+ *   pattern guard.
+ * - **SQLite** — `json_extract` returns the value in SQLite's own type, so the reads cast
+ *   explicitly: without that, SQLite's cross-type ordering puts every string above every
+ *   number and `'admin' > 0` would be true.
+ */
+const jsonPathExprs = (
+  column: Column,
+  path: string[],
+): { text: SQL; number: SQL; boolean: SQL; encodeBoolean: (value: boolean) => string | number } => {
+  switch (columnDialect(column)) {
+    case 'pg': {
+      const pathArray = sql`array[${sql.join(
+        path.map((part) => sql`${part}`),
+        sql`, `,
+      )}]::text[]`;
+      const text = sql`(${column} #>> ${pathArray})`;
+      return {
+        text,
+        number: sql`(case when ${text} ~ ${NUMERIC_TEXT_PATTERN} then ${text}::numeric end)`,
+        boolean: text,
+        encodeBoolean: (value) => String(value),
+      };
+    }
+    case 'mysql': {
+      const extracted = sql`json_extract(${column}, ${jsonPathString(path)})`;
+      const text = sql`(case when json_type(${extracted}) = 'NULL' then null else json_unquote(${extracted}) end)`;
+      return {
+        text,
+        number: sql`(case when ${text} regexp ${NUMERIC_TEXT_PATTERN} then cast(${text} as decimal(65, 30)) end)`,
+        boolean: text,
+        encodeBoolean: (value) => String(value),
+      };
+    }
+    default: {
+      const extracted = sql`json_extract(${column}, ${jsonPathString(path)})`;
+      return {
+        text: sql`cast(${extracted} as text)`,
+        number: sql`(case when typeof(${extracted}) in ('integer', 'real') then ${extracted} end)`,
+        // SQLite has no boolean type: a JSON `true` comes back as the integer 1.
+        boolean: extracted,
+        encodeBoolean: (value) => (value ? 1 : 0),
+      };
+    }
+  }
+};
+
+/** Comparison operators available inside a JSON path filter, as their SQL spelling. */
+const JSON_PATH_COMPARISONS: Record<string, string> = {
+  eq: '=',
+  ne: '<>',
+  lt: '<',
+  lte: '<=',
+  gt: '>',
+  gte: '>=',
+};
+
+/**
+ * How the value at a path is read when the filter does not say: a GraphQL number compares
+ * numerically, a boolean as a boolean, everything else as text.
+ */
+const inferJsonPathCast = (value: unknown): 'text' | 'number' | 'boolean' =>
+  typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'boolean' : 'text';
+
+/**
+ * Compiles one entry of a column's `path` filter: `as` (or the operand's own type) picks
+ * which of {@link jsonPathExprs}' reads the comparison is built on, and the operand is bound
+ * in the shape that read expects.
+ */
+const jsonPathCondition = (column: Column, columnName: string, filter: Record<string, any>): SQL | undefined => {
+  const { path, as: castOverride, ...operators } = filter;
+  const locator = `${columnName}.path`;
+
+  if (!Array.isArray(path) || !path.length) {
+    throw new GraphQLError(`WHERE ${locator}: 'path' must name at least one key`);
+  }
+
+  const exprs = jsonPathExprs(column, path);
+  const variants: SQL[] = [];
+
+  for (const [operatorName, operatorValue] of Object.entries(operators)) {
+    if (operatorValue === null || operatorValue === undefined) {
+      continue;
+    }
+
+    if (operatorName === 'isNull' || operatorName === 'isNotNull') {
+      if (operatorValue === false) {
+        continue;
+      }
+      variants.push(operatorName === 'isNull' ? sql`${exprs.text} is null` : sql`${exprs.text} is not null`);
+      continue;
+    }
+
+    if (operatorName in safeLikeOps) {
+      const { buildPattern, insensitive } = safeLikeOps[operatorName]!;
+      if (typeof operatorValue !== 'string') {
+        throw new GraphQLError(`WHERE ${locator}: operator '${operatorName}' takes a string`);
+      }
+      // The extracted value is an expression, not a column, so the case-insensitive form
+      // always goes through `lower()` rather than Postgres's ILIKE.
+      variants.push(safeLikeCondition(exprs.text as any, buildPattern(operatorValue), insensitive));
+      continue;
+    }
+
+    const comparison = JSON_PATH_COMPARISONS[operatorName];
+    if (!comparison) {
+      throw new GraphQLError(`WHERE ${locator}: Unknown operator: ${operatorName}`);
+    }
+
+    const cast = castOverride ?? inferJsonPathCast(operatorValue);
+    if (cast === 'number') {
+      const numeric = Number(operatorValue);
+      if (Number.isNaN(numeric)) {
+        throw new GraphQLError(
+          `WHERE ${locator}: operator '${operatorName}' compares as a number, so its value must be one`,
+        );
+      }
+      variants.push(sql`${exprs.number} ${sql.raw(comparison)} ${numeric}`);
+    } else if (cast === 'boolean') {
+      const truthy = operatorValue === true || operatorValue === 'true';
+      variants.push(sql`${exprs.boolean} ${sql.raw(comparison)} ${exprs.encodeBoolean(truthy)}`);
+    } else {
+      variants.push(sql`${exprs.text} ${sql.raw(comparison)} ${String(operatorValue)}`);
+    }
+  }
+
+  return variants.length ? (variants.length > 1 ? and(...variants) : variants[0]) : undefined;
+};
+
 export const extractFiltersColumn = <TColumn extends Column>(
   column: TColumn,
   columnName: string,
@@ -2747,6 +3032,15 @@ export const extractFiltersColumn = <TColumn extends Column>(
       variants.push(singleValueOps[operatorName]!(column, singleValue));
     } else if (operatorName in stringValueOps) {
       variants.push(stringValueOps[operatorName]!(column, operatorValue as string));
+    } else if (operatorName === 'path' && isJsonColumn(column)) {
+      // Several path predicates on one column are ANDed, matching how sibling operators
+      // already combine. GraphQL coerces a lone object into a one-element list.
+      for (const pathFilter of operatorValue as Record<string, any>[]) {
+        const extracted = jsonPathCondition(column, columnName, pathFilter);
+        if (extracted) {
+          variants.push(extracted);
+        }
+      }
     } else if (operatorName === 'contains' && isJsonColumn(column)) {
       // `contains` is JSON containment on json/jsonb columns; on string columns it is the
       // safe substring operator handled by safeLikeOps below.
@@ -2755,8 +3049,12 @@ export const extractFiltersColumn = <TColumn extends Column>(
       const { buildPattern, insensitive } = safeLikeOps[operatorName]!;
       variants.push(safeLikeCondition(column, buildPattern(operatorValue as string), insensitive));
     } else if (operatorName in arrayValueOps) {
+      // An empty candidate list is a well-formed question with a known answer — nothing is
+      // `IN ()`, everything is `NOT IN ()` — so it resolves to a constant predicate rather
+      // than an error. SQL has no empty-list literal, hence the constant rather than `IN ()`.
       if (!(operatorValue as any[]).length) {
-        throw new GraphQLError(`WHERE ${columnName}: Unable to use operator ${operatorName} with an empty array!`);
+        variants.push(operatorName === 'inArray' ? sqlFalse() : sqlTrue());
+        continue;
       }
       const arrayValue = (operatorValue as any[]).map((val) => remapFromGraphQLCore(val, column, columnName));
       variants.push(arrayValueOps[operatorName]!(column, arrayValue));
@@ -2764,8 +3062,11 @@ export const extractFiltersColumn = <TColumn extends Column>(
       // Single-element membership: containment with a one-element array (`col @> ARRAY[value]`).
       variants.push(arrayContains(column, [operatorValue]));
     } else if (operatorName in arrayMembershipOps) {
+      // Same reasoning as inArray/notInArray: overlapping with no elements is never true,
+      // and every array contains all zero of them.
       if (!(operatorValue as any[]).length) {
-        throw new GraphQLError(`WHERE ${columnName}: Unable to use operator ${operatorName} with an empty array!`);
+        variants.push(operatorName === 'hasSome' ? sqlFalse() : sqlTrue());
+        continue;
       }
       variants.push(arrayMembershipOps[operatorName]!(column, operatorValue as any[]));
     } else if (operatorName === 'isEmpty') {
@@ -3275,7 +3576,7 @@ const extractRelationsParamsInner = (
     const pkNames = targetPkNames ?? [];
     thisRecord.orderBy = relationArgs?.orderBy
       ? (aliasedTable: Table) =>
-          extractOrderBy(aliasedTable, relationArgs.orderBy!, relationFilterCtx(filterCtx, targetTableName))
+          extractOrderBy(aliasedTable, relationArgs.orderBy!, relationFilterCtx(filterCtx, targetTableName), relWhere)
       : hasPagination && pkNames.length
         ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
         : undefined;
@@ -3472,6 +3773,25 @@ export type CursorOrderEntry = [string, 'asc' | 'desc', (OrderNullsOption | null
 export const orderByHasRelationEntry = (orderBy: Record<string, any> | undefined): boolean =>
   !!orderBy &&
   Object.values(orderBy).some((config) => config && typeof config === 'object' && config.direction === undefined);
+
+/**
+ * Why the given `orderBy` cannot back a cursor, as the message to raise — or `undefined`
+ * when it can. Both cases sort on something that is not a value of the row: a related row's
+ * column, or a position in the request's own `inArray` list. `after` raises the message and
+ * the `cursor` field resolves to null, while the ordering itself still applies.
+ */
+export const orderByCursorObstacle = (orderBy: Record<string, any> | undefined): string | undefined => {
+  if (orderByHasRelationEntry(orderBy)) {
+    return "'after' cannot be combined with an orderBy that orders through a relation — a related row's value cannot be encoded into a cursor.";
+  }
+  if (
+    orderBy &&
+    Object.values(orderBy).some((config) => config && typeof config === 'object' && config.matchFilterOrder)
+  ) {
+    return "'after' cannot be combined with 'matchFilterOrder' — a row's position in the request's own filter list is not a value of the row, so it cannot be encoded into a cursor.";
+  }
+  return undefined;
+};
 
 /**
  * The total order a list query's rows follow when cursor pagination is in play: the request's
@@ -4604,14 +4924,13 @@ export const runRelationalSelect = async (opts: {
     if (after != null && distinct) {
       throw new GraphQLError("'after' cannot be combined with 'distinct'.");
     }
-    if (orderByHasRelationEntry(orderBy)) {
+    const cursorObstacle = orderByCursorObstacle(orderBy);
+    if (cursorObstacle) {
       if (after != null) {
-        throw new GraphQLError(
-          "'after' cannot be combined with an orderBy that orders through a relation — a related row's value cannot be encoded into a cursor.",
-        );
+        throw new GraphQLError(cursorObstacle);
       }
-      // `cursor` was selected under a relation ordering — the field resolves to null and the
-      // relation ordering itself still applies.
+      // `cursor` was selected under an ordering a cursor cannot express — the field resolves
+      // to null and the ordering itself still applies.
     } else if (!pkNames?.length) {
       if (after != null) {
         throw new GraphQLError(`Table ${tableName} has no primary key, so cursor pagination cannot be used on it.`);
@@ -4662,7 +4981,7 @@ export const runRelationalSelect = async (opts: {
     // directly so column refs match the CTE alias.
     orderBy: distinctKeys
       ? (aliasedTable: Table) => [
-          ...(orderBy ? extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName)) : []),
+          ...(orderBy ? extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName), where) : []),
           ...primaryKeyOrderExprs(aliasedTable, pkNames!),
         ]
       : cursorEntries
@@ -4670,7 +4989,8 @@ export const runRelationalSelect = async (opts: {
           // exactly the ordering the cursor encodes and the keyset predicate compares against.
           (aliasedTable: Table) => cursorOrderExprs(aliasedTable, cursorEntries!)
         : orderBy
-          ? (aliasedTable: Table) => extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName))
+          ? (aliasedTable: Table) =>
+              extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName), where)
           : needsDefaultOrder && pkNames?.length
             ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
             : undefined,
