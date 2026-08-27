@@ -1,3 +1,10 @@
+# [7.3.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.2.0...v7.3.0) (2026-08-27)
+
+
+### Features
+
+* JSON path filters, list-order sorting and empty-list operators ([83262cb](https://github.com/cubicecho/drizzle-graphql/commit/83262cb2ae361123c6dfe8a4f7b8b053c46acfef)), closes [#61](https://github.com/cubicecho/drizzle-graphql/issues/61) [#73](https://github.com/cubicecho/drizzle-graphql/issues/73)
+
 # [7.2.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.1.0...v7.2.0) (2026-08-27)
 
 
