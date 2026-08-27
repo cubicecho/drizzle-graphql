@@ -2792,7 +2792,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
@@ -2819,7 +2821,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -2862,7 +2866,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
@@ -2889,7 +2895,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -2932,7 +2940,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
@@ -2959,7 +2969,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -2976,7 +2988,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
@@ -3006,7 +3020,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
@@ -3023,7 +3039,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
@@ -3053,7 +3071,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
@@ -3070,7 +3090,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
@@ -3100,7 +3122,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLNonNull),
               })
               .strict(),
@@ -3121,7 +3145,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3138,7 +3164,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3155,7 +3183,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3177,7 +3207,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3199,7 +3231,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3216,7 +3250,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3233,7 +3269,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3250,7 +3288,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3267,7 +3307,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3284,7 +3326,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3306,7 +3350,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3328,7 +3374,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3345,7 +3393,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3362,7 +3412,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3379,7 +3431,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3396,7 +3450,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3413,7 +3469,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3435,7 +3493,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3457,7 +3517,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3474,7 +3536,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
@@ -3491,7 +3555,9 @@ describe.sequential('Returned data tests', () => {
                   .strict(),
                 resolve: z.function(),
                 // Present only on the fields that carry a complexity hint (lists and aggregates).
-                extensions: z.object({ complexity: z.function() }).strict().optional(),
+                extensions: z
+                  .object({ drizzle: z.object({}).passthrough(), complexity: z.function().optional() })
+                  .strict(),
                 type: z.instanceof(GraphQLObjectType),
               })
               .strict(),
