@@ -39,6 +39,8 @@ export type GeneratorFeatures = {
   delete: boolean;
   upsert: boolean;
   nestedWrites: boolean;
+  fieldUpdateOperations: boolean;
+  countMutations: boolean;
   requireWhere: boolean;
 };
 
@@ -102,7 +104,10 @@ export type TableSelectArgs = {
   where: Filters<Table>;
   orderBy: OrderByArgs<Table>;
   distinct: string[];
-  /** Opaque keyset-pagination cursor — only return rows strictly after it. List queries only. */
+  /**
+   * Opaque keyset-pagination cursor — only return rows strictly after it. List queries and
+   * to-many relation fields.
+   */
   after: string;
 };
 
