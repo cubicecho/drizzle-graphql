@@ -1,6 +1,5 @@
 import { is, One, type Table } from 'drizzle-orm';
 import { getTableConfig, type MySqlDatabase, MySqlTable } from 'drizzle-orm/mysql-core';
-import type { RelationalQueryBuilder } from 'drizzle-orm/mysql-core/query-builders/query';
 import type { GraphQLFieldConfig, GraphQLFieldConfigArgumentMap, ThunkObjMap } from 'graphql';
 import {
   GraphQLBoolean,
@@ -11,15 +10,12 @@ import {
   GraphQLNonNull,
   GraphQLObjectType,
 } from 'graphql';
-import type { ResolveTree } from 'graphql-parse-resolve-info';
-import { parseResolveInfo } from 'graphql-parse-resolve-info';
 
 import type { GeneratedEntities } from '../../types.ts';
 import {
   aggregateFieldComplexity,
   applyContextValues,
   applyContextValuesAll,
-  applyLimitPolicy,
   assertSingleMatch,
   attachTargetPrimaryKeys,
   bindPolicies,
@@ -29,13 +25,11 @@ import {
   createRelationResolverFactory,
   extractFilters,
   extractRequiredFilters,
-  generateDistinctEnum,
   generateOnConflictInput,
   generateTableTypes,
   generateUpdateManyInput,
   generateWriteCount,
   getPrimaryKeyPropNamesFromConfig,
-  type LimitPolicyFor,
   listFieldComplexity,
   type MutationTxCtx,
   mysqlValuesColumnRef,
@@ -48,19 +42,13 @@ import {
   registerColumnExclusions,
   relationFilterCtx,
   resolveConflictPlan,
-  resolveQueryExecutor,
   runMutation,
-  runRelationalSelect,
   runWriteHook,
-  selectArrayArgs,
-  selectSingleArgs,
   stripContextValues,
   type TablesRelationalConfig,
   type TypeCacheCtx,
-  type TypeNameMapper,
   toGraphQLError,
   type WriteOperation,
-  withDefaultOrderBy,
   withScope,
 } from '../builders/common.ts';
 import { remapFromGraphQLArrayInput, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
@@ -76,150 +64,9 @@ import {
   generateGroupByType,
   generateHavingInput,
 } from './aggregates.ts';
-import { missingQueryBuilderError } from './errors.ts';
 import { remapUpdateInput } from './field-updates.ts';
-import type {
-  CreatedResolver,
-  Filters,
-  SchemaGeneratorOptions,
-  TableFeatures,
-  TableNamedRelations,
-  TableSelectArgs,
-} from './types.ts';
-
-const generateSelectArray = (
-  db: MySqlDatabase<any, any, any>,
-  tableName: string,
-  tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  orderArgs: GraphQLInputObjectType,
-  filterArgs: GraphQLInputObjectType,
-  fieldName: string,
-  typeName: string,
-  typeNameMapper?: TypeNameMapper,
-  filterCtx?: RelationFilterBase,
-  distinctEnabled: boolean = true,
-  limits?: LimitPolicyFor,
-  policies?: ResolverPolicies,
-): CreatedResolver => {
-  const queryBase = db.query[tableName as keyof typeof db.query & string] as unknown as
-    | RelationalQueryBuilder<any, any, any>
-    | undefined;
-  if (!queryBase) {
-    throw missingQueryBuilderError(tableName);
-  }
-
-  const table = tables[tableName]!;
-  const limitPolicy = limits?.(tableName);
-  const pkNames = mysqlPrimaryKeyPropNames(table as MySqlTable);
-  const queryArgs = selectArrayArgs(
-    orderArgs,
-    filterArgs,
-    distinctEnabled ? generateDistinctEnum(table, typeName) : undefined,
-    policies?.softDelete,
-    tableName,
-  );
-
-  return {
-    name: fieldName,
-    resolver: async (_source, rawArgs: Partial<TableSelectArgs>, context, info) => {
-      // An omitted `orderBy` falls back to the table's configured default ordering here,
-      // before anything reads the arguments — the cursor tuple, a `distinct` pass and the
-      // plain-select fallback all have to agree on one effective ordering.
-      const args = withDefaultOrderBy(rawArgs, tableName, policies?.defaultOrderBy);
-      try {
-        const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
-        const { executor, queryBase: requestQueryBase } = resolveQueryExecutor(db, context, tableName, queryBase);
-        return await runRelationalSelect({
-          queryBase: requestQueryBase,
-          tables,
-          tableName,
-          table,
-          relationMap,
-          typeName,
-          typeNameMapper,
-          parsedInfo,
-          ...args,
-          limit: applyLimitPolicy(args.limit, limitPolicy, fieldName),
-          single: false,
-          filterCtx,
-          limits,
-          defaultOrderBy: policies?.defaultOrderBy,
-          scope: policies?.scope?.(context),
-          pkNames,
-          db: executor,
-          // MySQL sorts NULLs as the smallest values (first in ASC).
-          nullOrdering: 'nulls-smallest',
-        });
-      } catch (e) {
-        throw toGraphQLError(e);
-      }
-    },
-    args: queryArgs,
-  };
-};
-
-const generateSelectSingle = (
-  db: MySqlDatabase<any, any, any>,
-  tableName: string,
-  tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  orderArgs: GraphQLInputObjectType,
-  filterArgs: GraphQLInputObjectType,
-  fieldName: string,
-  typeName: string,
-  typeNameMapper?: TypeNameMapper,
-  filterCtx?: RelationFilterBase,
-  limits?: LimitPolicyFor,
-  policies?: ResolverPolicies,
-): CreatedResolver => {
-  const queryBase = db.query[tableName as keyof typeof db.query & string] as unknown as
-    | RelationalQueryBuilder<any, any, any>
-    | undefined;
-  if (!queryBase) {
-    throw missingQueryBuilderError(tableName);
-  }
-
-  const queryArgs = selectSingleArgs(orderArgs, filterArgs, policies?.softDelete, tableName);
-
-  const table = tables[tableName]!;
-  const pkNames = mysqlPrimaryKeyPropNames(table as MySqlTable);
-
-  return {
-    name: fieldName,
-    resolver: async (_source, rawArgs: Partial<TableSelectArgs>, context, info) => {
-      // An omitted `orderBy` falls back to the table's configured default ordering here,
-      // before anything reads the arguments — the cursor tuple, a `distinct` pass and the
-      // plain-select fallback all have to agree on one effective ordering.
-      const args = withDefaultOrderBy(rawArgs, tableName, policies?.defaultOrderBy);
-      try {
-        const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
-        const { executor, queryBase: requestQueryBase } = resolveQueryExecutor(db, context, tableName, queryBase);
-        return await runRelationalSelect({
-          queryBase: requestQueryBase,
-          tables,
-          tableName,
-          table,
-          relationMap,
-          typeName,
-          typeNameMapper,
-          parsedInfo,
-          ...args,
-          single: true,
-          filterCtx,
-          limits,
-          defaultOrderBy: policies?.defaultOrderBy,
-          scope: policies?.scope?.(context),
-          pkNames,
-          db: executor,
-        });
-      } catch (e) {
-        throw toGraphQLError(e);
-      }
-    },
-    args: queryArgs,
-  };
-};
+import { createSelectGenerators } from './select.ts';
+import type { CreatedResolver, Filters, SchemaGeneratorOptions, TableFeatures } from './types.ts';
 
 const generateInsertArray = (
   db: MySqlDatabase<any, any, any, any>,
@@ -783,6 +630,12 @@ const generateDelete = (
 /** Primary-key property names for a MySQL table, including table-level composite keys. */
 const mysqlPrimaryKeyPropNames = (table: MySqlTable): string[] =>
   getPrimaryKeyPropNamesFromConfig(table, getTableConfig);
+
+// MySQL sorts NULLs as the smallest values (first in ASC).
+const { generateSelectArray, generateSelectSingle } = createSelectGenerators(
+  mysqlPrimaryKeyPropNames,
+  'nulls-smallest',
+);
 
 export const generateSchemaData = <
   TDrizzleInstance extends MySqlDatabase<any, any, any, any>,

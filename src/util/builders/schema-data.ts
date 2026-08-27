@@ -61,41 +61,9 @@ import {
   createNestedWriteTypes,
   type NestedWriteRuntime,
 } from './nested-writes.ts';
+import { createSelectGenerators } from './select.ts';
 import type { CreatedResolver, SchemaGeneratorOptions, TableFeatures, TableNamedRelations } from './types.ts';
 import { buildWriteResolvers } from './write-resolvers.ts';
-
-/** `select<Table>` — the plural select, which each dialect implements against its own driver. */
-export type SelectArrayGenerator = (
-  db: any,
-  tableName: string,
-  tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  orderArgs: GraphQLInputObjectType,
-  filterArgs: GraphQLInputObjectType,
-  fieldName: string,
-  typeName: string,
-  typeNameMapper?: TypeNameMapper,
-  filterCtx?: RelationFilterBase,
-  distinctEnabled?: boolean,
-  limits?: LimitPolicyFor,
-  policies?: ResolverPolicies,
-) => CreatedResolver;
-
-/** `select<Table>Single`. */
-export type SelectSingleGenerator = (
-  db: any,
-  tableName: string,
-  tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  orderArgs: GraphQLInputObjectType,
-  filterArgs: GraphQLInputObjectType,
-  fieldName: string,
-  typeName: string,
-  typeNameMapper?: TypeNameMapper,
-  filterCtx?: RelationFilterBase,
-  limits?: LimitPolicyFor,
-  policies?: ResolverPolicies,
-) => CreatedResolver;
 
 /** `update<Table>Many` — batch update, whose statement loop is dialect-specific. */
 export type UpdateManyGenerator = (
@@ -134,8 +102,6 @@ export type DialectSchemaAdapter = {
    * reject features a synchronous driver cannot support.
    */
   preflight?: (db: any, options: SchemaGeneratorOptions) => void;
-  generateSelectArray: SelectArrayGenerator;
-  generateSelectSingle: SelectSingleGenerator;
   generateUpdateMany: UpdateManyGenerator;
 };
 
@@ -150,6 +116,12 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
   const uniqueColumnSets = (table: Table): string[][] => getUniqueColumnSets(table, adapter.getTableConfig);
   const { generateInsertArray, generateInsertSingle, generateUpsert, generateUpdate, generateDelete } =
     buildWriteResolvers(primaryKeyPropNames);
+  // Derived rather than supplied: the two values a select generator needs are already on the
+  // adapter, and all three dialects read the same way.
+  const { generateSelectArray, generateSelectSingle } = createSelectGenerators(
+    primaryKeyPropNames,
+    adapter.nullOrdering,
+  );
 
   return (
     db: any,
@@ -356,7 +328,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
       // column is not in the update input and a marked row is invisible to a `where` anyway.
       const softDeleteInfo = softDeleteOf?.(tableName);
 
-      const selectArrGenerated = adapter.generateSelectArray(
+      const selectArrGenerated = generateSelectArray(
         db,
         tableName,
         tables,
@@ -371,7 +343,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
         limits,
         policies,
       );
-      const selectSingleGenerated = adapter.generateSelectSingle(
+      const selectSingleGenerated = generateSelectSingle(
         db,
         tableName,
         tables,
