@@ -126,7 +126,7 @@ export { extractRelationsParams, pruneNonEagerRelations } from './common/relatio
 export { createRelationResolverFactory } from './common/relation-resolvers.ts';
 export type { RelationAggregateFactory, RelationResolverFactory, TablesRelationalConfig } from './common/relations.ts';
 export { attachTargetPrimaryKeys, buildNamedRelations, extractRelationJoinColumns } from './common/relations.ts';
-export { computeResolverFieldNames } from './common/resolver-names.ts';
+export { computeResolverFieldNames, type ResolverFieldNames } from './common/resolver-names.ts';
 export { eagerLoadMutationRelations, runRelationalSelect } from './common/select-runtime.ts';
 export type { SelectionCtx } from './common/selected-columns.ts';
 export { extractSelectedColumnsFromTree, extractSelectedColumnsFromTreeSQLFormat } from './common/selected-columns.ts';

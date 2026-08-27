@@ -1,72 +1,37 @@
 // =============================================================================
-// The dialect-independent half of `generateSchemaData`.
+// `generateSchemaData` for the two dialects whose writes return the rows they
+// wrote — PostgreSQL and SQLite. They build a schema identically, so this module
+// holds it once and a dialect supplies only what it genuinely owns, through
+// {@link DialectSchemaAdapter}.
 //
-// PostgreSQL and SQLite build a schema the same way: the same tables are found,
-// the same relation graph is flattened, the same per-table types and resolvers
-// are generated, and the same fields are hung off the query and mutation roots.
-// The two builders used to carry ~750 lines of that logic each, drifting
-// independently. This module holds it once; a dialect supplies only the handful
-// of things it genuinely owns, through {@link DialectSchemaAdapter}.
-//
-// MySQL is deliberately not on this path: its writes return no rows, so its
-// mutation fields, their return types and their resolvers differ throughout.
+// The parts that are not even dialect-specific — everything up to each table's
+// types, the read fields, and the relation resolvers at the end — live in
+// `build-context.ts`, which MySQL shares. What remains here is the mutation half:
+// MySQL has no RETURNING clause, so its mutation fields, return types and
+// resolvers differ throughout.
 // =============================================================================
 
-import { is, One, type Table } from 'drizzle-orm';
-import type { GraphQLFieldConfig, GraphQLInputObjectType, GraphQLObjectType, ThunkObjMap } from 'graphql';
+import type { Table } from 'drizzle-orm';
+import type { GraphQLInputObjectType } from 'graphql';
 import { GraphQLInt, GraphQLList, GraphQLNonNull } from 'graphql';
 import {
-  aggregateFieldComplexity,
-  attachTargetPrimaryKeys,
-  bindPolicies,
-  buildNamedRelations,
-  buildUniqueKeyMap,
   computeResolverFieldNames,
-  createMutationTxCtx,
-  createRelationResolverFactory,
-  extractRelationJoinColumns,
   generateOnConflictInput,
-  generateTableTypes,
   generateUpdateManyInput,
   generateWriteCount,
   getUniqueColumnSets,
   type LimitPolicyFor,
-  listFieldComplexity,
   type MutationTxCtx,
-  type NullOrdering,
-  pruneNonEagerRelations,
-  type RelationAggregateFactory,
   type RelationFilterBase,
-  type RelationResolverFactory,
   type ResolverPolicies,
-  registerColumnExclusions,
   type TablesRelationalConfig,
-  type TypeCacheCtx,
   type TypeNameMapper,
   type TypeNameResolver,
-  type UniqueKeyMap,
-  visibleColumns,
 } from '../builders/common.ts';
 import { tableFieldExtensions } from '../extensions.ts';
-import { resolveTableFeatures } from '../features.ts';
-import { registerEnumConfig, registerScalarOverrides } from '../type-converter/index.ts';
-import {
-  createRelationAggregateFactory,
-  generateAggregate,
-  generateAggregateTypes,
-  generateGroupBy,
-  generateGroupByEnum,
-  generateGroupByType,
-  generateHavingInput,
-} from './aggregates.ts';
-import {
-  buildNestedWritePlans,
-  createNestedWriteRuntime,
-  createNestedWriteTypes,
-  type NestedWriteRuntime,
-} from './nested-writes.ts';
-import { createSelectGenerators } from './select.ts';
-import type { CreatedResolver, SchemaGeneratorOptions, TableFeatures, TableNamedRelations } from './types.ts';
+import { createSchemaBuilder, type SchemaBuildAdapter } from './build-context.ts';
+import type { NestedWriteRuntime } from './nested-writes.ts';
+import type { CreatedResolver, SchemaGeneratorOptions, TableNamedRelations } from './types.ts';
 import { buildWriteResolvers } from './write-resolvers.ts';
 
 /** `update<Table>Many` — batch update, whose statement loop is dialect-specific. */
@@ -89,25 +54,12 @@ export type UpdateManyGenerator = (
   resolveName?: TypeNameResolver,
 ) => CreatedResolver;
 
-/** Everything {@link createSchemaDataGenerator} cannot decide for itself. */
-export type DialectSchemaAdapter = {
-  /** The dialect's table class, used with `is()` to pick tables out of the schema module. */
-  tableClass: any;
-  /**
-   * The dialect's `getTableConfig`. The three dialects expose the same
-   * `{ primaryKeys, uniqueConstraints, indexes }` shape from different modules.
-   */
-  getTableConfig: (table: any) => any;
-  /** Primary-key property names, composite-aware — built on the dialect's `getTableConfig`. */
-  primaryKeyPropNames: (table: any) => string[];
-  /** How the dialect's `ORDER BY` sorts NULLs, which relation pagination has to match. */
-  nullOrdering: NullOrdering;
-  /**
-   * Dialect-specific validation of the database handle against the requested options,
-   * run once the tables are known but before anything is generated. SQLite uses it to
-   * reject features a synchronous driver cannot support.
-   */
-  preflight?: (db: any, options: SchemaGeneratorOptions) => void;
+/**
+ * Everything {@link createSchemaDataGenerator} cannot decide for itself: the shared build's
+ * adapter, plus the one generator whose statement loop is dialect-specific. Both dialects on
+ * this path return the rows they write, so it is fixed to `true`.
+ */
+export type DialectSchemaAdapter = SchemaBuildAdapter<true> & {
   generateUpdateMany: UpdateManyGenerator;
 };
 
@@ -122,12 +74,9 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
   const uniqueColumnSets = (table: Table): string[][] => getUniqueColumnSets(table, adapter.getTableConfig);
   const { generateInsertArray, generateInsertSingle, generateUpsert, generateUpdate, generateDelete } =
     buildWriteResolvers(primaryKeyPropNames);
-  // Derived rather than supplied: the two values a select generator needs are already on the
-  // adapter, and all three dialects read the same way.
-  const { generateSelectArray, generateSelectSingle } = createSelectGenerators(
-    primaryKeyPropNames,
-    adapter.nullOrdering,
-  );
+  // The three stretches of a build that have nothing to do with the dialect: everything up to
+  // each table's types, the read fields in the middle, and the relation resolvers at the end.
+  const { prepareBuild, addReadFields, finalizeBuild } = createSchemaBuilder(adapter);
 
   return (
     db: any,
@@ -135,188 +84,28 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
     relations: TablesRelationalConfig,
     options: SchemaGeneratorOptions,
   ): any => {
+    const { prefixes, suffixes, conflictDoNothing, typeNameMapper, limits } = options;
+
+    // Table discovery, the relation graph, the per-build registries, the filter context, the
+    // type cache and every table's types — all of it dialect-independent, so all of it lives
+    // in `build-context.ts` and is shared with the MySQL builder.
+    const ctx = prepareBuild(db, schema, relations, options);
     const {
-      relationsDepthLimit,
-      prefixes,
-      suffixes,
-      conflictDoNothing,
-      typeNameMapper,
-      shouldEagerLoad,
-      features,
-      complexity,
-      limits,
-    } = options;
-    const schemaEntries = Object.entries(schema);
-    // Excluded tables are dropped here, before anything reads `tableEntries` — which also makes
-    // `buildNamedRelations` skip every relation pointing at one, since it resolves targets
-    // through this list.
-    const excludedTables = new Set(options.exclude?.tables ?? []);
-    const tableEntries = schemaEntries.filter(
-      ([key, value]) => is(value, adapter.tableClass) && !excludedTables.has(key),
-    ) as [string, Table][];
-    const tables = Object.fromEntries(tableEntries) as Record<string, Table>;
-
-    // A feature flag may be a per-table predicate, so every flag is resolved against the table
-    // it applies to. `anyTable` answers the build-wide question — whether machinery shared
-    // across tables is worth constructing at all.
-    const featureOf = resolveTableFeatures(features);
-    const anyTable = (feature: keyof TableFeatures) => tableEntries.some(([name]) => featureOf(name)[feature]);
-
-    if (!tableEntries.length) {
-      throw new Error(
-        "Drizzle-GraphQL Error: No tables detected in Drizzle-ORM's database instance. Did you forget to pass schema to drizzle constructor?",
-      );
-    }
-
-    // Resolve scalar overrides into the type-converter's registry before any type generation —
-    // every subsequent column→GraphQL type decision and runtime value remap consults it.
-    registerScalarOverrides(tables, options);
-    // Same lifecycle: the enum registry is per-build, so a second build never reuses the first
-    // build's enum types (and with them its naming decisions).
-    registerEnumConfig(options);
-    // And the same for column exclusions: a per-build registry read by every site that decides
-    // what the schema contains, reset here so a rebuild never inherits the previous build's.
-    registerColumnExclusions(tables, options.exclude);
-
-    // Flatten drizzle-orm v1 TablesRelationalConfig into the canonical shape
-    // used throughout common.ts: Record<tableName, Record<relName, TableNamedRelations>>
-    const namedRelations = buildNamedRelations(relations ?? {}, tableEntries);
-    // Relations *into* an excluded table are already gone (their target no longer resolves);
-    // relations *out of* one have no type left to hang a field on.
-    for (const excluded of excludedTables) {
-      delete namedRelations[excluded];
-    }
-    // Record each relation target's primary key (composite-aware) so paginated relations
-    // default to a deterministic PK order. Must run before pruning / type generation, which
-    // share these entry objects.
-    attachTargetPrimaryKeys(namedRelations, tables, (table) => primaryKeyPropNames(table));
-    // Relations to eager-load via `with:`. Query/mutation resolvers use this pruned map so
-    // opted-out relations never overfetch; type generation keeps the full map so their
-    // fields still exist and resolve lazily.
-    const eagerRelations = pruneNonEagerRelations(namedRelations, shouldEagerLoad);
-
-    // A `where` field per compound unique constraint, for the tables that asked for one. Built
-    // once and shared by the input types and the resolvers: the fields a request may spell and
-    // the fields a resolver understands are the same map, so neither can drift from the other.
-    const uniqueKeys: Record<string, UniqueKeyMap> = {};
-    for (const [tableName, table] of tableEntries) {
-      if (!featureOf(tableName).uniqueKeyFilters) {
-        continue;
-      }
-      // Whatever the filter input already offers under a name keeps it — columns are added
-      // first, then relations, and a key field last.
-      const taken = new Set([...Object.keys(visibleColumns(table)), ...Object.keys(namedRelations[tableName] ?? {})]);
-      const map = buildUniqueKeyMap(uniqueColumnSets(table), taken);
-      if (Object.keys(map).length) {
-        uniqueKeys[tableName] = map;
-      }
-    }
-
-    const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations, uniqueKeys };
-
-    // The row scope compiled against this build's relation graph, plus the columns whose value
-    // the server supplies. Both stay undefined unless configured.
-    const tablePolicies = options.policies;
-    const contextValuesOf = tablePolicies?.contextValues;
-    const softDeleteOf = tablePolicies?.softDelete;
-    const policies = bindPolicies(tablePolicies, filterCtx);
-
-    const resolverFactory: RelationResolverFactory = createRelationResolverFactory(
-      db,
       tables,
-      adapter.nullOrdering,
-      filterCtx,
-      limits,
-      tablePolicies,
-    );
-
-    // Fresh cache per generateSchemaData call — prevents type name collisions
-    // when buildSchema() is called multiple times.
-    const cacheCtx: TypeCacheCtx = {
-      typeName: options.typeName ?? ((info) => info.defaultName),
-      genericFilterCache: new Map(),
-      objectTypeCache: new Map(),
-      relationFieldContainers: new Map(),
-      fullyBuiltTables: new Set(),
-      relationTypeCache: new Map(),
-      selectFieldCache: new WeakMap(),
-      filterFieldCache: new WeakMap(),
-      orderTypeCache: new WeakMap(),
-      filterTypeCache: new WeakMap(),
-      listRelationFilterCache: new Map(),
-      aggregateTypeCache: new Map(),
-      complexity,
-      limits,
-      docs: options.docs ?? {},
-      primaryKeyOf: (name) => (tables[name] ? primaryKeyPropNames(tables[name] as Table) : []),
-      contextValuesOf,
-      softDeleteOf,
       featureOf,
-      uniqueKeysOf: (tableName) => uniqueKeys[tableName],
-    };
-
-    adapter.preflight?.(db, options);
-
-    // Nested writes: the plans decide which relations are writable at all, the types add their
-    // fields to the create/update inputs, and the runtime executes them. All three are left
-    // undefined when the feature is off, so the inputs and the resolvers stay as they were.
-    const nestedPlans = features.nestedWrites
-      ? buildNestedWritePlans(
-          tables,
-          namedRelations,
-          (target) => uniqueColumnSets(target as Table),
-          (target) => primaryKeyPropNames(target as Table),
-          extractRelationJoinColumns,
-        )
-      : undefined;
-    const nestedTypes = nestedPlans
-      ? createNestedWriteTypes({ plans: nestedPlans, cacheCtx, typeNameMapper })
-      : undefined;
-    const nestedRuntime = nestedPlans
-      ? createNestedWriteRuntime({
-          plans: nestedPlans,
-          filterCtx,
-          policies: tablePolicies,
-          contextValues: contextValuesOf,
-        })
-      : undefined;
-
-    // Built when at least one table wants relation aggregates; a table that has them off is
-    // handed `undefined` below, so `generateTableTypes` emits no `${relation}Aggregate` fields
-    // on its object type.
-    const relationAggregateFactory: RelationAggregateFactory | undefined = anyTable('relationAggregates')
-      ? createRelationAggregateFactory(db, tables, cacheCtx, typeNameMapper, filterCtx, tablePolicies)
-      : undefined;
-
-    const queries: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
-    const mutations: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
-
-    // Shared per-request transaction machinery for multi-mutation documents; undefined
-    // unless `transactions: 'auto'`. Its field-name set is filled once all mutations exist.
-    const mutationTxCtx = createMutationTxCtx(options.transactions);
-
-    const gqlSchemaTypes = Object.fromEntries(
-      Object.entries(tables).map(([tableName, _table]) => [
-        tableName,
-        generateTableTypes(
-          tableName,
-          tables,
-          namedRelations,
-          true,
-          relationsDepthLimit,
-          cacheCtx,
-          typeNameMapper,
-          prefixes.insert,
-          prefixes.update,
-          resolverFactory,
-          featureOf(tableName).relationAggregates ? relationAggregateFactory : undefined,
-          nestedTypes,
-        ),
-      ]),
-    );
-
-    const inputs: Record<string, GraphQLInputObjectType> = {};
-    const outputs: Record<string, GraphQLObjectType> = {};
+      eagerRelations,
+      filterCtx,
+      policies,
+      softDeleteOf,
+      namedRelations,
+      cacheCtx,
+      nestedRuntime,
+      mutationTxCtx,
+      gqlSchemaTypes,
+      mutations,
+      inputs,
+      outputs,
+    } = ctx;
 
     for (const [tableName, tableTypes] of Object.entries(gqlSchemaTypes)) {
       // Everything this table generates, with any per-table predicate already run.
@@ -325,15 +114,12 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
       // so a wrapper can read a field's identity instead of parsing its configurable name.
       const drizzleMeta = tableFieldExtensions(tableName, primaryKeyPropNames(schema[tableName] as Table));
       const { insertInput, updateInput, tableFilters, tableOrder } = tableTypes.inputs;
-      const { selectSingleOutput, selectArrOutput, singleTableItemOutput, arrTableItemOutput } = tableTypes.outputs;
+      const { selectSingleOutput, singleTableItemOutput, arrTableItemOutput } = tableTypes.outputs;
 
       // Compute field names using the mapper logic
+      const names = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
       const {
         typeName,
-        listFieldName,
-        singleFieldName,
-        aggregateFieldName,
-        groupByFieldName,
         createArrayFieldName,
         createSingleFieldName,
         upsertArrayFieldName,
@@ -347,43 +133,16 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
         restoreFieldName,
         restoreSingleFieldName,
         deleteCountFieldName,
-      } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
+      } = names;
       // A table that marks rows deleted instead of removing them also gets the mutation that
       // reverses it — clearing the column through an ordinary update is not possible, since the
       // column is not in the update input and a marked row is invisible to a `where` anyway.
       const softDeleteInfo = softDeleteOf?.(tableName);
 
-      const selectArrGenerated = generateSelectArray(
-        db,
-        tableName,
-        tables,
-        eagerRelations,
-        tableOrder,
-        tableFilters,
-        listFieldName,
-        typeName,
-        typeNameMapper,
-        filterCtx,
-        tableFeatures.distinct,
-        limits,
-        policies,
-        cacheCtx.typeName,
-      );
-      const selectSingleGenerated = generateSelectSingle(
-        db,
-        tableName,
-        tables,
-        eagerRelations,
-        tableOrder,
-        tableFilters,
-        singleFieldName,
-        typeName,
-        typeNameMapper,
-        filterCtx,
-        limits,
-        policies,
-        cacheCtx.typeName,
-      );
+      // Both selects, the aggregate and the group-by: generated and hung off the query root
+      // by the shared builder, since a read is a read on every dialect.
+      const { aggregateType, groupByType, havingInput } = addReadFields(ctx, tableName, names, tableTypes, drizzleMeta);
+
       const insertArrGenerated = tableFeatures.insert
         ? generateInsertArray(
             db,
@@ -659,90 +418,6 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
               txCtx: mutationTxCtx,
             })
           : undefined;
-      const aggregateType = tableFeatures.aggregates
-        ? generateAggregateTypes(schema[tableName] as Table, tableName, typeName, cacheCtx)
-        : undefined;
-      const aggregateGenerated = tableFeatures.aggregates
-        ? generateAggregate(
-            db,
-            tableName,
-            schema[tableName] as Table,
-            typeName,
-            aggregateFieldName,
-            tableFilters,
-            filterCtx,
-            tablePolicies,
-            cacheCtx.typeName,
-          )
-        : undefined;
-
-      // The grouped result reuses the aggregate output types, so it only exists alongside them.
-      const groupByType =
-        tableFeatures.aggregates && tableFeatures.groupBy
-          ? generateGroupByType(schema[tableName] as Table, tableName, typeName, cacheCtx)
-          : undefined;
-      const groupByEnum = groupByType
-        ? generateGroupByEnum(schema[tableName] as Table, tableName, typeName, cacheCtx)
-        : undefined;
-      const havingInput = groupByEnum
-        ? generateHavingInput(schema[tableName] as Table, tableName, typeName, cacheCtx)
-        : undefined;
-      const groupByGenerated =
-        groupByType && groupByEnum && havingInput
-          ? generateGroupBy(
-              db,
-              tableName,
-              schema[tableName] as Table,
-              typeName,
-              groupByFieldName,
-              tableFilters,
-              groupByEnum,
-              havingInput,
-              filterCtx,
-              tablePolicies,
-              cacheCtx.typeName,
-            )
-          : undefined;
-
-      queries[selectArrGenerated.name] = {
-        type: selectArrOutput,
-        args: selectArrGenerated.args,
-        resolve: selectArrGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'query', operation: 'select', single: false, targetArg: 'where' }),
-          ...(complexity ? { complexity: listFieldComplexity(complexity, limits?.(tableName)) } : {}),
-        },
-      };
-      queries[selectSingleGenerated.name] = {
-        type: selectSingleOutput,
-        args: selectSingleGenerated.args,
-        resolve: selectSingleGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'query', operation: 'select', single: true, targetArg: 'where' }),
-        },
-      };
-      if (aggregateGenerated && aggregateType) {
-        queries[aggregateGenerated.name] = {
-          type: new GraphQLNonNull(aggregateType),
-          args: aggregateGenerated.args,
-          resolve: aggregateGenerated.resolver,
-          extensions: {
-            drizzle: drizzleMeta({ kind: 'aggregate', operation: 'aggregate', single: true, targetArg: 'where' }),
-            ...(complexity ? { complexity: aggregateFieldComplexity(complexity) } : {}),
-          },
-        };
-      }
-      if (groupByGenerated && groupByType) {
-        queries[groupByGenerated.name] = {
-          type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(groupByType))),
-          args: groupByGenerated.args,
-          resolve: groupByGenerated.resolver,
-          extensions: {
-            drizzle: drizzleMeta({ kind: 'aggregate', operation: 'groupBy', single: false, targetArg: 'where' }),
-            ...(complexity ? { complexity: aggregateFieldComplexity(complexity) } : {}),
-          },
-        };
-      }
       if (insertArrGenerated) {
         mutations[insertArrGenerated.name] = {
           type: arrTableItemOutput,
@@ -915,30 +590,6 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
       }
     }
 
-    // Every generated mutation name is now known — the first mutation resolver of a request
-    // uses this set to count the document's root mutation fields (and to leave documents
-    // containing consumer-added mutations alone).
-    if (mutationTxCtx) {
-      for (const name of Object.keys(mutations)) {
-        mutationTxCtx.fieldNames.add(name);
-      }
-    }
-
-    const fieldResolvers: Record<string, Record<string, any>> = {};
-    for (const [tableName, tableRelations] of Object.entries(namedRelations)) {
-      const relResolvers: Record<string, any> = {};
-      for (const [relName, relEntry] of Object.entries(tableRelations)) {
-        const isOne = is((relEntry as any).relation ?? relEntry, One);
-        const resolver = resolverFactory({ tableName, relationName: relName, relEntry, isOne });
-        if (resolver) {
-          relResolvers[relName] = resolver;
-        }
-      }
-      if (Object.keys(relResolvers).length > 0) {
-        fieldResolvers[tableName] = relResolvers;
-      }
-    }
-
-    return { queries, mutations, inputs, types: outputs, fieldResolvers } as any;
+    return finalizeBuild(ctx);
   };
 };

@@ -101,6 +101,8 @@ const sqliteSchemaData = createSchemaDataGenerator({
   primaryKeyPropNames: sqlitePrimaryKeyPropNames,
   // SQLite sorts NULLs as the smallest values (first in ASC).
   nullOrdering: 'nulls-smallest',
+  // Writes come back with their rows, so the table types carry the `${Table}Item` outputs.
+  returnsRows: true,
   // A synchronous driver (e.g. better-sqlite3) commits the moment its transaction callback
   // returns, so it can neither interleave awaited statements inside one transaction nor hold
   // one open across resolver calls — which is what both of these features require.

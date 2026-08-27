@@ -1,6 +1,6 @@
-import { is, One, type Table } from 'drizzle-orm';
+import type { Table } from 'drizzle-orm';
 import { getTableConfig, type MySqlDatabase, MySqlTable } from 'drizzle-orm/mysql-core';
-import type { GraphQLFieldConfig, GraphQLFieldConfigArgumentMap, ThunkObjMap } from 'graphql';
+import type { GraphQLFieldConfigArgumentMap } from 'graphql';
 import {
   GraphQLBoolean,
   type GraphQLInputObjectType,
@@ -9,71 +9,42 @@ import {
   GraphQLNonNull,
   GraphQLObjectType,
 } from 'graphql';
-
 import type { GeneratedEntities } from '../../types.ts';
 import {
-  aggregateFieldComplexity,
   applyContextValues,
   applyContextValuesAll,
   assertSingleMatch,
-  attachTargetPrimaryKeys,
-  bindPolicies,
-  buildNamedRelations,
-  buildUniqueKeyMap,
   computeResolverFieldNames,
-  createMutationTxCtx,
-  createRelationResolverFactory,
   type DrizzleErrorContext,
   drizzleError,
   extractFilters,
   extractRequiredFilters,
   generateOnConflictInput,
-  generateTableTypes,
   generateUpdateManyInput,
   generateWriteCount,
   getPrimaryKeyPropNamesFromConfig,
-  getUniqueColumnSets,
   hardDeleteArg,
-  listFieldComplexity,
   type MutationTxCtx,
   mysqlValuesColumnRef,
   type OnConflictArg,
-  pruneNonEagerRelations,
-  type RelationAggregateFactory,
   type RelationFilterBase,
-  type RelationResolverFactory,
   type ResolverPolicies,
-  registerColumnExclusions,
   relationFilterCtx,
   resolveConflictPlan,
   runMutation,
   runWriteHook,
   stripContextValues,
   type TablesRelationalConfig,
-  type TypeCacheCtx,
   toGraphQLError,
-  type UniqueKeyMap,
-  visibleColumns,
   type WriteOperation,
   withErrorContext,
   withScope,
 } from '../builders/common.ts';
 import { remapFromGraphQLArrayInput, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
 import { type DrizzleMutationMeta, tableFieldExtensions } from '../extensions.ts';
-import { resolveTableFeatures } from '../features.ts';
-import { registerEnumConfig, registerScalarOverrides } from '../type-converter/index.ts';
-import {
-  createRelationAggregateFactory,
-  generateAggregate,
-  generateAggregateTypes,
-  generateGroupBy,
-  generateGroupByEnum,
-  generateGroupByType,
-  generateHavingInput,
-} from './aggregates.ts';
+import { createSchemaBuilder } from './build-context.ts';
 import { remapUpdateInput } from './field-updates.ts';
-import { createSelectGenerators } from './select.ts';
-import type { CreatedResolver, Filters, SchemaGeneratorOptions, TableFeatures } from './types.ts';
+import type { CreatedResolver, Filters, SchemaGeneratorOptions } from './types.ts';
 
 const generateInsertArray = (
   db: MySqlDatabase<any, any, any, any>,
@@ -657,11 +628,23 @@ const generateDelete = (
 const mysqlPrimaryKeyPropNames = (table: MySqlTable): string[] =>
   getPrimaryKeyPropNamesFromConfig(table, getTableConfig);
 
-// MySQL sorts NULLs as the smallest values (first in ASC).
-const { generateSelectArray, generateSelectSingle } = createSelectGenerators(
-  mysqlPrimaryKeyPropNames,
-  'nulls-smallest',
-);
+// MySQL sorts NULLs as the smallest values (first in ASC), and its writes return no rows.
+const { prepareBuild, addReadFields, finalizeBuild } = createSchemaBuilder({
+  tableClass: MySqlTable,
+  getTableConfig,
+  primaryKeyPropNames: mysqlPrimaryKeyPropNames,
+  nullOrdering: 'nulls-smallest',
+  returnsRows: false,
+  // A nested write reads the key of the row it just wrote back out of the statement that
+  // wrote it, which MySQL has no RETURNING clause for.
+  preflight: (_db, options) => {
+    if (options.features.nestedWrites) {
+      throw new Error(
+        'Drizzle-GraphQL Error: features.nestedWrites is not supported on MySQL — a nested write needs the parent row it just inserted returned to it, and MySQL has no RETURNING clause.',
+      );
+    }
+  },
+});
 
 export const generateSchemaData = <
   TDrizzleInstance extends MySqlDatabase<any, any, any, any>,
@@ -672,155 +655,28 @@ export const generateSchemaData = <
   relations: TablesRelationalConfig,
   options: SchemaGeneratorOptions,
 ): GeneratedEntities<TDrizzleInstance, TSchema> => {
-  const { relationsDepthLimit, prefixes, suffixes, typeNameMapper, shouldEagerLoad, features, complexity, limits } =
-    options;
-  const rawSchema = schema;
-  const schemaEntries = Object.entries(rawSchema);
+  const { prefixes, suffixes, typeNameMapper } = options;
 
-  // Excluded tables are dropped here, before anything reads `tableEntries` — which also makes
-  // `buildNamedRelations` skip every relation pointing at one, since it resolves targets
-  // through this list.
-  const excludedTables = new Set(options.exclude?.tables ?? []);
-  const tableEntries = schemaEntries.filter(([key, value]) => is(value, MySqlTable) && !excludedTables.has(key)) as [
-    string,
-    MySqlTable,
-  ][];
-  const tables = Object.fromEntries(tableEntries);
-
-  // A feature flag may be a per-table predicate, so every flag is resolved against the table
-  // it applies to. `anyTable` answers the build-wide question — whether machinery shared
-  // across tables is worth constructing at all.
-  const featureOf = resolveTableFeatures(features);
-  const anyTable = (feature: keyof TableFeatures) => tableEntries.some(([name]) => featureOf(name)[feature]);
-
-  if (!tableEntries.length) {
-    throw new Error(
-      "Drizzle-GraphQL Error: No tables detected in Drizzle-ORM's database instance. Did you forget to pass schema to drizzle constructor?",
-    );
-  }
-
-  // A nested write reads the key of the row it just wrote back out of the statement that
-  // wrote it, which MySQL has no RETURNING clause for.
-  if (features.nestedWrites) {
-    throw new Error(
-      'Drizzle-GraphQL Error: features.nestedWrites is not supported on MySQL — a nested write needs the parent row it just inserted returned to it, and MySQL has no RETURNING clause.',
-    );
-  }
-
-  // Resolve scalar overrides into the type-converter's registry before any type generation —
-  // every subsequent column→GraphQL type decision and runtime value remap consults it.
-  registerScalarOverrides(tables, options);
-  // Same lifecycle: the enum registry is per-build, so a second build never reuses the first
-  // build's enum types (and with them its naming decisions).
-  registerEnumConfig(options);
-  // And the same for column exclusions: a per-build registry read by every site that decides
-  // what the schema contains, reset here so a rebuild never inherits the previous build's.
-  registerColumnExclusions(tables, options.exclude);
-
-  // Build namedRelations from the drizzle-orm v1 relations config.
-  const namedRelations = buildNamedRelations(relations ?? {}, tableEntries);
-  // Relations *into* an excluded table are already gone (their target no longer resolves);
-  // relations *out of* one have no type left to hang a field on.
-  for (const excluded of excludedTables) {
-    delete namedRelations[excluded];
-  }
-  // Record each relation target's (composite-aware) primary key for deterministic
-  // paginated ordering. Must run before pruning / type generation (shared entry objects).
-  attachTargetPrimaryKeys(namedRelations, tables, mysqlPrimaryKeyPropNames);
-  // Pruned map for query resolvers' `with:`; type generation keeps the full map.
-  const eagerRelations = pruneNonEagerRelations(namedRelations, shouldEagerLoad);
-
-  // A `where` field per compound unique constraint, for the tables that asked for one. Built
-  // once and shared by the input types and the resolvers: the fields a request may spell and
-  // the fields a resolver understands are the same map, so neither can drift from the other.
-  const uniqueKeys: Record<string, UniqueKeyMap> = {};
-  for (const [tableName, table] of tableEntries) {
-    if (!featureOf(tableName).uniqueKeyFilters) {
-      continue;
-    }
-    // Whatever the filter input already offers under a name keeps it — columns are added
-    // first, then relations, and a key field last.
-    const taken = new Set([...Object.keys(visibleColumns(table)), ...Object.keys(namedRelations[tableName] ?? {})]);
-    const map = buildUniqueKeyMap(getUniqueColumnSets(table, getTableConfig), taken);
-    if (Object.keys(map).length) {
-      uniqueKeys[tableName] = map;
-    }
-  }
-
-  const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations, uniqueKeys };
-
-  // The row scope compiled against this build's relation graph, plus the columns whose value
-  // the server supplies. Both stay undefined unless configured.
-  const tablePolicies = options.policies;
-  const contextValuesOf = tablePolicies?.contextValues;
-  const softDeleteOf = tablePolicies?.softDelete;
-  const policies = bindPolicies(tablePolicies, filterCtx);
-
-  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(
-    db,
-    tables,
-    'nulls-smallest',
-    filterCtx,
-    limits,
-    tablePolicies,
-  );
-
-  // Fresh cache per generateSchemaData call — prevents type name collisions
-  // when buildSchema() is called multiple times.
-  const cacheCtx: TypeCacheCtx = {
-    typeName: options.typeName ?? ((info) => info.defaultName),
-    genericFilterCache: new Map(),
-    objectTypeCache: new Map(),
-    relationFieldContainers: new Map(),
-    fullyBuiltTables: new Set(),
-    relationTypeCache: new Map(),
-    selectFieldCache: new WeakMap(),
-    filterFieldCache: new WeakMap(),
-    orderTypeCache: new WeakMap(),
-    filterTypeCache: new WeakMap(),
-    listRelationFilterCache: new Map(),
-    aggregateTypeCache: new Map(),
-    complexity,
-    limits,
-    docs: options.docs ?? {},
-    primaryKeyOf: (name) => (tables[name] ? mysqlPrimaryKeyPropNames(tables[name] as MySqlTable) : []),
-    contextValuesOf,
-    softDeleteOf,
+  // Table discovery, the relation graph, the per-build registries, the filter context, the
+  // type cache and every table's types — all of it dialect-independent, so all of it lives
+  // in `build-context.ts` and is shared with the PostgreSQL/SQLite builder.
+  const ctx = prepareBuild(db, schema as Record<string, unknown>, relations, options);
+  const {
     featureOf,
-    uniqueKeysOf: (tableName) => uniqueKeys[tableName],
-  };
+    anyTable,
+    filterCtx,
+    policies,
+    softDeleteOf,
+    cacheCtx,
+    mutationTxCtx,
+    gqlSchemaTypes,
+    mutations,
+    inputs,
+    outputs,
+  } = ctx;
 
-  // Built when at least one table wants relation aggregates; a table that has them off is
-  // handed `undefined` below, so `generateTableTypes` emits no `${relation}Aggregate` fields
-  // on its object type.
-  const relationAggregateFactory: RelationAggregateFactory | undefined = anyTable('relationAggregates')
-    ? createRelationAggregateFactory(db, tables, cacheCtx, typeNameMapper, filterCtx, tablePolicies)
-    : undefined;
-
-  const queries: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
-  const mutations: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
-  // One per schema build: every mutation resolver shares it so a multi-mutation request can
-  // ride a single transaction. Undefined unless transactions were requested.
-  const mutationTxCtx = createMutationTxCtx(options.transactions);
-  const gqlSchemaTypes = Object.fromEntries(
-    Object.entries(tables).map(([tableName, _table]) => [
-      tableName,
-      generateTableTypes(
-        tableName,
-        tables,
-        namedRelations,
-        false,
-        relationsDepthLimit,
-        cacheCtx,
-        typeNameMapper,
-        prefixes.insert,
-        prefixes.update,
-        resolverFactory,
-        featureOf(tableName).relationAggregates ? relationAggregateFactory : undefined,
-      ),
-    ]),
-  );
-
+  // MySQL cannot return the rows a write touched, so every mutation reports only whether it
+  // succeeded — one shared type for the whole build.
   const mutationReturnType = new GraphQLObjectType({
     name: cacheCtx.typeName({ kind: 'shared', defaultName: 'MutationReturn' }),
     fields: {
@@ -829,9 +685,6 @@ export const generateSchemaData = <
       },
     },
   });
-
-  const inputs: Record<string, GraphQLInputObjectType> = {};
-  const outputs: Record<string, GraphQLObjectType> = {};
   // Every MySQL mutation returns it, so it only belongs in the type map when at least one
   // mutation is generated.
   if ((['insert', 'upsert', 'update', 'delete'] as const).some((feature) => anyTable(feature))) {
@@ -845,15 +698,12 @@ export const generateSchemaData = <
     // so a wrapper can read a field's identity instead of parsing its configurable name.
     const drizzleMeta = tableFieldExtensions(tableName, mysqlPrimaryKeyPropNames(schema[tableName] as MySqlTable));
     const { insertInput, updateInput, tableFilters, tableOrder } = tableTypes.inputs;
-    const { selectSingleOutput, selectArrOutput } = tableTypes.outputs;
+    const { selectSingleOutput } = tableTypes.outputs;
 
     // Compute field names using the mapper logic
+    const names = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
     const {
       typeName,
-      listFieldName,
-      singleFieldName,
-      aggregateFieldName,
-      groupByFieldName,
       createArrayFieldName,
       createSingleFieldName,
       upsertArrayFieldName,
@@ -867,43 +717,16 @@ export const generateSchemaData = <
       restoreFieldName,
       restoreSingleFieldName,
       deleteCountFieldName,
-    } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
+    } = names;
     // A table that marks rows deleted instead of removing them also gets the mutation that
     // reverses it — clearing the column through an ordinary update is not possible, since the
     // column is not in the update input and a marked row is invisible to a `where` anyway.
     const softDeleteInfo = softDeleteOf?.(tableName);
 
-    const selectArrGenerated = generateSelectArray(
-      db,
-      tableName,
-      tables,
-      eagerRelations,
-      tableOrder,
-      tableFilters,
-      listFieldName,
-      typeName,
-      typeNameMapper,
-      filterCtx,
-      tableFeatures.distinct,
-      limits,
-      policies,
-      cacheCtx.typeName,
-    );
-    const selectSingleGenerated = generateSelectSingle(
-      db,
-      tableName,
-      tables,
-      eagerRelations,
-      tableOrder,
-      tableFilters,
-      singleFieldName,
-      typeName,
-      typeNameMapper,
-      filterCtx,
-      limits,
-      policies,
-      cacheCtx.typeName,
-    );
+    // Both selects, the aggregate and the group-by: generated and hung off the query root
+    // by the shared builder, since a read is a read on every dialect.
+    const { aggregateType, groupByType, havingInput } = addReadFields(ctx, tableName, names, tableTypes, drizzleMeta);
+
     const insertArrGenerated = tableFeatures.insert
       ? generateInsertArray(
           db,
@@ -1108,90 +931,6 @@ export const generateSchemaData = <
             txCtx: mutationTxCtx,
           })
         : undefined;
-    const aggregateType = tableFeatures.aggregates
-      ? generateAggregateTypes(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
-      : undefined;
-    const aggregateGenerated = tableFeatures.aggregates
-      ? generateAggregate(
-          db,
-          tableName,
-          schema[tableName] as MySqlTable,
-          typeName,
-          aggregateFieldName,
-          tableFilters,
-          filterCtx,
-          tablePolicies,
-          cacheCtx.typeName,
-        )
-      : undefined;
-
-    // The grouped result reuses the aggregate output types, so it only exists alongside them.
-    const groupByType =
-      tableFeatures.aggregates && tableFeatures.groupBy
-        ? generateGroupByType(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
-        : undefined;
-    const groupByEnum = groupByType
-      ? generateGroupByEnum(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
-      : undefined;
-    const havingInput = groupByEnum
-      ? generateHavingInput(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
-      : undefined;
-    const groupByGenerated =
-      groupByType && groupByEnum && havingInput
-        ? generateGroupBy(
-            db,
-            tableName,
-            schema[tableName] as MySqlTable,
-            typeName,
-            groupByFieldName,
-            tableFilters,
-            groupByEnum,
-            havingInput,
-            filterCtx,
-            tablePolicies,
-            cacheCtx.typeName,
-          )
-        : undefined;
-
-    queries[selectArrGenerated.name] = {
-      type: selectArrOutput,
-      args: selectArrGenerated.args,
-      resolve: selectArrGenerated.resolver,
-      extensions: {
-        drizzle: drizzleMeta({ kind: 'query', operation: 'select', single: false, targetArg: 'where' }),
-        ...(complexity ? { complexity: listFieldComplexity(complexity, limits?.(tableName)) } : {}),
-      },
-    };
-    queries[selectSingleGenerated.name] = {
-      type: selectSingleOutput,
-      args: selectSingleGenerated.args,
-      resolve: selectSingleGenerated.resolver,
-      extensions: {
-        drizzle: drizzleMeta({ kind: 'query', operation: 'select', single: true, targetArg: 'where' }),
-      },
-    };
-    if (aggregateGenerated && aggregateType) {
-      queries[aggregateGenerated.name] = {
-        type: new GraphQLNonNull(aggregateType),
-        args: aggregateGenerated.args,
-        resolve: aggregateGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'aggregate', operation: 'aggregate', single: true, targetArg: 'where' }),
-          ...(complexity ? { complexity: aggregateFieldComplexity(complexity) } : {}),
-        },
-      };
-    }
-    if (groupByGenerated && groupByType) {
-      queries[groupByGenerated.name] = {
-        type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(groupByType))),
-        args: groupByGenerated.args,
-        resolve: groupByGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'aggregate', operation: 'groupBy', single: false, targetArg: 'where' }),
-          ...(complexity ? { complexity: aggregateFieldComplexity(complexity) } : {}),
-        },
-      };
-    }
     // Each mutation is paired with the identity it publishes on `extensions.drizzle`, so a
     // consumer can tell an insert from an upsert without unpicking the configured prefixes —
     // and, for a delete, whether the field can purge rather than mark.
@@ -1263,29 +1002,5 @@ export const generateSchemaData = <
     }
   }
 
-  // The first mutation resolver of a request counts the operation's root mutation fields to
-  // know how many completions to wait for — but only fields this library generated can report
-  // completion, so the shared-transaction path needs the full roster of generated names.
-  if (mutationTxCtx) {
-    for (const name of Object.keys(mutations)) {
-      mutationTxCtx.fieldNames.add(name);
-    }
-  }
-
-  const fieldResolvers: Record<string, Record<string, any>> = {};
-  for (const [tableName, tableRelations] of Object.entries(namedRelations)) {
-    const relResolvers: Record<string, any> = {};
-    for (const [relName, relEntry] of Object.entries(tableRelations)) {
-      const isOne = is((relEntry as any).relation ?? relEntry, One);
-      const resolver = resolverFactory({ tableName, relationName: relName, relEntry, isOne });
-      if (resolver) {
-        relResolvers[relName] = resolver;
-      }
-    }
-    if (Object.keys(relResolvers).length > 0) {
-      fieldResolvers[tableName] = relResolvers;
-    }
-  }
-
-  return { queries, mutations, inputs, types: outputs, fieldResolvers } as any;
+  return finalizeBuild(ctx);
 };
