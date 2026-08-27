@@ -1,4 +1,3 @@
-// @ts-nocheck — vendored file, drizzle-orm 1.0 type compat not guaranteed
 import { type Column, getTableColumns, is, One, type Table } from 'drizzle-orm';
 import { GraphQLError } from 'graphql';
 import type { TableNamedRelations } from '../builders/index.ts';
@@ -13,7 +12,8 @@ export const remapToGraphQLCore = (
   key: string,
   value: any,
   tableName: string,
-  column: Column,
+  // Relation keys have no column; the guard below is what handles them.
+  column: Column | undefined,
   relationMap?: Record<string, Record<string, TableNamedRelations>>,
 ): any => {
   // Check for relation fields BEFORE the column check.
@@ -101,6 +101,8 @@ export const remapToGraphQLSingleOutput = (
   table: Table,
   relationMap?: Record<string, Record<string, TableNamedRelations>>,
 ) => {
+  const columns = getTableColumns(table);
+
   for (const [key, value] of Object.entries(queryOutput)) {
     if (value === undefined || value === null) {
       // Preserve an explicitly-null TO-ONE relation field (eager-loaded with no related
@@ -117,7 +119,7 @@ export const remapToGraphQLSingleOutput = (
       continue;
     }
 
-    const column = table[key as keyof Table] as Column | undefined;
+    const column = columns[key];
 
     // SQLite blob(bigint) returns 0n for null DB values — treat as absent when nullable.
     if (value === 0n && column && (column as any).columnType === 'SQLiteBigInt' && !(column as any).notNull) {
@@ -125,7 +127,7 @@ export const remapToGraphQLSingleOutput = (
       continue;
     }
 
-    queryOutput[key] = remapToGraphQLCore(key, value, tableName, column!, relationMap);
+    queryOutput[key] = remapToGraphQLCore(key, value, tableName, column, relationMap);
   }
 
   return queryOutput;

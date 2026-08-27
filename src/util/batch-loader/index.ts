@@ -1,4 +1,3 @@
-// @ts-nocheck
 const DRIZZLE_LOADERS_KEY = Symbol('drizzle-graphql-loaders');
 
 type BatchFn<K, V> = (keys: readonly K[]) => Promise<readonly V[]>;

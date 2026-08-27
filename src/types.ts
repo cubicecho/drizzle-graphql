@@ -1,4 +1,3 @@
-// @ts-nocheck — vendored file, drizzle-orm 1.0 type compat not guaranteed
 import type { Many, One, Relation, Table, TableRelationalConfig, TablesRelationalConfig } from 'drizzle-orm';
 
 // Relations class was removed in drizzle-orm 1.0; stub for type compatibility
@@ -52,7 +51,7 @@ export type AnyDrizzleDB<TSchema extends Record<string, any>> =
 export type AnyQueryBuiler<TConfig extends TablesRelationalConfig = any, TFields extends TableRelationalConfig = any> =
   | PgQuery<TConfig, TFields>
   | MySqlQuery<any, TConfig, TFields>
-  | SQLiteQuery<any, any, TConfig, TFields>;
+  | SQLiteQuery<any, TConfig, TFields>;
 
 export type ExtractTables<TSchema extends Record<string, Table | unknown>> = {
   [K in keyof TSchema as TSchema[K] extends Table ? K : never]: TSchema[K] extends Table ? TSchema[K] : never;
@@ -169,14 +168,14 @@ export type SelectResolver<
     ? RelKey extends string
       ? Array<
           GetRemappedTableDataType<TTable> & {
-            [K in RelKey]: TRelations[K] extends One<string>
+            [K in RelKey]: TRelations[K] extends One<infer TTargetName, any>
               ? GetRemappedTableDataType<
-                  ExtractTableByName<TTables, TRelations[K]['referencedTableName']> extends infer T ? T[keyof T] : never
+                  ExtractTableByName<TTables, TTargetName> extends infer T ? T[keyof T] : never
                 > | null
-              : TRelations[K] extends Many<string>
+              : TRelations[K] extends Many<infer TTargetName>
                 ? Array<
                     GetRemappedTableDataType<
-                      ExtractTableByName<TTables, TRelations[K]['referencedTableName']> extends infer T
+                      ExtractTableByName<TTables, TTargetName> extends infer T
                         ? T[keyof T]
                         : never
                     >
@@ -201,14 +200,14 @@ export type SelectSingleResolver<
   | (keyof TRelations extends infer RelKey
       ? RelKey extends string
         ? GetRemappedTableDataType<TTable> & {
-            [K in RelKey]: TRelations[K] extends One<string>
+            [K in RelKey]: TRelations[K] extends One<infer TTargetName, any>
               ? GetRemappedTableDataType<
-                  ExtractTableByName<TTables, TRelations[K]['referencedTableName']> extends infer T ? T[keyof T] : never
+                  ExtractTableByName<TTables, TTargetName> extends infer T ? T[keyof T] : never
                 > | null
-              : TRelations[K] extends Many<string>
+              : TRelations[K] extends Many<infer TTargetName>
                 ? Array<
                     GetRemappedTableDataType<
-                      ExtractTableByName<TTables, TRelations[K]['referencedTableName']> extends infer T
+                      ExtractTableByName<TTables, TTargetName> extends infer T
                         ? T[keyof T]
                         : never
                     >

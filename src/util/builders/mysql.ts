@@ -1,4 +1,3 @@
-// @ts-nocheck — vendored file, drizzle-orm 1.0 type compat not guaranteed
 import { is, One, type Table } from 'drizzle-orm';
 import { getTableConfig, type MySqlDatabase, MySqlTable } from 'drizzle-orm/mysql-core';
 import type { RelationalQueryBuilder } from 'drizzle-orm/mysql-core/query-builders/query';
@@ -102,7 +101,7 @@ const generateSelectArray = (
   limits?: LimitPolicyFor,
   policies?: ResolverPolicies,
 ): CreatedResolver => {
-  const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
+  const queryBase = db.query[tableName as keyof typeof db.query & string] as unknown as
     | RelationalQueryBuilder<any, any, any>
     | undefined;
   if (!queryBase) {
@@ -175,7 +174,7 @@ const generateSelectSingle = (
   limits?: LimitPolicyFor,
   policies?: ResolverPolicies,
 ): CreatedResolver => {
-  const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
+  const queryBase = db.query[tableName as keyof typeof db.query & string] as unknown as
     | RelationalQueryBuilder<any, any, any>
     | undefined;
   if (!queryBase) {
@@ -941,7 +940,7 @@ export const generateSchemaData = <
   // Every MySQL mutation returns it, so it only belongs in the type map when at least one
   // mutation is generated.
   if ((['insert', 'upsert', 'update', 'delete'] as const).some((feature) => anyTable(feature))) {
-    outputs.MutationReturn = mutationReturnType;
+    outputs['MutationReturn'] = mutationReturnType;
   }
 
   for (const [tableName, tableTypes] of Object.entries(gqlSchemaTypes)) {

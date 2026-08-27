@@ -1,4 +1,3 @@
-// @ts-nocheck — vendored file, drizzle-orm 1.0 type compat not guaranteed
 import type { Column, Relation, SQL, Table } from 'drizzle-orm';
 import type {
   GraphQLFieldConfigArgumentMap,
@@ -130,8 +129,14 @@ export type ProcessedTableSelectArgs = {
   columns: Record<string, true>;
   offset: number;
   limit: number;
-  where: SQL;
-  orderBy: SQL[];
+  /**
+   * A filter, or drizzle's `{ RAW: … }` escape hatch. The RQB calls `RAW` with the aliased
+   * table proxy, which is the only way to reference the alias the generated CTE actually
+   * uses — an unaliased column reference would not match it.
+   */
+  where: SQL | { RAW: (aliasedTable: Table) => SQL | undefined };
+  /** Expressions, or a callback the RQB hands the aliased table proxy for the same reason. */
+  orderBy: SQL[] | ((aliasedTable: Table) => SQL[]);
   with?: Record<string, Partial<ProcessedTableSelectArgs>>;
 };
 
@@ -176,7 +181,7 @@ export type ColTypeIsNullOrUndefinedWithDefault<TColumn extends Column, TColType
 export type GetColumnGqlDataType<TColumn extends Column> = TColumn['dataType'] extends 'boolean'
   ? ColTypeIsNull<TColumn, boolean>
   : TColumn['dataType'] extends 'json'
-    ? TColumn['_']['columnType'] extends 'PgGeometryObject'
+    ? TColumn['columnType'] extends 'PgGeometryObject'
       ? ColTypeIsNull<
           TColumn,
           {
@@ -215,7 +220,7 @@ export type GetColumnGqlDataType<TColumn extends Column> = TColumn['dataType'] e
 export type GetColumnGqlInsertDataType<TColumn extends Column> = TColumn['dataType'] extends 'boolean'
   ? ColTypeIsNullOrUndefinedWithDefault<TColumn, boolean>
   : TColumn['dataType'] extends 'json'
-    ? TColumn['_']['columnType'] extends 'PgGeometryObject'
+    ? TColumn['columnType'] extends 'PgGeometryObject'
       ? ColTypeIsNullOrUndefinedWithDefault<
           TColumn,
           {
@@ -254,7 +259,7 @@ export type GetColumnGqlInsertDataType<TColumn extends Column> = TColumn['dataTy
 export type GetColumnGqlUpdateDataType<TColumn extends Column> = TColumn['dataType'] extends 'boolean'
   ? boolean | null | undefined
   : TColumn['dataType'] extends 'json'
-    ? TColumn['_']['columnType'] extends 'PgGeometryObject'
+    ? TColumn['columnType'] extends 'PgGeometryObject'
       ?
           | {
               x: number;

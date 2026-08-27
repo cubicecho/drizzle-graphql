@@ -1,4 +1,3 @@
-// @ts-nocheck — drizzle-orm 1.0 type compat not guaranteed, same as its sibling builders
 /**
  * Atomic column operations on the update `set` (`features.fieldUpdateOperations`).
  *

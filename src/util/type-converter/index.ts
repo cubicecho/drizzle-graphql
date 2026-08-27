@@ -364,7 +364,7 @@ export const registerScalarOverrides = (
   }
 };
 
-export const drizzleColumnToGraphQLType = <TColumn extends Column, TIsInput extends boolean>(
+export const drizzleColumnToGraphQLType = <TColumn extends Column, TIsInput extends boolean = false>(
   column: TColumn,
   columnName: string,
   tableName: string,
