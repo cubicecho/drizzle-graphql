@@ -2,6 +2,7 @@
 // Under drizzle-orm 1.x a text().array() column keeps dataType 'string' and sets
 // `dimensions`, so the type converter must not degrade it to a plain String — and
 // the generic filter for it must be String-typed, distinct from Int/Float arrays.
+import { rm } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { buildRelations, sql } from 'drizzle-orm';
 import { doublePrecision, integer, pgTable, serial, text } from 'drizzle-orm/pg-core';
@@ -56,6 +57,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await pglite?.close().catch(() => {});
+  await rm(DATA_DIR, { recursive: true, force: true }).catch(() => {});
 });
 
 describe.sequential('string-array schema shape', () => {

@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
@@ -49,6 +50,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await pglite?.close().catch(() => {});
+  await rm(DATA_DIR, { recursive: true, force: true }).catch(() => {});
 });
 
 // Seed recap: posts 1..6, contents 1MESSAGE, 2MESSAGE, 3MESSAGE, 1MESSAGE, 2MESSAGE, 4MESSAGE;

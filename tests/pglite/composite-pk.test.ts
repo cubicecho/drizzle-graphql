@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { buildRelations, createRelationsHelper, sql } from 'drizzle-orm';
 import { integer, pgTable, primaryKey, text } from 'drizzle-orm/pg-core';
@@ -78,6 +79,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await pglite?.close().catch(() => {});
+  await rm(DATA_DIR, { recursive: true, force: true }).catch(() => {});
 });
 
 describe.sequential('composite primary key', () => {

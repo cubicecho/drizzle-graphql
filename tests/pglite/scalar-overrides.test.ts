@@ -1,4 +1,5 @@
 import { mkdirSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { buildRelations, sql } from 'drizzle-orm';
 import { integer, jsonb, numeric, pgTable, real, serial, text } from 'drizzle-orm/pg-core';
@@ -128,6 +129,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await pglite?.close().catch(() => {});
+  await rm(DATA_DIR, { recursive: true, force: true }).catch(() => {});
 });
 
 describe.sequential('schema shape', () => {
