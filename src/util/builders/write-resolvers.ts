@@ -34,6 +34,7 @@ import {
   extractFilters,
   extractRequiredFilters,
   extractSelectedColumnsFromTreeSQLFormat,
+  hardDeleteArg,
   type LimitPolicyFor,
   type MutationTxCtx,
   type OnConflictArg,
@@ -690,10 +691,14 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
   /**
    * `delete<Table>` and, for a table that declares a soft-delete column, `restore<Table>`.
    *
-   * A soft-deleting table never issues a `DELETE`: both mutations are an `UPDATE` of the marker
-   * column, and the rows they return are the rows as they now stand. `restore` is the same
-   * resolver reading the other way — it matches only marked rows (`deleted: ONLY`) and writes
-   * the restored value.
+   * A soft-deleting table normally issues no `DELETE`: both mutations are an `UPDATE` of the
+   * marker column, and the rows they return are the rows as they now stand. `restore` is the
+   * same resolver reading the other way — it matches only marked rows (`deleted: ONLY`) and
+   * writes the restored value.
+   *
+   * A table that opted into `hardDelete` also takes `hard: true`, which issues the real
+   * `DELETE` — emptying the trash, reclaiming a unique key. It reads at `INCLUDE`, since the
+   * rows it mostly exists to remove are the ones already marked; a `scope` still confines it.
    */
   const generateDelete = (
     db: WriteDatabase,
@@ -713,15 +718,19 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
     const softDelete = policies?.softDelete?.(tableName);
     const operation: WriteOperation = restore ? 'restore' : 'delete';
     const hooks = policies?.onWrite?.(tableName, operation);
+    // Only a soft-deleting table that opted in gets the argument, so the schema itself says
+    // which tables can be purged — and `restore` never takes one, having nothing to remove.
+    const canHardDelete = !restore && softDelete?.hardDelete === true;
     const queryArgs = {
       where: {
         type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
       },
-    } as const satisfies GraphQLFieldConfigArgumentMap;
+      ...(canHardDelete ? { hard: hardDeleteArg } : {}),
+    } as GraphQLFieldConfigArgumentMap;
 
     return {
       name: fieldName,
-      resolver: async (_source, args: { where?: Filters<Table> }, context, info) => {
+      resolver: async (_source, args: { where?: Filters<Table>; hard?: boolean }, context, info) => {
         try {
           return await runMutation(
             db,
@@ -730,6 +739,9 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             txCtx,
             async (executor) => {
               const { where } = args;
+              // `canHardDelete` decides whether the argument exists; this decides what it does,
+              // so a stitched-in `hard: true` on a table that never opted in stays a soft delete.
+              const hard = canHardDelete && args.hard === true;
               const scope = policies?.scope?.(context);
               await runWriteHook(hooks, 'before', {
                 table: tableName,
@@ -765,18 +777,21 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
                   : where
                     ? extractFilters(table, tableName, where, relationCtx)
                     : undefined,
-                restore ? 'ONLY' : undefined,
+                // A hard delete reads at INCLUDE: the rows it mostly exists to remove are the
+                // ones already marked, which the default EXCLUDE could not reach at all.
+                restore ? 'ONLY' : hard ? 'INCLUDE' : undefined,
               );
 
               if (single) {
                 await assertSingleMatch(executor, table, filters!, fieldName);
               }
 
-              let query = softDelete
-                ? executor
-                    .update(table)
-                    .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
-                : executor.delete(table);
+              let query =
+                softDelete && !hard
+                  ? executor.update(table).set({
+                      [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted(),
+                    })
+                  : executor.delete(table);
               if (filters) {
                 query = query.where(filters) as any;
               }

@@ -30,6 +30,7 @@ import {
   generateUpdateManyInput,
   generateWriteCount,
   getPrimaryKeyPropNamesFromConfig,
+  hardDeleteArg,
   listFieldComplexity,
   type MutationTxCtx,
   mysqlValuesColumnRef,
@@ -526,6 +527,9 @@ const generateUpdateMany = (
  * `delete<Table>` and, for a table that declares a soft-delete column, `restore<Table>`.
  * MySQL's writes return no rows either way, so both answer `{ isSuccess: true }` — the
  * difference from the other dialects is only what the payload can say, not what runs.
+ *
+ * A table that opted into `hardDelete` also takes `hard: true`, which issues the real
+ * `DELETE` instead of writing the marker, reading at `INCLUDE` so it reaches marked rows.
  */
 const generateDelete = (
   db: MySqlDatabase<any, any, any>,
@@ -542,17 +546,21 @@ const generateDelete = (
 ): CreatedResolver => {
   const softDelete = policies?.softDelete?.(tableName);
   const operation: WriteOperation = restore ? 'restore' : 'delete';
+  // Only a soft-deleting table that opted in gets the argument, so the schema itself says
+  // which tables can be purged — and `restore` never takes one, having nothing to remove.
+  const canHardDelete = !restore && softDelete?.hardDelete === true;
   const queryArgs = {
     where: {
       type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
     },
-  } as const satisfies GraphQLFieldConfigArgumentMap;
+    ...(canHardDelete ? { hard: hardDeleteArg } : {}),
+  } as GraphQLFieldConfigArgumentMap;
 
   const hooks = policies?.onWrite?.(tableName, operation);
 
   return {
     name: fieldName,
-    resolver: async (_source, args: { where?: Filters<Table> }, context, info) => {
+    resolver: async (_source, args: { where?: Filters<Table>; hard?: boolean }, context, info) => {
       try {
         return await runMutation(
           db,
@@ -570,6 +578,9 @@ const generateDelete = (
               tx: executor,
             });
             const { where } = args;
+            // `canHardDelete` decides whether the argument exists; this decides what it does,
+            // so a stitched-in `hard: true` on a table that never opted in stays a soft delete.
+            const hard = canHardDelete && args.hard === true;
             const scope = policies?.scope?.(context);
 
             const relationCtx = relationFilterCtx(filterCtx, tableName);
@@ -586,18 +597,21 @@ const generateDelete = (
                 : where
                   ? extractFilters(table, tableName, where, relationCtx)
                   : undefined,
-              restore ? 'ONLY' : undefined,
+              // A hard delete reads at INCLUDE: the rows it mostly exists to remove are the
+              // ones already marked, which the default EXCLUDE could not reach at all.
+              restore ? 'ONLY' : hard ? 'INCLUDE' : undefined,
             );
 
             if (single) {
               await assertSingleMatch(executor, table, filters!, fieldName);
             }
 
-            let query = softDelete
-              ? executor
-                  .update(table)
-                  .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
-              : executor.delete(table);
+            let query =
+              softDelete && !hard
+                ? executor
+                    .update(table)
+                    .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
+                : executor.delete(table);
             if (filters) {
               query = query.where(filters) as any;
             }
@@ -1135,7 +1149,9 @@ export const generateSchemaData = <
       };
     }
     // Each mutation is paired with the identity it publishes on `extensions.drizzle`, so a
-    // consumer can tell an insert from an upsert without unpicking the configured prefixes.
+    // consumer can tell an insert from an upsert without unpicking the configured prefixes —
+    // and, for a delete, whether the field can purge rather than mark.
+    const hardDeleteMeta = softDeleteInfo?.hardDelete ? ({ hardDelete: true } as const) : {};
     const generatedMutations: [typeof insertArrGenerated, DrizzleMutationMeta][] = [
       [insertArrGenerated, { operation: 'insert', single: false, targetArg: 'values' }],
       [insertSingleGenerated, { operation: 'insert', single: true, targetArg: 'values' }],
@@ -1144,8 +1160,8 @@ export const generateSchemaData = <
       [updateGenerated, { operation: 'update', single: false, targetArg: 'where' }],
       [updateManyGenerated, { operation: 'updateMany', single: false, targetArg: 'updates' }],
       [updateSingleGenerated, { operation: 'update', single: true, targetArg: 'where' }],
-      [deleteGenerated, { operation: 'delete', single: false, targetArg: 'where' }],
-      [deleteSingleGenerated, { operation: 'delete', single: true, targetArg: 'where' }],
+      [deleteGenerated, { operation: 'delete', single: false, targetArg: 'where', ...hardDeleteMeta }],
+      [deleteSingleGenerated, { operation: 'delete', single: true, targetArg: 'where', ...hardDeleteMeta }],
       [restoreGenerated, { operation: 'restore', single: false, targetArg: 'where' }],
       [restoreSingleGenerated, { operation: 'restore', single: true, targetArg: 'where' }],
     ];

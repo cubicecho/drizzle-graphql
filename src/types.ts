@@ -961,6 +961,18 @@ export type SoftDeleteColumn =
        * per request.
        */
       scope?: 'root' | 'all';
+      /**
+       * Whether the table's delete mutations accept `hard: Boolean = false`, which issues a
+       * real `DELETE` instead of writing the marker — emptying the trash, reclaiming a unique
+       * key, clearing a table. Opt-in per table, and the argument is only generated when it is
+       * on, so the schema itself says which tables can be purged.
+       *
+       * A hard delete reads at `INCLUDE`: it reaches already-marked rows, which is the case it
+       * mostly exists for. A `scope` still confines it, exactly as it confines every other write.
+       *
+       * @default false
+       */
+      hardDelete?: boolean;
     };
 
 /**

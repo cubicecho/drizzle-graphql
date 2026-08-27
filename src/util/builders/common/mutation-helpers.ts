@@ -4,7 +4,7 @@
 import type { Column, Table } from 'drizzle-orm';
 import { type SQL, sql } from 'drizzle-orm';
 import type { GraphQLFieldConfigArgumentMap } from 'graphql';
-import { GraphQLError, GraphQLInputObjectType, GraphQLNonNull } from 'graphql';
+import { GraphQLBoolean, GraphQLError, GraphQLInputObjectType, GraphQLNonNull } from 'graphql';
 import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { capitalize } from '../../case-ops/index.ts';
 import { remapUpdateInput } from '../field-updates.ts';
@@ -23,6 +23,18 @@ import { extractRelationsParams } from './relation-params.ts';
 import { extractSelectedColumnsFromTreeSQLFormat } from './selected-columns.ts';
 import type { MutationTxCtx } from './transactions.ts';
 import { runMutation } from './transactions.ts';
+
+/**
+ * The `hard` argument on the delete mutations of a soft-deleting table that opted into
+ * `hardDelete`. One config shared by every such field — argument configs carry no per-field
+ * state — and generated nowhere else, so the schema says which tables can be purged.
+ */
+export const hardDeleteArg = {
+  type: GraphQLBoolean,
+  defaultValue: false,
+  description:
+    'Remove the matched rows instead of marking them deleted. Reads at `INCLUDE`, so it reaches rows that are already marked; a `scope` still confines what it can reach.',
+} as const;
 
 /**
  * Computes the RETURNING columns and relation selection for a mutation resolver: extracts

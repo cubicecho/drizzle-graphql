@@ -5,7 +5,7 @@ import { boolean, integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
 import { drizzle } from 'drizzle-orm/pglite';
 import { type GraphQLInputObjectType, type GraphQLObjectType, type GraphQLSchema, graphql } from 'graphql';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { type BuildSchemaConfig, buildSchema } from '@/index';
+import { type BuildSchemaConfig, buildSchema, drizzleExtension } from '@/index';
 
 // ── A schema with both shapes of the convention ──────────────────────────────
 // `Articles.deletedAt` is the nullable-timestamp form; `Flags.isArchived` is the NOT NULL
@@ -73,6 +73,14 @@ const softDelete: Partial<BuildSchemaConfig> = {
     Flags: { column: 'isArchived', deletedValue: true, restoredValue: false },
     Docs: { column: 'isDeleted', deletedValue: true, restoredValue: false },
     Kinds: { column: 'isRetired', deletedValue: true, restoredValue: false },
+  },
+};
+
+/** The same declaration, with the article table opted into purging. */
+const hardDeletable: Partial<BuildSchemaConfig> = {
+  softDelete: {
+    ...(softDelete.softDelete as Record<string, any>),
+    Articles: { column: 'deletedAt', hardDelete: true },
   },
 };
 
@@ -496,6 +504,124 @@ describe.sequential('soft delete', () => {
     expect(theirsDefault.data?.['articles']).toEqual([]);
   });
 
+  it('generates the hard argument only where the table opted in', async () => {
+    const gqlSchema = buildWith(hardDeletable);
+    const mutations = gqlSchema.getMutationType()!.getFields();
+    const argsOf = (field: string) => mutations[field]!.args.map((arg) => arg.name);
+
+    expect(argsOf('deleteArticles')).toContain('hard');
+    expect(argsOf('deleteArticlesSingle')).toContain('hard');
+    // Restoring removes nothing, so it never takes one.
+    expect(argsOf('restoreArticles')).not.toContain('hard');
+    // Flags soft-deletes without opting in; Authors does not soft-delete at all.
+    expect(argsOf('deleteFlags')).not.toContain('hard');
+    expect(argsOf('deleteAuthors')).not.toContain('hard');
+    // And the default is the safe one, so an existing query keeps marking rows.
+    expect(mutations['deleteArticles']!.args.find((arg) => arg.name === 'hard')!.defaultValue).toBe(false);
+
+    // The same table under the un-opted-in declaration has no argument at all.
+    expect(
+      buildWith(softDelete)
+        .getMutationType()!
+        .getFields()
+        ['deleteArticles']!.args.map((arg) => arg.name),
+    ).not.toContain('hard');
+  });
+
+  it('publishes the opt-in on the field extension, so a wrapper need not parse arguments', async () => {
+    const opted = buildWith(hardDeletable).getMutationType()!.getFields();
+    expect(drizzleExtension(opted['deleteArticles'])).toMatchObject({ operation: 'delete', hardDelete: true });
+    expect(drizzleExtension(opted['deleteArticlesSingle'])).toMatchObject({ operation: 'delete', hardDelete: true });
+    expect(drizzleExtension(opted['deleteFlags'])).not.toHaveProperty('hardDelete');
+    expect(drizzleExtension(opted['restoreArticles'])).not.toHaveProperty('hardDelete');
+  });
+
+  it('hard: true removes the row instead of marking it', async () => {
+    const gqlSchema = buildWith(hardDeletable);
+    const res = await run(gqlSchema, `mutation { deleteArticles(where: { id: { eq: 1 } }, hard: true) { id title } }`);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.['deleteArticles']).toEqual([{ id: 1, title: 'first' }]);
+
+    const rows = await rowsOf(Articles);
+    expect(rows.map((row: any) => row.id).sort()).toEqual([2, 3]);
+  });
+
+  it('hard: false, and the default, still mark the row', async () => {
+    const gqlSchema = buildWith(hardDeletable);
+    const explicit = await run(gqlSchema, `mutation { deleteArticles(where: { id: { eq: 1 } }, hard: false) { id } }`);
+    expect(explicit.errors).toBeUndefined();
+    const byDefault = await run(gqlSchema, `mutation { deleteArticles(where: { id: { eq: 2 } }) { id } }`);
+    expect(byDefault.errors).toBeUndefined();
+
+    const rows = await rowsOf(Articles);
+    expect(rows).toHaveLength(3);
+    expect(
+      rows
+        .filter((row: any) => row.deletedAt !== null)
+        .map((row: any) => row.id)
+        .sort(),
+    ).toEqual([1, 2, 3]);
+  });
+
+  it('empties the trash: a hard delete reaches rows that are already marked', async () => {
+    const gqlSchema = buildWith(hardDeletable);
+    // Article 3 is marked, so the soft path cannot see it at all.
+    const soft = await run(gqlSchema, `mutation { deleteArticles(where: { id: { eq: 3 } }) { id } }`);
+    expect(soft.errors).toBeUndefined();
+    expect(soft.data?.['deleteArticles']).toEqual([]);
+
+    const purge = await run(gqlSchema, `mutation { deleteArticles(where: { id: { eq: 3 } }, hard: true) { id } }`);
+    expect(purge.errors).toBeUndefined();
+    expect(purge.data?.['deleteArticles']).toEqual([{ id: 3 }]);
+    expect((await rowsOf(Articles)).map((row: any) => row.id).sort()).toEqual([1, 2]);
+  });
+
+  it('purges through the single variant too, marked row included', async () => {
+    const gqlSchema = buildWith(hardDeletable);
+    const res = await run(gqlSchema, `mutation { deleteArticlesSingle(where: { id: { eq: 3 } }, hard: true) { id } }`);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.['deleteArticlesSingle']).toEqual({ id: 3 });
+    expect((await rowsOf(Articles)).map((row: any) => row.id).sort()).toEqual([1, 2]);
+  });
+
+  it('clears the table when no where is given', async () => {
+    const gqlSchema = buildWith(hardDeletable);
+    const res = await run(gqlSchema, `mutation { deleteArticles(hard: true) { id } }`);
+
+    expect(res.errors).toBeUndefined();
+    // Including the row that was already marked — the reset the issue asks for.
+    expect((res.data?.['deleteArticles'] as any[]).map((row: any) => row.id).sort()).toEqual([1, 2, 3]);
+    expect(await rowsOf(Articles)).toHaveLength(0);
+  });
+
+  it('a scope still confines a hard delete', async () => {
+    const gqlSchema = buildWith({
+      ...hardDeletable,
+      scope: { Articles: (ctx: any, table: any) => eq(table.authorId, ctx.authorId) },
+    });
+
+    // Article 3 belongs to author 2 and is marked; author 1 can reach neither.
+    const res = await run(gqlSchema, `mutation { deleteArticles(hard: true) { id } }`, { authorId: 1 });
+    expect(res.errors).toBeUndefined();
+    expect((res.data?.['deleteArticles'] as any[]).map((row: any) => row.id).sort()).toEqual([1, 2]);
+    expect((await rowsOf(Articles)).map((row: any) => row.id)).toEqual([3]);
+  });
+
+  it('frees the unique key a marked row was holding', async () => {
+    const gqlSchema = buildWith(hardDeletable);
+    // The primary key is the case every table has: reusing it needs the row actually gone.
+    await run(gqlSchema, `mutation { deleteArticles(where: { id: { eq: 1 } }, hard: true) { id } }`);
+    const res = await run(
+      gqlSchema,
+      `mutation { createArticlesSingle(values: { id: 1, title: "reused", authorId: 1 }) { id title } }`,
+    );
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.['createArticlesSingle']).toEqual({ id: 1, title: 'reused' });
+  });
+
   it('rejects a declaration that does not match the schema', () => {
     expect(() => buildWith({ softDelete: { Nope: 'deletedAt' } })).toThrow(/not a table in the Drizzle schema/);
     expect(() => buildWith({ softDelete: { Articles: 'goneAt' } })).toThrow(/not a column of that table/);
@@ -511,6 +637,9 @@ describe.sequential('soft delete', () => {
     );
     expect(() => buildWith({ softDelete: { Articles: { column: 'deletedAt', scope: 'relations' as any } } })).toThrow(
       /scope must be 'root' or 'all'/,
+    );
+    expect(() => buildWith({ softDelete: { Articles: { column: 'deletedAt', hardDelete: 'yes' as any } } })).toThrow(
+      /hardDelete must be a boolean/,
     );
   });
 });

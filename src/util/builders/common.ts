@@ -81,6 +81,7 @@ export {
   extractRequiredFilters,
   generateUpdateManyInput,
   generateWriteCount,
+  hardDeleteArg,
   prepareMutationRelationColumns,
   rowsAffected,
 } from './common/mutation-helpers.ts';

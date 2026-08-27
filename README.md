@@ -388,7 +388,7 @@ What a declared table gets:
 
 | Path | Effect |
 | --- | --- |
-| `deletePosts`, `deletePostsSingle` | UPDATE that writes the marker; returns the rows as they now stand |
+| `deletePosts`, `deletePostsSingle` | UPDATE that writes the marker; returns the rows as they now stand — or a real DELETE under [`hard: true`](#purging-a-row), where the table opted in |
 | `restorePosts`, `restorePostsSingle` | the inverse — matches **only** marked rows and clears the marker |
 | `posts`, `postsSingle`, cursor pages | marked rows are not returned |
 | `postsAggregate`, `postsGroupBy` | counted over unmarked rows only |
@@ -459,6 +459,40 @@ INCLUDE)` under `'all'`.
 `scope` changes reads only. A nested `connect` / `disconnect` / `set` still refuses to attach a
 marked row under either setting, and the table's own writes are unaffected.
 
+### Purging a row
+
+Soft delete and purge are not alternatives — emptying the trash, reclaiming a unique key and
+clearing a table in development all need the row actually gone. `hardDelete: true` puts a
+`hard` argument on the table's delete mutations:
+
+```Typescript
+softDelete: { articles: { column: 'deletedAt', hardDelete: true } }
+```
+
+```graphql
+mutation {
+    trash: deleteArticles(where: { id: { eq: 1 } }) { id }             # UPDATE — marks the row
+    purge: deleteArticles(where: { id: { eq: 3 } }, hard: true) { id } # DELETE — removes it
+}
+```
+
+`hard: true` reads at `INCLUDE` rather than `EXCLUDE`, so it reaches rows that are **already
+marked** — which is the case it mostly exists for; a `scope` still confines what it can reach,
+exactly as it confines every other write. `deleteArticles(hard: true)` with no `where` empties
+the table, marked rows included.
+
+Opt-in per table, since it is destructive: no `hard` argument is generated where it was not
+asked for, so the schema itself says which tables can be purged. `restore` never takes one.
+
+One thing to weigh: an argument is harder to gate than a field — schema-level permission
+middleware registers rules per field name, so `deleteArticles` with and without `hard: true`
+is one rule that has to inspect arguments. The opted-in fields say so on their marker, so a
+wrapper can find them without parsing the schema's arguments:
+
+```Typescript
+const meta = drizzleExtension(field) // { operation: 'delete', hardDelete: true, … }
+```
+
 Three things it deliberately does not do:
 
 -   **It does not cascade.** Marking a post does not mark its comments. A comment whose post is
@@ -467,7 +501,8 @@ Three things it deliberately does not do:
     Declare the child table too if that is not what you want.
 -   **It does not free the row's unique keys.** A marked row still occupies its primary key and
     every unique index, so inserting a new row with the same natural key fails the constraint.
-    A partial unique index (`WHERE deleted_at IS NULL`) is the usual answer.
+    A partial unique index (`WHERE deleted_at IS NULL`) is the usual answer; `hardDelete`
+    (above) is the other one.
 -   **It does not refuse.** Like `scope`, an unreachable row answers the same as a row that does
     not exist.
 

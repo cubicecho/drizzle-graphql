@@ -775,7 +775,13 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
           args: deleteGenerated.args,
           resolve: deleteGenerated.resolver,
           extensions: {
-            drizzle: drizzleMeta({ kind: 'mutation', operation: 'delete', single: false, targetArg: 'where' }),
+            drizzle: drizzleMeta({
+              kind: 'mutation',
+              operation: 'delete',
+              single: false,
+              targetArg: 'where',
+              ...(softDeleteInfo?.hardDelete ? { hardDelete: true } : {}),
+            }),
           },
         };
       }
@@ -785,7 +791,13 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
           args: deleteSingleGenerated.args,
           resolve: deleteSingleGenerated.resolver,
           extensions: {
-            drizzle: drizzleMeta({ kind: 'mutation', operation: 'delete', single: true, targetArg: 'where' }),
+            drizzle: drizzleMeta({
+              kind: 'mutation',
+              operation: 'delete',
+              single: true,
+              targetArg: 'where',
+              ...(softDeleteInfo?.hardDelete ? { hardDelete: true } : {}),
+            }),
           },
         };
       }

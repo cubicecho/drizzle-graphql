@@ -61,6 +61,11 @@ export type SoftDeleteInfo = {
    * {@link relationDeletedDefault}.
    */
   scope: 'root' | 'all';
+  /**
+   * Whether the delete mutations take a `hard` argument that issues a real `DELETE`. Off
+   * unless the table opts in, so the generated schema says which tables can be purged.
+   */
+  hardDelete: boolean;
 };
 
 /** Build-time lookup: the soft-delete convention of a table, if it declares one. */
@@ -87,7 +92,15 @@ export const deletedFilterEnum = new GraphQLEnumType({
 export const resolveSoftDeleteInfo = (
   table: Table,
   tableName: string,
-  declaration: string | { column: string; deletedValue?: any; restoredValue?: any; scope?: 'root' | 'all' },
+  declaration:
+    | string
+    | {
+        column: string;
+        deletedValue?: any;
+        restoredValue?: any;
+        scope?: 'root' | 'all';
+        hardDelete?: boolean;
+      },
 ): SoftDeleteInfo => {
   const config = typeof declaration === 'string' ? { column: declaration } : declaration;
   const columnName = config?.column;
@@ -163,7 +176,14 @@ export const resolveSoftDeleteInfo = (
     );
   }
 
-  return { columnName, column, nullable, writeDeleted, writeRestored, marker, scope };
+  const hardDelete = config.hardDelete ?? false;
+  if (typeof hardDelete !== 'boolean') {
+    throw new Error(
+      `Drizzle-GraphQL Error: config.softDelete.${tableName}.hardDelete must be a boolean, not ${JSON.stringify(hardDelete)}.`,
+    );
+  }
+
+  return { columnName, column, nullable, writeDeleted, writeRestored, marker, scope, hardDelete };
 };
 
 /**
