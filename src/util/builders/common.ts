@@ -104,6 +104,7 @@ export {
   applyContextValuesAll,
   bindPolicies,
   deletedFilterEnum,
+  relationDeletedDefault,
   resolveScope,
   resolveSoftDeleteInfo,
   softDeletePredicate,

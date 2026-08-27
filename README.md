@@ -428,11 +428,43 @@ softDelete: { docs: { column: 'isDeleted', deletedValue: true, restoredValue: fa
 Here a row is deleted when the column holds `true`; `false` **and NULL** are both alive, so the
 rows written before the column existed are not swept into the trash view.
 
+### What a relation field sees
+
+By default the scope covers the table's own query fields **and** every relation field that
+points at it, with one exception: a *required* to-one relation (`optional: false`, so the
+field is `Kind!`) reads marked rows. Hiding one there can only ever produce `Cannot return
+null for non-nullable field Item.kind` and take the whole parent down with it — there is no
+usable result to protect.
+
+Marking a lookup row usually means *retired*: keep it off the pickers and the lists, keep
+rendering it on the historical rows that reference it. `scope: 'root'` says exactly that:
+
+```Typescript
+softDelete: {
+    kinds: { column: 'isRetired', deletedValue: true, restoredValue: false, scope: 'root' },
+}
+```
+
+| | `scope: 'all'` (default) | `scope: 'root'` |
+| --- | --- | --- |
+| `kinds`, `kindsSingle`, `kindsAggregate` | marked rows hidden | marked rows hidden |
+| `item.kind` (required to-one) | **shown** | shown |
+| `item.altKind` (nullable to-one) | hidden (resolves `null`) | shown |
+| `kind.items`, `kind.itemsAggregate` | hidden | shown |
+
+The `deleted` argument is generated on relation fields either way, so a request can override
+whichever default applies — `altKind(deleted: EXCLUDE)` under `'root'`, `altKind(deleted:
+INCLUDE)` under `'all'`.
+
+`scope` changes reads only. A nested `connect` / `disconnect` / `set` still refuses to attach a
+marked row under either setting, and the table's own writes are unaffected.
+
 Three things it deliberately does not do:
 
 -   **It does not cascade.** Marking a post does not mark its comments. A comment whose post is
-    marked is still returned by `comments`; its `post` field resolves to `null`. Declare the
-    child table too if that is not what you want.
+    marked is still returned by `comments`; its `post` field resolves to `null` (or to the
+    marked row, when the field is non-null or the table is `scope: 'root'` — see above).
+    Declare the child table too if that is not what you want.
 -   **It does not free the row's unique keys.** A marked row still occupies its primary key and
     every unique index, so inserting a new row with the same natural key fails the constraint.
     A partial unique index (`WHERE deleted_at IS NULL`) is the usual answer.

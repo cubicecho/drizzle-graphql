@@ -44,6 +44,7 @@ import {
   generateColumnEnum,
   type RelationAggregateFactory,
   type RelationFilterBase,
+  relationDeletedDefault,
   relationFilterCtx,
   resolveExecutor,
   resolveScope,
@@ -441,6 +442,9 @@ export const createRelationAggregateFactory = (
       return undefined;
     }
     const { localColPropName, foreignCol } = joinCols;
+    // An aggregate over a relation counts the rows the relation itself returns, so it takes
+    // the same soft-delete default — a `scope: 'root'` target is not hidden here either.
+    const defaultDeleted = relationDeletedDefault(policies?.softDelete, targetTableName, false);
 
     const targetTypeName = resolveTypeName(targetTableName, typeNameMapper);
     const type = generateAggregateTypes(targetTable, targetTableName, targetTypeName, cacheCtx);
@@ -469,7 +473,7 @@ export const createRelationAggregateFactory = (
         // Siblings only share a batch when they'd run the same query: same filters, same aggregates.
         const argsKey = JSON.stringify({
           where: whereArg ?? null,
-          deleted: deleted ?? null,
+          deleted: deleted ?? defaultDeleted ?? null,
           selection: Object.keys(request.selection).sort(),
         });
         const loaderKey = `${tableName}::${relationName}::aggregate::${argsKey}`;
@@ -490,7 +494,7 @@ export const createRelationAggregateFactory = (
                 ? extractFilters(targetTable, targetTableName, whereArg, relationFilterCtx(filterCtx, targetTableName))
                 : undefined,
             ),
-            deleted,
+            deleted ?? defaultDeleted,
           );
 
           const rows: any[] = await executor

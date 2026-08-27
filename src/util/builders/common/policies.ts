@@ -55,6 +55,12 @@ export type SoftDeleteInfo = {
    * NOT NULL column; optional on a nullable one, which otherwise reads NULL as alive.
    */
   marker?: any;
+  /**
+   * Which reads hide marked rows by default — `'all'` (the table's own fields and every
+   * relation pointing at it) or `'root'` (its own fields only). See
+   * {@link relationDeletedDefault}.
+   */
+  scope: 'root' | 'all';
 };
 
 /** Build-time lookup: the soft-delete convention of a table, if it declares one. */
@@ -81,7 +87,7 @@ export const deletedFilterEnum = new GraphQLEnumType({
 export const resolveSoftDeleteInfo = (
   table: Table,
   tableName: string,
-  declaration: string | { column: string; deletedValue?: any; restoredValue?: any },
+  declaration: string | { column: string; deletedValue?: any; restoredValue?: any; scope?: 'root' | 'all' },
 ): SoftDeleteInfo => {
   const config = typeof declaration === 'string' ? { column: declaration } : declaration;
   const columnName = config?.column;
@@ -150,7 +156,42 @@ export const resolveSoftDeleteInfo = (
     );
   }
 
-  return { columnName, column, nullable, writeDeleted, writeRestored, marker };
+  const scope = config.scope ?? 'all';
+  if (scope !== 'root' && scope !== 'all') {
+    throw new Error(
+      `Drizzle-GraphQL Error: config.softDelete.${tableName}.scope must be 'root' or 'all', not ${JSON.stringify(scope)}.`,
+    );
+  }
+
+  return { columnName, column, nullable, writeDeleted, writeRestored, marker, scope };
+};
+
+/**
+ * The `deleted` mode a *relation* field reads its target with when the request does not pass
+ * one. Root fields always default to `EXCLUDE`; a relation field is the case a soft delete
+ * cannot answer for on its own, because the row it hides belongs to a different query than
+ * the one that marked it.
+ *
+ * - `scope: 'root'` reads relations with `INCLUDE`: the row is retired, not erased, so the
+ *   historical rows that reference it keep rendering it.
+ * - `scope: 'all'` keeps hiding it — except through a *required* to-one relation, where a
+ *   hidden row can only surface as "Cannot return null for non-nullable field" and take the
+ *   whole parent down with it. There is no usable result to protect there, so the row is
+ *   included rather than the parent lost.
+ *
+ * Returns `undefined` when the target declares no soft delete, so an unconfigured build
+ * passes exactly the mode it did before.
+ */
+export const relationDeletedDefault = (
+  softDelete: SoftDeleteFor | undefined,
+  targetTableName: string,
+  requiredToOne: boolean,
+): DeletedMode | undefined => {
+  const info = softDelete?.(targetTableName);
+  if (!info) {
+    return undefined;
+  }
+  return info.scope === 'root' || requiredToOne ? 'INCLUDE' : 'EXCLUDE';
 };
 
 /**
@@ -184,6 +225,12 @@ export const softDeletePredicate = (info: SoftDeleteInfo, table: Table, mode: De
 export type ScopeResolver = {
   has: (tableName: string, mode?: DeletedMode) => boolean;
   on: (tableName: string, table: Table, mode?: DeletedMode) => SQL | undefined;
+  /**
+   * The mode a relation field reading `tableName` defaults to — see
+   * {@link relationDeletedDefault}. Carried here because the eager (`with:`) path has the
+   * resolver but not the build-time soft-delete lookup.
+   */
+  relationDefault: (tableName: string, requiredToOne: boolean) => DeletedMode | undefined;
 };
 
 /**
@@ -204,6 +251,7 @@ export const resolveScope = (
   }
   return {
     has: (tableName, mode) => !!scopes?.(tableName) || (!!softDelete?.(tableName) && (mode ?? 'EXCLUDE') !== 'INCLUDE'),
+    relationDefault: (tableName, requiredToOne) => relationDeletedDefault(softDelete, tableName, requiredToOne),
     on: (tableName, table, mode) => {
       // Order is fixed: the soft-delete predicate first, the scope after it, both ANDed. They
       // commute, but a fixed order keeps the generated SQL stable between requests.

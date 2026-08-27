@@ -127,7 +127,14 @@ export const extractRelationsParamsInner = (
     // references in the generated SQL match the CTE alias rather than the
     // original unaliased table name.
     const relWhere = relationArgs?.where;
-    const relDeleted = (relationArgs as any)?.deleted as DeletedMode | undefined;
+    // A relation field's soft-delete default is the target's, not the root default — a
+    // required to-one relation, and a table declared `scope: 'root'`, both read INCLUDE.
+    const relDeleted =
+      ((relationArgs as any)?.deleted as DeletedMode | undefined) ??
+      scope?.relationDefault(
+        targetTableName,
+        is(relEntry.relation, One) && (relEntry.relation as any).optional === false,
+      );
     // The eager path is the one read that never passes through the relation field's own
     // resolver, so the target's scope has to be applied here as well — otherwise selecting a
     // relation would be the way around it.

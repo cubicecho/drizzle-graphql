@@ -26,7 +26,7 @@ import type { LimitPolicyFor } from './limits.ts';
 import { applyLimitPolicy, withDefaultOrderBy } from './limits.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { TablePolicies } from './policies.ts';
-import { resolveScope, withScope } from './policies.ts';
+import { relationDeletedDefault, resolveScope, withScope } from './policies.ts';
 import type { RelationFilterBase, RelationFilterContext } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import type { RelationResolverFactory } from './relations.ts';
@@ -134,6 +134,14 @@ export const createRelationResolverFactory =
     }
 
     const { localColPropName, foreignCol, foreignColPropName } = joinCols;
+    // The mode this field reads its target with when the request passes no `deleted` — see
+    // `relationDeletedDefault`. Required to-one relations and `scope: 'root'` tables read
+    // marked rows; everything else keeps hiding them.
+    const defaultDeleted = relationDeletedDefault(
+      policies?.softDelete,
+      targetTableName,
+      isOne && (relEntry.relation as any)?.optional === false,
+    );
     // A relation field is bounded by the policy of the table it reads, not the parent's.
     const limitPolicy = isOne ? undefined : limits?.(targetTableName);
     // Resolved at build time (composite keys included) — used to tiebreak paginated batches.
@@ -200,7 +208,7 @@ export const createRelationResolverFactory =
         orderBy: orderByArg ?? null,
         limit: limit ?? null,
         offset: offset ?? null,
-        deleted: deleted ?? null,
+        deleted: deleted ?? defaultDeleted ?? null,
         after: after ?? null,
         distinct: distinct ?? null,
         cursor: cursorEntries ? 1 : 0,
@@ -225,7 +233,7 @@ export const createRelationResolverFactory =
               : undefined,
             cursorValues ? buildCursorCondition(targetTable, cursorEntries!, cursorValues, nullOrdering) : undefined,
           ),
-          deleted,
+          deleted ?? defaultDeleted,
         );
 
         if (distinct) {

@@ -946,6 +946,21 @@ export type SoftDeleteColumn =
        * for a NOT NULL boolean; required for any other NOT NULL column.
        */
       restoredValue?: any;
+      /**
+       * Which generated reads hide marked rows by default.
+       *
+       * - `'all'` (the default) — the table's own query fields and every relation field that
+       *   points at it. A *required* to-one relation is the one exception: hiding the row
+       *   there can only produce "Cannot return null for non-nullable field", never a usable
+       *   result, so it reads `INCLUDE` unless the request says otherwise.
+       * - `'root'` — only the table's own query fields. Relation fields read marked rows,
+       *   which is what "retired, not erased" usually means: keep the row off the pickers and
+       *   the lists, keep rendering it on the historical rows that reference it.
+       *
+       * The `deleted` argument is generated either way, so either default can be overridden
+       * per request.
+       */
+      scope?: 'root' | 'all';
     };
 
 /**

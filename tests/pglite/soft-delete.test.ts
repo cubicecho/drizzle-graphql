@@ -33,15 +33,35 @@ const Docs = pgTable('docs', {
   isDeleted: boolean('is_deleted').default(false),
 });
 
-const r = createRelationsHelper({ Authors, Articles, Flags, Docs });
+// A soft-deleting lookup table reached through relations: `Items.kind` is *required*, so
+// hiding a marked kind there can only produce "Cannot return null for non-nullable field";
+// `Items.altKind` is the nullable version of the same shape.
+const Kinds = pgTable('kinds', {
+  id: integer('id').primaryKey(),
+  label: text('label').notNull(),
+  isRetired: boolean('is_retired').notNull().default(false),
+});
+const Items = pgTable('items', {
+  id: integer('id').primaryKey(),
+  name: text('name').notNull(),
+  kindId: integer('kind_id').notNull(),
+  altKindId: integer('alt_kind_id'),
+});
+
+const r = createRelationsHelper({ Authors, Articles, Flags, Docs, Kinds, Items });
 const relations = buildRelations(
-  { Authors, Articles, Flags, Docs },
+  { Authors, Articles, Flags, Docs, Kinds, Items },
   {
     Authors: { articles: r.many.Articles({ from: r.Authors.id, to: r.Articles.authorId }) },
     Articles: { author: r.one.Authors({ from: r.Articles.authorId, to: r.Authors.id }) },
+    Kinds: { items: r.many.Items({ from: r.Kinds.id, to: r.Items.kindId }) },
+    Items: {
+      kind: r.one.Kinds({ from: r.Items.kindId, to: r.Kinds.id, optional: false }),
+      altKind: r.one.Kinds({ from: r.Items.altKindId, to: r.Kinds.id }),
+    },
   },
 );
-const schema = { Authors, Articles, Flags, Docs, relations };
+const schema = { Authors, Articles, Flags, Docs, Kinds, Items, relations };
 
 const DATA_DIR = `./tests/.temp/pgdata-soft-delete-${Date.now()}`;
 let pglite: PGlite;
@@ -52,6 +72,15 @@ const softDelete: Partial<BuildSchemaConfig> = {
     Articles: 'deletedAt',
     Flags: { column: 'isArchived', deletedValue: true, restoredValue: false },
     Docs: { column: 'isDeleted', deletedValue: true, restoredValue: false },
+    Kinds: { column: 'isRetired', deletedValue: true, restoredValue: false },
+  },
+};
+
+/** The same declaration, with the lookup table scoped to its own root fields. */
+const rootScoped: Partial<BuildSchemaConfig> = {
+  softDelete: {
+    ...(softDelete.softDelete as Record<string, any>),
+    Kinds: { column: 'isRetired', deletedValue: true, restoredValue: false, scope: 'root' },
   },
 };
 
@@ -80,6 +109,12 @@ beforeAll(async () => {
   await db.execute(
     sql`CREATE TABLE "docs" ("id" integer PRIMARY KEY NOT NULL, "title" text NOT NULL, "is_deleted" boolean DEFAULT false);`,
   );
+  await db.execute(
+    sql`CREATE TABLE "kinds" ("id" integer PRIMARY KEY NOT NULL, "label" text NOT NULL, "is_retired" boolean NOT NULL DEFAULT false);`,
+  );
+  await db.execute(
+    sql`CREATE TABLE "items" ("id" integer PRIMARY KEY NOT NULL, "name" text NOT NULL, "kind_id" integer NOT NULL, "alt_kind_id" integer);`,
+  );
 });
 
 afterAll(async () => {
@@ -93,6 +128,8 @@ beforeEach(async () => {
   await db.delete(Authors);
   await db.delete(Flags);
   await db.delete(Docs);
+  await db.delete(Items);
+  await db.delete(Kinds);
   await db.insert(Authors).values([
     { id: 1, name: 'Ada' },
     { id: 2, name: 'Grace' },
@@ -111,6 +148,15 @@ beforeEach(async () => {
     { id: 2, title: 'gone', isDeleted: true },
     // The un-backfilled row: the column was added after this one was written.
     { id: 3, title: 'never marked', isDeleted: null },
+  ]);
+  // Kind 2 is retired; item 2 is a live row that still points at it.
+  await db.insert(Kinds).values([
+    { id: 1, label: 'current', isRetired: false },
+    { id: 2, label: 'retired', isRetired: true },
+  ]);
+  await db.insert(Items).values([
+    { id: 1, name: 'one', kindId: 1, altKindId: 1 },
+    { id: 2, name: 'two', kindId: 2, altKindId: 2 },
   ]);
 });
 
@@ -340,6 +386,69 @@ describe.sequential('soft delete', () => {
     expect((only.data?.['articles'] as any[]).map((a) => a.id)).toEqual([3]);
   });
 
+  it('reads a marked row through a required to-one relation rather than losing the parent', async () => {
+    const gqlSchema = buildWith(softDelete);
+
+    // Item 2 is live and points at the retired kind. Hiding it there could only produce
+    // "Cannot return null for non-nullable field Items.kind" and take the whole item with it.
+    const res = await run(gqlSchema, `{ items { id kind { id label } } }`);
+    expect(res.errors).toBeUndefined();
+    const items = res.data?.['items'] as any[];
+    expect(items.find((i) => i.id === 2).kind).toEqual({ id: 2, label: 'retired' });
+
+    // The root fields still hide it — the exception is the relation, not the table.
+    const kinds = await run(gqlSchema, `{ kinds { id } }`);
+    expect((kinds.data?.['kinds'] as any[]).map((k) => k.id)).toEqual([1]);
+  });
+
+  it('applies the required-to-one exception on the batch-loader path too', async () => {
+    const gqlSchema = buildWith({ ...softDelete, eagerLoadRelations: false });
+    const res = await run(gqlSchema, `{ items { id kind { id } } }`);
+
+    expect(res.errors).toBeUndefined();
+    expect((res.data?.['items'] as any[]).find((i) => i.id === 2).kind).toEqual({ id: 2 });
+  });
+
+  it('still hides a marked row behind a nullable relation by default', async () => {
+    const gqlSchema = buildWith(softDelete);
+    const res = await run(gqlSchema, `{ items { id altKind { id } } }`);
+
+    expect(res.errors).toBeUndefined();
+    expect((res.data?.['items'] as any[]).find((i) => i.id === 2).altKind).toBeNull();
+
+    // And the argument still reaches it.
+    const included = await run(gqlSchema, `{ items { id altKind(deleted: INCLUDE) { id } } }`);
+    expect((included.data?.['items'] as any[]).find((i) => i.id === 2).altKind).toEqual({ id: 2 });
+  });
+
+  it("scope: 'root' leaves every relation field unscoped", async () => {
+    const gqlSchema = buildWith(rootScoped);
+
+    // Nullable to-one, to-many and the relation aggregate all read the retired row.
+    const res = await run(
+      gqlSchema,
+      `{ items { id altKind { id } } kinds(deleted: INCLUDE) { id items { id } itemsAggregate { count } } }`,
+    );
+    expect(res.errors).toBeUndefined();
+    expect((res.data?.['items'] as any[]).find((i) => i.id === 2).altKind).toEqual({ id: 2 });
+    const retired = (res.data?.['kinds'] as any[]).find((k) => k.id === 2);
+    expect(retired.items.map((i: any) => i.id)).toEqual([2]);
+    expect(retired.itemsAggregate.count).toBe(1);
+
+    // The root fields are scoped exactly as before.
+    const roots = await run(gqlSchema, `{ kinds { id } kindsAggregate { count } }`);
+    expect((roots.data?.['kinds'] as any[]).map((k) => k.id)).toEqual([1]);
+    expect((roots.data?.['kindsAggregate'] as any).count).toBe(1);
+  });
+
+  it("scope: 'root' keeps the argument on relation fields, so either default can be overridden", async () => {
+    const gqlSchema = buildWith({ ...rootScoped, eagerLoadRelations: false });
+    const res = await run(gqlSchema, `{ items { id altKind(deleted: EXCLUDE) { id } } }`);
+
+    expect(res.errors).toBeUndefined();
+    expect((res.data?.['items'] as any[]).find((i) => i.id === 2).altKind).toBeNull();
+  });
+
   it('leaves a table that declares nothing alone', async () => {
     const gqlSchema = buildWith(softDelete);
     const res = await run(gqlSchema, `mutation { deleteAuthors(where: { id: { eq: 2 } }) { id } }`);
@@ -399,6 +508,9 @@ describe.sequential('soft delete', () => {
     );
     expect(() => buildWith({ softDelete: { Flags: { column: 'label', deletedValue: 'gone' } } })).toThrow(
       /must say what restoring writes back/,
+    );
+    expect(() => buildWith({ softDelete: { Articles: { column: 'deletedAt', scope: 'relations' as any } } })).toThrow(
+      /scope must be 'root' or 'all'/,
     );
   });
 });
