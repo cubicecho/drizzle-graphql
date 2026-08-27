@@ -720,8 +720,14 @@ export type SchemaFeatures = {
    * Each relation field offers `create` and `connect`; the update input adds `disconnect`
    * and, for a to-many relation, `set` (replace the whole set). `disconnect` and `set` are
    * generated only when the foreign key is nullable — there is no way to detach a row whose
-   * key is NOT NULL — and many-to-many (`.through()`) relations are not written through at
-   * all. Nesting is one level deep: the row a nested `create` inserts takes columns only.
+   * key is NOT NULL. Nesting is one level deep: the row a nested `create` inserts takes
+   * columns only.
+   *
+   * A many-to-many (`.through()`) relation is written as junction rows: `connect` on the
+   * create input, and `connect` / `disconnect` / `set` on the update input, all
+   * unconditional, since unlinking deletes a junction row rather than nulling a column.
+   * It offers no `create` — inserting a row and linking it are two writes to two tables —
+   * and `set: []` clears the relation.
    *
    * The whole tree runs in one transaction (a savepoint when the request already carries
    * one), and a column a relation fills in (`authorId`, when `author: { create: … }` is

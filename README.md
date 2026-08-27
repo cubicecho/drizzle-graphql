@@ -1045,11 +1045,45 @@ mutation {
     `author: { create: … }` available, `authorId` is one of two ways to supply it
 -   Nesting is one level deep: the row a nested `create` inserts takes columns only, and the
     join column is left off, since the write it is part of sets it
--   Many-to-many (`.through()`) relations are not written through
+-   Many-to-many (`.through()`) relations are written through their junction table — see
+    below
 -   The whole tree runs in one transaction — a savepoint when the request already carries one
     — so a failure anywhere leaves nothing behind
 -   A `set` that carries only relation fields is a valid update: it changes what the row is
     attached to without rewriting the row
+
+### Many-to-many relations
+
+A relation declared with `.through()` is written by inserting and deleting rows of its
+junction table, so nothing about the two rows being linked changes:
+
+```graphql
+mutation {
+    updatePostsSingle(
+        where: { id: { eq: 1 } }
+        set: { tags: { set: [{ name: { inArray: ["news", "release"] } }] } }
+    ) {
+        id
+    }
+}
+```
+
+-   It offers `connect` on the create input, and `connect`, `disconnect` and `set` on the
+    update input. All three take the target's `Filters`, exactly as on a foreign-key relation
+-   `disconnect` and `set` are offered unconditionally here: unlinking deletes a junction row
+    rather than writing `NULL` into a column that might be `NOT NULL`
+-   `connect` links every row its filters match and leaves already-linked rows alone, so
+    re-connecting is a no-op rather than a unique-constraint error
+-   `disconnect` deletes only the links, never the rows they pointed at
+-   `set: []` unlinks everything and links nothing back, which is how a many-to-many relation
+    is cleared
+-   There is no `create`: inserting a row *and* linking it is a write to two tables, and the
+    link is what the relation field is for. Create the row with its own mutation, then
+    `connect` it
+-   A relation is left out when its junction carries a further `NOT NULL` column with no
+    default — a filter alone could not supply a value for it — and when it is declared as a
+    to-one, whose "exactly one" guarantee lives in the junction's constraints rather than in
+    the relation
 
 Dialect support: **PostgreSQL**, and **SQLite** on an asynchronous driver (libsql, D1). A
 nested write reads back the key of the row it just wrote, which MySQL has no `RETURNING` for,

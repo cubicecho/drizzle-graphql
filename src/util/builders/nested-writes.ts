@@ -10,7 +10,7 @@
 // foreign key and whether that column is nullable, so the schema never advertises
 // an operation whose every call would be a database error.
 // =============================================================================
-import { and, type Column, eq, getColumns, is, One, type Table } from 'drizzle-orm';
+import { and, Column, eq, getColumns, inArray, is, One, type Table } from 'drizzle-orm';
 import {
   GraphQLBoolean,
   GraphQLError,
@@ -64,6 +64,23 @@ export type NestedRelationPlan = {
   fkSide: 'child' | 'parent';
   /** Whether the foreign key is nullable, and so whether a row can be detached at all. */
   canDetach: boolean;
+  /** Set when the relation goes through a junction table, which is then what gets written. */
+  through?: NestedThroughPlan;
+};
+
+/**
+ * The junction table of a `.through()` relation, and the two of its columns this relation
+ * joins on. A many-to-many is attached and detached by inserting and deleting junction rows,
+ * so neither the parent row nor the target row is written at all.
+ */
+export type NestedThroughPlan = {
+  table: Table;
+  /** Property name of the junction column holding the parent's key. */
+  sourceColPropName: string;
+  /** Property name of the junction column holding the target's key. */
+  targetColPropName: string;
+  sourceCol: Column;
+  targetCol: Column;
 };
 
 /** Every writable relation of every table: table name → relation name → plan. */
@@ -79,14 +96,109 @@ export type NestedOps = Record<string, Record<string, any>>;
 const isOptionalOnInsert = (column: Column): boolean =>
   !column.notNull || !!column.hasDefault || !!(column as any).defaultFn;
 
+/** The property name a column is stored under on its table, matched by identity. */
+const propNameOf = (table: Table, column: Column | undefined): string | undefined => {
+  if (!column) {
+    return undefined;
+  }
+  for (const [propName, candidate] of Object.entries(getColumns(table))) {
+    if (candidate === column) {
+      return propName;
+    }
+  }
+  return undefined;
+};
+
+/**
+ * The junction column one entry of a relation's `through` config points at. Drizzle wraps it
+ * in a descriptor while the relation is being defined; the raw column is accepted too, so a
+ * change of shape there degrades to skipping the relation rather than mis-planning it.
+ */
+const throughColumn = (entry: any): Column | undefined =>
+  entry && is(entry, Column) ? (entry as Column) : (entry?._?.column as Column | undefined);
+
+/**
+ * A `.through()` relation's plan: the junction table plus the two columns it joins on.
+ *
+ * Nothing about the parent or the target row changes when a many-to-many link is made or
+ * broken — only junction rows are inserted and deleted — so `canDetach` is unconditional
+ * here, and there is no nullable-foreign-key question to ask.
+ *
+ * Left unplanned, and so absent from the inputs: a to-one `.through()`, whose "exactly one
+ * row" guarantee lives in the junction's constraints rather than in the relation; a relation
+ * joining on more than one column per side; and a junction carrying a further NOT NULL column
+ * with no default, which no `connect` operand could supply a value for.
+ */
+const buildThroughPlan = (
+  relationName: string,
+  relation: any,
+  table: Table,
+  targetTableName: string,
+  targetTable: Table,
+): NestedRelationPlan | undefined => {
+  if (is(relation, One)) {
+    return undefined;
+  }
+
+  const junction = relation.throughTable as Table | undefined;
+  const sourceEntries = relation.through?.source;
+  const targetEntries = relation.through?.target;
+  if (!junction || sourceEntries?.length !== 1 || targetEntries?.length !== 1) {
+    return undefined;
+  }
+  if (relation.sourceColumns?.length !== 1 || relation.targetColumns?.length !== 1) {
+    return undefined;
+  }
+
+  // Drizzle normalizes the two ends before it stores them, so `source` is the parent's side
+  // even on the relation declared from the other table. Each column is looked up on the table
+  // it is supposed to belong to, which is also the check that the normalization held.
+  const localCol = relation.sourceColumns[0] as Column;
+  const foreignCol = relation.targetColumns[0] as Column;
+  const localColPropName = propNameOf(table, localCol);
+  const foreignColPropName = propNameOf(targetTable, foreignCol);
+  const sourceColPropName = propNameOf(junction, throughColumn(sourceEntries[0]));
+  const targetColPropName = propNameOf(junction, throughColumn(targetEntries[0]));
+  if (!localColPropName || !foreignColPropName || !sourceColPropName || !targetColPropName) {
+    return undefined;
+  }
+
+  const junctionColumns = getColumns(junction);
+  const sourceCol = junctionColumns[sourceColPropName] as Column;
+  const targetCol = junctionColumns[targetColPropName] as Column;
+  const unsuppliable = Object.entries(junctionColumns).some(
+    ([propName, column]) =>
+      propName !== sourceColPropName && propName !== targetColPropName && !isOptionalOnInsert(column as Column),
+  );
+  if (unsuppliable) {
+    return undefined;
+  }
+
+  return {
+    relationName,
+    targetTableName,
+    targetTable,
+    localColPropName,
+    foreignColPropName,
+    foreignCol,
+    localCol,
+    isOne: false,
+    // The link is written after the parent row exists, exactly like a child-side foreign key.
+    fkSide: 'child',
+    canDetach: true,
+    through: { table: junction, sourceColPropName, targetColPropName, sourceCol, targetCol },
+  };
+};
+
 /**
  * Which relations of which tables can be written through.
  *
+ * A `.through()` (many-to-many) relation is planned too, but as a junction-table write
+ * rather than a foreign-key one — see {@link buildThroughPlan}.
+ *
  * Skipped, and so absent from the generated inputs rather than failing at runtime:
- * `.through()` (many-to-many) relations, whose write target is a junction table this pass
- * does not model; relations whose join columns cannot be read off the drizzle relation;
- * and relations where neither join column is unique, which leaves no way to tell which
- * side stores the key.
+ * relations whose join columns cannot be read off the drizzle relation; and relations where
+ * neither join column is unique, which leaves no way to tell which side stores the key.
  */
 export const buildNestedWritePlans = (
   tables: Record<string, Table>,
@@ -138,13 +250,17 @@ export const buildNestedWritePlans = (
 
     for (const [relationName, relEntry] of Object.entries(relations)) {
       const relation = (relEntry as any).relation;
-      if ((relation as any).through) {
-        continue;
-      }
-
       const targetTableName = relEntry.targetTableName;
       const targetTable = tables[targetTableName];
       if (!targetTable) {
+        continue;
+      }
+
+      if ((relation as any).through) {
+        const throughPlan = buildThroughPlan(relationName, relation, table, targetTableName, targetTable);
+        if (throughPlan) {
+          tablePlans[relationName] = throughPlan;
+        }
         continue;
       }
 
@@ -300,6 +416,11 @@ export const createNestedWriteTypes = (params: {
    * `<Type><Relation>NestedCreateInput` / `<Type><Relation>NestedUpdateInput` — the operations
    * offered on one relation. The create variant has no `disconnect` or `set`: a row that does
    * not exist yet has nothing attached to detach or replace.
+   *
+   * A many-to-many relation offers no `create`: inserting a row *and* linking it is two
+   * writes to two tables, and the link half is what the relation field is for. Its
+   * `disconnect` and `set` are offered unconditionally, since breaking a link deletes a
+   * junction row rather than nulling a column that might be NOT NULL.
    */
   const wrapperType = (
     tableName: string,
@@ -314,12 +435,34 @@ export const createNestedWriteTypes = (params: {
     }
 
     const filters = targetFilters(plan);
-    const payload = payloadType(tableName, typeName, plan);
     const targetTypeName = resolveTypeName(plan.targetTableName, typeNameMapper);
     const fields: Record<string, { type: GraphQLInputType; description: string }> = {};
 
-    if (plan.isOne) {
-      fields['create'] = { type: payload, description: `Insert a ${targetTypeName} row and attach it` };
+    if (plan.through) {
+      // Without a `Filters` input there is no way to name the rows to link, and `create` is
+      // not offered here, so the whole field would be empty — the relation is left out.
+      if (!filters) {
+        return undefined;
+      }
+      fields['connect'] = {
+        type: listOf(filters),
+        description: `Link every existing ${targetTypeName} row these match. Already-linked rows are left alone.`,
+      };
+      if (forUpdate) {
+        fields['disconnect'] = {
+          type: listOf(filters),
+          description: `Unlink every linked ${targetTypeName} row these match, leaving the rows in place`,
+        };
+        fields['set'] = {
+          type: listOf(filters),
+          description: `Replace the whole set: unlink everything linked, then link every ${targetTypeName} row these match. \`set: []\` clears the relation. Applied before \`disconnect\` and \`connect\`.`,
+        };
+      }
+    } else if (plan.isOne) {
+      fields['create'] = {
+        type: payloadType(tableName, typeName, plan),
+        description: `Insert a ${targetTypeName} row and attach it`,
+      };
       if (filters) {
         fields['connect'] = {
           type: filters,
@@ -333,7 +476,10 @@ export const createNestedWriteTypes = (params: {
         };
       }
     } else {
-      fields['create'] = { type: listOf(payload), description: `Insert these ${targetTypeName} rows and attach them` };
+      fields['create'] = {
+        type: listOf(payloadType(tableName, typeName, plan)),
+        description: `Insert these ${targetTypeName} rows and attach them`,
+      };
       if (filters) {
         fields['connect'] = {
           type: listOf(filters),
@@ -352,8 +498,8 @@ export const createNestedWriteTypes = (params: {
       }
     }
 
-    // `create` alone is still a usable relation field, but a relation with nothing on it at
-    // all cannot happen: `create` is unconditional.
+    // `create` alone is still a usable relation field, and outside a many-to-many a relation
+    // with nothing on it at all cannot happen: `create` is unconditional there.
     const type = new GraphQLInputObjectType({
       name: `${typeName}${capitalize(plan.relationName)}Nested${forUpdate ? 'Update' : 'Create'}Input`,
       description: `Writes through ${typeName}.${plan.relationName}`,
@@ -482,6 +628,86 @@ export const createNestedWriteRuntime = (params: {
     }
   };
 
+  /** The values the junction stores for the target rows one operand selects. */
+  const selectedTargetKeys = async (
+    executor: any,
+    plan: NestedRelationPlan,
+    filter: Record<string, any>,
+    operation: string,
+    scope: ScopeResolver | undefined,
+  ): Promise<any[]> => {
+    const rows = await executor
+      .select()
+      .from(plan.targetTable)
+      .where(conditionOf(plan, filter, operation, scope));
+    return rows
+      .map((row: any) => row[plan.foreignColPropName])
+      .filter((value: any) => value !== undefined && value !== null);
+  };
+
+  /**
+   * The link half of a many-to-many write: junction rows are inserted and deleted, and both
+   * the parent row and the target rows are left exactly as they are.
+   *
+   * `connect` reads the parent's existing links first and inserts only the missing ones, so
+   * re-connecting a linked row is a no-op on every dialect rather than a unique-constraint
+   * error on some of them — the read and the write share the surrounding transaction, so no
+   * other writer can slip a duplicate in between them.
+   */
+  const applyThroughOps = async (
+    executor: any,
+    plan: NestedRelationPlan,
+    key: any,
+    op: Record<string, any>,
+    scope: ScopeResolver | undefined,
+  ) => {
+    const through = plan.through!;
+    const unlinkAll = () => executor.delete(through.table).where(eq(through.sourceCol, key));
+
+    const link = async (operands: any[], operation: string) => {
+      const existing = new Set(
+        (await executor.select().from(through.table).where(eq(through.sourceCol, key))).map(
+          (row: any) => row[through.targetColPropName],
+        ),
+      );
+      const rows: Record<string, any>[] = [];
+      for (const filter of operands) {
+        for (const targetKey of await selectedTargetKeys(executor, plan, filter, operation, scope)) {
+          if (!existing.has(targetKey)) {
+            existing.add(targetKey);
+            rows.push({ [through.sourceColPropName]: key, [through.targetColPropName]: targetKey });
+          }
+        }
+      }
+      if (rows.length) {
+        await executor.insert(through.table).values(rows);
+      }
+    };
+
+    // Replace-the-set first, so a `set` alongside a `connect` reads as "these rows, plus that
+    // one". `set: []` unlinks everything and links nothing back, which is how the relation is
+    // cleared.
+    if (op['set'] !== undefined && op['set'] !== null) {
+      await unlinkAll();
+      await link(asArray(op['set']), 'set');
+    }
+
+    if (op['disconnect'] !== undefined && op['disconnect'] !== null) {
+      for (const filter of asArray(op['disconnect'])) {
+        const targetKeys = await selectedTargetKeys(executor, plan, filter, 'disconnect', scope);
+        if (targetKeys.length) {
+          await executor
+            .delete(through.table)
+            .where(and(eq(through.sourceCol, key), inArray(through.targetCol, targetKeys)));
+        }
+      }
+    }
+
+    if (op['connect'] !== undefined && op['connect'] !== null) {
+      await link(asArray(op['connect']), 'connect');
+    }
+  };
+
   const detachAll = async (executor: any, plan: NestedRelationPlan, key: any, scope: ScopeResolver | undefined) =>
     executor
       .update(plan.targetTable)
@@ -595,6 +821,11 @@ export const createNestedWriteRuntime = (params: {
             throw new GraphQLError(
               `Drizzle-GraphQL Error: cannot write through '${relationName}': the ${tableName} row has no '${plan.localColPropName}' value to attach to.`,
             );
+          }
+
+          if (plan.through) {
+            await applyThroughOps(executor, plan, key, op, scope);
+            continue;
           }
 
           // Replace-the-set first, so a `set` alongside a `create` reads as "these rows, plus
