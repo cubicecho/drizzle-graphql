@@ -1,3 +1,10 @@
+## [7.9.1](https://github.com/cubicecho/drizzle-graphql/compare/v7.9.0...v7.9.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* **types:** remove [@ts-nocheck](https://github.com/ts-nocheck) from src and repair the drizzle 1.0 type drift ([be7d678](https://github.com/cubicecho/drizzle-graphql/commit/be7d678e4efed3c90103e41c09607ec72cee5151))
+
 # [7.9.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.8.0...v7.9.0) (2026-08-27)
 
 
