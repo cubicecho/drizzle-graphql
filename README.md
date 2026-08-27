@@ -1232,6 +1232,30 @@ mutation {
 -   `values` is the same `Create<Type>Input` the insert mutations take, so turning `insert`
     off does not remove it
 
+### A null key is an absent key
+
+Which half of an upsert runs is decided by the key the request supplies, but a GraphQL client
+cannot leave an input field out based on a variable's value. So one document carries both
+halves with one nullable variable:
+
+```graphql
+mutation Save($id: Int, $name: String!) {
+    upsertUsersSingle(values: { id: $id, name: $name }) {
+        id
+    }
+}
+```
+
+`$id: null` inserts a new row; `$id: 1` overwrites row 1. An explicit `null` for a NOT NULL
+column is treated as if the field had been left out, so the column's default fills it in —
+the column cannot store null, so null cannot have been meant as the value to write. It works
+the same for a database default (`serial`, `defaultRandom()`), a drizzle-side one
+(`$defaultFn`), the plain `create*` mutations, and a batch where only some rows carry a key.
+
+The key has to have *something* to fill it in: a primary key declared with no default at all
+stays non-null on the create input, so a nullable variable in that position is a validation
+error at query time rather than a NOT NULL violation from the database.
+
 Dialect differences:
 
 -   **PostgreSQL** and **SQLite** — the full surface above. A table with no primary key and no
