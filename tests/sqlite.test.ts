@@ -4983,6 +4983,59 @@ describe.sequential('limit policy', () => {
   }
 });
 
+describe.sequential('default orderBy', () => {
+  const buildDefaulted = (eagerLoadRelations: boolean) =>
+    buildSchema(ctx.db, {
+      defaults: { Posts: { orderBy: { id: 'desc' } } },
+      eagerLoadRelations,
+    }).schema;
+
+  it('orders a list and a single query that asked for no ordering', async () => {
+    const res = await graphql({
+      schema: buildDefaulted(true),
+      source: `{ posts { id } postsSingle { id } }`,
+      contextValue: {},
+    });
+
+    expect(res.errors).toBeUndefined();
+    expect((res.data as any).posts.map((row: any) => row.id)).toEqual([6, 5, 4, 3, 2, 1]);
+    expect((res.data as any).postsSingle.id).toBe(6);
+  });
+
+  it("is replaced by the request's own orderBy", async () => {
+    const res = await graphql({
+      schema: buildDefaulted(true),
+      source: `{ posts(orderBy: { id: { direction: asc, priority: 1 } }) { id } }`,
+      contextValue: {},
+    });
+
+    expect(res.errors).toBeUndefined();
+    expect((res.data as any).posts.map((row: any) => row.id)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  for (const [label, eager] of [
+    ['eagerly loaded', true],
+    ['lazily resolved', false],
+  ] as const) {
+    it(`orders a to-many relation when ${label}`, async () => {
+      const res = await graphql({
+        schema: buildDefaulted(eager),
+        source: `{ users(orderBy: { id: { direction: asc, priority: 1 } }) { id posts { id } } }`,
+        contextValue: {},
+      });
+
+      expect(res.errors).toBeUndefined();
+      expect((res.data as any).users[0].posts.map((row: any) => row.id)).toEqual([6, 3, 2, 1]);
+    });
+  }
+
+  it('rejects a column that is not on the table', () => {
+    expect(() => buildSchema(ctx.db, { defaults: { Posts: { orderBy: { nope: 'asc' } } } as any })).toThrow(
+      /config\.defaults\.Posts\.orderBy names 'nope'/,
+    );
+  });
+});
+
 describe.sequential('schema exclusions', () => {
   it('drops an excluded table along with the relation fields pointing at it', async () => {
     const { schema: gqlSchema } = buildSchema(ctx.db, { exclude: { tables: ['Customers'] } });

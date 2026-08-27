@@ -886,6 +886,56 @@ supplies no `orderBy`:
 An explicit `orderBy` always takes precedence, composite primary keys are ordered by every
 key column, and an unpaginated list query is left unordered so no sort is paid for.
 
+## Default ordering
+
+A table usually has one ordering that is right nearly every time it is read — newest first,
+priority first, name alphabetical. `defaults` names that ordering once, and every query that
+does not ask for its own gets it:
+
+```ts
+buildSchema(db, {
+  defaults: {
+    Todos: { orderBy: { priority: 'desc', createdAt: 'desc' } },
+    Users: { orderBy: { name: 'asc' } },
+  },
+});
+```
+
+```graphql
+# ordered by priority desc, then createdAt desc — nothing in the query says so
+{ todos { id title } }
+```
+
+Keys are the table's key in your Drizzle schema and the column's property name, so a typo in
+either fails at `buildSchema` time rather than silently doing nothing. Each column takes
+`'asc'`, `'desc'`, or a `{ direction, priority? }` object mirroring the `orderBy` argument.
+Columns sort highest `priority` first, and the shorthand leaves it unset, so the shorthand
+falls back to the order the keys are written in — the object form is there for when you would
+rather state the precedence than depend on that:
+
+```ts
+defaults: {
+  Todos: { orderBy: { createdAt: { direction: 'desc', priority: 1 }, priority: { direction: 'desc', priority: 2 } } },
+}
+```
+
+It applies to list queries, `<tableName>Single` queries, and to-many relation fields on both
+the eager and the lazy relation paths — a relation takes the default of the table it *reads*,
+not its parent's. To-one relation fields are a single row and take no ordering.
+
+Two details worth stating plainly:
+
+-   **Any `orderBy` in the request wins outright.** The default is a fallback for a missing
+    argument, not a base that client ordering is appended to. To ask for *no* ordering, pass
+    `orderBy: {}` — an empty object is still an argument, so it suppresses the default.
+-   **A default ordering makes an unpaginated list query pay for a sort.** That is the point,
+    but it is a cost a table with no `defaults` entry does not pay; a build with no `defaults`
+    behaves exactly as before.
+
+Cursor pagination composes with it: a default-ordered page is ordered by those columns plus
+the primary key tiebreak, and its `cursor` values encode that same total order, so paging works
+without the client restating the ordering.
+
 ## Cursor pagination
 
 `OFFSET` pagination degrades linearly and shifts under concurrent writes. List queries also

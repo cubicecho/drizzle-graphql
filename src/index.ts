@@ -12,6 +12,7 @@ import {
 import type { AnyDrizzleDB, BuildSchemaConfig, GeneratedData, TableLimitPolicy } from './types.ts';
 import {
   applyErrorMapper,
+  type DefaultOrderByFor,
   defaultErrorMapper,
   type LimitPolicyFor,
   normalizeWriteHooks,
@@ -36,6 +37,8 @@ export type {
   BuildSchemaConfig,
   ComplexityConfig,
   ContextValuesConfig,
+  DefaultOrderByEntry,
+  DefaultsConfig,
   DeleteResolver,
   DeleteSingleResolver,
   ExtractRelations,
@@ -63,6 +66,7 @@ export type {
   SelectSingleResolver,
   SoftDeleteColumn,
   SoftDeleteConfig,
+  TableDefaults,
   TableLimitPolicy,
   UpdateManyArgs,
   UpdateManyEntry,
@@ -231,6 +235,53 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
       }
     : undefined;
 
+  // Per-table defaults are resolved against the real schema at build time, so a renamed table
+  // or column fails the build rather than silently ordering by nothing. The normalized form is
+  // the same shape the generated `orderBy` argument has, so every read path can substitute it
+  // without knowing where it came from.
+  const defaultsConfig = config?.defaults;
+  const defaultOrderByByTable = new Map<string, Record<string, any>>();
+  if (defaultsConfig) {
+    const defaultsTableNames = new Set(tableKeys);
+    for (const [tableName, tableDefaults] of Object.entries(defaultsConfig)) {
+      if (!defaultsTableNames.has(tableName)) {
+        throw new Error(
+          `Drizzle-GraphQL Error: config.defaults names '${tableName}', which is not a table in the Drizzle schema.`,
+        );
+      }
+      const orderBy = tableDefaults?.orderBy;
+      if (!orderBy || !Object.keys(orderBy).length) {
+        continue;
+      }
+      const columns = getColumns(schema[tableName] as Table);
+      const normalized: Record<string, any> = {};
+      for (const [columnName, entry] of Object.entries(orderBy)) {
+        if (!columns[columnName]) {
+          throw new Error(
+            `Drizzle-GraphQL Error: config.defaults.${tableName}.orderBy names '${columnName}', which is not a column of '${tableName}'.`,
+          );
+        }
+        const direction = typeof entry === 'string' ? entry : entry?.direction;
+        if (direction !== 'asc' && direction !== 'desc') {
+          throw new Error(
+            `Drizzle-GraphQL Error: config.defaults.${tableName}.orderBy.${columnName} must be 'asc', 'desc', or { direction, priority? }.`,
+          );
+        }
+        const priority = typeof entry === 'string' ? undefined : entry?.priority;
+        if (priority !== undefined && !Number.isInteger(priority)) {
+          throw new Error(
+            `Drizzle-GraphQL Error: config.defaults.${tableName}.orderBy.${columnName}.priority must be an integer.`,
+          );
+        }
+        normalized[columnName] = priority === undefined ? { direction } : { direction, priority };
+      }
+      defaultOrderByByTable.set(tableName, normalized);
+    }
+  }
+  const defaultOrderBy: DefaultOrderByFor | undefined = defaultOrderByByTable.size
+    ? (tableName: string) => defaultOrderByByTable.get(tableName)
+    : undefined;
+
   // A row scope and the context-derived columns are resolved against the real schema for the
   // same reason exclusions are: a renamed table or column must fail the build, not silently
   // stop scoping. Both stay undefined unless configured, so an unconfigured build emits the
@@ -332,12 +383,13 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
       : undefined;
 
   const policies: TablePolicies | undefined =
-    scopeConfig || contextValuesConfig || softDeleteInfos.size || onWrite
+    scopeConfig || contextValuesConfig || softDeleteInfos.size || onWrite || defaultOrderBy
       ? {
           scope: scopeConfig ? (tableName: string) => scopeConfig[tableName] : undefined,
           contextValues: contextValuesConfig ? (tableName: string) => contextValuesConfig[tableName] : undefined,
           softDelete: softDeleteInfos.size ? (tableName: string) => softDeleteInfos.get(tableName) : undefined,
           onWrite,
+          defaultOrderBy,
         }
       : undefined;
 

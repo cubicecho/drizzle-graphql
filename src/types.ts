@@ -795,6 +795,25 @@ export type TableLimitPolicy = {
   clampToMax?: boolean;
 };
 
+/**
+ * One entry of a {@link TableDefaults} ordering: a direction, or a direction with the
+ * priority that decides where it sits among the other entries (higher first, as in the
+ * generated `orderBy` argument).
+ */
+export type DefaultOrderByEntry = 'asc' | 'desc' | { direction: 'asc' | 'desc'; priority?: number };
+
+/** {@link DefaultsConfig} — what one table falls back to when the request does not say. */
+export type TableDefaults = {
+  /**
+   * The ordering a read of this table runs with when the request passes no `orderBy`, keyed
+   * by column property name.
+   */
+  orderBy?: Record<string, DefaultOrderByEntry>;
+};
+
+/** {@link BuildSchemaConfig.defaults} — per-table defaults, keyed by the Drizzle schema key. */
+export type DefaultsConfig = Record<string, TableDefaults>;
+
 /** {@link BuildSchemaConfig.limits} — a global policy plus per-table overrides. */
 export type LimitsConfig = TableLimitPolicy & {
   /** Per-table overrides, keyed by the table's key in the Drizzle schema. */
@@ -1115,6 +1134,38 @@ export type BuildSchemaConfig = {
    *   agree.
    */
   limits?: LimitsConfig;
+  /**
+   * Per-table defaults for arguments the request leaves out. Today that is `orderBy`: the
+   * presentation order a table has, declared once on the server instead of repeated by every
+   * client.
+   *
+   * ```ts
+   * buildSchema(db, {
+   *   defaults: {
+   *     Todos: { orderBy: { priority: 'desc', createdAt: 'desc' } },
+   *     AuditLog: { orderBy: { createdAt: { direction: 'desc', priority: 10 } } },
+   *   },
+   * });
+   * ```
+   *
+   * - Applies to the table's list and single queries, and to every to-many relation field
+   *   that *targets* it — a relation is ordered by the default of the table it reads, so a
+   *   table presents the same way wherever it is reached from. Eagerly and lazily loaded
+   *   relations agree.
+   * - Only a missing `orderBy` is replaced. `orderBy: {}` is a request for no ordering and
+   *   stays one, and any `orderBy` the client sends replaces the default outright rather than
+   *   merging with it.
+   * - Cursor pagination is defined over the effective ordering, so a default `orderBy` is
+   *   what an `after`-only page is ordered by. Changing a table's default changes what its
+   *   existing cursors mean.
+   * - Entries name column property names of that table; a direction alone is shorthand for
+   *   `{ direction }`. Unknown table or column names throw at build time.
+   * - Aggregates and `groupBy` take their own ordering and are unaffected.
+   *
+   * Off by default: a table with no entry keeps returning rows in whatever order the database
+   * gives them, tiebroken by primary key where an operation needs a total order.
+   */
+  defaults?: DefaultsConfig;
   /**
    * Row-level scoping: a predicate, derived from the GraphQL context, that every read and
    * write of a table is confined to. This is the multi-tenancy / ownership knob — the one
