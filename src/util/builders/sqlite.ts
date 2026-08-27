@@ -1,48 +1,23 @@
-import { is, One, type Table } from 'drizzle-orm';
+import type { Table } from 'drizzle-orm';
 import type { RelationalQueryBuilder } from 'drizzle-orm/mysql-core/query-builders/query';
 import { type BaseSQLiteDatabase, getTableConfig, SQLiteTable } from 'drizzle-orm/sqlite-core';
-import type { GraphQLFieldConfig, GraphQLFieldConfigArgumentMap, GraphQLResolveInfo, ThunkObjMap } from 'graphql';
-import {
-  GraphQLError,
-  type GraphQLInputObjectType,
-  GraphQLInt,
-  GraphQLList,
-  GraphQLNonNull,
-  type GraphQLObjectType,
-} from 'graphql';
+import type { GraphQLFieldConfigArgumentMap, GraphQLResolveInfo } from 'graphql';
+import { GraphQLError, type GraphQLInputObjectType, GraphQLList, GraphQLNonNull } from 'graphql';
 import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { parseResolveInfo } from 'graphql-parse-resolve-info';
 
 import type { GeneratedEntities } from '../../types.ts';
 import {
-  aggregateFieldComplexity,
   applyLimitPolicy,
-  attachTargetPrimaryKeys,
-  bindPolicies,
-  buildNamedRelations,
-  computeResolverFieldNames,
-  createMutationTxCtx,
-  createRelationResolverFactory,
   eagerLoadMutationRelations,
   extractFilters,
-  extractRelationJoinColumns,
   generateDistinctEnum,
-  generateOnConflictInput,
-  generateTableTypes,
-  generateUpdateManyInput,
-  generateWriteCount,
   getPrimaryKeyPropNamesFromConfig,
-  getUniqueColumnSets,
   type LimitPolicyFor,
-  listFieldComplexity,
   type MutationTxCtx,
   prepareMutationRelationColumns,
-  pruneNonEagerRelations,
-  type RelationAggregateFactory,
   type RelationFilterBase,
-  type RelationResolverFactory,
   type ResolverPolicies,
-  registerColumnExclusions,
   relationFilterCtx,
   resolveQueryExecutor,
   runMutation,
@@ -52,42 +27,22 @@ import {
   selectSingleArgs,
   stripContextValues,
   type TablesRelationalConfig,
-  type TypeCacheCtx,
   type TypeNameMapper,
   toGraphQLError,
   withDefaultOrderBy,
   withScope,
 } from '../builders/common.ts';
 import { remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
-import { tableFieldExtensions } from '../extensions.ts';
-import { resolveTableFeatures } from '../features.ts';
-import { registerEnumConfig, registerScalarOverrides } from '../type-converter/index.ts';
-import {
-  createRelationAggregateFactory,
-  generateAggregate,
-  generateAggregateTypes,
-  generateGroupBy,
-  generateGroupByEnum,
-  generateGroupByType,
-  generateHavingInput,
-} from './aggregates.ts';
 import { remapUpdateInput } from './field-updates.ts';
-import {
-  buildNestedWritePlans,
-  createNestedWriteRuntime,
-  createNestedWriteTypes,
-  mergedOps,
-  type NestedWriteRuntime,
-} from './nested-writes.ts';
+import { mergedOps, type NestedWriteRuntime } from './nested-writes.ts';
+import { createSchemaDataGenerator } from './schema-data.ts';
 import type {
   CreatedResolver,
   Filters,
   SchemaGeneratorOptions,
-  TableFeatures,
   TableNamedRelations,
   TableSelectArgs,
 } from './types.ts';
-import { buildWriteResolvers } from './write-resolvers.ts';
 
 const generateSelectArray = (
   db: BaseSQLiteDatabase<any, any, any, any>,
@@ -230,9 +185,6 @@ const generateSelectSingle = (
 /** Primary-key property names for a SQLite table, including table-level composite keys. */
 const sqlitePrimaryKeyPropNames = (table: SQLiteTable): string[] =>
   getPrimaryKeyPropNamesFromConfig(table, getTableConfig);
-
-const { generateInsertArray, generateInsertSingle, generateUpsert, generateUpdate, generateDelete } =
-  buildWriteResolvers(sqlitePrimaryKeyPropNames);
 
 /**
  * `update<Table>Many` — batch update with a per-entry `set` and `where`.
@@ -465,6 +417,32 @@ const generateUpdateMany = (
   };
 };
 
+const sqliteSchemaData = createSchemaDataGenerator({
+  tableClass: SQLiteTable,
+  getTableConfig,
+  primaryKeyPropNames: sqlitePrimaryKeyPropNames,
+  // SQLite sorts NULLs as the smallest values (first in ASC).
+  nullOrdering: 'nulls-smallest',
+  // A synchronous driver (e.g. better-sqlite3) commits the moment its transaction callback
+  // returns, so it can neither interleave awaited statements inside one transaction nor hold
+  // one open across resolver calls — which is what both of these features require.
+  preflight: (db, options) => {
+    if (options.features.nestedWrites && (db as any).resultKind === 'sync') {
+      throw new Error(
+        'Drizzle-GraphQL Error: features.nestedWrites requires an asynchronous SQLite driver (e.g. libsql). Synchronous drivers cannot run the multi-statement transaction a nested write needs.',
+      );
+    }
+    if (options.transactions && (db as any).resultKind === 'sync') {
+      throw new Error(
+        "Drizzle-GraphQL Error: transactions: 'auto' requires an asynchronous SQLite driver (e.g. libsql). Synchronous drivers cannot hold a transaction open across resolvers.",
+      );
+    }
+  },
+  generateSelectArray,
+  generateSelectSingle,
+  generateUpdateMany,
+});
+
 export const generateSchemaData = <
   TDrizzleInstance extends BaseSQLiteDatabase<any, any, any, any>,
   TSchema extends Record<string, Table | unknown>,
@@ -473,767 +451,4 @@ export const generateSchemaData = <
   schema: TSchema,
   relations: TablesRelationalConfig,
   options: SchemaGeneratorOptions,
-): GeneratedEntities<TDrizzleInstance, TSchema> => {
-  const {
-    relationsDepthLimit,
-    prefixes,
-    suffixes,
-    conflictDoNothing,
-    typeNameMapper,
-    shouldEagerLoad,
-    features,
-    complexity,
-    limits,
-  } = options;
-  const rawSchema = schema;
-  const schemaEntries = Object.entries(rawSchema);
-
-  // Excluded tables are dropped here, before anything reads `tableEntries` — which also makes
-  // `buildNamedRelations` skip every relation pointing at one, since it resolves targets
-  // through this list.
-  const excludedTables = new Set(options.exclude?.tables ?? []);
-  const tableEntries = schemaEntries.filter(([key, value]) => is(value, SQLiteTable) && !excludedTables.has(key)) as [
-    string,
-    SQLiteTable,
-  ][];
-  const tables = Object.fromEntries(tableEntries) as Record<string, SQLiteTable>;
-
-  // A feature flag may be a per-table predicate, so every flag is resolved against the table
-  // it applies to. `anyTable` answers the build-wide question — whether machinery shared
-  // across tables is worth constructing at all.
-  const featureOf = resolveTableFeatures(features);
-  const anyTable = (feature: keyof TableFeatures) => tableEntries.some(([name]) => featureOf(name)[feature]);
-
-  if (!tableEntries.length) {
-    throw new Error(
-      "Drizzle-GraphQL Error: No tables detected in Drizzle-ORM's database instance. Did you forget to pass schema to drizzle constructor?",
-    );
-  }
-
-  // Resolve scalar overrides into the type-converter's registry before any type generation —
-  // every subsequent column→GraphQL type decision and runtime value remap consults it.
-  registerScalarOverrides(tables, options);
-  // Same lifecycle: the enum registry is per-build, so a second build never reuses the first
-  // build's enum types (and with them its naming decisions).
-  registerEnumConfig(options);
-  // And the same for column exclusions: a per-build registry read by every site that decides
-  // what the schema contains, reset here so a rebuild never inherits the previous build's.
-  registerColumnExclusions(tables, options.exclude);
-
-  // Build namedRelations from the drizzle-orm v1 relations config.
-  const namedRelations = buildNamedRelations(relations ?? {}, tableEntries);
-  // Relations *into* an excluded table are already gone (their target no longer resolves);
-  // relations *out of* one have no type left to hang a field on.
-  for (const excluded of excludedTables) {
-    delete namedRelations[excluded];
-  }
-  // Record each relation target's (composite-aware) primary key for deterministic
-  // paginated ordering. Must run before pruning / type generation (shared entry objects).
-  attachTargetPrimaryKeys(namedRelations, tables, sqlitePrimaryKeyPropNames);
-  // Pruned map for query/mutation resolvers' `with:`; type generation keeps the full map.
-  const eagerRelations = pruneNonEagerRelations(namedRelations, shouldEagerLoad);
-
-  const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations };
-
-  // The row scope compiled against this build's relation graph, plus the columns whose value
-  // the server supplies. Both stay undefined unless configured.
-  const tablePolicies = options.policies;
-  const contextValuesOf = tablePolicies?.contextValues;
-  const softDeleteOf = tablePolicies?.softDelete;
-  const policies = bindPolicies(tablePolicies, filterCtx);
-
-  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(
-    db,
-    tables,
-    'nulls-smallest',
-    filterCtx,
-    limits,
-    tablePolicies,
-  );
-
-  // Fresh cache per generateSchemaData call — prevents type name collisions
-  // when buildSchema() is called multiple times.
-  const cacheCtx: TypeCacheCtx = {
-    genericFilterCache: new Map(),
-    objectTypeCache: new Map(),
-    relationFieldContainers: new Map(),
-    fullyBuiltTables: new Set(),
-    relationTypeCache: new Map(),
-    selectFieldCache: new WeakMap(),
-    filterFieldCache: new WeakMap(),
-    orderTypeCache: new WeakMap(),
-    filterTypeCache: new WeakMap(),
-    listRelationFilterCache: new Map(),
-    aggregateTypeCache: new Map(),
-    complexity,
-    limits,
-    docs: options.docs ?? {},
-    primaryKeyOf: (name) => (tables[name] ? sqlitePrimaryKeyPropNames(tables[name] as SQLiteTable) : []),
-    contextValuesOf,
-    softDeleteOf,
-    featureOf,
-  };
-
-  // A nested write interleaves reads and writes inside one transaction, which a synchronous
-  // driver cannot do — its transaction callback commits before an awaited statement runs.
-  if (features.nestedWrites && (db as any).resultKind === 'sync') {
-    throw new Error(
-      'Drizzle-GraphQL Error: features.nestedWrites requires an asynchronous SQLite driver (e.g. libsql). Synchronous drivers cannot run the multi-statement transaction a nested write needs.',
-    );
-  }
-
-  // Nested writes: the plans decide which relations are writable at all, the types add their
-  // fields to the create/update inputs, and the runtime executes them. All three are left
-  // undefined when the feature is off, so the inputs and the resolvers stay as they were.
-  const nestedPlans = features.nestedWrites
-    ? buildNestedWritePlans(
-        tables,
-        namedRelations,
-        (target) => getUniqueColumnSets(target as SQLiteTable, getTableConfig),
-        (target) => sqlitePrimaryKeyPropNames(target as SQLiteTable),
-        extractRelationJoinColumns,
-      )
-    : undefined;
-  const nestedTypes = nestedPlans
-    ? createNestedWriteTypes({ plans: nestedPlans, cacheCtx, typeNameMapper, insertPrefix: prefixes.insert })
-    : undefined;
-  const nestedRuntime = nestedPlans
-    ? createNestedWriteRuntime({
-        plans: nestedPlans,
-        filterCtx,
-        policies: tablePolicies,
-        contextValues: contextValuesOf,
-      })
-    : undefined;
-
-  // Built when at least one table wants relation aggregates; a table that has them off is
-  // handed `undefined` below, so `generateTableTypes` emits no `${relation}Aggregate` fields
-  // on its object type.
-  const relationAggregateFactory: RelationAggregateFactory | undefined = anyTable('relationAggregates')
-    ? createRelationAggregateFactory(db, tables, cacheCtx, typeNameMapper, filterCtx, tablePolicies)
-    : undefined;
-
-  const queries: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
-  const mutations: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
-
-  // A synchronous driver (e.g. better-sqlite3) commits the moment its transaction callback
-  // returns, so a transaction cannot be held open across resolver calls.
-  if (options.transactions && (db as any).resultKind === 'sync') {
-    throw new Error(
-      "Drizzle-GraphQL Error: transactions: 'auto' requires an asynchronous SQLite driver (e.g. libsql). Synchronous drivers cannot hold a transaction open across resolvers.",
-    );
-  }
-  // Shared per-request transaction machinery for multi-mutation documents; undefined
-  // unless `transactions: 'auto'`. Its field-name set is filled once all mutations exist.
-  const mutationTxCtx = createMutationTxCtx(options.transactions);
-
-  const gqlSchemaTypes = Object.fromEntries(
-    Object.entries(tables).map(([tableName, _table]) => [
-      tableName,
-      generateTableTypes(
-        tableName,
-        tables,
-        namedRelations,
-        true,
-        relationsDepthLimit,
-        cacheCtx,
-        typeNameMapper,
-        prefixes.insert,
-        prefixes.update,
-        resolverFactory,
-        featureOf(tableName).relationAggregates ? relationAggregateFactory : undefined,
-        nestedTypes,
-      ),
-    ]),
-  );
-
-  const inputs: Record<string, GraphQLInputObjectType> = {};
-  const outputs: Record<string, GraphQLObjectType> = {};
-
-  for (const [tableName, tableTypes] of Object.entries(gqlSchemaTypes)) {
-    // Everything this table generates, with any per-table predicate already run.
-    const tableFeatures = featureOf(tableName);
-    // What every field this table generates publishes about itself under `extensions.drizzle`,
-    // so a wrapper can read a field's identity instead of parsing its configurable name.
-    const drizzleMeta = tableFieldExtensions(tableName, sqlitePrimaryKeyPropNames(schema[tableName] as SQLiteTable));
-    const { insertInput, updateInput, tableFilters, tableOrder } = tableTypes.inputs;
-    const { selectSingleOutput, selectArrOutput, singleTableItemOutput, arrTableItemOutput } = tableTypes.outputs;
-
-    // Compute field names using the mapper logic
-    const {
-      typeName,
-      listFieldName,
-      singleFieldName,
-      aggregateFieldName,
-      groupByFieldName,
-      createArrayFieldName,
-      createSingleFieldName,
-      upsertArrayFieldName,
-      upsertSingleFieldName,
-      updateFieldName,
-      updateManyFieldName,
-      updateSingleFieldName,
-      updateCountFieldName,
-      deleteFieldName,
-      deleteSingleFieldName,
-      restoreFieldName,
-      restoreSingleFieldName,
-      deleteCountFieldName,
-    } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
-    // A table that marks rows deleted instead of removing them also gets the mutation that
-    // reverses it — clearing the column through an ordinary update is not possible, since the
-    // column is not in the update input and a marked row is invisible to a `where` anyway.
-    const softDeleteInfo = softDeleteOf?.(tableName);
-
-    const selectArrGenerated = generateSelectArray(
-      db,
-      tableName,
-      tables,
-      eagerRelations,
-      tableOrder,
-      tableFilters,
-      listFieldName,
-      typeName,
-      typeNameMapper,
-      filterCtx,
-      tableFeatures.distinct,
-      limits,
-      policies,
-    );
-    const selectSingleGenerated = generateSelectSingle(
-      db,
-      tableName,
-      tables,
-      eagerRelations,
-      tableOrder,
-      tableFilters,
-      singleFieldName,
-      typeName,
-      typeNameMapper,
-      filterCtx,
-      limits,
-      policies,
-    );
-    const insertArrGenerated = tableFeatures.insert
-      ? generateInsertArray(
-          db,
-          tableName,
-          schema[tableName] as SQLiteTable,
-          tables,
-          eagerRelations,
-          insertInput,
-          createArrayFieldName,
-          typeName,
-          typeNameMapper,
-          conflictDoNothing,
-          mutationTxCtx,
-          nestedRuntime,
-          limits,
-          policies,
-        )
-      : undefined;
-    const insertSingleGenerated = tableFeatures.insert
-      ? generateInsertSingle(
-          db,
-          tableName,
-          schema[tableName] as SQLiteTable,
-          tables,
-          eagerRelations,
-          insertInput,
-          createSingleFieldName,
-          typeName,
-          typeNameMapper,
-          conflictDoNothing,
-          mutationTxCtx,
-          nestedRuntime,
-          limits,
-          policies,
-        )
-      : undefined;
-    // An upsert needs something to conflict on, so a table with no primary key and no
-    // unique constraint gets no upsert mutations rather than ones that always fail.
-    const uniqueSets = tableFeatures.upsert
-      ? getUniqueColumnSets(schema[tableName] as SQLiteTable, getTableConfig)
-      : [];
-    const onConflictInput = tableFeatures.upsert
-      ? generateOnConflictInput({
-          table: schema[tableName] as SQLiteTable,
-          typeName,
-          uniqueSets,
-          tableFilters,
-          withTarget: true,
-        })
-      : undefined;
-    const upsertArrGenerated = onConflictInput
-      ? generateUpsert(
-          db,
-          tableName,
-          schema[tableName] as SQLiteTable,
-          tables,
-          eagerRelations,
-          insertInput,
-          onConflictInput,
-          uniqueSets,
-          upsertArrayFieldName,
-          typeName,
-          false,
-          typeNameMapper,
-          filterCtx,
-          mutationTxCtx,
-          nestedRuntime,
-          limits,
-          policies,
-        )
-      : undefined;
-    const upsertSingleGenerated = onConflictInput
-      ? generateUpsert(
-          db,
-          tableName,
-          schema[tableName] as SQLiteTable,
-          tables,
-          eagerRelations,
-          insertInput,
-          onConflictInput,
-          uniqueSets,
-          upsertSingleFieldName,
-          typeName,
-          true,
-          typeNameMapper,
-          filterCtx,
-          mutationTxCtx,
-          nestedRuntime,
-          limits,
-          policies,
-        )
-      : undefined;
-    const updateGenerated = tableFeatures.update
-      ? generateUpdate(
-          db,
-          tableName,
-          schema[tableName] as SQLiteTable,
-          tables,
-          eagerRelations,
-          updateInput,
-          tableFilters,
-          updateFieldName,
-          typeName,
-          false,
-          tableFeatures.requireWhere,
-          typeNameMapper,
-          filterCtx,
-          mutationTxCtx,
-          nestedRuntime,
-          limits,
-          policies,
-        )
-      : undefined;
-    const updateSingleGenerated = tableFeatures.update
-      ? generateUpdate(
-          db,
-          tableName,
-          schema[tableName] as SQLiteTable,
-          tables,
-          eagerRelations,
-          updateInput,
-          tableFilters,
-          updateSingleFieldName,
-          typeName,
-          true,
-          tableFeatures.requireWhere,
-          typeNameMapper,
-          filterCtx,
-          mutationTxCtx,
-          nestedRuntime,
-          limits,
-          policies,
-        )
-      : undefined;
-    // The batch update reuses the update `set` input, so it needs `update` on too.
-    const updateManyInput =
-      tableFeatures.update && tableFeatures.updateMany
-        ? generateUpdateManyInput({ typeName, updatePrefix: prefixes.update, updateInput, tableFilters })
-        : undefined;
-    const updateManyGenerated = updateManyInput
-      ? generateUpdateMany(
-          db,
-          tableName,
-          schema[tableName] as SQLiteTable,
-          tables,
-          eagerRelations,
-          updateManyInput,
-          updateManyFieldName,
-          typeName,
-          typeNameMapper,
-          filterCtx,
-          mutationTxCtx,
-          nestedRuntime,
-          limits,
-          policies,
-        )
-      : undefined;
-    const deleteGenerated = tableFeatures.delete
-      ? generateDelete(
-          db,
-          tableName,
-          schema[tableName] as SQLiteTable,
-          tableFilters,
-          deleteFieldName,
-          typeName,
-          false,
-          tableFeatures.requireWhere,
-          filterCtx,
-          { tableName, relationMap: namedRelations, tables },
-          mutationTxCtx,
-          policies,
-        )
-      : undefined;
-    const deleteSingleGenerated = tableFeatures.delete
-      ? generateDelete(
-          db,
-          tableName,
-          schema[tableName] as SQLiteTable,
-          tableFilters,
-          deleteSingleFieldName,
-          typeName,
-          true,
-          tableFeatures.requireWhere,
-          filterCtx,
-          { tableName, relationMap: namedRelations, tables },
-          mutationTxCtx,
-          policies,
-        )
-      : undefined;
-    const restoreGenerated = softDeleteInfo
-      ? generateDelete(
-          db,
-          tableName,
-          schema[tableName] as SQLiteTable,
-          tableFilters,
-          restoreFieldName,
-          typeName,
-          false,
-          tableFeatures.requireWhere,
-          filterCtx,
-          { tableName, relationMap: namedRelations, tables },
-          mutationTxCtx,
-          policies,
-          true,
-        )
-      : undefined;
-    const restoreSingleGenerated = softDeleteInfo
-      ? generateDelete(
-          db,
-          tableName,
-          schema[tableName] as SQLiteTable,
-          tableFilters,
-          restoreSingleFieldName,
-          typeName,
-          true,
-          tableFeatures.requireWhere,
-          filterCtx,
-          { tableName, relationMap: namedRelations, tables },
-          mutationTxCtx,
-          policies,
-          true,
-        )
-      : undefined;
-    // The count variants are the plural write with its payload left off, so each follows the
-    // same feature switch as the write it mirrors.
-    const updateCountGenerated =
-      tableFeatures.update && tableFeatures.countMutations
-        ? generateWriteCount({
-            db,
-            tableName,
-            table: schema[tableName] as SQLiteTable,
-            kind: 'update',
-            setArgs: updateInput,
-            filterArgs: tableFilters,
-            fieldName: updateCountFieldName,
-            requireWhere: tableFeatures.requireWhere,
-            filterCtx,
-            txCtx: mutationTxCtx,
-            nested: nestedRuntime,
-          })
-        : undefined;
-    const deleteCountGenerated =
-      tableFeatures.delete && tableFeatures.countMutations
-        ? generateWriteCount({
-            db,
-            tableName,
-            table: schema[tableName] as SQLiteTable,
-            kind: 'delete',
-            filterArgs: tableFilters,
-            fieldName: deleteCountFieldName,
-            requireWhere: tableFeatures.requireWhere,
-            filterCtx,
-            txCtx: mutationTxCtx,
-          })
-        : undefined;
-    const aggregateType = tableFeatures.aggregates
-      ? generateAggregateTypes(schema[tableName] as SQLiteTable, tableName, typeName, cacheCtx)
-      : undefined;
-    const aggregateGenerated = tableFeatures.aggregates
-      ? generateAggregate(
-          db,
-          tableName,
-          schema[tableName] as SQLiteTable,
-          typeName,
-          aggregateFieldName,
-          tableFilters,
-          filterCtx,
-          tablePolicies,
-        )
-      : undefined;
-
-    // The grouped result reuses the aggregate output types, so it only exists alongside them.
-    const groupByType =
-      tableFeatures.aggregates && tableFeatures.groupBy
-        ? generateGroupByType(schema[tableName] as SQLiteTable, tableName, typeName, cacheCtx)
-        : undefined;
-    const groupByEnum = groupByType
-      ? generateGroupByEnum(schema[tableName] as SQLiteTable, tableName, typeName)
-      : undefined;
-    const havingInput = groupByEnum
-      ? generateHavingInput(schema[tableName] as SQLiteTable, tableName, typeName)
-      : undefined;
-    const groupByGenerated =
-      groupByType && groupByEnum && havingInput
-        ? generateGroupBy(
-            db,
-            tableName,
-            schema[tableName] as SQLiteTable,
-            typeName,
-            groupByFieldName,
-            tableFilters,
-            groupByEnum,
-            havingInput,
-            filterCtx,
-            tablePolicies,
-          )
-        : undefined;
-
-    queries[selectArrGenerated.name] = {
-      type: selectArrOutput,
-      args: selectArrGenerated.args,
-      resolve: selectArrGenerated.resolver,
-      extensions: {
-        drizzle: drizzleMeta({ kind: 'query', operation: 'select', single: false, targetArg: 'where' }),
-        ...(complexity ? { complexity: listFieldComplexity(complexity, limits?.(tableName)) } : {}),
-      },
-    };
-    queries[selectSingleGenerated.name] = {
-      type: selectSingleOutput,
-      args: selectSingleGenerated.args,
-      resolve: selectSingleGenerated.resolver,
-      extensions: {
-        drizzle: drizzleMeta({ kind: 'query', operation: 'select', single: true, targetArg: 'where' }),
-      },
-    };
-    if (aggregateGenerated && aggregateType) {
-      queries[aggregateGenerated.name] = {
-        type: new GraphQLNonNull(aggregateType),
-        args: aggregateGenerated.args,
-        resolve: aggregateGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'aggregate', operation: 'aggregate', single: true, targetArg: 'where' }),
-          ...(complexity ? { complexity: aggregateFieldComplexity(complexity) } : {}),
-        },
-      };
-    }
-    if (groupByGenerated && groupByType) {
-      queries[groupByGenerated.name] = {
-        type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(groupByType))),
-        args: groupByGenerated.args,
-        resolve: groupByGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'aggregate', operation: 'groupBy', single: false, targetArg: 'where' }),
-          ...(complexity ? { complexity: aggregateFieldComplexity(complexity) } : {}),
-        },
-      };
-    }
-    if (insertArrGenerated) {
-      mutations[insertArrGenerated.name] = {
-        type: arrTableItemOutput,
-        args: insertArrGenerated.args,
-        resolve: insertArrGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'mutation', operation: 'insert', single: false, targetArg: 'values' }),
-        },
-      };
-    }
-    if (insertSingleGenerated) {
-      mutations[insertSingleGenerated.name] = {
-        // An insert either returns the row it inserted or throws — the one path to `null` is
-        // `conflictDoNothing` swallowing the insert, so the field is nullable only there.
-        type: conflictDoNothing ? singleTableItemOutput : new GraphQLNonNull(singleTableItemOutput),
-        args: insertSingleGenerated.args,
-        resolve: insertSingleGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'mutation', operation: 'insert', single: true, targetArg: 'values' }),
-        },
-      };
-    }
-    if (upsertArrGenerated) {
-      mutations[upsertArrGenerated.name] = {
-        type: arrTableItemOutput,
-        args: upsertArrGenerated.args,
-        resolve: upsertArrGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'mutation', operation: 'upsert', single: false, targetArg: 'values' }),
-        },
-      };
-    }
-    if (upsertSingleGenerated) {
-      mutations[upsertSingleGenerated.name] = {
-        type: singleTableItemOutput,
-        args: upsertSingleGenerated.args,
-        resolve: upsertSingleGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'mutation', operation: 'upsert', single: true, targetArg: 'values' }),
-        },
-      };
-    }
-    if (updateGenerated) {
-      mutations[updateGenerated.name] = {
-        type: arrTableItemOutput,
-        args: updateGenerated.args,
-        resolve: updateGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'mutation', operation: 'update', single: false, targetArg: 'where' }),
-        },
-      };
-    }
-    if (updateManyGenerated) {
-      mutations[updateManyGenerated.name] = {
-        type: new GraphQLNonNull(new GraphQLList(singleTableItemOutput)),
-        args: updateManyGenerated.args,
-        resolve: updateManyGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'mutation', operation: 'updateMany', single: false, targetArg: 'updates' }),
-        },
-        // The nullable element is deliberate, and the reason this mutation's return type
-        // differs from every sibling's: the result is aligned with the input, one slot per
-        // entry, so an entry that matched nothing has to be able to say so.
-        description:
-          "Each entry's updated rows, in entry order. An entry whose `where` matched no rows contributes `null` in its slot; an entry that matched several contributes each of its rows.",
-      };
-    }
-    if (updateSingleGenerated) {
-      mutations[updateSingleGenerated.name] = {
-        type: singleTableItemOutput,
-        args: updateSingleGenerated.args,
-        resolve: updateSingleGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'mutation', operation: 'update', single: true, targetArg: 'where' }),
-        },
-      };
-    }
-    if (deleteGenerated) {
-      mutations[deleteGenerated.name] = {
-        type: arrTableItemOutput,
-        args: deleteGenerated.args,
-        resolve: deleteGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'mutation', operation: 'delete', single: false, targetArg: 'where' }),
-        },
-      };
-    }
-    if (deleteSingleGenerated) {
-      mutations[deleteSingleGenerated.name] = {
-        type: singleTableItemOutput,
-        args: deleteSingleGenerated.args,
-        resolve: deleteSingleGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'mutation', operation: 'delete', single: true, targetArg: 'where' }),
-        },
-      };
-    }
-    if (restoreGenerated) {
-      mutations[restoreGenerated.name] = {
-        type: arrTableItemOutput,
-        args: restoreGenerated.args,
-        resolve: restoreGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'mutation', operation: 'restore', single: false, targetArg: 'where' }),
-        },
-      };
-    }
-    if (restoreSingleGenerated) {
-      mutations[restoreSingleGenerated.name] = {
-        type: singleTableItemOutput,
-        args: restoreSingleGenerated.args,
-        resolve: restoreSingleGenerated.resolver,
-        extensions: {
-          drizzle: drizzleMeta({ kind: 'mutation', operation: 'restore', single: true, targetArg: 'where' }),
-        },
-      };
-    }
-    if (updateCountGenerated) {
-      mutations[updateCountGenerated.name] = {
-        type: new GraphQLNonNull(GraphQLInt),
-        args: updateCountGenerated.args,
-        resolve: updateCountGenerated.resolver,
-        description:
-          'How many rows the update touched. The rows themselves are not read back, which is the point of this mutation.',
-      };
-    }
-    if (deleteCountGenerated) {
-      mutations[deleteCountGenerated.name] = {
-        type: new GraphQLNonNull(GraphQLInt),
-        args: deleteCountGenerated.args,
-        resolve: deleteCountGenerated.resolver,
-        description:
-          'How many rows the delete removed. The rows themselves are not read back, which is the point of this mutation.',
-      };
-    }
-    // The insert/update inputs are still built (they type the mutations that survive) but
-    // only reach the schema's type map when a mutation actually references them.
-    const activeInputs = [
-      // The insert input types the upsert mutations too, so either feature keeps it.
-      ...(tableFeatures.insert || onConflictInput ? [insertInput] : []),
-      ...(onConflictInput ? [onConflictInput] : []),
-      ...(tableFeatures.update ? [updateInput] : []),
-      ...(updateManyInput ? [updateManyInput] : []),
-      tableFilters,
-      tableOrder,
-    ];
-    activeInputs.forEach((e) => {
-      inputs[e.name] = e;
-    });
-    outputs[selectSingleOutput.name] = selectSingleOutput;
-    outputs[singleTableItemOutput.name] = singleTableItemOutput;
-    if (aggregateType) {
-      outputs[aggregateType.name] = aggregateType;
-    }
-    if (groupByType && havingInput) {
-      outputs[groupByType.name] = groupByType;
-      inputs[havingInput.name] = havingInput;
-    }
-  }
-
-  // Every generated mutation name is now known — the first mutation resolver of a request
-  // uses this set to count the document's root mutation fields (and to leave documents
-  // containing consumer-added mutations alone).
-  if (mutationTxCtx) {
-    for (const name of Object.keys(mutations)) {
-      mutationTxCtx.fieldNames.add(name);
-    }
-  }
-
-  const fieldResolvers: Record<string, Record<string, any>> = {};
-  for (const [tableName, tableRelations] of Object.entries(namedRelations)) {
-    const relResolvers: Record<string, any> = {};
-    for (const [relName, relEntry] of Object.entries(tableRelations)) {
-      const isOne = is((relEntry as any).relation ?? relEntry, One);
-      const resolver = resolverFactory({ tableName, relationName: relName, relEntry, isOne });
-      if (resolver) {
-        relResolvers[relName] = resolver;
-      }
-    }
-    if (Object.keys(relResolvers).length > 0) {
-      fieldResolvers[tableName] = relResolvers;
-    }
-  }
-
-  return { queries, mutations, inputs, types: outputs, fieldResolvers } as any;
-};
+): GeneratedEntities<TDrizzleInstance, TSchema> => sqliteSchemaData(db, schema, relations, options);
