@@ -1198,3 +1198,103 @@ Opting a relation out does **not** remove its field — it keeps resolving lazil
 request-scoped batch loader, so the field still works even before you override it. Table
 and relation names are the Drizzle schema keys (e.g. `Users`, `posts`), matching the keys
 of `entities.fieldResolvers`.
+
+## Writing your own resolver over a generated type
+
+When you replace or wrap a generated resolver — to add a permission check that needs the
+row, to run a write inside your own transaction, to enforce a rule the schema cannot
+express — you become responsible for returning a row shaped like the type you replaced.
+That means translating the GraphQL selection set into the relational query builder's
+`with:` tree: relation field resolvers only fill in relations the parent did not already
+provide.
+
+Two exports do that for you, alongside the already-exported `extractFilters` and
+`extractOrderBy`:
+
+```Typescript
+import { resolveSelection, selectionToWith } from '@vantreeseba/drizzle-graphql'
+
+// The whole read: selected columns, relation arguments, eager loading, cursor
+// pagination, and the transport remapping of the result — against any executor.
+const rows = await resolveSelection(info, {
+    db,
+    table: 'Users',
+    where: { id: { eq: userId } },
+    executor: tx, // defaults to `db`; pass a transaction to see its own writes
+})
+
+// Or just the `with:` tree, if you are building the query yourself.
+const withTree = selectionToWith(info, { db, table: 'Users' })
+const row = await tx.query.Users.findFirst({ where: { id: userId }, with: withTree })
+```
+
+`selectionToWith` resolves fragments and inline fragments against `info.fragments`,
+intersects the selection against the relations config (so scalars and any fields you added
+yourself drop out instead of becoming invalid `with:` keys), follows aliases back to the
+relation they select, compiles each relation's `where` / `orderBy` / `limit` / `offset`
+into its nested entry, and leaves `<relation>Aggregate` selections out — they are not
+`with:` entries. It returns `undefined` when the selection asks for no relations.
+
+`resolveSelection` additionally accepts `single`, `orderBy`, `limit`, `offset` and `after`,
+and returns the rows already remapped to their GraphQL transport forms.
+
+Both take a `typeNameMapper` option. If the schema was built with one, pass the same
+function here — the translation matches selections against GraphQL type names, so a build
+that renames its types has to say so.
+
+## Identifying generated fields
+
+Every generated field and object type publishes what it is under `extensions.drizzle`, so
+wrappers — `graphql-middleware`, envelop, `graphql-shield`, an audit log, a cache
+invalidator — can ask the schema instead of parsing field names. Names are configurable
+(`prefixes`, `suffixes`, `typeNameMapper`), which makes name parsing ambiguous by
+construction; this is not.
+
+```Typescript
+import { drizzleExtension, identifyRows } from '@vantreeseba/drizzle-graphql'
+
+const field = info.parentType.getFields()[info.fieldName]
+const meta = drizzleExtension(field)
+// {
+//   table: 'Users',        // the Drizzle schema key
+//   kind: 'mutation',      // 'query' | 'mutation' | 'relation' | 'aggregate' | 'type'
+//   operation: 'update',   // 'select' | 'insert' | 'update' | 'updateMany' | 'upsert'
+//                          // | 'delete' | 'aggregate' | 'groupBy' | 'relation'
+//                          // | 'relationAggregate'
+//   single: true,          // one row, or a list
+//   targetArg: 'where',    // 'where' | 'values' | 'updates' — where the rows live
+//   primaryKey: ['id'],    // key columns of `table`, in schema order
+// }
+
+if (meta?.kind === 'mutation') await audit(meta.table, meta.operation, args[meta.targetArg])
+```
+
+`drizzleExtension` returns `undefined` for anything this library did not generate, which is
+the check to make before treating a field as one of ours. Relation fields (and
+`<relation>Aggregate` fields) additionally carry `relation` and `parentTable`, with `table`
+naming the relation's **target** — so `Users.posts` reads as
+`{ table: 'Posts', parentTable: 'Users', relation: 'posts' }`. Object types carry
+`{ table, kind: 'type', primaryKey }`, which is what a stitching layer needs to map a type
+back to its source.
+
+Because the row identity of a mutation lives in a different argument for every operation,
+`identifyRows` reads whichever one applies and hands back primary-key values:
+
+```Typescript
+const target = identifyRows(field, args)
+// { table: 'Users', primaryKey: ['id'], rows: [{ id: 3 }], complete: true }
+
+if (target?.complete) await invalidate(target.table, target.rows)
+```
+
+It understands `values` (one object or a list), `where` (`eq` for one row, `inArray` for
+many, an equality on every column of a composite key), and the per-entry `where` inside a
+batch update's `updates`. Check `complete` before treating `rows` as the affected set: it
+is `false` when the arguments do not pin the rows down — an insert whose key the database
+generates, a filter on something other than the primary key, an unbounded update, or a
+table with no primary key at all.
+
+> [!NOTE]
+> `extensions.drizzle` is stable API. The point of publishing it is that consumers stop
+> parsing names, which only holds if the shape does not move: fields are added to it, never
+> removed or repurposed.

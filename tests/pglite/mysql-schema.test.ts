@@ -327,6 +327,7 @@ describe('MySQL complexity hints', () => {
   });
 
   it('leaves single queries flat', () => {
-    expect(entities.queries['usersSingle'].extensions).toBeUndefined();
+    // The identity block is always published; a single query just has no cost hint beside it.
+    expect(entities.queries['usersSingle'].extensions['complexity']).toBeUndefined();
   });
 });

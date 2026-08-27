@@ -66,6 +66,7 @@ import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { getOrCreateLoader } from '../batch-loader/index.ts';
 import { capitalize, uncapitalize } from '../case-ops/index.ts';
 import { remapFromGraphQLCore, remapToGraphQLArrayOutput, remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
+import { relationFieldExtension, tableTypeExtension } from '../extensions.ts';
 import {
   GraphQLBigIntString,
   GraphQLDate,
@@ -822,6 +823,27 @@ export const createRelationResolverFactory =
     };
   };
 
+/**
+ * The `extensions.drizzle` block for one relation field. The relation entry already carries
+ * the target table's primary key (resolved at build time for pagination), so the field can
+ * publish it without the dialect's key resolver being reachable from here.
+ */
+const relationExtensionFor = (
+  relEntry: TableNamedRelations,
+  parentTable: string,
+  relationName: string,
+  isOne: boolean,
+  aggregate?: boolean,
+) =>
+  relationFieldExtension({
+    targetTable: relEntry.targetTableName,
+    parentTable,
+    relation: relationName,
+    single: isOne,
+    primaryKey: relEntry.targetPkNames ?? [],
+    aggregate,
+  });
+
 /** Per-call cache context — created fresh on each generateSchemaData call to avoid type name collisions. */
 export interface TypeCacheCtx {
   /** Cache of generic filter types, keyed by generic name (e.g. "String", "DateTime"). */
@@ -892,6 +914,12 @@ export interface TypeCacheCtx {
    * it targets, the same one its resolver enforces.
    */
   limits: LimitPolicyFor | undefined;
+  /**
+   * A table's primary-key property names, from the dialect's own resolver. Object types and
+   * relation fields publish it on `extensions.drizzle` so a consumer can identify the rows a
+   * field is about without re-deriving the key from the Drizzle schema.
+   */
+  primaryKeyOf?: (tableName: string) => readonly string[];
 }
 
 /**
@@ -2099,6 +2127,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
       name: typeName,
       description: cacheCtx.docs.describeTable?.(tableName),
       fields: () => ({ ...tableFields, ...container!.fields }),
+      extensions: { drizzle: tableTypeExtension(tableName, cacheCtx.primaryKeyOf?.(tableName) ?? []) },
     });
     cacheCtx.objectTypeCache.set(tableName, shell);
   }
@@ -2159,6 +2188,9 @@ const generateSelectFields = <TWithOrder extends boolean>(
           name: resolveTypeName(targetTableName, typeNameMapper),
           description: cacheCtx.docs.describeTable?.(targetTableName),
           fields: () => ({ ...targetTableFields, ...capturedTargetContainer.fields }),
+          extensions: {
+            drizzle: tableTypeExtension(targetTableName, cacheCtx.primaryKeyOf?.(targetTableName) ?? []),
+          },
         });
         cacheCtx.objectTypeCache.set(targetTableName, relType);
       }
@@ -2184,6 +2216,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
             },
             resolve,
             ...relationDocs,
+            extensions: { drizzle: relationExtensionFor(relEntry, tableName, relationName, true) },
           },
         ]);
         continue;
@@ -2201,13 +2234,12 @@ const generateSelectFields = <TWithOrder extends boolean>(
           },
           resolve,
           ...relationDocs,
-          ...(cacheCtx.complexity
-            ? {
-                extensions: {
-                  complexity: listFieldComplexity(cacheCtx.complexity, cacheCtx.limits?.(targetTableName)),
-                },
-              }
-            : {}),
+          extensions: {
+            drizzle: relationExtensionFor(relEntry, tableName, relationName, false),
+            ...(cacheCtx.complexity
+              ? { complexity: listFieldComplexity(cacheCtx.complexity, cacheCtx.limits?.(targetTableName)) }
+              : {}),
+          },
         },
       ]);
 
@@ -2230,9 +2262,10 @@ const generateSelectFields = <TWithOrder extends boolean>(
                 where: { type: relSelectData.filters },
               },
               resolve: relationAggregate.resolve,
-              ...(cacheCtx.complexity
-                ? { extensions: { complexity: aggregateFieldComplexity(cacheCtx.complexity) } }
-                : {}),
+              extensions: {
+                drizzle: relationExtensionFor(relEntry, tableName, relationName, isOne, true),
+                ...(cacheCtx.complexity ? { complexity: aggregateFieldComplexity(cacheCtx.complexity) } : {}),
+              },
             } as unknown as ConvertedRelationColumnWithArgs,
           ]);
         }
@@ -2364,6 +2397,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
       name: resolveTypeName(tableName, typeNameMapper),
       description: cacheCtx.docs.describeTable?.(tableName),
       fields: { ...tableFields, ...relationFields },
+      extensions: { drizzle: tableTypeExtension(tableName, cacheCtx.primaryKeyOf?.(tableName) ?? []) },
     });
 
   const selectArrOutput = new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(selectSingleOutput)));
