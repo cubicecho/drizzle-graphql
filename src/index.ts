@@ -16,6 +16,7 @@ import {
   type LimitPolicyFor,
   type ResolvedLimitPolicy,
   resolveLimitPolicy,
+  type TablePolicies,
 } from './util/builders/common.ts';
 import { generateMySQL, generatePG, generateSQLite } from './util/builders/index.ts';
 import type { SchemaGeneratorOptions } from './util/builders/types.ts';
@@ -27,6 +28,7 @@ export type {
   AnyDrizzleDB,
   BuildSchemaConfig,
   ComplexityConfig,
+  ContextValuesConfig,
   DeleteResolver,
   DeleteSingleResolver,
   ExtractRelations,
@@ -44,8 +46,11 @@ export type {
   MutationReturnlessResult,
   MutationsCore,
   QueriesCore,
+  RowScope,
+  RowScopeFilter,
   SchemaExclusions,
   SchemaFeatures,
+  ScopeConfig,
   SelectResolver,
   SelectSingleResolver,
   TableLimitPolicy,
@@ -210,6 +215,51 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
       }
     : undefined;
 
+  // A row scope and the context-derived columns are resolved against the real schema for the
+  // same reason exclusions are: a renamed table or column must fail the build, not silently
+  // stop scoping. Both stay undefined unless configured, so an unconfigured build emits the
+  // same SQL it always did.
+  const scopeConfig = config?.scope;
+  const contextValuesConfig = config?.contextValues;
+  if (scopeConfig || contextValuesConfig) {
+    const tableNames = new Set(tableKeys);
+    for (const [tableName, hook] of Object.entries(scopeConfig ?? {})) {
+      if (!tableNames.has(tableName)) {
+        throw new Error(
+          `Drizzle-GraphQL Error: config.scope names '${tableName}', which is not a table in the Drizzle schema.`,
+        );
+      }
+      if (typeof hook !== 'function') {
+        throw new Error(`Drizzle-GraphQL Error: config.scope.${tableName} must be a function.`);
+      }
+    }
+    for (const [tableName, columnHooks] of Object.entries(contextValuesConfig ?? {})) {
+      if (!tableNames.has(tableName)) {
+        throw new Error(
+          `Drizzle-GraphQL Error: config.contextValues names '${tableName}', which is not a table in the Drizzle schema.`,
+        );
+      }
+      const columns = getColumns(schema[tableName] as Table);
+      for (const [columnName, hook] of Object.entries(columnHooks)) {
+        if (!columns[columnName]) {
+          throw new Error(
+            `Drizzle-GraphQL Error: config.contextValues names '${tableName}.${columnName}', which is not a column of that table.`,
+          );
+        }
+        if (typeof hook !== 'function') {
+          throw new Error(`Drizzle-GraphQL Error: config.contextValues.${tableName}.${columnName} must be a function.`);
+        }
+      }
+    }
+  }
+  const policies: TablePolicies | undefined =
+    scopeConfig || contextValuesConfig
+      ? {
+          scope: scopeConfig ? (tableName: string) => scopeConfig[tableName] : undefined,
+          contextValues: contextValuesConfig ? (tableName: string) => contextValuesConfig[tableName] : undefined,
+        }
+      : undefined;
+
   // Exclusions are resolved against the real schema so a renamed table or column fails the
   // build instead of quietly un-hiding itself — the failure mode that matters when this config
   // is what keeps a secret out of the API.
@@ -350,6 +400,7 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     enumNameMapper: config?.enumNameMapper,
     transactions,
     limits,
+    policies,
     exclude,
     docs: {
       describeColumn: config?.describeColumn,

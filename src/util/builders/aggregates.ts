@@ -45,11 +45,14 @@ import {
   type RelationFilterBase,
   relationFilterCtx,
   resolveExecutor,
+  resolveScope,
   resolveTypeName,
+  type ScopeFor,
   type TypeCacheCtx,
   type TypeNameMapper,
   toGraphQLError,
   visibleColumns,
+  withScope,
 } from './common.ts';
 import type { CreatedResolver, Filters } from './types.ts';
 
@@ -358,6 +361,7 @@ export const generateAggregate = (
   fieldName: string,
   filterArgs: GraphQLInputObjectType,
   filterCtx?: RelationFilterBase,
+  scopes?: ScopeFor,
 ): CreatedResolver => {
   const target = aggregateTarget(table, tableName, typeName);
 
@@ -375,8 +379,16 @@ export const generateAggregate = (
         }
 
         let query = resolveExecutor(db, context).select(request.selection).from(table);
-        if (args.where) {
-          query = query.where(extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName)));
+        const where = withScope(
+          resolveScope(scopes, context, filterCtx),
+          tableName,
+          table,
+          args.where
+            ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName))
+            : undefined,
+        );
+        if (where) {
+          query = query.where(where);
         }
         const rows = await query;
 
@@ -408,6 +420,7 @@ export const createRelationAggregateFactory = (
   cacheCtx: TypeCacheCtx,
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
+  scopes?: ScopeFor,
 ): RelationAggregateFactory => {
   return ({ tableName, relationName, relEntry }) => {
     const parentTable = tables[tableName];
@@ -453,11 +466,18 @@ export const createRelationAggregateFactory = (
           // Loaders are cached per context, so the whole batch shares this request's executor.
           const executor = resolveExecutor(db, context);
           const uniqueIds = [...new Set(parentIds)];
-          const whereCondition = and(
-            inArray(foreignCol, uniqueIds),
-            whereArg
-              ? extractFilters(targetTable, targetTableName, whereArg, relationFilterCtx(filterCtx, targetTableName))
-              : undefined,
+          // An aggregate over a relation counts the same rows the relation itself returns,
+          // so it is narrowed by the target table's scope too.
+          const whereCondition = withScope(
+            resolveScope(scopes, context, filterCtx),
+            targetTableName,
+            targetTable,
+            and(
+              inArray(foreignCol, uniqueIds),
+              whereArg
+                ? extractFilters(targetTable, targetTableName, whereArg, relationFilterCtx(filterCtx, targetTableName))
+                : undefined,
+            ),
           );
 
           const rows: any[] = await executor
@@ -681,6 +701,7 @@ export const generateGroupBy = (
   groupByEnum: GraphQLEnumType,
   havingInput: GraphQLInputObjectType,
   filterCtx?: RelationFilterBase,
+  scopes?: ScopeFor,
 ): CreatedResolver => {
   const target = aggregateTarget(table, tableName, typeName);
   const groupable = groupableColumns(table, tableName);
@@ -725,8 +746,16 @@ export const generateGroupBy = (
         };
 
         let query = resolveExecutor(db, context).select(selection).from(table);
-        if (args.where) {
-          query = query.where(extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName)));
+        const where = withScope(
+          resolveScope(scopes, context, filterCtx),
+          tableName,
+          table,
+          args.where
+            ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName))
+            : undefined,
+        );
+        if (where) {
+          query = query.where(where);
         }
         query = query.groupBy(...keyColumns.map(([, column]) => column));
 

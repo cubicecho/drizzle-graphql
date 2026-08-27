@@ -23,13 +23,19 @@ import { capitalize } from '../case-ops/index.ts';
 import { remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import {
+  applyContextValues,
+  type ContextValuesFor,
   extractFilters,
   type RelationFilterBase,
   relationFilterCtx,
+  resolveScope,
   resolveTypeName,
+  type ScopeFor,
+  type ScopeResolver,
   type TypeCacheCtx,
   type TypeNameMapper,
   visibleColumns,
+  withScope,
 } from './common.ts';
 import type { TableNamedRelations } from './types.ts';
 
@@ -260,9 +266,12 @@ export const createNestedWriteTypes = (params: {
     }
 
     const omitted = plan.fkSide === 'child' ? plan.foreignColPropName : undefined;
+    // Same rule as the table's own create input: a column the server fills in from context
+    // is not something a nested `create` may supply either.
+    const contextColumns = cacheCtx.contextValuesOf?.(plan.targetTableName);
     const fields = Object.fromEntries(
       Object.entries(visibleColumns(plan.targetTable))
-        .filter(([columnName]) => columnName !== omitted)
+        .filter(([columnName]) => columnName !== omitted && !contextColumns?.[columnName])
         .map(([columnName, column]) => [
           columnName,
           drizzleColumnToGraphQLType(column as Column, columnName, plan.targetTableName, false, true, true),
@@ -409,13 +418,14 @@ export type NestedWriteRuntime = {
    * Runs the operations that have to happen *before* the parent row is written, and returns
    * the parent column values they produced.
    */
-  applyParentSide: (executor: any, tableName: string, ops: NestedOps) => Promise<Record<string, any>>;
+  applyParentSide: (executor: any, tableName: string, ops: NestedOps, context?: any) => Promise<Record<string, any>>;
   /** Runs the operations that attach to a parent row, once that row exists. */
   applyChildSide: (
     executor: any,
     tableName: string,
     ops: NestedOps,
     parentRows: Record<string, any>[],
+    context?: any,
   ) => Promise<void>;
 };
 
@@ -431,14 +441,21 @@ const asArray = (value: any): any[] => (Array.isArray(value) ? value : value ===
 export const createNestedWriteRuntime = (params: {
   plans: NestedWritePlans;
   filterCtx: RelationFilterBase | undefined;
+  scopes?: ScopeFor;
+  contextValues?: ContextValuesFor;
 }): NestedWriteRuntime => {
-  const { plans, filterCtx } = params;
+  const { plans, filterCtx, scopes, contextValues } = params;
 
   /**
    * A `connect` / `disconnect` / `set` operand compiled to SQL. An operand that compiles to
    * nothing is rejected: `connect: {}` would otherwise attach every row in the table.
    */
-  const conditionOf = (plan: NestedRelationPlan, filter: Record<string, any>, operation: string) => {
+  const conditionOf = (
+    plan: NestedRelationPlan,
+    filter: Record<string, any>,
+    operation: string,
+    scope: ScopeResolver | undefined,
+  ) => {
     const condition = extractFilters(
       plan.targetTable,
       plan.targetTableName,
@@ -450,7 +467,10 @@ export const createNestedWriteRuntime = (params: {
         `Drizzle-GraphQL Error: '${operation}' on '${plan.relationName}' needs a filter that selects rows — it was given one that matches everything.`,
       );
     }
-    return condition;
+    // The filter selects rows to attach or detach, so it is a write against the target
+    // table and is narrowed by its scope: `connect` cannot reach a row the caller cannot
+    // see, and out-of-scope rows are not detached.
+    return withScope(scope, plan.targetTableName, plan.targetTable, condition)!;
   };
 
   const assertSingleOperation = (plan: NestedRelationPlan, op: Record<string, any>) => {
@@ -462,11 +482,11 @@ export const createNestedWriteRuntime = (params: {
     }
   };
 
-  const detachAll = async (executor: any, plan: NestedRelationPlan, key: any) =>
+  const detachAll = async (executor: any, plan: NestedRelationPlan, key: any, scope: ScopeResolver | undefined) =>
     executor
       .update(plan.targetTable)
       .set({ [plan.foreignColPropName]: null })
-      .where(eq(plan.foreignCol, key));
+      .where(withScope(scope, plan.targetTableName, plan.targetTable, eq(plan.foreignCol, key)));
 
   return {
     enabled: (tableName) => !!plans[tableName],
@@ -505,12 +525,13 @@ export const createNestedWriteRuntime = (params: {
       return columns;
     },
 
-    applyParentSide: async (executor, tableName, ops) => {
+    applyParentSide: async (executor, tableName, ops, context) => {
       const tablePlans = plans[tableName];
       const patch: Record<string, any> = {};
       if (!tablePlans) {
         return patch;
       }
+      const scope = resolveScope(scopes, context, filterCtx);
 
       for (const [relationName, op] of Object.entries(ops)) {
         const plan = tablePlans[relationName];
@@ -520,7 +541,11 @@ export const createNestedWriteRuntime = (params: {
         assertSingleOperation(plan, op);
 
         if (op['create'] !== undefined) {
-          const values = remapFromGraphQLSingleInput({ ...op['create'] }, plan.targetTable);
+          const values = applyContextValues(
+            remapFromGraphQLSingleInput({ ...op['create'] }, plan.targetTable),
+            contextValues?.(plan.targetTableName),
+            context,
+          );
           const inserted = await executor.insert(plan.targetTable).values(values).returning();
           const created = inserted[0];
           if (!created) {
@@ -533,7 +558,7 @@ export const createNestedWriteRuntime = (params: {
           const rows = await executor
             .select()
             .from(plan.targetTable)
-            .where(conditionOf(plan, op['connect'], 'connect'));
+            .where(conditionOf(plan, op['connect'], 'connect', scope));
           if (rows.length !== 1) {
             throw new GraphQLError(
               `Drizzle-GraphQL Error: 'connect' on '${relationName}' matched ${rows.length} rows — it attaches a single row, so its filter must match exactly one.`,
@@ -548,11 +573,12 @@ export const createNestedWriteRuntime = (params: {
       return patch;
     },
 
-    applyChildSide: async (executor, tableName, ops, parentRows) => {
+    applyChildSide: async (executor, tableName, ops, parentRows, context) => {
       const tablePlans = plans[tableName];
       if (!tablePlans) {
         return;
       }
+      const scope = resolveScope(scopes, context, filterCtx);
 
       for (const [relationName, op] of Object.entries(ops)) {
         const plan = tablePlans[relationName];
@@ -574,26 +600,26 @@ export const createNestedWriteRuntime = (params: {
           // Replace-the-set first, so a `set` alongside a `create` reads as "these rows, plus
           // this new one" rather than dropping the row it just inserted.
           if (op['set'] !== undefined) {
-            await detachAll(executor, plan, key);
+            await detachAll(executor, plan, key, scope);
             for (const filter of asArray(op['set'])) {
               await executor
                 .update(plan.targetTable)
                 .set({ [plan.foreignColPropName]: key })
-                .where(conditionOf(plan, filter, 'set'));
+                .where(conditionOf(plan, filter, 'set', scope));
             }
           }
 
           if (op['disconnect'] !== undefined) {
             if (plan.isOne) {
               if (op['disconnect'] === true) {
-                await detachAll(executor, plan, key);
+                await detachAll(executor, plan, key, scope);
               }
             } else {
               for (const filter of asArray(op['disconnect'])) {
                 await executor
                   .update(plan.targetTable)
                   .set({ [plan.foreignColPropName]: null })
-                  .where(and(eq(plan.foreignCol, key), conditionOf(plan, filter, 'disconnect')));
+                  .where(and(eq(plan.foreignCol, key), conditionOf(plan, filter, 'disconnect', scope)));
               }
             }
           }
@@ -602,7 +628,7 @@ export const createNestedWriteRuntime = (params: {
           // there — otherwise both rows point at this parent and the relation is ambiguous.
           const attaches = op['connect'] !== undefined || op['create'] !== undefined;
           if (plan.isOne && attaches && plan.canDetach && op['set'] === undefined) {
-            await detachAll(executor, plan, key);
+            await detachAll(executor, plan, key, scope);
           }
 
           if (op['connect'] !== undefined) {
@@ -610,13 +636,17 @@ export const createNestedWriteRuntime = (params: {
               await executor
                 .update(plan.targetTable)
                 .set({ [plan.foreignColPropName]: key })
-                .where(conditionOf(plan, filter, 'connect'));
+                .where(conditionOf(plan, filter, 'connect', scope));
             }
           }
 
           if (op['create'] !== undefined) {
             const rows = asArray(op['create']).map((row) => ({
-              ...remapFromGraphQLSingleInput({ ...row }, plan.targetTable),
+              ...applyContextValues(
+                remapFromGraphQLSingleInput({ ...row }, plan.targetTable),
+                contextValues?.(plan.targetTableName),
+                context,
+              ),
               [plan.foreignColPropName]: key,
             }));
             if (rows.length) {
@@ -645,15 +675,16 @@ export const writeWithNestedOps = async (params: {
   entries: { columns: Record<string, any>; ops: NestedOps }[];
   remapValues: (columns: Record<string, any>) => Record<string, any>;
   write: (executor: any, values: Record<string, any>) => Promise<Record<string, any>[]>;
+  context?: any;
 }): Promise<Record<string, any>[]> => {
-  const { executor, runtime, tableName, entries, remapValues, write } = params;
+  const { executor, runtime, tableName, entries, remapValues, write, context } = params;
 
   return executor.transaction(async (tx: any) => {
     const rows: Record<string, any>[] = [];
     for (const entry of entries) {
-      const patch = await runtime.applyParentSide(tx, tableName, entry.ops);
+      const patch = await runtime.applyParentSide(tx, tableName, entry.ops, context);
       const written = await write(tx, { ...remapValues(entry.columns), ...patch });
-      await runtime.applyChildSide(tx, tableName, entry.ops, written);
+      await runtime.applyChildSide(tx, tableName, entry.ops, written, context);
       rows.push(...written);
     }
     return rows;
@@ -673,13 +704,14 @@ export const updateWithNestedOps = async (params: {
   ops: NestedOps;
   remapValues: (columns: Record<string, any>) => Record<string, any>;
   write: (executor: any, values: Record<string, any>) => Promise<Record<string, any>[]>;
+  context?: any;
 }): Promise<Record<string, any>[]> => {
-  const { executor, runtime, tableName, columns, ops, remapValues, write } = params;
+  const { executor, runtime, tableName, columns, ops, remapValues, write, context } = params;
 
   return executor.transaction(async (tx: any) => {
-    const patch = await runtime.applyParentSide(tx, tableName, ops);
+    const patch = await runtime.applyParentSide(tx, tableName, ops, context);
     const rows = await write(tx, { ...remapValues(columns), ...patch });
-    await runtime.applyChildSide(tx, tableName, ops, rows);
+    await runtime.applyChildSide(tx, tableName, ops, rows, context);
     return rows;
   });
 };

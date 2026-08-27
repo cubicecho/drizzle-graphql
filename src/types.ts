@@ -795,6 +795,38 @@ export type LimitsConfig = TableLimitPolicy & {
 };
 
 /**
+ * What a {@link RowScope} may return: a Drizzle `SQL` expression, a filter object in the same
+ * shape as the generated `where` argument, or `undefined`/`null` for "no restriction".
+ *
+ * The filter-object form is compiled with the same code that compiles a client `where`, so it
+ * supports relation filters — `{ author: { orgId: { eq: 1 } } }` scopes a table through a join
+ * rather than a column it owns.
+ */
+export type RowScopeFilter = Record<string, any> | undefined | null;
+
+/**
+ * A per-table row scope: given the GraphQL context, the predicate every read and write of that
+ * table is confined to.
+ *
+ * `table` is the table instance the current statement runs against. For a relational read that
+ * is Drizzle's *aliased* copy of the table, so build the predicate from this argument rather
+ * than from the imported table object — `eq(table.orgId, ctx.orgId)` is always correct, while
+ * `eq(users.orgId, ctx.orgId)` refers to the wrong alias inside a nested read.
+ *
+ * See {@link BuildSchemaConfig.scope}.
+ */
+export type RowScope<TContext = any> = (context: TContext, table: any) => RowScopeFilter | object;
+
+/** {@link BuildSchemaConfig.scope} — a row scope per table, keyed by the Drizzle schema key. */
+export type ScopeConfig<TContext = any> = Record<string, RowScope<TContext>>;
+
+/**
+ * {@link BuildSchemaConfig.contextValues} — columns whose value the server derives from the
+ * request context, keyed by Drizzle schema key and then by column property name.
+ */
+export type ContextValuesConfig<TContext = any> = Record<string, Record<string, (context: TContext) => any>>;
+
+/**
  * {@link BuildSchemaConfig.exclude} — tables and columns to keep out of the generated schema.
  *
  * Both lists are keyed by the Drizzle schema key, not the database name and not the generated
@@ -1021,6 +1053,66 @@ export type BuildSchemaConfig = {
    *   agree.
    */
   limits?: LimitsConfig;
+  /**
+   * Row-level scoping: a predicate, derived from the GraphQL context, that every read and
+   * write of a table is confined to. This is the multi-tenancy / ownership knob — the one
+   * rule a wrapper cannot enforce from outside, because a nested relation field never passes
+   * through a root resolver.
+   *
+   * ```ts
+   * import { and, eq } from 'drizzle-orm';
+   *
+   * buildSchema(db, {
+   *   scope: {
+   *     posts: (ctx, table) => eq(table.orgId, ctx.orgId),
+   *     // A filter object works too, and can scope through a relation:
+   *     comments: (ctx) => ({ post: { orgId: { eq: ctx.orgId } } }),
+   *   },
+   * });
+   * ```
+   *
+   * - The predicate is ANDed on **last**, after the client's `where`, so a client filter can
+   *   only ever narrow the scope, never widen it.
+   * - It applies to every path that reads the table: list and single queries, aggregates and
+   *   `groupBy`, relation fields (batched and eager), relation aggregates, and cursor pages.
+   * - It applies to every path that writes it: `update`, `updateMany`, `delete`, the
+   *   conflict-update half of an upsert (PostgreSQL and SQLite), and the rows a nested
+   *   `connect` / `disconnect` / `set` is allowed to reach. An out-of-scope row is simply not
+   *   matched — a scoped `delete` reports zero rows rather than refusing.
+   * - It cannot apply to a plain `insert`: there is no existing row to filter. Use
+   *   {@link BuildSchemaConfig.contextValues} to stamp the owning column on the way in.
+   * - `table` is the table the current statement runs against, which for a relational read is
+   *   Drizzle's aliased copy — always build the predicate from that argument.
+   * - Returning `undefined` means "no restriction for this context", so a hook can let an
+   *   admin through. A table with no entry is unscoped.
+   * - MySQL's `ON DUPLICATE KEY UPDATE` takes no predicate, so a MySQL upsert cannot be
+   *   scoped on the conflict path; scope the table's `update` and rely on `contextValues`
+   *   for the insert half.
+   */
+  scope?: ScopeConfig;
+  /**
+   * Columns whose value the server derives from the request context rather than accepting
+   * from the client — the write-side half of {@link BuildSchemaConfig.scope}.
+   *
+   * ```ts
+   * buildSchema(db, {
+   *   contextValues: {
+   *     posts: {
+   *       orgId: (ctx) => ctx.orgId,
+   *       authorId: (ctx) => ctx.userId,
+   *     },
+   *   },
+   * });
+   * ```
+   *
+   * - The column is removed from the generated insert and update inputs, so a client cannot
+   *   send it at all — the schema itself documents that it is server-owned.
+   * - Every insert stamps it, including the rows created by a nested `create`.
+   * - Updates never write it: an update cannot hand a row to another owner.
+   * - Keyed by the Drizzle schema key, then by the column's property name (not its database
+   *   name), the same keying {@link BuildSchemaConfig.exclude} uses.
+   */
+  contextValues?: ContextValuesConfig;
   /**
    * Tables and columns to leave out of the generated schema entirely.
    *

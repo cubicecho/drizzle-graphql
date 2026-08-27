@@ -45,7 +45,7 @@ import {
   One,
   or,
   relationsFilterToSQL,
-  type SQL,
+  SQL,
   sql,
 } from 'drizzle-orm';
 import type { GraphQLFieldResolver } from 'graphql';
@@ -718,6 +718,7 @@ export const createRelationResolverFactory =
     tables: Record<string, Table>,
     filterCtx?: RelationFilterBase,
     limits?: LimitPolicyFor,
+    scopes?: ScopeFor,
   ): RelationResolverFactory =>
   ({ tableName, relationName, relEntry, isOne }) => {
     const parentTable = tables[tableName];
@@ -770,11 +771,18 @@ export const createRelationResolverFactory =
         // executor — the transaction on the context, when there is one.
         const executor = resolveExecutor(db, context);
         const uniqueIds = [...new Set(parentIds)];
-        const whereCondition = and(
-          inArray(foreignCol, uniqueIds),
-          whereArg
-            ? extractFilters(targetTable, targetTableName, whereArg, relationFilterCtx(filterCtx, targetTableName))
-            : undefined,
+        // Loaders are keyed per context too, so the scope resolved here is this request's.
+        const scope = resolveScope(scopes, context, filterCtx);
+        const whereCondition = withScope(
+          scope,
+          targetTableName,
+          targetTable,
+          and(
+            inArray(foreignCol, uniqueIds),
+            whereArg
+              ? extractFilters(targetTable, targetTableName, whereArg, relationFilterCtx(filterCtx, targetTableName))
+              : undefined,
+          ),
         );
 
         let rows: any[];
@@ -920,6 +928,11 @@ export interface TypeCacheCtx {
    * field is about without re-deriving the key from the Drizzle schema.
    */
   primaryKeyOf?: (tableName: string) => readonly string[];
+  /**
+   * The context-derived columns of a table, if any. Read when the create/update inputs are
+   * built: a column the server fills in is not part of either.
+   */
+  contextValuesOf?: ContextValuesFor;
 }
 
 /**
@@ -2338,13 +2351,21 @@ export const generateTableTypes = <WithReturning extends boolean>(
   const columns = visibleColumns(table);
   const columnEntries = Object.entries(columns);
 
+  // A column whose value comes from the request context is not part of any write input: the
+  // client cannot supply one on create, and cannot reassign one on update. It stays an
+  // ordinary column everywhere else — the output type, the filters, the ordering.
+  const contextColumns = cacheCtx.contextValuesOf?.(tableName);
+  const writableEntries = contextColumns
+    ? columnEntries.filter(([columnName]) => !(columnName in contextColumns))
+    : columnEntries;
+
   // A column a nested write can supply (`author: { create: … }` fills in `authorId`) cannot
   // stay required on the create input, or the two ways of setting it would be mutually
   // exclusive at the type level.
   const relaxedColumns = nestedWrites?.relaxedColumns(tableName);
 
   const insertFields = Object.fromEntries(
-    columnEntries.map(([columnName, column]) => {
+    writableEntries.map(([columnName, column]) => {
       const converted = drizzleColumnToGraphQLType(
         column,
         columnName,
@@ -2361,7 +2382,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   );
 
   const updateFields = Object.fromEntries(
-    columnEntries.map(([columnName, column]) => {
+    writableEntries.map(([columnName, column]) => {
       const converted = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, true);
       return [
         columnName,
@@ -3379,6 +3400,187 @@ export const extractFilters = <TTable extends Table>(
   return variants.length ? (variants.length > 1 ? and(...variants) : variants[0]) : undefined;
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Row-level scoping
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A table's row-level scope: the predicate every generated read, update and delete on that
+ * table is narrowed by. See `BuildSchemaConfig.scope`.
+ *
+ * `table` is the table the predicate must be built against. On the relational-query path
+ * drizzle hands its callbacks an *aliased* proxy (`d0`, `d1`, …), so a predicate built from
+ * the imported schema table would reference a name that isn't in the query — always build
+ * from the argument. Returning a filter object instead (the same shape as the field's
+ * `where`) sidesteps aliasing entirely, and is the only form that can reach through a
+ * relation — which is what ownership through a join table needs.
+ */
+export type ScopeHook<TContext = any> = (context: TContext, table: any) => SQL | Record<string, any> | undefined | null;
+
+/** Build-time lookup: the scope configured for a table, if any. */
+export type ScopeFor = (tableName: string) => ScopeHook | undefined;
+
+/**
+ * The scopes bound to one request's context. `has` answers "is this table scoped at all",
+ * cheaply and without evaluating anything; `on` compiles the predicate against a given table.
+ */
+export type ScopeResolver = {
+  has: (tableName: string) => boolean;
+  on: (tableName: string, table: Table) => SQL | undefined;
+};
+
+/**
+ * Binds the configured scopes to one request's GraphQL context. Returns `undefined` when no
+ * scope is configured at all, so every call site skips the machinery with a single check and
+ * an unscoped build generates exactly the SQL it did before.
+ */
+export const resolveScope = (
+  scopes: ScopeFor | undefined,
+  context: any,
+  filterCtx?: RelationFilterBase,
+): ScopeResolver | undefined => {
+  if (!scopes) {
+    return undefined;
+  }
+  return {
+    has: (tableName) => !!scopes(tableName),
+    on: (tableName, table) => {
+      const hook = scopes(tableName);
+      if (!hook) {
+        return undefined;
+      }
+      const predicate = hook(context, table);
+      if (predicate === undefined || predicate === null) {
+        return undefined;
+      }
+      if (is(predicate, SQL)) {
+        return predicate as SQL;
+      }
+      if (typeof predicate !== 'object') {
+        throw new GraphQLError(
+          `Drizzle-GraphQL Error: the scope for '${tableName}' returned a ${typeof predicate}. A scope returns a filter object, a Drizzle SQL expression, or undefined.`,
+        );
+      }
+      // A filter object is compiled the same way the field's own `where` is, against the
+      // table it was handed — which is what keeps it correct under RQB aliasing.
+      return extractFilters(table, tableName, predicate as any, relationFilterCtx(filterCtx, tableName));
+    },
+  };
+};
+
+/**
+ * `condition AND <the scope of tableName>` — the single way a scope is ever combined with a
+ * caller-supplied filter, so a `where` can only ever narrow the scope, never widen it.
+ */
+export const withScope = (
+  scope: ScopeResolver | undefined,
+  tableName: string,
+  table: Table,
+  condition: SQL | undefined,
+): SQL | undefined => {
+  const predicate = scope?.on(tableName, table);
+  return predicate ? and(condition, predicate) : condition;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Context-derived column values
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Produces one column's value from the GraphQL context. See `BuildSchemaConfig.contextValues`. */
+export type ContextValueHook<TContext = any> = (context: TContext) => any;
+
+/** Build-time lookup: the context-derived columns of a table, keyed by column property name. */
+export type ContextValuesFor = (tableName: string) => Record<string, ContextValueHook> | undefined;
+
+/**
+ * The two request-time policies a generated resolver applies, passed to the dialect
+ * generators as one value so a table's read scope and its server-owned columns travel
+ * together. Both stay `undefined` when nothing is configured, and every call site checks
+ * before doing any work — an unconfigured build generates exactly the SQL it did before.
+ */
+export type TablePolicies = {
+  /** See `BuildSchemaConfig.scope`. */
+  scope?: ScopeFor;
+  /** See `BuildSchemaConfig.contextValues`. */
+  contextValues?: ContextValuesFor;
+};
+
+/**
+ * {@link TablePolicies} with the scope already bound to the build's relation context, which
+ * is what a dialect generator is handed: `scope(context)` is all a resolver needs to compile
+ * a predicate, and it stays `undefined` when nothing is scoped.
+ */
+export type ResolverPolicies = {
+  scope?: (context: any) => ScopeResolver | undefined;
+  contextValues?: ContextValuesFor;
+};
+
+/** Binds a build's {@link TablePolicies} to its relation context, once, at schema-build time. */
+export const bindPolicies = (
+  policies: TablePolicies | undefined,
+  filterCtx: RelationFilterBase | undefined,
+): ResolverPolicies | undefined =>
+  policies?.scope || policies?.contextValues
+    ? {
+        scope: policies.scope ? (context: any) => resolveScope(policies.scope, context, filterCtx) : undefined,
+        contextValues: policies.contextValues,
+      }
+    : undefined;
+
+/**
+ * Merges a table's context-derived values into one row's insert values. The hooks run per
+ * row — a value may depend on the row's own contents through the closure the caller built —
+ * and they overwrite whatever was there: the columns are not in the create input, so nothing
+ * legitimate can be lost, but a stitched-in input could still carry the key and the server's
+ * value has to win.
+ */
+export const applyContextValues = (
+  values: Record<string, any>,
+  hooks: Record<string, ContextValueHook> | undefined,
+  context: any,
+): Record<string, any> => {
+  if (!hooks) {
+    return values;
+  }
+  for (const [columnName, hook] of Object.entries(hooks)) {
+    values[columnName] = hook(context);
+  }
+  return values;
+};
+
+/** {@link applyContextValues} over a batch — every row in an insert gets its own evaluation. */
+export const applyContextValuesAll = (
+  rows: Record<string, any>[],
+  hooks: Record<string, ContextValueHook> | undefined,
+  context: any,
+): Record<string, any>[] => {
+  if (!hooks) {
+    return rows;
+  }
+  for (const row of rows) {
+    applyContextValues(row, hooks, context);
+  }
+  return rows;
+};
+
+/**
+ * Drops context-derived columns from an update's `set`. They are not in the update input
+ * either, so this only matters when the key arrives some other way — and reassigning one is
+ * exactly the ownership transfer the feature exists to prevent.
+ */
+export const stripContextValues = (
+  values: Record<string, any>,
+  hooks: Record<string, ContextValueHook> | undefined,
+): Record<string, any> => {
+  if (!hooks) {
+    return values;
+  }
+  for (const columnName of Object.keys(hooks)) {
+    delete values[columnName];
+  }
+  return values;
+};
+
 const extractRelationsParamsInner = (
   relationMap: Record<string, Record<string, TableNamedRelations>>,
   tables: Record<string, Table>,
@@ -3389,6 +3591,7 @@ const extractRelationsParamsInner = (
   _isInitial: boolean = false,
   filterCtx?: RelationFilterBase,
   limits?: LimitPolicyFor,
+  scope?: ScopeResolver,
 ) => {
   const relationsForTable = relationMap[tableName];
   if (!relationsForTable) {
@@ -3465,12 +3668,23 @@ const extractRelationsParamsInner = (
     // references in the generated SQL match the CTE alias rather than the
     // original unaliased table name.
     const relWhere = relationArgs?.where;
-    thisRecord.where = relWhere
-      ? {
-          RAW: (aliasedTable: Table) =>
-            extractFilters(aliasedTable, relName, relWhere, relationFilterCtx(filterCtx, targetTableName)),
-        }
-      : undefined;
+    // The eager path is the one read that never passes through the relation field's own
+    // resolver, so the target's scope has to be applied here as well — otherwise selecting a
+    // relation would be the way around it.
+    thisRecord.where =
+      relWhere || scope?.has(targetTableName)
+        ? {
+            RAW: (aliasedTable: Table) =>
+              withScope(
+                scope,
+                targetTableName,
+                aliasedTable,
+                relWhere
+                  ? extractFilters(aliasedTable, relName, relWhere, relationFilterCtx(filterCtx, targetTableName))
+                  : undefined,
+              ),
+          }
+        : undefined;
     // When a relation is paginated (limit/offset) but unordered, default to the target's
     // primary key so the per-parent slice is deterministic. Drizzle's RQB calls orderBy
     // with the aliased table proxy, so resolve the PK columns from it. targetPkNames is
@@ -3497,6 +3711,7 @@ const extractRelationsParamsInner = (
           false,
           filterCtx,
           limits,
+          scope,
         )
       : undefined;
     thisRecord.with = relWith;
@@ -3516,6 +3731,7 @@ export const extractRelationsParams = (
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
   limits?: LimitPolicyFor,
+  scope?: ScopeResolver,
 ): Record<string, Partial<ProcessedTableSelectArgs>> | undefined => {
   if (!info) {
     return undefined;
@@ -3531,6 +3747,7 @@ export const extractRelationsParams = (
     true,
     filterCtx,
     limits,
+    scope,
   );
 };
 
@@ -4320,6 +4537,7 @@ export const prepareMutationRelationColumns = (params: {
   pkNames: readonly string[];
   parsedInfo: ResolveTree;
   limits?: LimitPolicyFor;
+  scope?: ScopeResolver;
 }): {
   columns: Record<string, Column>;
   hasRelations: boolean;
@@ -4336,6 +4554,7 @@ export const prepareMutationRelationColumns = (params: {
         typeNameMapper,
         undefined,
         params.limits,
+        params.scope,
       )
     : undefined;
   const hasRelations = !!(withParams && Object.keys(withParams).length);
@@ -4624,6 +4843,7 @@ export const runRelationalSelect = async (opts: {
   after?: string;
   nullOrdering?: NullOrdering;
   limits?: LimitPolicyFor;
+  scope?: ScopeResolver;
 }): Promise<any> => {
   const {
     queryBase,
@@ -4641,6 +4861,7 @@ export const runRelationalSelect = async (opts: {
     filterCtx,
     pkNames,
     after,
+    scope,
   } = opts;
   const distinct = opts.distinct?.length ? opts.distinct : undefined;
 
@@ -4688,7 +4909,12 @@ export const runRelationalSelect = async (opts: {
       tableName,
       distinct,
       pkNames: pkNames ?? [],
-      where: where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
+      where: withScope(
+        scope,
+        tableName,
+        table,
+        where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
+      ),
       orderBy,
       limit: single ? 1 : opts.limit,
       offset,
@@ -4725,22 +4951,28 @@ export const runRelationalSelect = async (opts: {
             ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
             : undefined,
     where: distinctKeys
-      ? { RAW: (aliasedTable: Table) => primaryKeyRestriction(aliasedTable, pkNames!, distinctKeys!) }
-      : where || cursorValues
+      ? // The distinct pass already ran inside the scope, so the keys it picked are in it.
+        { RAW: (aliasedTable: Table) => primaryKeyRestriction(aliasedTable, pkNames!, distinctKeys!) }
+      : where || cursorValues || scope?.has(tableName)
         ? {
             RAW: (aliasedTable: Table) =>
-              and(
-                where
-                  ? extractFilters(aliasedTable, tableName, where, relationFilterCtx(filterCtx, tableName))
-                  : undefined,
-                cursorValues
-                  ? buildCursorCondition(
-                      aliasedTable,
-                      cursorEntries!,
-                      cursorValues,
-                      opts.nullOrdering ?? 'nulls-smallest',
-                    )
-                  : undefined,
+              withScope(
+                scope,
+                tableName,
+                aliasedTable,
+                and(
+                  where
+                    ? extractFilters(aliasedTable, tableName, where, relationFilterCtx(filterCtx, tableName))
+                    : undefined,
+                  cursorValues
+                    ? buildCursorCondition(
+                        aliasedTable,
+                        cursorEntries!,
+                        cursorValues,
+                        opts.nullOrdering ?? 'nulls-smallest',
+                      )
+                    : undefined,
+                ),
               ),
           }
         : undefined,
@@ -4754,6 +4986,7 @@ export const runRelationalSelect = async (opts: {
           typeNameMapper,
           filterCtx,
           opts.limits,
+          scope,
         )
       : undefined,
   };

@@ -18,7 +18,7 @@ import type {
   ScalarOverridesConfig,
   SchemaDocs,
 } from '../type-converter/types.ts';
-import type { LimitPolicyFor, ResolvedComplexityOptions } from './common.ts';
+import type { LimitPolicyFor, ResolvedComplexityOptions, TablePolicies } from './common.ts';
 // import type {
 //   ConvertedColumn,
 //   ConvertedRelationColumnWithArgs,
@@ -92,6 +92,12 @@ export type SchemaGeneratorOptions = {
    * `registerColumnExclusions` and read from there by every schema-shape site.
    */
   exclude?: SchemaExclusions;
+  /**
+   * Resolved `BuildSchemaConfig.scope` and `BuildSchemaConfig.contextValues` — the row-level
+   * read scope and the server-owned columns, looked up per table. Both are `undefined` when
+   * neither is configured.
+   */
+  policies?: TablePolicies;
 };
 
 export type TableNamedRelations = {

@@ -17,9 +17,12 @@ import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import type { GeneratedEntities } from '../../types.ts';
 import {
   aggregateFieldComplexity,
+  applyContextValues,
+  applyContextValuesAll,
   applyLimitPolicy,
   assertSingleMatch,
   attachTargetPrimaryKeys,
+  bindPolicies,
   buildNamedRelations,
   computeResolverFieldNames,
   createMutationTxCtx,
@@ -40,6 +43,7 @@ import {
   type RelationAggregateFactory,
   type RelationFilterBase,
   type RelationResolverFactory,
+  type ResolverPolicies,
   registerColumnExclusions,
   relationFilterCtx,
   resolveConflictPlan,
@@ -48,10 +52,12 @@ import {
   runRelationalSelect,
   selectArrayArgs,
   selectSingleArgs,
+  stripContextValues,
   type TablesRelationalConfig,
   type TypeCacheCtx,
   type TypeNameMapper,
   toGraphQLError,
+  withScope,
 } from '../builders/common.ts';
 import { remapFromGraphQLArrayInput, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
 import { type DrizzleMutationMeta, tableFieldExtensions } from '../extensions.ts';
@@ -88,6 +94,7 @@ const generateSelectArray = (
   filterCtx?: RelationFilterBase,
   distinctEnabled: boolean = true,
   limits?: LimitPolicyFor,
+  policies?: ResolverPolicies,
 ): CreatedResolver => {
   const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
     | RelationalQueryBuilder<any, any, any>
@@ -127,6 +134,7 @@ const generateSelectArray = (
           single: false,
           filterCtx,
           limits,
+          scope: policies?.scope?.(context),
           pkNames,
           db: executor,
           // MySQL sorts NULLs as the smallest values (first in ASC).
@@ -152,6 +160,7 @@ const generateSelectSingle = (
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
   limits?: LimitPolicyFor,
+  policies?: ResolverPolicies,
 ): CreatedResolver => {
   const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
     | RelationalQueryBuilder<any, any, any>
@@ -186,6 +195,7 @@ const generateSelectSingle = (
           single: true,
           filterCtx,
           limits,
+          scope: policies?.scope?.(context),
           pkNames,
           db: executor,
         });
@@ -199,11 +209,12 @@ const generateSelectSingle = (
 
 const generateInsertArray = (
   db: MySqlDatabase<any, any, any, any>,
-  _tableName: string,
+  tableName: string,
   table: MySqlTable,
   baseType: GraphQLInputObjectType,
   fieldName: string,
   txCtx?: MutationTxCtx,
+  policies?: ResolverPolicies,
 ): CreatedResolver => {
   const queryArgs: GraphQLFieldConfigArgumentMap = {
     values: {
@@ -216,7 +227,11 @@ const generateInsertArray = (
     resolver: async (_source, args: { values: Record<string, any>[] }, context, info) => {
       try {
         return await runMutation(db, context, info, txCtx, async (executor) => {
-          const input = remapFromGraphQLArrayInput(args.values, table);
+          const input = applyContextValuesAll(
+            remapFromGraphQLArrayInput(args.values, table),
+            policies?.contextValues?.(tableName),
+            context,
+          );
           if (!input.length) {
             throw new GraphQLError('No values were provided!');
           }
@@ -235,11 +250,12 @@ const generateInsertArray = (
 
 const generateInsertSingle = (
   db: MySqlDatabase<any, any, any, any>,
-  _tableName: string,
+  tableName: string,
   table: MySqlTable,
   baseType: GraphQLInputObjectType,
   fieldName: string,
   txCtx?: MutationTxCtx,
+  policies?: ResolverPolicies,
 ): CreatedResolver => {
   const queryArgs: GraphQLFieldConfigArgumentMap = {
     values: {
@@ -252,7 +268,11 @@ const generateInsertSingle = (
     resolver: async (_source, args: { values: Record<string, any> }, context, info) => {
       try {
         return await runMutation(db, context, info, txCtx, async (executor) => {
-          const input = remapFromGraphQLSingleInput(args.values, table);
+          const input = applyContextValues(
+            remapFromGraphQLSingleInput(args.values, table),
+            policies?.contextValues?.(tableName),
+            context,
+          );
 
           await executor.insert(table).values(input);
 
@@ -268,12 +288,14 @@ const generateInsertSingle = (
 
 const generateUpsert = (
   db: MySqlDatabase<any, any, any, any>,
+  tableName: string,
   table: MySqlTable,
   baseType: GraphQLInputObjectType,
   onConflictType: GraphQLInputObjectType,
   fieldName: string,
   single: boolean,
   txCtx?: MutationTxCtx,
+  policies?: ResolverPolicies,
 ): CreatedResolver => {
   const queryArgs: GraphQLFieldConfigArgumentMap = {
     values: {
@@ -297,9 +319,13 @@ const generateUpsert = (
     ) => {
       try {
         return await runMutation(db, context, info, txCtx, async (executor) => {
-          const input = single
-            ? [remapFromGraphQLSingleInput(args.values as Record<string, any>, table)]
-            : remapFromGraphQLArrayInput(args.values as Record<string, any>[], table);
+          const input = applyContextValuesAll(
+            single
+              ? [remapFromGraphQLSingleInput(args.values as Record<string, any>, table)]
+              : remapFromGraphQLArrayInput(args.values as Record<string, any>[], table),
+            policies?.contextValues?.(tableName),
+            context,
+          );
           if (!input.length) {
             throw new GraphQLError('No values were provided!');
           }
@@ -344,6 +370,7 @@ const generateUpdate = (
   requireWhere: boolean,
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
+  policies?: ResolverPolicies,
 ): CreatedResolver => {
   const queryArgs = {
     set: {
@@ -360,19 +387,30 @@ const generateUpdate = (
       try {
         return await runMutation(db, context, info, txCtx, async (executor) => {
           const { where, set } = args;
+          const scope = policies?.scope?.(context);
 
-          const input = remapFromGraphQLSingleInput(set, table);
+          // A context-derived column is the server's to set, so an update never reassigns
+          // one — that is what stops a row being handed to another owner.
+          const input = stripContextValues(
+            remapFromGraphQLSingleInput(set, table),
+            policies?.contextValues?.(tableName),
+          );
           if (!Object.keys(input).length) {
             throw new GraphQLError('Unable to update with no values specified!');
           }
 
           const relationCtx = relationFilterCtx(filterCtx, tableName);
-          const filters =
+          // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
+          const filters = withScope(
+            scope,
+            tableName,
+            table,
             single || requireWhere
               ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
               : where
                 ? extractFilters(table, tableName, where, relationCtx)
-                : undefined;
+                : undefined,
+          );
 
           if (single) {
             await assertSingleMatch(executor, table, filters!, fieldName);
@@ -412,6 +450,7 @@ const generateUpdateMany = (
   fieldName: string,
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
+  policies?: ResolverPolicies,
 ): CreatedResolver => {
   const queryArgs = {
     updates: {
@@ -433,19 +472,24 @@ const generateUpdateMany = (
           if (!updates.length) {
             throw new GraphQLError('No updates were provided!');
           }
+          const scope = policies?.scope?.(context);
+          const contextColumns = policies?.contextValues?.(tableName);
 
           // Remap and validate every entry before the transaction opens, so a malformed
           // entry rejects the request instead of rolling back mid-batch.
           const entries = updates.map(({ where, set }) => {
-            const input = remapFromGraphQLSingleInput(set, table);
+            const input = stripContextValues(remapFromGraphQLSingleInput(set, table), contextColumns);
             if (!Object.keys(input).length) {
               throw new GraphQLError('Unable to update with no values specified!');
             }
             return {
               set: input,
-              filters: where
-                ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))
-                : undefined,
+              filters: withScope(
+                scope,
+                tableName,
+                table,
+                where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
+              ),
             };
           });
 
@@ -482,6 +526,7 @@ const generateDelete = (
   requireWhere: boolean,
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
+  policies?: ResolverPolicies,
 ): CreatedResolver => {
   const queryArgs = {
     where: {
@@ -495,14 +540,21 @@ const generateDelete = (
       try {
         return await runMutation(db, context, info, txCtx, async (executor) => {
           const { where } = args;
+          const scope = policies?.scope?.(context);
 
           const relationCtx = relationFilterCtx(filterCtx, tableName);
-          const filters =
+          // Same rule as update: the scope is ANDed on last, so a delete can only ever reach
+          // rows inside it — an out-of-scope row is not matched rather than being refused.
+          const filters = withScope(
+            scope,
+            tableName,
+            table,
             single || requireWhere
               ? extractRequiredFilters(table, tableName, where, fieldName, relationCtx)
               : where
                 ? extractFilters(table, tableName, where, relationCtx)
-                : undefined;
+                : undefined,
+          );
 
           if (single) {
             await assertSingleMatch(executor, table, filters!, fieldName);
@@ -598,7 +650,13 @@ export const generateSchemaData = <
 
   const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations };
 
-  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(db, tables, filterCtx, limits);
+  // The row scope compiled against this build's relation graph, plus the columns whose value
+  // the server supplies. Both stay undefined unless configured.
+  const scopes = options.policies?.scope;
+  const contextValuesOf = options.policies?.contextValues;
+  const policies = bindPolicies(options.policies, filterCtx);
+
+  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(db, tables, filterCtx, limits, scopes);
 
   // Fresh cache per generateSchemaData call — prevents type name collisions
   // when buildSchema() is called multiple times.
@@ -618,13 +676,14 @@ export const generateSchemaData = <
     limits,
     docs: options.docs ?? {},
     primaryKeyOf: (name) => (tables[name] ? mysqlPrimaryKeyPropNames(tables[name] as MySqlTable) : []),
+    contextValuesOf,
   };
 
   // Built when at least one table wants relation aggregates; a table that has them off is
   // handed `undefined` below, so `generateTableTypes` emits no `${relation}Aggregate` fields
   // on its object type.
   const relationAggregateFactory: RelationAggregateFactory | undefined = anyTable('relationAggregates')
-    ? createRelationAggregateFactory(db, tables, cacheCtx, typeNameMapper, filterCtx)
+    ? createRelationAggregateFactory(db, tables, cacheCtx, typeNameMapper, filterCtx, scopes)
     : undefined;
 
   const queries: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
@@ -708,6 +767,7 @@ export const generateSchemaData = <
       filterCtx,
       tableFeatures.distinct,
       limits,
+      policies,
     );
     const selectSingleGenerated = generateSelectSingle(
       db,
@@ -721,6 +781,7 @@ export const generateSchemaData = <
       typeNameMapper,
       filterCtx,
       limits,
+      policies,
     );
     const insertArrGenerated = tableFeatures.insert
       ? generateInsertArray(
@@ -730,6 +791,7 @@ export const generateSchemaData = <
           insertInput,
           createArrayFieldName,
           mutationTxCtx,
+          policies,
         )
       : undefined;
     const insertSingleGenerated = tableFeatures.insert
@@ -740,6 +802,7 @@ export const generateSchemaData = <
           insertInput,
           createSingleFieldName,
           mutationTxCtx,
+          policies,
         )
       : undefined;
     // MySQL detects a conflict on any unique key, so unlike PostgreSQL and SQLite every
@@ -756,23 +819,27 @@ export const generateSchemaData = <
     const upsertArrGenerated = onConflictInput
       ? generateUpsert(
           db,
+          tableName,
           schema[tableName] as MySqlTable,
           insertInput,
           onConflictInput,
           upsertArrayFieldName,
           false,
           mutationTxCtx,
+          policies,
         )
       : undefined;
     const upsertSingleGenerated = onConflictInput
       ? generateUpsert(
           db,
+          tableName,
           schema[tableName] as MySqlTable,
           insertInput,
           onConflictInput,
           upsertSingleFieldName,
           true,
           mutationTxCtx,
+          policies,
         )
       : undefined;
     const updateGenerated = tableFeatures.update
@@ -787,6 +854,7 @@ export const generateSchemaData = <
           tableFeatures.requireWhere,
           filterCtx,
           mutationTxCtx,
+          policies,
         )
       : undefined;
     const updateSingleGenerated = tableFeatures.update
@@ -801,6 +869,7 @@ export const generateSchemaData = <
           tableFeatures.requireWhere,
           filterCtx,
           mutationTxCtx,
+          policies,
         )
       : undefined;
     // The batch update reuses the update `set` input, so it needs `update` on too.
@@ -817,6 +886,7 @@ export const generateSchemaData = <
           updateManyFieldName,
           filterCtx,
           mutationTxCtx,
+          policies,
         )
       : undefined;
     const deleteGenerated = tableFeatures.delete
@@ -830,6 +900,7 @@ export const generateSchemaData = <
           tableFeatures.requireWhere,
           filterCtx,
           mutationTxCtx,
+          policies,
         )
       : undefined;
     const deleteSingleGenerated = tableFeatures.delete
@@ -843,6 +914,7 @@ export const generateSchemaData = <
           tableFeatures.requireWhere,
           filterCtx,
           mutationTxCtx,
+          policies,
         )
       : undefined;
     const aggregateType = tableFeatures.aggregates
@@ -857,6 +929,7 @@ export const generateSchemaData = <
           aggregateFieldName,
           tableFilters,
           filterCtx,
+          scopes,
         )
       : undefined;
 
@@ -883,6 +956,7 @@ export const generateSchemaData = <
             groupByEnum,
             havingInput,
             filterCtx,
+            scopes,
           )
         : undefined;
 
