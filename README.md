@@ -124,6 +124,60 @@ const { schema } = buildSchema(db, {
     `mutations: false`
 -   List and single queries are always generated, so `Query` is never empty
 
+## Excluding tables and columns
+
+`features` decides which *kinds* of operation exist. `exclude` decides which tables and
+columns exist at all — for the table holding session tokens, or the column holding a
+password hash:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    exclude: {
+        tables: ['magicLinks', 'sessions'],
+        columns: { apiKeys: ['keyHash'] },
+    },
+})
+```
+
+Both lists are keyed by the **Drizzle schema key**, not the database name and not the
+generated GraphQL name.
+
+An excluded **table** generates nothing: no object type, no queries, no mutations, no
+aggregates, and no relation field on any other table that points at it. `Users.sessions`
+is gone, and so is `users(where: { sessions: { … } })` — the table is unreachable, not
+merely unnamed.
+
+An excluded **column** disappears from every surface at once:
+
+| Surface | Effect |
+| --- | --- |
+| `<Type>` object type | field removed |
+| `Create<Type>Input` / `Update<Type>Input` | field removed (nested-write payloads too) |
+| `<Type>Filters` | field removed |
+| `<Type>OrderBy` | field removed |
+| `<Type>MinAggregate` / `<Type>MaxAggregate` / … | field removed |
+| `<Type>DistinctColumn` / `<Type>GroupByColumn` | value removed |
+| `<Type>ConflictColumn` (upsert targets) | value removed |
+
+Two details worth stating plainly:
+
+-   **The exclusion is all-or-nothing on purpose.** A column you can filter on but not
+    select is an oracle: `where: { keyHash: { eq: '…' } }` confirms a value without ever
+    returning it. Ordering and grouping leak the same way, more slowly. There is no
+    read-only or write-only variant of `exclude` for this reason.
+-   **Nothing changes below the schema.** An excluded column is still written by its
+    default, still read by the primary-key and cursor machinery, and still usable by your
+    own resolvers. Only the generated schema stops mentioning it.
+
+Names that match nothing throw at build time, so renaming a column fails the build instead
+of quietly un-hiding it. Excluding a `NOT NULL` column with no default is allowed — the
+table becomes readable but not insertable — and warns on the console, since that is more
+often a mistake than a plan.
+
+> `exclude` is a static decision: the column is absent for every caller. Deciding per
+> request who may see what is a job for [`graphql-shield`](https://the-guild.dev/graphql/shield)
+> or an equivalent layer above the schema, which has the request context this library
+> does not.
 ## Naming
 
 Type and field names are derived from the Drizzle schema keys. Three options change them.

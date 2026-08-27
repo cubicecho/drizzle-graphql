@@ -56,6 +56,7 @@ import {
   type RelationAggregateFactory,
   type RelationFilterBase,
   type RelationResolverFactory,
+  registerColumnExclusions,
   relationFilterCtx,
   resolveConflictPlan,
   resolveQueryExecutor,
@@ -1055,7 +1056,14 @@ export function generateSchemaData<
     limits,
   } = options;
   const schemaEntries = Object.entries(schema);
-  const tableEntries = schemaEntries.filter(([_key, value]) => is(value, PgTable)) as [string, PgTable][];
+  // Excluded tables are dropped here, before anything reads `tableEntries` — which also makes
+  // `buildNamedRelations` skip every relation pointing at one, since it resolves targets
+  // through this list.
+  const excludedTables = new Set(options.exclude?.tables ?? []);
+  const tableEntries = schemaEntries.filter(([key, value]) => is(value, PgTable) && !excludedTables.has(key)) as [
+    string,
+    PgTable,
+  ][];
   const tables = Object.fromEntries(tableEntries) as Record<string, PgTable>;
 
   if (!tableEntries.length) {
@@ -1070,10 +1078,18 @@ export function generateSchemaData<
   // Same lifecycle: the enum registry is per-build, so a second build never reuses the first
   // build's enum types (and with them its naming decisions).
   registerEnumConfig(options);
+  // And the same for column exclusions: a per-build registry read by every site that decides
+  // what the schema contains, reset here so a rebuild never inherits the previous build's.
+  registerColumnExclusions(tables, options.exclude);
 
   // Flatten drizzle-orm v1 TablesRelationalConfig into the canonical shape
   // used throughout common.ts: Record<tableName, Record<relName, TableNamedRelations>>
   const namedRelations = buildNamedRelations(relations ?? {}, tableEntries);
+  // Relations *into* an excluded table are already gone (their target no longer resolves);
+  // relations *out of* one have no type left to hang a field on.
+  for (const excluded of excludedTables) {
+    delete namedRelations[excluded];
+  }
   // Record each relation target's primary key (composite-aware) so paginated relations
   // default to a deterministic PK order. Must run before pruning / type generation, which
   // share these entry objects.

@@ -42,6 +42,7 @@ import {
   type RelationAggregateFactory,
   type RelationFilterBase,
   type RelationResolverFactory,
+  registerColumnExclusions,
   relationFilterCtx,
   resolveConflictPlan,
   resolveQueryExecutor,
@@ -542,7 +543,14 @@ export const generateSchemaData = <
   const rawSchema = schema;
   const schemaEntries = Object.entries(rawSchema);
 
-  const tableEntries = schemaEntries.filter(([_key, value]) => is(value, MySqlTable)) as [string, MySqlTable][];
+  // Excluded tables are dropped here, before anything reads `tableEntries` — which also makes
+  // `buildNamedRelations` skip every relation pointing at one, since it resolves targets
+  // through this list.
+  const excludedTables = new Set(options.exclude?.tables ?? []);
+  const tableEntries = schemaEntries.filter(([key, value]) => is(value, MySqlTable) && !excludedTables.has(key)) as [
+    string,
+    MySqlTable,
+  ][];
   const tables = Object.fromEntries(tableEntries);
 
   if (!tableEntries.length) {
@@ -565,9 +573,17 @@ export const generateSchemaData = <
   // Same lifecycle: the enum registry is per-build, so a second build never reuses the first
   // build's enum types (and with them its naming decisions).
   registerEnumConfig(options);
+  // And the same for column exclusions: a per-build registry read by every site that decides
+  // what the schema contains, reset here so a rebuild never inherits the previous build's.
+  registerColumnExclusions(tables, options.exclude);
 
   // Build namedRelations from the drizzle-orm v1 relations config.
   const namedRelations = buildNamedRelations(relations ?? {}, tableEntries);
+  // Relations *into* an excluded table are already gone (their target no longer resolves);
+  // relations *out of* one have no type left to hang a field on.
+  for (const excluded of excludedTables) {
+    delete namedRelations[excluded];
+  }
   // Record each relation target's (composite-aware) primary key for deterministic
   // paginated ordering. Must run before pruning / type generation (shared entry objects).
   attachTargetPrimaryKeys(namedRelations, tables, mysqlPrimaryKeyPropNames);

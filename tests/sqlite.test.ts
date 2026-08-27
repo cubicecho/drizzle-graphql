@@ -4988,3 +4988,31 @@ describe.sequential('limit policy', () => {
     });
   }
 });
+
+describe.sequential('schema exclusions', () => {
+  it('drops an excluded table along with the relation fields pointing at it', async () => {
+    const { schema: gqlSchema } = buildSchema(ctx.db, { exclude: { tables: ['Customers'] } });
+
+    expect(gqlSchema.getType('Customers')).toBeUndefined();
+    expect(Object.keys(gqlSchema.getQueryType()!.getFields())).not.toContain('customers');
+    expect(Object.keys((gqlSchema.getType('Users') as GraphQLObjectType).getFields())).not.toContain('customer');
+
+    const res = await graphql({ schema: gqlSchema, source: `{ users { id posts { id } } }`, contextValue: {} });
+    expect(res.errors).toBeUndefined();
+  });
+
+  it('drops an excluded column from every surface at once', async () => {
+    const { schema: gqlSchema } = buildSchema(ctx.db, { exclude: { columns: { Posts: ['content'] } } });
+    const fields = (name: string) =>
+      Object.keys((gqlSchema.getType(name) as GraphQLObjectType | GraphQLInputObjectType).getFields());
+
+    expect(fields('Posts')).not.toContain('content');
+    expect(fields('PostsFilters')).not.toContain('content');
+    expect(fields('PostsOrderBy')).not.toContain('content');
+    expect(fields('CreatePostsInput')).not.toContain('content');
+    expect(fields('UpdatePostsInput')).not.toContain('content');
+
+    const res = await graphql({ schema: gqlSchema, source: `{ posts { id content } }`, contextValue: {} });
+    expect(res.errors?.[0]?.message).toMatch(/Cannot query field "content"/);
+  });
+});

@@ -29,6 +29,7 @@ import {
   resolveTypeName,
   type TypeCacheCtx,
   type TypeNameMapper,
+  visibleColumns,
 } from './common.ts';
 import type { TableNamedRelations } from './types.ts';
 
@@ -260,7 +261,7 @@ export const createNestedWriteTypes = (params: {
 
     const omitted = plan.fkSide === 'child' ? plan.foreignColPropName : undefined;
     const fields = Object.fromEntries(
-      Object.entries(getColumns(plan.targetTable))
+      Object.entries(visibleColumns(plan.targetTable))
         .filter(([columnName]) => columnName !== omitted)
         .map(([columnName, column]) => [
           columnName,
