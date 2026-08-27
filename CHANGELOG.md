@@ -1,3 +1,10 @@
+# [7.6.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.5.0...v7.6.0) (2026-08-27)
+
+
+### Features
+
+* row scoping and server-owned column values ([e2d33fc](https://github.com/cubicecho/drizzle-graphql/commit/e2d33fcfe08fe194bb2af92aef7bc910e3f92a32))
+
 # [7.5.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.4.0...v7.5.0) (2026-08-27)
 
 
