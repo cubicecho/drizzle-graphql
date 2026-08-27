@@ -7,8 +7,10 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     globalSetup: ['tests/globalSetup.ts'],
     isolate: true,
+    // `expectTypeOf` assertions are compile-time only; `npm run typecheck` is what
+    // actually enforces them (tests/tsconfig.json is the project that includes tests/).
     typecheck: {
-      tsconfig: 'tsconfig.json',
+      tsconfig: 'tests/tsconfig.json',
     },
     testTimeout: 100000,
     hookTimeout: 120000,

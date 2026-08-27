@@ -9,7 +9,7 @@ import {
   GraphQLSchema,
   type GraphQLSchemaConfig,
 } from 'graphql';
-import type { AnyDrizzleDB, BuildSchemaConfig, GeneratedData, TableLimitPolicy } from './types.ts';
+import type { AnyDrizzleDB, BuildSchemaConfig, GeneratedData, GeneratedEntities, TableLimitPolicy } from './types.ts';
 import {
   applyErrorMapper,
   DEFAULT_TRANSACTION_TIMEOUT_MS,
@@ -597,5 +597,8 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
 
   const outputSchema = new GraphQLSchema(graphQLSchemaConfig);
 
-  return { schema: outputSchema, entities: generatorOutput };
+  // The three dialect generators are typed on their own dialect's database, so their union
+  // does not structurally match `GeneratedEntities<TDbClient>` for a still-generic TDbClient.
+  // The runtime branch above is what guarantees the right one was built.
+  return { schema: outputSchema, entities: generatorOutput as unknown as GeneratedEntities<TDbClient> };
 };

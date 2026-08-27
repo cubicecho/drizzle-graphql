@@ -10,6 +10,7 @@
     "prepare": "npm run build",
     "pack": "(cd dist && npm pack --pack-destination ..) && rm -f package.tgz && mv *.tgz package.tgz",
     "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tests/tsconfig.json",
     "server-test:pg": "DB_TYPE=pg tsx watch server/server.ts",
     "server-test:mysql": "DB_TYPE=mysql tsx watch server/server.ts",
     "server-test:sqlite": "DB_TYPE=sqlite tsx watch server/server.ts",

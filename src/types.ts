@@ -53,9 +53,23 @@ export type AnyQueryBuiler<TConfig extends TablesRelationalConfig = any, TFields
   | MySqlQuery<any, TConfig, TFields>
   | SQLiteQuery<any, TConfig, TFields>;
 
-export type ExtractTables<TSchema extends Record<string, Table | unknown>> = {
-  [K in keyof TSchema as TSchema[K] extends Table ? K : never]: TSchema[K] extends Table ? TSchema[K] : never;
-};
+/**
+ * The tables a database handle knows about, keyed by their schema key.
+ *
+ * Two shapes reach this type, because drizzle-orm v1 changed what a database's generic slot
+ * holds. SQLite and MySQL handles still carry the schema module itself, so the tables are
+ * picked out of it directly. PostgreSQL handles carry only the relations config built by
+ * `buildRelations` — a `Record<string, { table; name; relations }>` — so the tables are read
+ * off its `table` members instead. Without the second branch every PG-derived type collapses
+ * to `never`.
+ */
+export type ExtractTables<TSchema extends Record<string, Table | unknown>> = TSchema extends TablesRelationalConfig
+  ? {
+      [K in keyof TSchema]: TSchema[K]['table'] extends infer TTable extends Table ? TTable : never;
+    }
+  : {
+      [K in keyof TSchema as TSchema[K] extends Table ? K : never]: TSchema[K] extends Table ? TSchema[K] : never;
+    };
 
 export type ExtractRelations<TSchema extends Record<string, Table | unknown>> = {
   [K in keyof TSchema as TSchema[K] extends Relations ? K : never]: TSchema[K] extends Relations ? TSchema[K] : never;
@@ -316,7 +330,7 @@ export type QueriesCore<
 > = {
   [TName in keyof TSchemaTables as TName extends string ? `${Uncapitalize<TName>}` : never]: TName extends string
     ? {
-        type: GraphQLNonNull<GraphQLList<GraphQLNonNull<TOutputs[`${Capitalize<TName>}SelectItem`]>>>;
+        type: GraphQLNonNull<GraphQLList<GraphQLNonNull<TOutputs[Capitalize<TName>]>>>;
         args: {
           offset: {
             type: GraphQLScalarType<number, number>;
@@ -348,7 +362,7 @@ export type QueriesCore<
 } & {
   [TName in keyof TSchemaTables as TName extends string ? `${Uncapitalize<TName>}Single` : never]: TName extends string
     ? {
-        type: TOutputs[`${Capitalize<TName>}SelectItem`];
+        type: TOutputs[Capitalize<TName>];
         args: {
           offset: {
             type: GraphQLScalarType<number, number>;
@@ -405,10 +419,10 @@ export type MutationsCore<
           ? TOutputs['MutationReturn'] extends GraphQLObjectType
             ? TOutputs['MutationReturn']
             : never
-          : GraphQLNonNull<GraphQLList<GraphQLNonNull<TOutputs[`${Capitalize<TName>}Item`]>>>;
+          : GraphQLNonNull<GraphQLList<GraphQLNonNull<TOutputs[Capitalize<TName>]>>>;
         args: {
           values: {
-            type: GraphQLNonNull<GraphQLList<GraphQLNonNull<TInputs[`${Capitalize<TName>}InsertInput`]>>>;
+            type: GraphQLNonNull<GraphQLList<GraphQLNonNull<TInputs[`Create${Capitalize<TName>}Input`]>>>;
           };
         };
         resolve: InsertArrResolver<TSchemaTables[TName], IsReturnless>;
@@ -423,11 +437,11 @@ export type MutationsCore<
           ? TOutputs['MutationReturn'] extends GraphQLObjectType
             ? TOutputs['MutationReturn']
             : never
-          : TOutputs[`${Capitalize<TName>}Item`];
+          : TOutputs[Capitalize<TName>];
 
         args: {
           values: {
-            type: GraphQLNonNull<TInputs[`${Capitalize<TName>}InsertInput`]>;
+            type: GraphQLNonNull<TInputs[`Create${Capitalize<TName>}Input`]>;
           };
         };
         resolve: InsertResolver<TSchemaTables[TName], IsReturnless>;
@@ -442,10 +456,10 @@ export type MutationsCore<
           ? TOutputs['MutationReturn'] extends GraphQLObjectType
             ? TOutputs['MutationReturn']
             : never
-          : GraphQLNonNull<GraphQLList<GraphQLNonNull<TOutputs[`${Capitalize<TName>}Item`]>>>;
+          : GraphQLNonNull<GraphQLList<GraphQLNonNull<TOutputs[Capitalize<TName>]>>>;
         args: {
           values: {
-            type: GraphQLNonNull<GraphQLList<GraphQLNonNull<TInputs[`${Capitalize<TName>}InsertInput`]>>>;
+            type: GraphQLNonNull<GraphQLList<GraphQLNonNull<TInputs[`Create${Capitalize<TName>}Input`]>>>;
           };
           onConflict: {
             type: GraphQLInputObjectType;
@@ -463,10 +477,10 @@ export type MutationsCore<
           ? TOutputs['MutationReturn'] extends GraphQLObjectType
             ? TOutputs['MutationReturn']
             : never
-          : TOutputs[`${Capitalize<TName>}Item`];
+          : TOutputs[Capitalize<TName>];
         args: {
           values: {
-            type: GraphQLNonNull<TInputs[`${Capitalize<TName>}InsertInput`]>;
+            type: GraphQLNonNull<TInputs[`Create${Capitalize<TName>}Input`]>;
           };
           onConflict: {
             type: GraphQLInputObjectType;
@@ -482,10 +496,10 @@ export type MutationsCore<
           ? TOutputs['MutationReturn'] extends GraphQLObjectType
             ? TOutputs['MutationReturn']
             : never
-          : GraphQLNonNull<GraphQLList<GraphQLNonNull<TOutputs[`${Capitalize<TName>}Item`]>>>;
+          : GraphQLNonNull<GraphQLList<GraphQLNonNull<TOutputs[Capitalize<TName>]>>>;
         args: {
           set: {
-            type: GraphQLNonNull<TInputs[`${Capitalize<TName>}UpdateInput`]>;
+            type: GraphQLNonNull<TInputs[`Update${Capitalize<TName>}Input`]>;
           };
           where: {
             type: TInputs[`${Capitalize<TName>}Filters`] extends GraphQLInputObjectType
@@ -507,10 +521,10 @@ export type MutationsCore<
             : never
           : // The list items are nullable: an entry whose `where` matched no rows
             // yields `null` in its slot, keeping the result aligned with the input.
-            GraphQLNonNull<GraphQLList<TOutputs[`${Capitalize<TName>}Item`]>>;
+            GraphQLNonNull<GraphQLList<TOutputs[Capitalize<TName>]>>;
         args: {
           updates: {
-            type: GraphQLNonNull<GraphQLList<GraphQLNonNull<TInputs[`${Capitalize<TName>}UpdateManyInput`]>>>;
+            type: GraphQLNonNull<GraphQLList<GraphQLNonNull<TInputs[`Update${Capitalize<TName>}ManyInput`]>>>;
           };
         };
         resolve: UpdateManyResolver<TSchemaTables[TName], IsReturnless>;
@@ -525,10 +539,10 @@ export type MutationsCore<
           ? TOutputs['MutationReturn'] extends GraphQLObjectType
             ? TOutputs['MutationReturn']
             : never
-          : TOutputs[`${Capitalize<TName>}Item`];
+          : TOutputs[Capitalize<TName>];
         args: {
           set: {
-            type: GraphQLNonNull<TInputs[`${Capitalize<TName>}UpdateInput`]>;
+            type: GraphQLNonNull<TInputs[`Update${Capitalize<TName>}Input`]>;
           };
           where: {
             type: GraphQLNonNull<
@@ -548,7 +562,7 @@ export type MutationsCore<
           ? TOutputs['MutationReturn'] extends GraphQLObjectType
             ? TOutputs['MutationReturn']
             : never
-          : GraphQLNonNull<GraphQLList<GraphQLNonNull<TOutputs[`${Capitalize<TName>}Item`]>>>;
+          : GraphQLNonNull<GraphQLList<GraphQLNonNull<TOutputs[Capitalize<TName>]>>>;
         args: {
           where: {
             type: TInputs[`${Capitalize<TName>}Filters`] extends GraphQLInputObjectType
@@ -568,7 +582,7 @@ export type MutationsCore<
           ? TOutputs['MutationReturn'] extends GraphQLObjectType
             ? TOutputs['MutationReturn']
             : never
-          : TOutputs[`${Capitalize<TName>}Item`];
+          : TOutputs[Capitalize<TName>];
         args: {
           where: {
             type: GraphQLNonNull<
@@ -583,13 +597,22 @@ export type MutationsCore<
     : never;
 };
 
+/**
+ * Keys of `entities.inputs`, which is keyed by generated GraphQL input type name.
+ *
+ * The write inputs are named from the configured `prefixes`, so these keys describe a build
+ * that uses the defaults (`insert: 'create'`, `update: 'update'`); a build that overrides a
+ * prefix produces correspondingly different keys. Inputs that only exist when a feature is
+ * enabled — `${Table}OnConflict` for upsert, `${Table}Having` for group-by — are not listed,
+ * since whether they were generated is a runtime decision.
+ */
 export type GeneratedInputs<TSchema extends Record<string, Table>> = {
-  [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}InsertInput` : never]: GraphQLInputObjectType;
+  [TName in keyof TSchema as TName extends string ? `Create${Capitalize<TName>}Input` : never]: GraphQLInputObjectType;
 } & {
-  [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}UpdateInput` : never]: GraphQLInputObjectType;
+  [TName in keyof TSchema as TName extends string ? `Update${Capitalize<TName>}Input` : never]: GraphQLInputObjectType;
 } & {
   [TName in keyof TSchema as TName extends string
-    ? `${Capitalize<TName>}UpdateManyInput`
+    ? `Update${Capitalize<TName>}ManyInput`
     : never]: GraphQLInputObjectType;
 } & {
   [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}OrderBy` : never]: GraphQLInputObjectType;
@@ -597,8 +620,16 @@ export type GeneratedInputs<TSchema extends Record<string, Table>> = {
   [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}Filters` : never]: GraphQLInputObjectType;
 };
 
+/**
+ * Keys of `entities.types`, which is keyed by generated GraphQL type name.
+ *
+ * This build emits ONE object type per table (`Users`) used for both selects and mutation
+ * returns — upstream drizzle-graphql emitted two (`UsersSelectItem` / `UsersItem`), and this
+ * type kept those names long after the generator stopped producing them. MySQL still has a
+ * shared `MutationReturn` instead of per-table return types, because its writes return no rows.
+ */
 export type GeneratedOutputs<TSchema extends Record<string, Table>, IsReturnless extends boolean> = {
-  [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}SelectItem` : never]: GraphQLObjectType;
+  [TName in keyof TSchema as TName extends string ? Capitalize<TName> : never]: GraphQLObjectType;
 } & {
   [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}Aggregate` : never]: GraphQLObjectType;
 } & (IsReturnless extends true
@@ -606,7 +637,7 @@ export type GeneratedOutputs<TSchema extends Record<string, Table>, IsReturnless
         MutationReturn: GraphQLObjectType;
       }
     : {
-        [TName in keyof TSchema as TName extends string ? `${Capitalize<TName>}Item` : never]: GraphQLObjectType;
+        [TName in keyof TSchema as TName extends string ? Capitalize<TName> : never]: GraphQLObjectType;
       });
 
 export type GeneratedEntities<

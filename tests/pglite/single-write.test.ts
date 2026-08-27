@@ -251,7 +251,7 @@ describe.sequential('features.requireWhere', () => {
   beforeAll(async () => {
     rwCtx.pglite = new PGlite(dataDir);
     await rwCtx.pglite.waitReady;
-    rwCtx.db = drizzle({ client: rwCtx.pglite, schema, relations: schema.relations });
+    rwCtx.db = drizzle({ client: rwCtx.pglite, relations: schema.relations });
     await rwCtx.db.execute(
       sql`DO $$ BEGIN CREATE TYPE "role" AS ENUM('admin','user'); EXCEPTION WHEN duplicate_object THEN null; END $$;`,
     );

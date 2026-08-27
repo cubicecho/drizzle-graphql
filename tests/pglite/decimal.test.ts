@@ -221,10 +221,13 @@ describe('MySQL decimal columns', () => {
 
   const mysqlEntities = generateMySQL(mockDb, { Products: MysqlProducts }, mysqlRelations, {
     relationsDepthLimit: undefined,
-    prefixes: { insert: 'create', delete: 'delete', update: 'update' },
+    prefixes: { insert: 'create', delete: 'delete', update: 'update', upsert: 'upsert' },
     suffixes: { list: '', single: 'Single' },
     conflictDoNothing: false,
     shouldEagerLoad: () => true,
+    complexity: undefined,
+    transactions: undefined,
+    limits: undefined,
     features: {
       aggregates: true,
       relationAggregates: true,

@@ -7,7 +7,7 @@ import * as schema from '../schema/pg';
 
 // buildSchema only reads the drizzle metadata, so these tests never touch the database.
 let pglite: PGlite;
-let db: PgliteDatabase<typeof schema>;
+let db: PgliteDatabase<typeof schema.relations>;
 
 const build = (config?: BuildSchemaConfig) => buildSchema(db, config).schema;
 
@@ -23,7 +23,7 @@ const estimatorOf = (field: GraphQLField<any, any> | undefined): Estimator | und
 beforeAll(async () => {
   pglite = new PGlite();
   await pglite.waitReady;
-  db = drizzle({ client: pglite, schema, relations: schema.relations });
+  db = drizzle({ client: pglite, relations: schema.relations });
 });
 
 afterAll(async () => {

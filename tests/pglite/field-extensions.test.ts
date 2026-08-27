@@ -9,7 +9,7 @@ import * as schema from '../schema/pg';
 
 // buildSchema only reads drizzle metadata, so these tests never touch the database.
 let pglite: PGlite;
-let db: PgliteDatabase<typeof schema>;
+let db: PgliteDatabase<typeof schema.relations>;
 let gqlSchema: GraphQLSchema;
 
 const queryField = (name: string) => gqlSchema.getQueryType()!.getFields()[name]!;
@@ -19,7 +19,7 @@ const meta = (field: unknown) => drizzleExtension(field as any) as DrizzleFieldE
 beforeAll(async () => {
   pglite = new PGlite();
   await pglite.waitReady;
-  db = drizzle({ client: pglite, schema, relations: schema.relations });
+  db = drizzle({ client: pglite, relations: schema.relations });
   gqlSchema = buildSchema(db, { features: { upsert: true } }).schema;
 });
 
@@ -233,7 +233,7 @@ describe('identifyRows: composite primary keys', () => {
   let compositeGql: GraphQLSchema;
 
   beforeAll(() => {
-    const compositeDb = drizzle({ client: pglite, schema: compositeSchema, relations: compositeSchema.relations });
+    const compositeDb = drizzle({ client: pglite, relations: compositeSchema.relations });
     compositeGql = buildSchema(compositeDb as any).schema;
   });
 

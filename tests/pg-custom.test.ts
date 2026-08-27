@@ -16,10 +16,10 @@ import { GraphQLClient } from './util/query';
 interface Context {
   docker: Docker;
   pgContainer: Docker.Container;
-  db: PostgresJsDatabase<typeof schema>;
+  db: PostgresJsDatabase<typeof schema.relations>;
   client: Sql;
   schema: GraphQLSchema;
-  entities: GeneratedEntities<PostgresJsDatabase<typeof schema>>;
+  entities: GeneratedEntities<PostgresJsDatabase<typeof schema.relations>>;
   server: Server;
   gql: GraphQLClient;
 }
@@ -88,9 +88,8 @@ beforeAll(async () => {
 
   ctx.db = drizzle({
     client: ctx.client,
-    schema,
     relations: schema.relations,
-    logger: !!process.env.LOG_SQL,
+    logger: !!process.env['LOG_SQL'],
   });
 
   const { entities } = buildSchema(ctx.db);
