@@ -112,6 +112,8 @@ const generateSelectArray = (
     orderArgs,
     filterArgs,
     distinctEnabled ? generateDistinctEnum(table, typeName) : undefined,
+    policies?.softDelete,
+    tableName,
   );
 
   return {
@@ -171,7 +173,7 @@ const generateSelectSingle = (
     );
   }
 
-  const queryArgs = selectSingleArgs(orderArgs, filterArgs);
+  const queryArgs = selectSingleArgs(orderArgs, filterArgs, policies?.softDelete, tableName);
 
   const table = tables[tableName]!;
   const pkNames = mysqlPrimaryKeyPropNames(table as MySqlTable);
@@ -516,6 +518,11 @@ const generateUpdateMany = (
   };
 };
 
+/**
+ * `delete<Table>` and, for a table that declares a soft-delete column, `restore<Table>`.
+ * MySQL's writes return no rows either way, so both answer `{ isSuccess: true }` — the
+ * difference from the other dialects is only what the payload can say, not what runs.
+ */
 const generateDelete = (
   db: MySqlDatabase<any, any, any>,
   tableName: string,
@@ -527,7 +534,9 @@ const generateDelete = (
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
   policies?: ResolverPolicies,
+  restore: boolean = false,
 ): CreatedResolver => {
+  const softDelete = policies?.softDelete?.(tableName);
   const queryArgs = {
     where: {
       type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
@@ -545,6 +554,8 @@ const generateDelete = (
           const relationCtx = relationFilterCtx(filterCtx, tableName);
           // Same rule as update: the scope is ANDed on last, so a delete can only ever reach
           // rows inside it — an out-of-scope row is not matched rather than being refused.
+          // A soft-deleting table adds the marker predicate the same way: `delete` only sees
+          // rows that are not already marked, `restore` only sees the ones that are.
           const filters = withScope(
             scope,
             tableName,
@@ -554,13 +565,18 @@ const generateDelete = (
               : where
                 ? extractFilters(table, tableName, where, relationCtx)
                 : undefined,
+            restore ? 'ONLY' : undefined,
           );
 
           if (single) {
             await assertSingleMatch(executor, table, filters!, fieldName);
           }
 
-          let query = executor.delete(table);
+          let query = softDelete
+            ? executor
+                .update(table)
+                .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
+            : executor.delete(table);
           if (filters) {
             query = query.where(filters) as any;
           }
@@ -652,11 +668,18 @@ export const generateSchemaData = <
 
   // The row scope compiled against this build's relation graph, plus the columns whose value
   // the server supplies. Both stay undefined unless configured.
-  const scopes = options.policies?.scope;
-  const contextValuesOf = options.policies?.contextValues;
-  const policies = bindPolicies(options.policies, filterCtx);
+  const tablePolicies = options.policies;
+  const contextValuesOf = tablePolicies?.contextValues;
+  const softDeleteOf = tablePolicies?.softDelete;
+  const policies = bindPolicies(tablePolicies, filterCtx);
 
-  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(db, tables, filterCtx, limits, scopes);
+  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(
+    db,
+    tables,
+    filterCtx,
+    limits,
+    tablePolicies,
+  );
 
   // Fresh cache per generateSchemaData call — prevents type name collisions
   // when buildSchema() is called multiple times.
@@ -677,13 +700,14 @@ export const generateSchemaData = <
     docs: options.docs ?? {},
     primaryKeyOf: (name) => (tables[name] ? mysqlPrimaryKeyPropNames(tables[name] as MySqlTable) : []),
     contextValuesOf,
+    softDeleteOf,
   };
 
   // Built when at least one table wants relation aggregates; a table that has them off is
   // handed `undefined` below, so `generateTableTypes` emits no `${relation}Aggregate` fields
   // on its object type.
   const relationAggregateFactory: RelationAggregateFactory | undefined = anyTable('relationAggregates')
-    ? createRelationAggregateFactory(db, tables, cacheCtx, typeNameMapper, filterCtx, scopes)
+    ? createRelationAggregateFactory(db, tables, cacheCtx, typeNameMapper, filterCtx, tablePolicies)
     : undefined;
 
   const queries: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
@@ -752,7 +776,13 @@ export const generateSchemaData = <
       updateSingleFieldName,
       deleteFieldName,
       deleteSingleFieldName,
+      restoreFieldName,
+      restoreSingleFieldName,
     } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
+    // A table that marks rows deleted instead of removing them also gets the mutation that
+    // reverses it — clearing the column through an ordinary update is not possible, since the
+    // column is not in the update input and a marked row is invisible to a `where` anyway.
+    const softDeleteInfo = softDeleteOf?.(tableName);
 
     const selectArrGenerated = generateSelectArray(
       db,
@@ -917,6 +947,36 @@ export const generateSchemaData = <
           policies,
         )
       : undefined;
+    const restoreGenerated = softDeleteInfo
+      ? generateDelete(
+          db,
+          tableName,
+          schema[tableName] as MySqlTable,
+          tableFilters,
+          restoreFieldName,
+          false,
+          tableFeatures.requireWhere,
+          filterCtx,
+          mutationTxCtx,
+          policies,
+          true,
+        )
+      : undefined;
+    const restoreSingleGenerated = softDeleteInfo
+      ? generateDelete(
+          db,
+          tableName,
+          schema[tableName] as MySqlTable,
+          tableFilters,
+          restoreSingleFieldName,
+          true,
+          tableFeatures.requireWhere,
+          filterCtx,
+          mutationTxCtx,
+          policies,
+          true,
+        )
+      : undefined;
     const aggregateType = tableFeatures.aggregates
       ? generateAggregateTypes(schema[tableName] as MySqlTable, tableName, typeName, cacheCtx)
       : undefined;
@@ -929,7 +989,7 @@ export const generateSchemaData = <
           aggregateFieldName,
           tableFilters,
           filterCtx,
-          scopes,
+          tablePolicies,
         )
       : undefined;
 
@@ -956,7 +1016,7 @@ export const generateSchemaData = <
             groupByEnum,
             havingInput,
             filterCtx,
-            scopes,
+            tablePolicies,
           )
         : undefined;
 
@@ -1011,6 +1071,8 @@ export const generateSchemaData = <
       [updateSingleGenerated, { operation: 'update', single: true, targetArg: 'where' }],
       [deleteGenerated, { operation: 'delete', single: false, targetArg: 'where' }],
       [deleteSingleGenerated, { operation: 'delete', single: true, targetArg: 'where' }],
+      [restoreGenerated, { operation: 'restore', single: false, targetArg: 'where' }],
+      [restoreSingleGenerated, { operation: 'restore', single: true, targetArg: 'where' }],
     ];
     for (const [generated, meta] of generatedMutations) {
       if (generated) {

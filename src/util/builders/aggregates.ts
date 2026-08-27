@@ -38,6 +38,8 @@ import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type { ConvertedColumn } from '../type-converter/types.ts';
 import {
   columnDocs,
+  type DeletedMode,
+  deletedArg,
   extractFilters,
   extractRelationJoinColumns,
   generateColumnEnum,
@@ -47,7 +49,7 @@ import {
   resolveExecutor,
   resolveScope,
   resolveTypeName,
-  type ScopeFor,
+  type TablePolicies,
   type TypeCacheCtx,
   type TypeNameMapper,
   toGraphQLError,
@@ -361,17 +363,18 @@ export const generateAggregate = (
   fieldName: string,
   filterArgs: GraphQLInputObjectType,
   filterCtx?: RelationFilterBase,
-  scopes?: ScopeFor,
+  policies?: TablePolicies,
 ): CreatedResolver => {
   const target = aggregateTarget(table, tableName, typeName);
 
   const queryArgs = {
     where: { type: filterArgs },
+    ...deletedArg(policies?.softDelete, tableName),
   };
 
   return {
     name: fieldName,
-    resolver: async (_source, args: { where?: Filters<Table> }, context, info) => {
+    resolver: async (_source, args: { where?: Filters<Table>; deleted?: DeletedMode }, context, info) => {
       try {
         const request = parseAggregateRequest(info, target);
         if (!Object.keys(request.selection).length) {
@@ -380,12 +383,13 @@ export const generateAggregate = (
 
         let query = resolveExecutor(db, context).select(request.selection).from(table);
         const where = withScope(
-          resolveScope(scopes, context, filterCtx),
+          resolveScope(policies, context, filterCtx),
           tableName,
           table,
           args.where
             ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName))
             : undefined,
+          args.deleted,
         );
         if (where) {
           query = query.where(where);
@@ -420,7 +424,7 @@ export const createRelationAggregateFactory = (
   cacheCtx: TypeCacheCtx,
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
-  scopes?: ScopeFor,
+  policies?: TablePolicies,
 ): RelationAggregateFactory => {
   return ({ tableName, relationName, relEntry }) => {
     const parentTable = tables[tableName];
@@ -441,7 +445,12 @@ export const createRelationAggregateFactory = (
     const type = generateAggregateTypes(targetTable, targetTableName, targetTypeName, cacheCtx);
     const target = aggregateTarget(targetTable, targetTableName, targetTypeName);
 
-    const resolve = async (parent: any, args: { where?: Filters<Table> }, context: any, info: any) => {
+    const resolve = async (
+      parent: any,
+      args: { where?: Filters<Table>; deleted?: DeletedMode },
+      context: any,
+      info: any,
+    ) => {
       try {
         const request = parseAggregateRequest(info, target);
         if (!Object.keys(request.selection).length) {
@@ -455,9 +464,11 @@ export const createRelationAggregateFactory = (
         }
 
         const whereArg = args?.where;
+        const deleted = args?.deleted;
         // Siblings only share a batch when they'd run the same query: same filters, same aggregates.
         const argsKey = JSON.stringify({
           where: whereArg ?? null,
+          deleted: deleted ?? null,
           selection: Object.keys(request.selection).sort(),
         });
         const loaderKey = `${tableName}::${relationName}::aggregate::${argsKey}`;
@@ -469,7 +480,7 @@ export const createRelationAggregateFactory = (
           // An aggregate over a relation counts the same rows the relation itself returns,
           // so it is narrowed by the target table's scope too.
           const whereCondition = withScope(
-            resolveScope(scopes, context, filterCtx),
+            resolveScope(policies, context, filterCtx),
             targetTableName,
             targetTable,
             and(
@@ -478,6 +489,7 @@ export const createRelationAggregateFactory = (
                 ? extractFilters(targetTable, targetTableName, whereArg, relationFilterCtx(filterCtx, targetTableName))
                 : undefined,
             ),
+            deleted,
           );
 
           const rows: any[] = await executor
@@ -701,7 +713,7 @@ export const generateGroupBy = (
   groupByEnum: GraphQLEnumType,
   havingInput: GraphQLInputObjectType,
   filterCtx?: RelationFilterBase,
-  scopes?: ScopeFor,
+  policies?: TablePolicies,
 ): CreatedResolver => {
   const target = aggregateTarget(table, tableName, typeName);
   const groupable = groupableColumns(table, tableName);
@@ -715,13 +727,14 @@ export const generateGroupBy = (
     },
     where: { type: filterArgs, description: 'Filters the rows before they are grouped.' },
     having: { type: havingInput, description: 'Filters the groups after they are aggregated.' },
+    ...deletedArg(policies?.softDelete, tableName),
   };
 
   return {
     name: fieldName,
     resolver: async (
       _source,
-      args: { groupBy?: string[]; where?: Filters<Table>; having?: Record<string, any> },
+      args: { groupBy?: string[]; where?: Filters<Table>; having?: Record<string, any>; deleted?: DeletedMode },
       context,
       info,
     ) => {
@@ -747,12 +760,13 @@ export const generateGroupBy = (
 
         let query = resolveExecutor(db, context).select(selection).from(table);
         const where = withScope(
-          resolveScope(scopes, context, filterCtx),
+          resolveScope(policies, context, filterCtx),
           tableName,
           table,
           args.where
             ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName))
             : undefined,
+          args.deleted,
         );
         if (where) {
           query = query.where(where);

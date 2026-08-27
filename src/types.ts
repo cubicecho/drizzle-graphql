@@ -827,6 +827,37 @@ export type ScopeConfig<TContext = any> = Record<string, RowScope<TContext>>;
 export type ContextValuesConfig<TContext = any> = Record<string, Record<string, (context: TContext) => any>>;
 
 /**
+ * How one table marks a row deleted: the column's property name, or that name plus the values
+ * written on delete and on restore. See {@link BuildSchemaConfig.softDelete}.
+ */
+export type SoftDeleteColumn =
+  | string
+  | {
+      /** Property name of the column that marks a row deleted. */
+      column: string;
+      /**
+       * Written when a row is deleted. A function is evaluated per delete. Defaults by column
+       * type: `new Date()` for a timestamp, an ISO string for text, `Date.now()` for a number,
+       * `true` for a boolean. Required, as a constant, when the column is NOT NULL and not a
+       * boolean — the predicate that hides marked rows has to compare against it.
+       */
+      deletedValue?: any;
+      /**
+       * Written when a row is restored. Defaults to `null` for a nullable column and `false`
+       * for a NOT NULL boolean; required for any other NOT NULL column.
+       */
+      restoredValue?: any;
+    };
+
+/**
+ * Per-table soft-delete declarations, either keyed by Drizzle schema key or as a rule applied
+ * to every table. See {@link BuildSchemaConfig.softDelete}.
+ */
+export type SoftDeleteConfig =
+  | Record<string, SoftDeleteColumn>
+  | ((table: any, tableName: string) => SoftDeleteColumn | undefined | null);
+
+/**
  * {@link BuildSchemaConfig.exclude} — tables and columns to keep out of the generated schema.
  *
  * Both lists are keyed by the Drizzle schema key, not the database name and not the generated
@@ -885,6 +916,11 @@ export type BuildSchemaConfig = {
     update?: string;
     /** Prefix for upsert mutations (e.g., 'users' -> 'upsertUsers') */
     upsert?: string;
+    /**
+     * Prefix for the restore mutations of a soft-deleting table (e.g., 'users' ->
+     * 'restoreUsers'). Only used when {@link BuildSchemaConfig.softDelete} names the table.
+     */
+    restore?: string;
   };
 
   /**
@@ -1113,6 +1149,50 @@ export type BuildSchemaConfig = {
    *   name), the same keying {@link BuildSchemaConfig.exclude} uses.
    */
   contextValues?: ContextValuesConfig;
+  /**
+   * Tables that mark rows deleted instead of removing them.
+   *
+   * ```ts
+   * buildSchema(db, {
+   *   softDelete: {
+   *     users: 'deletedAt',                          // nullable timestamp: stamped on delete
+   *     posts: { column: 'isDeleted', deletedValue: true, restoredValue: false },
+   *   },
+   * });
+   *
+   * // or as a convention across the whole schema:
+   * buildSchema(db, { softDelete: (table) => ('deletedAt' in table ? 'deletedAt' : undefined) });
+   * ```
+   *
+   * For a table that declares one:
+   *
+   * - `delete<Table>` and `delete<Table>Single` issue an `UPDATE` of the marker column
+   *   instead of a `DELETE`, and return the rows as they now stand.
+   * - `restore<Table>` and `restore<Table>Single` are generated alongside them, matching only
+   *   marked rows and writing the restored value. The prefix is configurable through
+   *   {@link BuildSchemaConfig.prefixes}.
+   * - Every generated read hides marked rows: list and single queries, aggregates, `groupBy`,
+   *   relation fields on both the eager and the batched path, and relation aggregates. Each
+   *   of those fields takes a `deleted: EXCLUDE | INCLUDE | ONLY` argument (default
+   *   `EXCLUDE`); `ONLY` is a trash view.
+   * - Every generated write skips them too: an `update`, a `delete`, or a nested `connect`
+   *   cannot reach a row that is already marked.
+   * - The marker column is removed from the create and update inputs, so the only ways to set
+   *   or clear it are the delete and restore mutations.
+   * - The predicate is ANDed on before {@link BuildSchemaConfig.scope}, and both are ANDed
+   *   after the client's `where` — a request can only ever narrow them.
+   *
+   * Two consequences of the pattern itself, which this does not paper over:
+   *
+   * - A marked row still occupies its unique keys, so inserting a row that reuses the natural
+   *   key of a deleted one still fails on the constraint.
+   * - An upsert whose conflict target hits a marked row updates nothing on PostgreSQL and
+   *   SQLite (the conflict predicate excludes it) but revives it on MySQL, whose
+   *   `ON DUPLICATE KEY UPDATE` takes no predicate.
+   *
+   * Marking a parent deleted does not mark its children — a cascade is a schema decision.
+   */
+  softDelete?: SoftDeleteConfig;
   /**
    * Tables and columns to leave out of the generated schema entirely.
    *

@@ -30,8 +30,8 @@ import {
   relationFilterCtx,
   resolveScope,
   resolveTypeName,
-  type ScopeFor,
   type ScopeResolver,
+  type TablePolicies,
   type TypeCacheCtx,
   type TypeNameMapper,
   visibleColumns,
@@ -441,10 +441,10 @@ const asArray = (value: any): any[] => (Array.isArray(value) ? value : value ===
 export const createNestedWriteRuntime = (params: {
   plans: NestedWritePlans;
   filterCtx: RelationFilterBase | undefined;
-  scopes?: ScopeFor;
+  policies?: TablePolicies;
   contextValues?: ContextValuesFor;
 }): NestedWriteRuntime => {
-  const { plans, filterCtx, scopes, contextValues } = params;
+  const { plans, filterCtx, policies, contextValues } = params;
 
   /**
    * A `connect` / `disconnect` / `set` operand compiled to SQL. An operand that compiles to
@@ -531,7 +531,7 @@ export const createNestedWriteRuntime = (params: {
       if (!tablePlans) {
         return patch;
       }
-      const scope = resolveScope(scopes, context, filterCtx);
+      const scope = resolveScope(policies, context, filterCtx);
 
       for (const [relationName, op] of Object.entries(ops)) {
         const plan = tablePlans[relationName];
@@ -578,7 +578,7 @@ export const createNestedWriteRuntime = (params: {
       if (!tablePlans) {
         return;
       }
-      const scope = resolveScope(scopes, context, filterCtx);
+      const scope = resolveScope(policies, context, filterCtx);
 
       for (const [relationName, op] of Object.entries(ops)) {
         const plan = tablePlans[relationName];

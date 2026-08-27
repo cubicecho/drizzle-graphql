@@ -30,6 +30,7 @@ import {
   createRelationResolverFactory,
   cursorOrderExprs,
   cursorOrderingEntries,
+  type DeletedMode,
   decodeCursor,
   eagerLoadMutationRelations,
   excludedColumnRef,
@@ -138,6 +139,8 @@ const generateSelectArray = (
     orderArgs,
     filterArgs,
     distinctEnabled ? generateDistinctEnum(table, typeName) : undefined,
+    policies?.softDelete,
+    tableName,
   );
 
   return {
@@ -176,7 +179,9 @@ const generateSelectArray = (
 
         // Fallback for tables without relational query builder support.
         // Use SQL column objects (not Record<string,true>) so db.select() receives valid expressions.
-        const { offset, orderBy, where, distinct, after } = args;
+        const { offset, orderBy, where, distinct, after, deleted } = args as Partial<TableSelectArgs> & {
+          deleted?: DeletedMode;
+        };
         const selectedColumnsSql = extractSelectedColumnsFromTreeSQLFormat<PgColumn>(
           parsedInfo.fieldsByTypeName[typeName]!,
           table,
@@ -224,6 +229,7 @@ const generateSelectArray = (
           tableName,
           table,
           where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
+          deleted,
         );
         const whereSql = cursorCondition ? and(baseWhereSql, cursorCondition) : baseWhereSql;
 
@@ -305,7 +311,7 @@ const generateSelectSingle = (
     | undefined;
   // Tables without relations won't have db.query support — fall back to basic select.
 
-  const queryArgs = selectSingleArgs(orderArgs, filterArgs);
+  const queryArgs = selectSingleArgs(orderArgs, filterArgs, policies?.softDelete, tableName);
 
   const table = tables[tableName]!;
   const pkNames = pgPrimaryKeyPropNames(table as PgTable);
@@ -339,7 +345,7 @@ const generateSelectSingle = (
         }
 
         // Fallback for tables without relational query builder support.
-        const { offset, orderBy, where } = args;
+        const { offset, orderBy, where, deleted } = args as Partial<TableSelectArgs> & { deleted?: DeletedMode };
         const selectedColumnsSql = extractSelectedColumnsFromTreeSQLFormat<PgColumn>(
           parsedInfo.fieldsByTypeName[typeName]!,
           table,
@@ -351,6 +357,7 @@ const generateSelectSingle = (
           tableName,
           table,
           where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
+          deleted,
         );
         if (whereSql) {
           q = q.where(whereSql) as any;
@@ -1032,6 +1039,14 @@ const generateUpdateMany = (
   };
 };
 
+/**
+ * `delete<Table>` and, for a table that declares a soft-delete column, `restore<Table>`.
+ *
+ * A soft-deleting table never issues a `DELETE`: both mutations are an `UPDATE` of the marker
+ * column, and the rows they return are the rows as they now stand. `restore` is the same
+ * resolver reading the other way — it matches only marked rows (`deleted: ONLY`) and writes
+ * the restored value.
+ */
 const generateDelete = (
   db: PgAsyncDatabase<any, any, any>,
   tableName: string,
@@ -1045,7 +1060,9 @@ const generateDelete = (
   selectionCtx?: SelectionCtx,
   txCtx?: MutationTxCtx,
   policies?: ResolverPolicies,
+  restore: boolean = false,
 ): CreatedResolver => {
+  const softDelete = policies?.softDelete?.(tableName);
   const queryArgs = {
     where: {
       type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
@@ -1073,6 +1090,8 @@ const generateDelete = (
           const relationCtx = relationFilterCtx(filterCtx, tableName);
           // Same rule as update: the scope is ANDed on last, so a delete can only ever reach
           // rows inside it — an out-of-scope row is not matched rather than being refused.
+          // A soft-deleting table adds the marker predicate the same way: `delete` only sees
+          // rows that are not already marked, `restore` only sees the ones that are.
           const filters = withScope(
             scope,
             tableName,
@@ -1082,13 +1101,18 @@ const generateDelete = (
               : where
                 ? extractFilters(table, tableName, where, relationCtx)
                 : undefined,
+            restore ? 'ONLY' : undefined,
           );
 
           if (single) {
             await assertSingleMatch(executor, table, filters!, fieldName);
           }
 
-          let query = executor.delete(table);
+          let query = softDelete
+            ? executor
+                .update(table)
+                .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
+            : executor.delete(table);
           if (filters) {
             query = query.where(filters) as any;
           }
@@ -1193,11 +1217,18 @@ export function generateSchemaData<
 
   // The row scope compiled against this build's relation graph, plus the columns whose value
   // the server supplies. Both stay undefined unless configured.
-  const scopes = options.policies?.scope;
-  const contextValuesOf = options.policies?.contextValues;
-  const policies = bindPolicies(options.policies, filterCtx);
+  const tablePolicies = options.policies;
+  const contextValuesOf = tablePolicies?.contextValues;
+  const softDeleteOf = tablePolicies?.softDelete;
+  const policies = bindPolicies(tablePolicies, filterCtx);
 
-  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(db, tables, filterCtx, limits, scopes);
+  const resolverFactory: RelationResolverFactory = createRelationResolverFactory(
+    db,
+    tables,
+    filterCtx,
+    limits,
+    tablePolicies,
+  );
 
   // Fresh cache per generateSchemaData call — prevents type name collisions
   // when buildSchema() is called multiple times.
@@ -1218,6 +1249,7 @@ export function generateSchemaData<
     docs: options.docs ?? {},
     primaryKeyOf: (name) => (tables[name] ? pgPrimaryKeyPropNames(tables[name] as PgTable) : []),
     contextValuesOf,
+    softDeleteOf,
   };
 
   // Nested writes: the plans decide which relations are writable at all, the types add their
@@ -1236,14 +1268,19 @@ export function generateSchemaData<
     ? createNestedWriteTypes({ plans: nestedPlans, cacheCtx, typeNameMapper, insertPrefix: prefixes.insert })
     : undefined;
   const nestedRuntime = nestedPlans
-    ? createNestedWriteRuntime({ plans: nestedPlans, filterCtx, scopes, contextValues: contextValuesOf })
+    ? createNestedWriteRuntime({
+        plans: nestedPlans,
+        filterCtx,
+        policies: tablePolicies,
+        contextValues: contextValuesOf,
+      })
     : undefined;
 
   // Built when at least one table wants relation aggregates; a table that has them off is
   // handed `undefined` below, so `generateTableTypes` emits no `${relation}Aggregate` fields
   // on its object type.
   const relationAggregateFactory: RelationAggregateFactory | undefined = anyTable('relationAggregates')
-    ? createRelationAggregateFactory(db, tables, cacheCtx, typeNameMapper, filterCtx, scopes)
+    ? createRelationAggregateFactory(db, tables, cacheCtx, typeNameMapper, filterCtx, tablePolicies)
     : undefined;
 
   const queries: ThunkObjMap<GraphQLFieldConfig<any, any>> = {};
@@ -1301,7 +1338,13 @@ export function generateSchemaData<
       updateSingleFieldName,
       deleteFieldName,
       deleteSingleFieldName,
+      restoreFieldName,
+      restoreSingleFieldName,
     } = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
+    // A table that marks rows deleted instead of removing them also gets the mutation that
+    // reverses it — clearing the column through an ordinary update is not possible, since the
+    // column is not in the update input and a marked row is invisible to a `where` anyway.
+    const softDeleteInfo = softDeleteOf?.(tableName);
 
     const selectArrGenerated = generateSelectArray(
       db,
@@ -1519,6 +1562,40 @@ export function generateSchemaData<
           policies,
         )
       : undefined;
+    const restoreGenerated = softDeleteInfo
+      ? generateDelete(
+          db,
+          tableName,
+          schema[tableName] as PgTable,
+          tableFilters,
+          restoreFieldName,
+          typeName,
+          false,
+          tableFeatures.requireWhere,
+          filterCtx,
+          { tableName, relationMap: namedRelations, tables },
+          mutationTxCtx,
+          policies,
+          true,
+        )
+      : undefined;
+    const restoreSingleGenerated = softDeleteInfo
+      ? generateDelete(
+          db,
+          tableName,
+          schema[tableName] as PgTable,
+          tableFilters,
+          restoreSingleFieldName,
+          typeName,
+          true,
+          tableFeatures.requireWhere,
+          filterCtx,
+          { tableName, relationMap: namedRelations, tables },
+          mutationTxCtx,
+          policies,
+          true,
+        )
+      : undefined;
     const aggregateType = tableFeatures.aggregates
       ? generateAggregateTypes(schema[tableName] as PgTable, tableName, typeName, cacheCtx)
       : undefined;
@@ -1531,7 +1608,7 @@ export function generateSchemaData<
           aggregateFieldName,
           tableFilters,
           filterCtx,
-          scopes,
+          tablePolicies,
         )
       : undefined;
 
@@ -1558,7 +1635,7 @@ export function generateSchemaData<
             groupByEnum,
             havingInput,
             filterCtx,
-            scopes,
+            tablePolicies,
           )
         : undefined;
 
@@ -1689,6 +1766,26 @@ export function generateSchemaData<
         resolve: deleteSingleGenerated.resolver,
         extensions: {
           drizzle: drizzleMeta({ kind: 'mutation', operation: 'delete', single: true, targetArg: 'where' }),
+        },
+      };
+    }
+    if (restoreGenerated) {
+      mutations[restoreGenerated.name] = {
+        type: arrTableItemOutput,
+        args: restoreGenerated.args,
+        resolve: restoreGenerated.resolver,
+        extensions: {
+          drizzle: drizzleMeta({ kind: 'mutation', operation: 'restore', single: false, targetArg: 'where' }),
+        },
+      };
+    }
+    if (restoreSingleGenerated) {
+      mutations[restoreSingleGenerated.name] = {
+        type: singleTableItemOutput,
+        args: restoreSingleGenerated.args,
+        resolve: restoreSingleGenerated.resolver,
+        extensions: {
+          drizzle: drizzleMeta({ kind: 'mutation', operation: 'restore', single: true, targetArg: 'where' }),
         },
       };
     }

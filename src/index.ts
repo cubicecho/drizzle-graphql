@@ -16,6 +16,8 @@ import {
   type LimitPolicyFor,
   type ResolvedLimitPolicy,
   resolveLimitPolicy,
+  resolveSoftDeleteInfo,
+  type SoftDeleteInfo,
   type TablePolicies,
 } from './util/builders/common.ts';
 import { generateMySQL, generatePG, generateSQLite } from './util/builders/index.ts';
@@ -53,6 +55,8 @@ export type {
   ScopeConfig,
   SelectResolver,
   SelectSingleResolver,
+  SoftDeleteColumn,
+  SoftDeleteConfig,
   TableLimitPolicy,
   UpdateManyArgs,
   UpdateManyEntry,
@@ -139,6 +143,7 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
     delete: config?.prefixes?.delete ?? 'delete',
     update: config?.prefixes?.update ?? 'update',
     upsert: config?.prefixes?.upsert ?? 'upsert',
+    restore: config?.prefixes?.restore ?? 'restore',
   };
 
   const suffixes = {
@@ -252,11 +257,38 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
       }
     }
   }
+  // Soft delete is resolved against the real columns here, once, so a renamed column or a
+  // NOT NULL column with no restore value fails the build rather than silently making every
+  // row visible again at runtime.
+  const softDeleteConfig = config?.softDelete;
+  const softDeleteInfos = new Map<string, SoftDeleteInfo>();
+  if (softDeleteConfig) {
+    if (typeof softDeleteConfig === 'function') {
+      for (const tableName of tableKeys) {
+        const declaration = softDeleteConfig(schema[tableName] as Table, tableName);
+        if (declaration) {
+          softDeleteInfos.set(tableName, resolveSoftDeleteInfo(schema[tableName] as Table, tableName, declaration));
+        }
+      }
+    } else {
+      const tableNames = new Set(tableKeys);
+      for (const [tableName, declaration] of Object.entries(softDeleteConfig)) {
+        if (!tableNames.has(tableName)) {
+          throw new Error(
+            `Drizzle-GraphQL Error: config.softDelete names '${tableName}', which is not a table in the Drizzle schema.`,
+          );
+        }
+        softDeleteInfos.set(tableName, resolveSoftDeleteInfo(schema[tableName] as Table, tableName, declaration));
+      }
+    }
+  }
+
   const policies: TablePolicies | undefined =
-    scopeConfig || contextValuesConfig
+    scopeConfig || contextValuesConfig || softDeleteInfos.size
       ? {
           scope: scopeConfig ? (tableName: string) => scopeConfig[tableName] : undefined,
           contextValues: contextValuesConfig ? (tableName: string) => contextValuesConfig[tableName] : undefined,
+          softDelete: softDeleteInfos.size ? (tableName: string) => softDeleteInfos.get(tableName) : undefined,
         }
       : undefined;
 
