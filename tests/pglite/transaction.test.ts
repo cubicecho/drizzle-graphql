@@ -37,7 +37,9 @@ const run = (source: string, executor?: unknown) => runOn(ctx.schema, source, ex
 const recordingExecutor = <T extends object>(target: T, reads: string[]): T =>
   new Proxy(target, {
     get(t, prop) {
-      if (typeof prop === 'string') reads.push(prop);
+      if (typeof prop === 'string') {
+        reads.push(prop);
+      }
       const value = Reflect.get(t, prop, t);
       return typeof value === 'function' ? value.bind(t) : value;
     },

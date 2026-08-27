@@ -141,7 +141,10 @@ describe.sequential('SQLite soft delete', () => {
 
   it('a write cannot reach a marked row, and restore brings it back', async () => {
     const gqlSchema = buildWith(softDelete);
-    const updated = await run(gqlSchema, `mutation { updateItems(set: { name: "x" }, where: { id: { eq: 3 } }) { id } }`);
+    const updated = await run(
+      gqlSchema,
+      `mutation { updateItems(set: { name: "x" }, where: { id: { eq: 3 } }) { id } }`,
+    );
     expect(updated.errors).toBeUndefined();
     expect(updated.data?.['updateItems']).toEqual([]);
 
@@ -178,7 +181,12 @@ describe.sequential('SQLite soft delete', () => {
     const mutations = gqlSchema.getMutationType()!.getFields();
     expect(mutations['restoreItems']).toBeDefined();
     expect(mutations['restoreOrgs']).toBeUndefined();
-    expect(gqlSchema.getQueryType()!.getFields()['orgs']!.args.map((a) => a.name)).not.toContain('deleted');
+    expect(
+      gqlSchema
+        .getQueryType()!
+        .getFields()
+        ['orgs']!.args.map((a) => a.name),
+    ).not.toContain('deleted');
 
     const res = await run(gqlSchema, `mutation { deleteOrgs(where: { id: { eq: 2 } }) { id } }`);
     expect(res.errors).toBeUndefined();

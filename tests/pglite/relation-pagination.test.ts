@@ -329,7 +329,9 @@ describe('relation cursors', () => {
       );
       expect(res.errors).toBeUndefined();
       const posts = res.data['authors'][0]['posts'];
-      if (!posts.length) break;
+      if (!posts.length) {
+        break;
+      }
       seen.push(posts[0]['title']);
       after = posts[0]['cursor'];
     }

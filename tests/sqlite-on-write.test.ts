@@ -54,9 +54,7 @@ beforeAll(async () => {
   db = (drizzle as any)({ client, schema, relations });
 
   await db.run(sql`CREATE TABLE "orgs" ("id" integer PRIMARY KEY NOT NULL, "name" text NOT NULL);`);
-  await db.run(
-    sql`CREATE TABLE "items" ("id" integer PRIMARY KEY NOT NULL, "org_id" integer NOT NULL, "name" text);`,
-  );
+  await db.run(sql`CREATE TABLE "items" ("id" integer PRIMARY KEY NOT NULL, "org_id" integer NOT NULL, "name" text);`);
   await db.run(
     sql`CREATE TABLE "audit" ("id" integer PRIMARY KEY AUTOINCREMENT, "table_name" text NOT NULL, "operation" text NOT NULL, "position" text NOT NULL, "detail" text);`,
   );

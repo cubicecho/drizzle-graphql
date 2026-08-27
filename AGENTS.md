@@ -68,7 +68,7 @@ npx vitest run -t "test name pattern" # Run tests matching a pattern
 ### Lint & Format
 ```bash
 npx biome check .          # Check linting + formatting
-npx biome check --apply .  # Auto-fix linting + formatting
+npx biome check --write .  # Auto-fix linting + formatting
 npx biome format --write . # Format only
 ```
 
@@ -98,7 +98,7 @@ Key lint rules enforced:
 - `suspicious/noExplicitAny: off` — library internals need `any` for generics
 - `style/noNonNullAssertion: off`
 
-Run `npx biome check --apply .` before committing.
+Run `npx biome check --write .` before committing.
 
 ## TypeScript Patterns
 

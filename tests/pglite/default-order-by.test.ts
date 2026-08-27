@@ -138,7 +138,10 @@ describe.sequential('default orderBy', () => {
 
   describe('relation fields', () => {
     it('orders a to-many relation on the eager path', async () => {
-      const res = await run(buildWith(postsDesc), `{ users(orderBy: { id: { direction: asc, priority: 1 } }) { id posts { id } } }`);
+      const res = await run(
+        buildWith(postsDesc),
+        `{ users(orderBy: { id: { direction: asc, priority: 1 } }) { id posts { id } } }`,
+      );
 
       expect(res.errors).toBeUndefined();
       expect(ids((res.data as any).users[0].posts)).toEqual([6, 3, 2, 1]);
@@ -147,7 +150,10 @@ describe.sequential('default orderBy', () => {
 
     it('orders a to-many relation on the lazy path', async () => {
       const gqlSchema = buildWith(postsDesc, false);
-      const res = await run(gqlSchema, `{ users(orderBy: { id: { direction: asc, priority: 1 } }) { id posts { id } } }`);
+      const res = await run(
+        gqlSchema,
+        `{ users(orderBy: { id: { direction: asc, priority: 1 } }) { id posts { id } } }`,
+      );
 
       expect(res.errors).toBeUndefined();
       expect(ids((res.data as any).users[0].posts)).toEqual([6, 3, 2, 1]);
@@ -177,7 +183,10 @@ describe.sequential('default orderBy', () => {
     it('leaves a to-one relation alone', async () => {
       // A to-one relation is a single row and takes no orderBy argument at all.
       const usersDesc: DefaultsConfig = { Users: { orderBy: { id: 'desc' } } };
-      const res = await run(buildWith(usersDesc), `{ posts(orderBy: { id: { direction: asc, priority: 1 } }) { id author { id } } }`);
+      const res = await run(
+        buildWith(usersDesc),
+        `{ posts(orderBy: { id: { direction: asc, priority: 1 } }) { id author { id } } }`,
+      );
 
       expect(res.errors).toBeUndefined();
       expect((res.data as any).posts[0]).toEqual({ id: 1, author: { id: 1 } });

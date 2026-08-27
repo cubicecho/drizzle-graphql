@@ -180,9 +180,7 @@ describe.sequential('soft delete', () => {
 
     const included = await run(gqlSchema, `{ authors { id articles(deleted: INCLUDE) { id } } }`);
     expect(included.errors).toBeUndefined();
-    expect(
-      (included.data?.['authors'] as any[]).find((a) => a.id === 2).articles.map((a: any) => a.id),
-    ).toEqual([3]);
+    expect((included.data?.['authors'] as any[]).find((a) => a.id === 2).articles.map((a: any) => a.id)).toEqual([3]);
   });
 
   it('hides them on the batch-loader path too', async () => {
@@ -235,7 +233,10 @@ describe.sequential('soft delete', () => {
 
   it('restores a marked row, and only a marked row', async () => {
     const gqlSchema = buildWith(softDelete);
-    const restored = await run(gqlSchema, `mutation { restoreArticlesSingle(where: { id: { eq: 3 } }) { id deletedAt } }`);
+    const restored = await run(
+      gqlSchema,
+      `mutation { restoreArticlesSingle(where: { id: { eq: 3 } }) { id deletedAt } }`,
+    );
 
     expect(restored.errors).toBeUndefined();
     expect((restored.data?.['restoreArticlesSingle'] as any).deletedAt).toBeNull();
