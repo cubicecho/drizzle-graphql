@@ -1,3 +1,11 @@
+# [7.8.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.7.0...v7.8.0) (2026-08-27)
+
+
+### Features
+
+* `onWrite`, a hook that runs inside the mutation's transaction ([57a3cb8](https://github.com/cubicecho/drizzle-graphql/commit/57a3cb8521a0a0b2e7ea036a7be9da29f6f2a09f))
+* **nested-writes:** write through many-to-many relations ([e07118b](https://github.com/cubicecho/drizzle-graphql/commit/e07118bc3c5020a28b8ce9c5196a590672230368)), closes [#77](https://github.com/cubicecho/drizzle-graphql/issues/77)
+
 # [7.7.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.6.0...v7.7.0) (2026-08-27)
 
 
