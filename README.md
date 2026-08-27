@@ -629,6 +629,40 @@ A **to-many** relation takes a `some` / `none` / `every` wrapper
     `users(where: { roles: { some: { name: { eq: "admin" } } } })` works the same as a direct
     to-many relation
 
+## Case-insensitive matching
+
+Every filter on a string column carries an `insensitive` flag alongside its operators. Set it
+and each comparison in that object compares `lower(column)` against `lower(operand)`:
+
+```graphql
+{
+    users(where: { email: { eq: "Dan@Example.com", insensitive: true } }) {
+        id
+    }
+
+    users(where: { username: { inArray: ["dan", "SAM", "Alex"], insensitive: true } }) {
+        id
+    }
+}
+```
+
+This is what a natural key — an email, a username, a slug, an account code, a SKU — actually
+wants, and `ilike` is the wrong tool for it: `%`, `_` and `\` in an `ilike` operand are
+wildcards, so `100%_off` would silently match rows it should not unless the caller escapes them
+by hand. Under `insensitive` the operand stays a literal and stays a bound parameter.
+
+-   It covers every operator beside it: `eq` / `ne`, the ordering comparisons, `inArray` /
+        `notInArray`, `like` / `notLike`, and the safe `startsWith` / `endsWith` / `contains`
+        (the `i`-prefixed forms are already case-insensitive and are unaffected)
+-   It applies to the operators in its own object only. A nested `AND` / `OR` / `NOT` branch is
+        a separate object and sets its own flag
+-   `lower()` is the same function the case-insensitive LIKE operators already fall back to on
+        the dialects without a native `ILIKE`, so the behaviour is identical on all three. Because
+        the left side is a plain `lower(column)`, a `lower(column)` expression index can serve the
+        lookup — which `ilike '%…%'` never can
+-   The flag appears only on filters whose column can take string operators, so it is absent
+        from the numeric, uuid and boolean filters
+
 ## Matching lists of values
 
 `inArray` / `notInArray` take a list of candidate values and compile to SQL `IN` / `NOT IN`.

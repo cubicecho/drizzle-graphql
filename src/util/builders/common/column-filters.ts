@@ -383,6 +383,11 @@ export const generateColumnFilterValues = (
                     type: GraphQLString,
                     description: 'Case-insensitive `contains`.',
                   },
+                  insensitive: {
+                    type: GraphQLBoolean,
+                    description:
+                      'When true, every comparison operator in this object matches case-insensitively — `eq`, `ne`, the ordering operators, `inArray`/`notInArray` and the pattern operators all compare `lower(column)` against `lower(operand)`. Applies only to the operators beside it; a nested `AND`/`OR`/`NOT` branch sets its own.',
+                  },
                 }),
             inArray: { type: colArr, description: IN_ARRAY_DESCRIPTION },
             notInArray: { type: colArr, description: NOT_IN_ARRAY_DESCRIPTION },

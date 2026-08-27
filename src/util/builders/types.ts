@@ -343,6 +343,12 @@ export type FilterColumnOperatorsCore<TColumn extends Column, TColType = GetColu
   isEmpty: boolean;
   isNull: boolean;
   isNotNull: boolean;
+  /**
+   * String columns: compares every operator in this object case-insensitively
+   * (`lower(column)` against `lower(operand)`). Applies to the operators beside it only —
+   * a nested `AND`/`OR`/`NOT` branch sets its own.
+   */
+  insensitive: boolean;
 }>;
 
 export type FilterColumnOperators<
