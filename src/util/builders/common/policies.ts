@@ -2,7 +2,7 @@
 // bound into the shape the resolvers apply at request time.
 
 import type { Column, Table } from 'drizzle-orm';
-import { and, eq, extractExtendedColumnType, getColumns, is, isNotNull, isNull, ne, SQL } from 'drizzle-orm';
+import { and, eq, extractExtendedColumnType, getColumns, is, isNotNull, isNull, ne, or, SQL } from 'drizzle-orm';
 import { GraphQLEnumType, GraphQLError } from 'graphql';
 import type { DefaultOrderByFor } from './limits.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
@@ -35,10 +35,11 @@ export type DeletedMode = 'EXCLUDE' | 'INCLUDE' | 'ONLY';
 /**
  * One table's soft-delete convention, resolved against the real column at build time.
  *
- * `nullable` picks the shape of the predicate. A nullable column marks a row deleted by
- * holding a value at all (`deletedAt IS NOT NULL`), which is the common timestamp form; a
- * non-nullable one marks it by holding `marker` (`isDeleted = true`), so the column has to
- * have a constant that means "deleted" and another that means "not deleted".
+ * `marker` picks the shape of the predicate. When the config names a constant that means
+ * deleted, the predicate compares against it (`isDeleted = true`); otherwise the column marks
+ * a row deleted by holding a value at all (`deletedAt IS NOT NULL`), the common timestamp
+ * form. A NOT NULL column has no "absent" state, so it must have a marker; a nullable one
+ * takes the NULL-means-alive reading only when no marker was configured.
  */
 export type SoftDeleteInfo = {
   /** Property name of the column on the drizzle table — also the key on an aliased proxy. */
@@ -49,7 +50,10 @@ export type SoftDeleteInfo = {
   writeDeleted: () => any;
   /** Written by the restore mutation. */
   writeRestored: any;
-  /** Non-nullable form only: the constant that means "this row is deleted". */
+  /**
+   * The constant that means "this row is deleted", when the config named one. Required on a
+   * NOT NULL column; optional on a nullable one, which otherwise reads NULL as alive.
+   */
   marker?: any;
 };
 
@@ -114,12 +118,16 @@ export const resolveSoftDeleteInfo = (
             : () => true;
 
   let marker: any;
-  if (!nullable) {
+  if (hasDeleted && typeof config.deletedValue !== 'function') {
+    // A configured constant is what reads compare against, whether or not the column is
+    // nullable: a nullable boolean defaulting to `false` (the shape a marker column added to
+    // an existing table without a backfill takes) means deleted by holding `true`, not by
+    // holding anything at all.
+    marker = config.deletedValue;
+  } else if (!nullable) {
     // A non-nullable column has no "absent" state, so the predicate has to compare against a
     // constant — which a function cannot supply, and which the boolean form supplies for free.
-    if (hasDeleted && typeof config.deletedValue !== 'function') {
-      marker = config.deletedValue;
-    } else if (!hasDeleted && baseType === 'boolean') {
+    if (!hasDeleted && baseType === 'boolean') {
       marker = true;
     } else {
       throw new Error(
@@ -156,10 +164,15 @@ export const softDeletePredicate = (info: SoftDeleteInfo, table: Table, mode: De
     return undefined;
   }
   const column = ((table as any)?.[info.columnName] ?? info.column) as Column;
-  if (info.nullable) {
+  if (info.marker === undefined) {
     return mode === 'ONLY' ? isNotNull(column) : isNull(column);
   }
-  return mode === 'ONLY' ? eq(column, info.marker) : ne(column, info.marker);
+  if (!info.nullable) {
+    return mode === 'ONLY' ? eq(column, info.marker) : ne(column, info.marker);
+  }
+  // A nullable column with a marker: NULL is neither the marker nor a match for `<>`, so the
+  // exclude side has to name it explicitly or every un-backfilled row would drop out.
+  return mode === 'ONLY' ? eq(column, info.marker) : or(ne(column, info.marker), isNull(column))!;
 };
 
 /**

@@ -415,6 +415,19 @@ Defaults come from the column's type: `new Date()` for a timestamp, an ISO strin
 the predicate has to compare against a constant: any NOT NULL column other than a boolean must
 give `deletedValue` (a constant, not a function) and `restoredValue`, or the build throws.
 
+**What counts as marked** follows the config, not the column's nullability. With no
+`deletedValue`, a nullable column reads as "holding a value at all means deleted" — the
+timestamp form, `deletedAt IS NOT NULL`. Name a constant and reads compare against it instead,
+on a nullable column as much as a NOT NULL one:
+
+```Typescript
+// `is_deleted boolean DEFAULT false` — nullable, because it was added to an existing table
+softDelete: { docs: { column: 'isDeleted', deletedValue: true, restoredValue: false } }
+```
+
+Here a row is deleted when the column holds `true`; `false` **and NULL** are both alive, so the
+rows written before the column existed are not swept into the trash view.
+
 Three things it deliberately does not do:
 
 -   **It does not cascade.** Marking a post does not mark its comments. A comment whose post is

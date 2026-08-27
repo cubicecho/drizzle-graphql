@@ -25,16 +25,23 @@ const Flags = pgTable('flags', {
   label: text('label').notNull(),
   isArchived: boolean('is_archived').notNull().default(false),
 });
+// The third shape: a *nullable* boolean marker, which is what a column added to an existing
+// table without a backfill looks like. NULL there means "never marked", not "deleted".
+const Docs = pgTable('docs', {
+  id: integer('id').primaryKey(),
+  title: text('title').notNull(),
+  isDeleted: boolean('is_deleted').default(false),
+});
 
-const r = createRelationsHelper({ Authors, Articles, Flags });
+const r = createRelationsHelper({ Authors, Articles, Flags, Docs });
 const relations = buildRelations(
-  { Authors, Articles, Flags },
+  { Authors, Articles, Flags, Docs },
   {
     Authors: { articles: r.many.Articles({ from: r.Authors.id, to: r.Articles.authorId }) },
     Articles: { author: r.one.Authors({ from: r.Articles.authorId, to: r.Authors.id }) },
   },
 );
-const schema = { Authors, Articles, Flags, relations };
+const schema = { Authors, Articles, Flags, Docs, relations };
 
 const DATA_DIR = `./tests/.temp/pgdata-soft-delete-${Date.now()}`;
 let pglite: PGlite;
@@ -44,6 +51,7 @@ const softDelete: Partial<BuildSchemaConfig> = {
   softDelete: {
     Articles: 'deletedAt',
     Flags: { column: 'isArchived', deletedValue: true, restoredValue: false },
+    Docs: { column: 'isDeleted', deletedValue: true, restoredValue: false },
   },
 };
 
@@ -69,6 +77,9 @@ beforeAll(async () => {
   await db.execute(
     sql`CREATE TABLE "flags" ("id" integer PRIMARY KEY NOT NULL, "label" text NOT NULL, "is_archived" boolean NOT NULL DEFAULT false);`,
   );
+  await db.execute(
+    sql`CREATE TABLE "docs" ("id" integer PRIMARY KEY NOT NULL, "title" text NOT NULL, "is_deleted" boolean DEFAULT false);`,
+  );
 });
 
 afterAll(async () => {
@@ -81,6 +92,7 @@ beforeEach(async () => {
   await db.delete(Articles);
   await db.delete(Authors);
   await db.delete(Flags);
+  await db.delete(Docs);
   await db.insert(Authors).values([
     { id: 1, name: 'Ada' },
     { id: 2, name: 'Grace' },
@@ -93,6 +105,12 @@ beforeEach(async () => {
   await db.insert(Flags).values([
     { id: 1, label: 'live', isArchived: false },
     { id: 2, label: 'archived', isArchived: true },
+  ]);
+  await db.insert(Docs).values([
+    { id: 1, title: 'live', isDeleted: false },
+    { id: 2, title: 'gone', isDeleted: true },
+    // The un-backfilled row: the column was added after this one was written.
+    { id: 3, title: 'never marked', isDeleted: null },
   ]);
 });
 
@@ -283,6 +301,43 @@ describe.sequential('soft delete', () => {
 
     const restored = await run(gqlSchema, `mutation { restoreFlags(where: { id: { eq: 1 } }) { id isArchived } }`);
     expect((restored.data?.['restoreFlags'] as any[])[0].isArchived).toBe(false);
+  });
+
+  it('honours an explicit deletedValue on a nullable marker column', async () => {
+    const gqlSchema = buildWith(softDelete);
+
+    // The live row and the un-backfilled NULL row are both alive; only the marked one is not.
+    const list = await run(gqlSchema, `{ docs { id } }`);
+    expect(list.errors).toBeUndefined();
+    expect((list.data?.['docs'] as any[]).map((d) => d.id).sort()).toEqual([1, 3]);
+
+    const included = await run(gqlSchema, `{ docs(deleted: INCLUDE) { id } }`);
+    expect((included.data?.['docs'] as any[]).map((d) => d.id).sort()).toEqual([1, 2, 3]);
+
+    // The trash view is the marked row alone — not every row, which is what reading the
+    // column as NULL-means-alive would have given.
+    const only = await run(gqlSchema, `{ docs(deleted: ONLY) { id } }`);
+    expect((only.data?.['docs'] as any[]).map((d) => d.id)).toEqual([2]);
+  });
+
+  it('writes the configured values on a nullable marker column', async () => {
+    const gqlSchema = buildWith(softDelete);
+
+    const deleted = await run(gqlSchema, `mutation { deleteDocs(where: { id: { eq: 1 } }) { id isDeleted } }`);
+    expect(deleted.errors).toBeUndefined();
+    expect((deleted.data?.['deleteDocs'] as any[])[0].isDeleted).toBe(true);
+    expect(await rowsOf(Docs)).toHaveLength(3);
+
+    const restored = await run(gqlSchema, `mutation { restoreDocs(where: { id: { eq: 1 } }) { id isDeleted } }`);
+    expect((restored.data?.['restoreDocs'] as any[])[0].isDeleted).toBe(false);
+  });
+
+  it('keeps the NULL-means-alive reading when no deletedValue is configured', async () => {
+    // `Articles.deletedAt` is the timestamp form: nothing configured, so holding a value at
+    // all is what marks the row.
+    const gqlSchema = buildWith({ softDelete: { Articles: 'deletedAt' } });
+    const only = await run(gqlSchema, `{ articles(deleted: ONLY) { id } }`);
+    expect((only.data?.['articles'] as any[]).map((a) => a.id)).toEqual([3]);
   });
 
   it('leaves a table that declares nothing alone', async () => {
