@@ -1,3 +1,10 @@
+# [7.7.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.6.0...v7.7.0) (2026-08-27)
+
+
+### Features
+
+* soft delete, with restore mutations and a `deleted` read argument ([ce91e26](https://github.com/cubicecho/drizzle-graphql/commit/ce91e26c91e56e7486b456394b66313e1ec9b2cf))
+
 # [7.6.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.5.0...v7.6.0) (2026-08-27)
 
 
