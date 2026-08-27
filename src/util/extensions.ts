@@ -23,6 +23,7 @@ export type DrizzleFieldOperation =
   | 'updateMany'
   | 'upsert'
   | 'delete'
+  | 'restore'
   | 'aggregate'
   | 'groupBy'
   | 'relation'

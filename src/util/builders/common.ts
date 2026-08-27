@@ -728,7 +728,7 @@ export const createRelationResolverFactory =
     nullOrdering: NullOrdering,
     filterCtx?: RelationFilterBase,
     limits?: LimitPolicyFor,
-    scopes?: ScopeFor,
+    policies?: TablePolicies,
   ): RelationResolverFactory =>
   ({ tableName, relationName, relEntry, isOne }) => {
     const parentTable = tables[tableName];
@@ -761,7 +761,14 @@ export const createRelationResolverFactory =
         return isOne ? null : [];
       }
 
-      const { where: whereArg, orderBy: orderByArg, limit: requestedLimit, offset, after } = (args ?? {}) as any;
+      const {
+        where: whereArg,
+        orderBy: orderByArg,
+        limit: requestedLimit,
+        offset,
+        after,
+        deleted,
+      } = (args ?? {}) as any;
       const limit = applyLimitPolicy(requestedLimit, limitPolicy, `${tableName}.${relationName}`);
       const distinct = ((args ?? {}) as any).distinct?.length ? ((args ?? {}) as any).distinct : undefined;
 
@@ -806,6 +813,7 @@ export const createRelationResolverFactory =
         orderBy: orderByArg ?? null,
         limit: limit ?? null,
         offset: offset ?? null,
+        deleted: deleted ?? null,
         after: after ?? null,
         distinct: distinct ?? null,
         cursor: cursorEntries ? 1 : 0,
@@ -818,7 +826,7 @@ export const createRelationResolverFactory =
         const executor = resolveExecutor(db, context);
         const uniqueIds = [...new Set(parentIds)];
         // Loaders are keyed per context too, so the scope resolved here is this request's.
-        const scope = resolveScope(scopes, context, filterCtx);
+        const scope = resolveScope(policies, context, filterCtx);
         let whereCondition = withScope(
           scope,
           targetTableName,
@@ -830,6 +838,7 @@ export const createRelationResolverFactory =
               : undefined,
             cursorValues ? buildCursorCondition(targetTable, cursorEntries!, cursorValues, nullOrdering) : undefined,
           ),
+          deleted,
         );
 
         if (distinct) {
@@ -1012,6 +1021,12 @@ export interface TypeCacheCtx {
    * built: a column the server fills in is not part of either.
    */
   contextValuesOf?: ContextValuesFor;
+  /**
+   * The soft-delete convention of a table, if it declares one. Read when the write inputs are
+   * built — the marker column is written by the delete and restore mutations, not by a client
+   * — and when a read field's `deleted` argument is generated.
+   */
+  softDeleteOf?: SoftDeleteFor;
   /**
    * This build's feature flags, resolved for one table. Like `complexity` and `docs`, not a
    * cache — the type builders are several calls deep and this context is already threaded
@@ -2324,6 +2339,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
             type: isRequired ? new GraphQLNonNull(relType) : relType,
             args: {
               where: { type: relSelectData.filters },
+              ...deletedArg(cacheCtx.softDeleteOf, targetTableName),
             },
             resolve,
             ...relationDocs,
@@ -2351,6 +2367,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
             orderBy: { type: relSelectData.order! },
             offset: { type: GraphQLInt },
             limit: { type: GraphQLInt },
+            ...deletedArg(cacheCtx.softDeleteOf, targetTableName),
             after: {
               type: GraphQLString,
               description:
@@ -2388,6 +2405,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
               type: new GraphQLNonNull(relationAggregate.type),
               args: {
                 where: { type: relSelectData.filters },
+                ...deletedArg(cacheCtx.softDeleteOf, targetTableName),
               },
               resolve: relationAggregate.resolve,
               extensions: {
@@ -2470,9 +2488,16 @@ export const generateTableTypes = <WithReturning extends boolean>(
   // client cannot supply one on create, and cannot reassign one on update. It stays an
   // ordinary column everywhere else — the output type, the filters, the ordering.
   const contextColumns = cacheCtx.contextValuesOf?.(tableName);
-  const writableEntries = contextColumns
-    ? columnEntries.filter(([columnName]) => !(columnName in contextColumns))
-    : columnEntries;
+  // Same for the column that marks a row deleted: `delete` and `restore` own it, and a client
+  // that could write it through an ordinary create or update could delete or undelete a row
+  // without going through either.
+  const markerColumn = cacheCtx.softDeleteOf?.(tableName)?.columnName;
+  const writableEntries =
+    contextColumns || markerColumn
+      ? columnEntries.filter(
+          ([columnName]) => !(contextColumns && columnName in contextColumns) && columnName !== markerColumn,
+        )
+      : columnEntries;
 
   // A column a nested write can supply (`author: { create: … }` fills in `authorId`) cannot
   // stay required on the create input, or the two ways of setting it would be mutually
@@ -3538,41 +3563,187 @@ export type ScopeHook<TContext = any> = (context: TContext, table: any) => SQL |
 /** Build-time lookup: the scope configured for a table, if any. */
 export type ScopeFor = (tableName: string) => ScopeHook | undefined;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Soft delete
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** What a read over a soft-deleting table does with rows that are marked deleted. */
+export type DeletedMode = 'EXCLUDE' | 'INCLUDE' | 'ONLY';
+
 /**
- * The scopes bound to one request's context. `has` answers "is this table scoped at all",
- * cheaply and without evaluating anything; `on` compiles the predicate against a given table.
+ * One table's soft-delete convention, resolved against the real column at build time.
+ *
+ * `nullable` picks the shape of the predicate. A nullable column marks a row deleted by
+ * holding a value at all (`deletedAt IS NOT NULL`), which is the common timestamp form; a
+ * non-nullable one marks it by holding `marker` (`isDeleted = true`), so the column has to
+ * have a constant that means "deleted" and another that means "not deleted".
  */
-export type ScopeResolver = {
-  has: (tableName: string) => boolean;
-  on: (tableName: string, table: Table) => SQL | undefined;
+export type SoftDeleteInfo = {
+  /** Property name of the column on the drizzle table — also the key on an aliased proxy. */
+  columnName: string;
+  column: Column;
+  nullable: boolean;
+  /** Evaluated per delete, so a timestamp form stamps the moment of the delete. */
+  writeDeleted: () => any;
+  /** Written by the restore mutation. */
+  writeRestored: any;
+  /** Non-nullable form only: the constant that means "this row is deleted". */
+  marker?: any;
+};
+
+/** Build-time lookup: the soft-delete convention of a table, if it declares one. */
+export type SoftDeleteFor = (tableName: string) => SoftDeleteInfo | undefined;
+
+/**
+ * The enum behind the `deleted` argument on every read over a soft-deleting table. One
+ * instance shared by every build — it carries no per-build state.
+ */
+export const deletedFilterEnum = new GraphQLEnumType({
+  name: 'DeletedFilter',
+  description: 'Which rows a read over a soft-deleting table returns.',
+  values: {
+    EXCLUDE: { value: 'EXCLUDE', description: 'Only rows that are not marked deleted. The default.' },
+    INCLUDE: { value: 'INCLUDE', description: 'Marked and unmarked rows alike.' },
+    ONLY: { value: 'ONLY', description: 'Only rows that are marked deleted — a trash view.' },
+  },
+});
+
+/**
+ * Resolves one table's `softDelete` declaration against the real column, at build time, so a
+ * renamed column fails the build instead of quietly making every row visible again.
+ */
+export const resolveSoftDeleteInfo = (
+  table: Table,
+  tableName: string,
+  declaration: string | { column: string; deletedValue?: any; restoredValue?: any },
+): SoftDeleteInfo => {
+  const config = typeof declaration === 'string' ? { column: declaration } : declaration;
+  const columnName = config?.column;
+  if (typeof columnName !== 'string' || !columnName) {
+    throw new Error(
+      `Drizzle-GraphQL Error: config.softDelete.${tableName} must be a column name or an object with a 'column' property.`,
+    );
+  }
+  const column = getColumns(table)[columnName];
+  if (!column) {
+    throw new Error(
+      `Drizzle-GraphQL Error: config.softDelete names '${tableName}.${columnName}', which is not a column of that table.`,
+    );
+  }
+  const nullable = !column.notNull;
+  // drizzle-orm v1 reports compound dataType strings ("object date", "number int32"), so the
+  // shape of the column has to come from the extended type rather than a string compare.
+  const { type: baseType, constraint } = extractExtendedColumnType(column);
+  const hasDeleted = 'deletedValue' in (config as object) && config.deletedValue !== undefined;
+  // The default depends on what the column can hold: a timestamp records when, a flag records
+  // whether. Both are the shapes the convention actually takes in the wild.
+  const writeDeleted: () => any = hasDeleted
+    ? typeof config.deletedValue === 'function'
+      ? (config.deletedValue as () => any)
+      : () => config.deletedValue
+    : constraint === 'date' && baseType === 'object'
+      ? () => new Date()
+      : baseType === 'string'
+        ? () => new Date().toISOString()
+        : baseType === 'number'
+          ? () => Date.now()
+          : baseType === 'bigint'
+            ? () => BigInt(Date.now())
+            : () => true;
+
+  let marker: any;
+  if (!nullable) {
+    // A non-nullable column has no "absent" state, so the predicate has to compare against a
+    // constant — which a function cannot supply, and which the boolean form supplies for free.
+    if (hasDeleted && typeof config.deletedValue !== 'function') {
+      marker = config.deletedValue;
+    } else if (!hasDeleted && baseType === 'boolean') {
+      marker = true;
+    } else {
+      throw new Error(
+        `Drizzle-GraphQL Error: config.softDelete.${tableName} marks a NOT NULL column ('${columnName}'), so 'deletedValue' must be a constant that means deleted — not a function, and not omitted for a non-boolean column.`,
+      );
+    }
+  }
+
+  const hasRestored = 'restoredValue' in (config as object);
+  const writeRestored = hasRestored
+    ? config.restoredValue
+    : nullable
+      ? null
+      : baseType === 'boolean'
+        ? false
+        : undefined;
+  if (!nullable && writeRestored === undefined) {
+    throw new Error(
+      `Drizzle-GraphQL Error: config.softDelete.${tableName} marks a NOT NULL column ('${columnName}'), so 'restoredValue' must say what restoring writes back.`,
+    );
+  }
+
+  return { columnName, column, nullable, writeDeleted, writeRestored, marker };
 };
 
 /**
- * Binds the configured scopes to one request's GraphQL context. Returns `undefined` when no
- * scope is configured at all, so every call site skips the machinery with a single check and
- * an unscoped build generates exactly the SQL it did before.
+ * The predicate that selects the rows a `deleted` mode asks for: nothing for `INCLUDE`, the
+ * marked rows for `ONLY`, the unmarked ones for `EXCLUDE`. Built against the table it is
+ * handed, which on the relational path is drizzle's aliased proxy rather than the schema
+ * table — the same rule a scope hook follows.
+ */
+export const softDeletePredicate = (info: SoftDeleteInfo, table: Table, mode: DeletedMode): SQL | undefined => {
+  if (mode === 'INCLUDE') {
+    return undefined;
+  }
+  const column = ((table as any)?.[info.columnName] ?? info.column) as Column;
+  if (info.nullable) {
+    return mode === 'ONLY' ? isNotNull(column) : isNull(column);
+  }
+  return mode === 'ONLY' ? eq(column, info.marker) : ne(column, info.marker);
+};
+
+/**
+ * The row policies of one request, bound to its context: the table's scope and its
+ * soft-delete convention, which both narrow the same `where`. `has` answers "does this table
+ * restrict anything at all", cheaply and without evaluating a hook; `on` compiles the
+ * predicate against a given table.
+ */
+export type ScopeResolver = {
+  has: (tableName: string, mode?: DeletedMode) => boolean;
+  on: (tableName: string, table: Table, mode?: DeletedMode) => SQL | undefined;
+};
+
+/**
+ * Binds the configured row policies to one request's GraphQL context. Returns `undefined`
+ * when neither a scope nor a soft-delete column is configured, so every call site skips the
+ * machinery with a single check and an unconfigured build generates exactly the SQL it did
+ * before.
  */
 export const resolveScope = (
-  scopes: ScopeFor | undefined,
+  policies: TablePolicies | undefined,
   context: any,
   filterCtx?: RelationFilterBase,
 ): ScopeResolver | undefined => {
-  if (!scopes) {
+  const scopes = policies?.scope;
+  const softDelete = policies?.softDelete;
+  if (!scopes && !softDelete) {
     return undefined;
   }
   return {
-    has: (tableName) => !!scopes(tableName),
-    on: (tableName, table) => {
-      const hook = scopes(tableName);
+    has: (tableName, mode) => !!scopes?.(tableName) || (!!softDelete?.(tableName) && (mode ?? 'EXCLUDE') !== 'INCLUDE'),
+    on: (tableName, table, mode) => {
+      // Order is fixed: the soft-delete predicate first, the scope after it, both ANDed. They
+      // commute, but a fixed order keeps the generated SQL stable between requests.
+      const marked = softDelete?.(tableName);
+      const deleted = marked ? softDeletePredicate(marked, table, mode ?? 'EXCLUDE') : undefined;
+      const hook = scopes?.(tableName);
       if (!hook) {
-        return undefined;
+        return deleted;
       }
       const predicate = hook(context, table);
       if (predicate === undefined || predicate === null) {
-        return undefined;
+        return deleted;
       }
       if (is(predicate, SQL)) {
-        return predicate as SQL;
+        return and(deleted, predicate as SQL);
       }
       if (typeof predicate !== 'object') {
         throw new GraphQLError(
@@ -3581,22 +3752,25 @@ export const resolveScope = (
       }
       // A filter object is compiled the same way the field's own `where` is, against the
       // table it was handed — which is what keeps it correct under RQB aliasing.
-      return extractFilters(table, tableName, predicate as any, relationFilterCtx(filterCtx, tableName));
+      return and(deleted, extractFilters(table, tableName, predicate as any, relationFilterCtx(filterCtx, tableName)));
     },
   };
 };
 
 /**
- * `condition AND <the scope of tableName>` — the single way a scope is ever combined with a
- * caller-supplied filter, so a `where` can only ever narrow the scope, never widen it.
+ * `condition AND <the row policies of tableName>` — the single way a scope or a soft-delete
+ * predicate is ever combined with a caller-supplied filter, so a `where` can only ever narrow
+ * them, never widen them. `mode` is the read's `deleted` argument, and defaults to hiding
+ * marked rows; a write passes nothing and so never touches one.
  */
 export const withScope = (
   scope: ScopeResolver | undefined,
   tableName: string,
   table: Table,
   condition: SQL | undefined,
+  mode?: DeletedMode,
 ): SQL | undefined => {
-  const predicate = scope?.on(tableName, table);
+  const predicate = scope?.on(tableName, table, mode);
   return predicate ? and(condition, predicate) : condition;
 };
 
@@ -3621,6 +3795,8 @@ export type TablePolicies = {
   scope?: ScopeFor;
   /** See `BuildSchemaConfig.contextValues`. */
   contextValues?: ContextValuesFor;
+  /** See `BuildSchemaConfig.softDelete`. */
+  softDelete?: SoftDeleteFor;
 };
 
 /**
@@ -3631,6 +3807,7 @@ export type TablePolicies = {
 export type ResolverPolicies = {
   scope?: (context: any) => ScopeResolver | undefined;
   contextValues?: ContextValuesFor;
+  softDelete?: SoftDeleteFor;
 };
 
 /** Binds a build's {@link TablePolicies} to its relation context, once, at schema-build time. */
@@ -3638,10 +3815,14 @@ export const bindPolicies = (
   policies: TablePolicies | undefined,
   filterCtx: RelationFilterBase | undefined,
 ): ResolverPolicies | undefined =>
-  policies?.scope || policies?.contextValues
+  policies?.scope || policies?.contextValues || policies?.softDelete
     ? {
-        scope: policies.scope ? (context: any) => resolveScope(policies.scope, context, filterCtx) : undefined,
+        scope:
+          policies.scope || policies.softDelete
+            ? (context: any) => resolveScope(policies, context, filterCtx)
+            : undefined,
         contextValues: policies.contextValues,
+        softDelete: policies.softDelete,
       }
     : undefined;
 
@@ -3802,11 +3983,12 @@ const extractRelationsParamsInner = (
     // references in the generated SQL match the CTE alias rather than the
     // original unaliased table name.
     const relWhere = relationArgs?.where;
+    const relDeleted = (relationArgs as any)?.deleted as DeletedMode | undefined;
     // The eager path is the one read that never passes through the relation field's own
     // resolver, so the target's scope has to be applied here as well — otherwise selecting a
     // relation would be the way around it.
     thisRecord.where =
-      relWhere || scope?.has(targetTableName)
+      relWhere || scope?.has(targetTableName, relDeleted)
         ? {
             RAW: (aliasedTable: Table) =>
               withScope(
@@ -3816,6 +3998,7 @@ const extractRelationsParamsInner = (
                 relWhere
                   ? extractFilters(aliasedTable, relName, relWhere, relationFilterCtx(filterCtx, targetTableName))
                   : undefined,
+                relDeleted,
               ),
           }
         : undefined;
@@ -4834,7 +5017,7 @@ export const applyErrorMapper = (
 export const computeResolverFieldNames = (
   tableName: string,
   typeNameMapper: TypeNameMapper | undefined,
-  prefixes: { insert: string; update: string; delete: string; upsert?: string },
+  prefixes: { insert: string; update: string; delete: string; upsert?: string; restore?: string },
   suffixes: { list: string; single: string },
 ): {
   typeName: string;
@@ -4852,6 +5035,8 @@ export const computeResolverFieldNames = (
   updateCountFieldName: string;
   deleteFieldName: string;
   deleteSingleFieldName: string;
+  restoreFieldName: string;
+  restoreSingleFieldName: string;
   deleteCountFieldName: string;
 } => {
   const mapped = typeNameMapper?.(tableName);
@@ -4874,6 +5059,9 @@ export const computeResolverFieldNames = (
   // suffix so it never collides with the single-set update.
   const updateManyFieldName = `${prefixes.update}${mapped ? capitalize(mapped.plural) : capitalize(tableName)}Many`;
   const deleteFieldName = `${prefixes.delete}${mapped ? capitalize(mapped.singular) : capitalize(tableName)}`;
+  // The soft-delete counterpart, named the same way so `deleteUser` / `restoreUser` read as a
+  // pair however the delete prefix and the single suffix are configured.
+  const restoreFieldName = `${prefixes.restore ?? 'restore'}${mapped ? capitalize(mapped.singular) : capitalize(tableName)}`;
   // The plural update/delete mutations already use the singular noun when a mapper is
   // present, so — unlike create — the Single variants can't rely on singular vs plural to
   // stay distinct. They always carry a suffix, falling back to 'Single' when the configured
@@ -4881,6 +5069,7 @@ export const computeResolverFieldNames = (
   const writeSingleSuffix = suffixes.single === '' ? 'Single' : suffixes.single;
   const updateSingleFieldName = `${updateFieldName}${writeSingleSuffix}`;
   const deleteSingleFieldName = `${deleteFieldName}${writeSingleSuffix}`;
+  const restoreSingleFieldName = `${restoreFieldName}${writeSingleSuffix}`;
   // The count variants are the plural write under another name, so they take the plural
   // noun rather than the singular one the plural mutations inherited from the mapper.
   const pluralNoun = mapped ? capitalize(mapped.plural) : capitalize(tableName);
@@ -4902,6 +5091,8 @@ export const computeResolverFieldNames = (
     updateCountFieldName,
     deleteFieldName,
     deleteSingleFieldName,
+    restoreFieldName,
+    restoreSingleFieldName,
     deleteCountFieldName,
   };
 };
@@ -5095,10 +5286,29 @@ export const generateWriteCount = ({
 };
 
 /** GraphQL argument map for a list/array select field. */
+/**
+ * The `deleted` argument, emitted only on reads over a table that declares a soft-delete
+ * column — a schema with no soft delete anywhere keeps exactly the arguments it had.
+ */
+export const deletedArg = (
+  softDelete: SoftDeleteFor | undefined,
+  tableName: string,
+): Record<string, { type: any; description: string }> =>
+  softDelete?.(tableName)
+    ? {
+        deleted: {
+          type: deletedFilterEnum,
+          description: 'Whether rows marked deleted are returned. Defaults to EXCLUDE.',
+        },
+      }
+    : {};
+
 export const selectArrayArgs = (
   orderArgs: GraphQLInputObjectType,
   filterArgs: GraphQLInputObjectType,
   distinctEnum?: GraphQLEnumType,
+  softDelete?: SoftDeleteFor,
+  tableName?: string,
 ): Record<string, { type: any; description?: string }> => ({
   offset: { type: GraphQLInt },
   limit: { type: GraphQLInt },
@@ -5110,16 +5320,20 @@ export const selectArrayArgs = (
       "Keyset pagination: only return rows strictly after this cursor (a row's `cursor` field from a previous page, under the same orderBy).",
   },
   ...(distinctEnum ? { distinct: { type: new GraphQLList(new GraphQLNonNull(distinctEnum)) } } : {}),
+  ...deletedArg(softDelete, tableName!),
 });
 
 /** GraphQL argument map for a single-row select field (no `limit`). */
 export const selectSingleArgs = (
   orderArgs: GraphQLInputObjectType,
   filterArgs: GraphQLInputObjectType,
+  softDelete?: SoftDeleteFor,
+  tableName?: string,
 ): Record<string, { type: any }> => ({
   offset: { type: GraphQLInt },
   orderBy: { type: orderArgs },
   where: { type: filterArgs },
+  ...deletedArg(softDelete, tableName!),
 });
 
 /**
@@ -5151,6 +5365,7 @@ export const runRelationalSelect = async (opts: {
   nullOrdering?: NullOrdering;
   limits?: LimitPolicyFor;
   scope?: ScopeResolver;
+  deleted?: DeletedMode;
 }): Promise<any> => {
   const {
     queryBase,
@@ -5169,6 +5384,7 @@ export const runRelationalSelect = async (opts: {
     pkNames,
     after,
     scope,
+    deleted,
   } = opts;
   const distinct = opts.distinct?.length ? opts.distinct : undefined;
 
@@ -5221,6 +5437,7 @@ export const runRelationalSelect = async (opts: {
         tableName,
         table,
         where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
+        deleted,
       ),
       orderBy,
       limit: single ? 1 : opts.limit,
@@ -5260,7 +5477,7 @@ export const runRelationalSelect = async (opts: {
     where: distinctKeys
       ? // The distinct pass already ran inside the scope, so the keys it picked are in it.
         { RAW: (aliasedTable: Table) => primaryKeyRestriction(aliasedTable, pkNames!, distinctKeys!) }
-      : where || cursorValues || scope?.has(tableName)
+      : where || cursorValues || scope?.has(tableName, deleted)
         ? {
             RAW: (aliasedTable: Table) =>
               withScope(
@@ -5280,6 +5497,7 @@ export const runRelationalSelect = async (opts: {
                       )
                     : undefined,
                 ),
+                deleted,
               ),
           }
         : undefined,

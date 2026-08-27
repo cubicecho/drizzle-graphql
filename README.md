@@ -362,6 +362,81 @@ const { schema } = buildSchema(db, {
 
 Return `undefined` for any table that should keep its default naming.
 
+## Soft delete
+
+`softDelete` turns a table's `delete` mutation into an UPDATE that marks the row, and hides
+marked rows from every read:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    softDelete: {
+        posts: 'deletedAt',
+        // The NOT NULL form has to spell out both values:
+        flags: { column: 'isArchived', deletedValue: true, restoredValue: false },
+    },
+})
+```
+
+Keyed by the **Drizzle schema key**, like `scope` and `exclude`. A function form is also
+accepted, for a convention applied across the schema:
+
+```Typescript
+softDelete: (table, tableName) => ('deletedAt' in getTableColumns(table) ? 'deletedAt' : undefined)
+```
+
+What a declared table gets:
+
+| Path | Effect |
+| --- | --- |
+| `deletePosts`, `deletePostsSingle` | UPDATE that writes the marker; returns the rows as they now stand |
+| `restorePosts`, `restorePostsSingle` | the inverse — matches **only** marked rows and clears the marker |
+| `posts`, `postsSingle`, cursor pages | marked rows are not returned |
+| `postsAggregate`, `postsGroupBy` | counted over unmarked rows only |
+| `user.posts`, `user.postsAggregate` | hidden on both the batched and the eager (`with:`) path |
+| `updatePosts`, `updatePostsMany`, a second `deletePosts` | a marked row is simply not matched |
+| nested `connect` / `disconnect` / `set` | a marked row cannot be attached or detached |
+| `CreatePostsInput`, `UpdatePostsInput` | the marker column is **removed** — only the mutations write it |
+
+Every read path also gains a `deleted` argument for the cases the default hides:
+
+```graphql
+{
+    live: posts { id }                      # the default — EXCLUDE
+    trash: posts(deleted: ONLY) { id }      # the trash view, no second field needed
+    all: posts(deleted: INCLUDE) { id }
+}
+```
+
+The marker column stays **readable and filterable** — it is only the write inputs that lose it,
+the same trade `contextValues` makes.
+
+Defaults come from the column's type: `new Date()` for a timestamp, an ISO string for text,
+`Date.now()` for a number, `true` for a boolean. A NOT NULL column has no "absent" state, so
+the predicate has to compare against a constant: any NOT NULL column other than a boolean must
+give `deletedValue` (a constant, not a function) and `restoredValue`, or the build throws.
+
+Three things it deliberately does not do:
+
+-   **It does not cascade.** Marking a post does not mark its comments. A comment whose post is
+    marked is still returned by `comments`; its `post` field resolves to `null`. Declare the
+    child table too if that is not what you want.
+-   **It does not free the row's unique keys.** A marked row still occupies its primary key and
+    every unique index, so inserting a new row with the same natural key fails the constraint.
+    A partial unique index (`WHERE deleted_at IS NULL`) is the usual answer.
+-   **It does not refuse.** Like `scope`, an unreachable row answers the same as a row that does
+    not exist.
+
+The soft-delete predicate is ANDed **before** a `scope` predicate, both after the client's
+`where` — so a scope still confines what `deleted: INCLUDE` can reach.
+
+> **MySQL caveat.** `ON DUPLICATE KEY UPDATE` takes no predicate, so an upsert whose conflict
+> target hits a marked row updates it — reviving it — rather than leaving it alone. On
+> PostgreSQL and SQLite the conflict branch carries the predicate and updates nothing.
+
+A table with no declaration keeps a real `DELETE`, gets no `restore` mutation and no `deleted`
+argument, and a build with no `softDelete` at all emits exactly the SQL it did before.
+
+
 ## Scalars
 
 Columns whose values don't fit a built-in GraphQL scalar get a named custom scalar, so the
@@ -1637,7 +1712,8 @@ const meta = drizzleExtension(field)
 //   table: 'Users',        // the Drizzle schema key
 //   kind: 'mutation',      // 'query' | 'mutation' | 'relation' | 'aggregate' | 'type'
 //   operation: 'update',   // 'select' | 'insert' | 'update' | 'updateMany' | 'upsert'
-//                          // | 'delete' | 'aggregate' | 'groupBy' | 'relation'
+//                          // | 'delete' | 'restore' | 'aggregate' | 'groupBy'
+//                          // | 'relation'
 //                          // | 'relationAggregate'
 //   single: true,          // one row, or a list
 //   targetArg: 'where',    // 'where' | 'values' | 'updates' — where the rows live
