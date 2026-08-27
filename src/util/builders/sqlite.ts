@@ -1,4 +1,3 @@
-// @ts-nocheck — vendored file, drizzle-orm 1.0 type compat not guaranteed
 import { is, One, type Table } from 'drizzle-orm';
 import type { RelationalQueryBuilder } from 'drizzle-orm/mysql-core/query-builders/query';
 import { type BaseSQLiteDatabase, getTableConfig, type SQLiteColumn, SQLiteTable } from 'drizzle-orm/sqlite-core';
@@ -121,7 +120,7 @@ const generateSelectArray = (
   limits?: LimitPolicyFor,
   policies?: ResolverPolicies,
 ): CreatedResolver => {
-  const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
+  const queryBase = db.query[tableName as keyof typeof db.query & string] as unknown as
     | RelationalQueryBuilder<any, any, any>
     | undefined;
   if (!queryBase) {
@@ -194,7 +193,7 @@ const generateSelectSingle = (
   limits?: LimitPolicyFor,
   policies?: ResolverPolicies,
 ): CreatedResolver => {
-  const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
+  const queryBase = db.query[tableName as keyof typeof db.query & string] as unknown as
     | RelationalQueryBuilder<any, any, any>
     | undefined;
   if (!queryBase) {

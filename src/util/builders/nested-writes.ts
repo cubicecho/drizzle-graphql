@@ -1,4 +1,3 @@
-// @ts-nocheck — drizzle-orm 1.0 type compat not guaranteed, same as its sibling builders
 // =============================================================================
 // Nested writes — `create` / `connect` / `disconnect` / `set` on the relation
 // fields of a table's create and update inputs.

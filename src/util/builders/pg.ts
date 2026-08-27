@@ -1,4 +1,3 @@
-// @ts-nocheck — vendored file, drizzle-orm 1.0 type compat not guaranteed
 import { and, getColumns, is, One, type Table, type View } from 'drizzle-orm';
 import type { RelationalQueryBuilder } from 'drizzle-orm/mysql-core/query-builders/query';
 import { getTableConfig, type PgAsyncDatabase, type PgColumn, PgTable } from 'drizzle-orm/pg-core';
@@ -119,7 +118,7 @@ import type {
 } from './types.ts';
 
 const generateSelectArray = (
-  db: PgAsyncDatabase<any, any, any>,
+  db: PgAsyncDatabase<any, any>,
   tableName: string,
   tables: Record<string, Table>,
   relationMap: Record<string, Record<string, TableNamedRelations>>,
@@ -133,7 +132,7 @@ const generateSelectArray = (
   limits?: LimitPolicyFor,
   policies?: ResolverPolicies,
 ): CreatedResolver => {
-  const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
+  const queryBase = db.query[tableName as keyof typeof db.query & string] as unknown as
     | RelationalQueryBuilder<any, any, any>
     | undefined;
   // Tables without relations won't have db.query support — fall back to basic select.
@@ -304,7 +303,7 @@ const generateSelectArray = (
 };
 
 const generateSelectSingle = (
-  db: PgAsyncDatabase<any, any, any>,
+  db: PgAsyncDatabase<any, any>,
   tableName: string,
   tables: Record<string, Table>,
   relationMap: Record<string, Record<string, TableNamedRelations>>,
@@ -317,7 +316,7 @@ const generateSelectSingle = (
   limits?: LimitPolicyFor,
   policies?: ResolverPolicies,
 ): CreatedResolver => {
-  const queryBase = db.query[tableName as keyof typeof db.query] as unknown as
+  const queryBase = db.query[tableName as keyof typeof db.query & string] as unknown as
     | RelationalQueryBuilder<any, any, any>
     | undefined;
   // Tables without relations won't have db.query support — fall back to basic select.
@@ -402,7 +401,7 @@ const generateSelectSingle = (
 const pgPrimaryKeyPropNames = (table: PgTable): string[] => getPrimaryKeyPropNamesFromConfig(table, getTableConfig);
 
 const generateInsertArray = (
-  db: PgAsyncDatabase<any, any, any>,
+  db: PgAsyncDatabase<any, any>,
   tableName: string,
   table: PgTable,
   tables: Record<string, Table>,
@@ -538,7 +537,7 @@ const generateInsertArray = (
 };
 
 const generateInsertSingle = (
-  db: PgAsyncDatabase<any, any, any>,
+  db: PgAsyncDatabase<any, any>,
   tableName: string,
   table: PgTable,
   tables: Record<string, Table>,
@@ -680,7 +679,7 @@ const generateInsertSingle = (
  * Shares the insert input: an upsert supplies a whole row, same as a create.
  */
 const generateUpsert = (
-  db: PgAsyncDatabase<any, any, any>,
+  db: PgAsyncDatabase<any, any>,
   tableName: string,
   table: PgTable,
   tables: Record<string, Table>,
@@ -849,7 +848,7 @@ const generateUpsert = (
 };
 
 const generateUpdate = (
-  db: PgAsyncDatabase<any, any, any>,
+  db: PgAsyncDatabase<any, any>,
   tableName: string,
   table: PgTable,
   tables: Record<string, Table>,
@@ -1028,7 +1027,7 @@ const generateUpdate = (
  * case stays aligned with the input.
  */
 const generateUpdateMany = (
-  db: PgAsyncDatabase<any, any, any>,
+  db: PgAsyncDatabase<any, any>,
   tableName: string,
   table: PgTable,
   tables: Record<string, Table>,
@@ -1216,7 +1215,7 @@ const generateUpdateMany = (
  * the restored value.
  */
 const generateDelete = (
-  db: PgAsyncDatabase<any, any, any>,
+  db: PgAsyncDatabase<any, any>,
   tableName: string,
   table: PgTable,
   filterArgs: GraphQLInputObjectType,
@@ -1404,7 +1403,7 @@ export function generateSchemaData<
   // Record each relation target's primary key (composite-aware) so paginated relations
   // default to a deterministic PK order. Must run before pruning / type generation, which
   // share these entry objects.
-  attachTargetPrimaryKeys(namedRelations, tables, pgPrimaryKeyPropNames);
+  attachTargetPrimaryKeys(namedRelations, tables, (table) => pgPrimaryKeyPropNames(table as PgTable));
   // Relations to eager-load via `with:`. Query/mutation resolvers use this pruned map so
   // opted-out relations never overfetch; type generation keeps the full map so their
   // fields still exist and resolve lazily.

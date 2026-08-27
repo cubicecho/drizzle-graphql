@@ -1,4 +1,3 @@
-// @ts-nocheck — vendored file, drizzle-orm 1.0 type compat not guaranteed
 import {
   and,
   avg,
@@ -279,7 +278,7 @@ const parseAggregateRequest = (
   for (const field of Object.values(selectionTree) as ResolveTree[]) {
     if (field.name === 'count') {
       request.count = true;
-      request.selection.count = count();
+      request.selection['count'] = count();
       continue;
     }
 
@@ -312,7 +311,7 @@ const assembleAggregateRow = (row: Record<string, any>, request: AggregateReques
 
   if (request.count) {
     // drizzle's count() maps to number already; guard for drivers returning strings.
-    result.count = row.count == null ? 0 : Number(row.count);
+    result['count'] = row['count'] == null ? 0 : Number(row['count']);
   }
 
   for (const op of AGGREGATE_OPS) {
@@ -335,7 +334,9 @@ const assembleAggregateRow = (row: Record<string, any>, request: AggregateReques
         // the value (`min`/`max` are `mapWith(column)`), so all that's left is coercing a
         // leftover raw date string (PG decodes timestamps in driver-level codecs, which raw
         // select expressions bypass) and remapping for GraphQL output.
-        const column = target.columns[columnName];
+        // Present by construction: a name only reaches `request.ops` after the same lookup
+        // succeeded in `buildAggregateRequest`.
+        const column = target.columns[columnName]!;
         const decoded =
           typeof value === 'string' && target.dateTimeColumns.has(columnName) ? parseDriverDateTime(value) : value;
         opResult[columnName] = remapToGraphQLCore(columnName, decoded, target.tableName, column);

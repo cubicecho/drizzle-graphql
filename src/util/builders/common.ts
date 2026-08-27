@@ -14,7 +14,6 @@
 //    - Insert input: ${capitalize(insertPrefix)}${toTypeName(tableName)}Input (e.g. CreateUsersInput)
 //    - Update input: ${capitalize(updatePrefix)}${toTypeName(tableName)}Input (e.g. UpdateUsersInput)
 // =============================================================================
-// @ts-nocheck — vendored file, drizzle-orm 1.0 type compat not guaranteed
 import type { Column, Relation, Table } from 'drizzle-orm';
 import {
   aliasedTable,
@@ -91,7 +90,6 @@ import type {
   FilterColumnOperators,
   FilterColumnOperatorsCore,
   Filters,
-  FiltersCore,
   GeneratedTableTypes,
   GeneratedTableTypesOutputs,
   OrderByArgs,
@@ -1651,7 +1649,7 @@ const resolveGenericFilterDescriptor = (
  * Postgres `@>` / MySQL `JSON_CONTAINS`. SQLite stores json as text and has no containment
  * operator, so `contains` is omitted there (same precedent as dialect-specific ops like ilike).
  */
-const jsonFilterFields = (column: Column, colType: ReturnType<typeof drizzleColumnToGraphQLType>['type']) => {
+const jsonFilterFields = (column: Column, colType: ConvertedColumn<true>['type']) => {
   const dialect = columnDialect(column);
   return {
     eq: { type: colType, description: 'JSON equality on the whole value' },
@@ -3585,7 +3583,10 @@ export const extractFilters = <TTable extends Table>(
   // filter type itself, so the tree nests arbitrarily.
   const { OR, AND, NOT, ...fieldFilters } = filters;
 
-  const entries = Object.entries(fieldFilters as FiltersCore<TTable>);
+  // `Omit`-ing the boolean keys off a generic `Filters<TTable>` leaves a type the checker
+  // can no longer relate to `FiltersCore<TTable>`. Each key is dispatched on its own below
+  // — as a column or as a relation — so the entries are typed for that dispatch instead.
+  const entries = Object.entries(fieldFilters) as [string, FilterColumnOperatorsCore<any> | undefined][];
 
   const columns = getColumns(table);
   const relations = relationCtx?.relationMap[relationCtx.tableKey];
@@ -4274,9 +4275,9 @@ export const withPrimaryKeyColumns = <T extends Record<string, any>>(
  * Each dialect builder binds this with its own getTableConfig and reuses the binding for
  * both relation pagination and mutation re-fetch keying.
  */
-export const getPrimaryKeyPropNamesFromConfig = (
-  table: Table,
-  getTableConfig: (table: Table) => { primaryKeys: { columns: { name: string }[] }[] },
+export const getPrimaryKeyPropNamesFromConfig = <TTable extends Table>(
+  table: TTable,
+  getTableConfig: (table: TTable) => { primaryKeys: { columns: { name: string }[] }[] },
 ): string[] => {
   const compositePkColumnNames = getTableConfig(table).primaryKeys.flatMap((pk) => pk.columns.map((c) => c.name));
   return getPrimaryKeyPropNames(table, compositePkColumnNames);
@@ -4600,9 +4601,9 @@ export const rowCursorResolver = (source: any): string | null => source?.[ROW_CU
  * column enum. Deduplicated, order-insensitive — a column that is both the primary key and
  * a unique constraint yields one set.
  */
-export const getUniqueColumnSets = (
-  table: Table,
-  getTableConfig: (table: Table) => {
+export const getUniqueColumnSets = <TTable extends Table>(
+  table: TTable,
+  getTableConfig: (table: TTable) => {
     primaryKeys: { columns: { name: string }[] }[];
     uniqueConstraints?: { columns: { name: string }[] }[];
     indexes?: { config: { unique?: boolean; columns: any[] } }[];
