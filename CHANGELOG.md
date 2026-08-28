@@ -1,3 +1,10 @@
+# [8.2.0](https://github.com/cubicecho/drizzle-graphql/compare/v8.1.0...v8.2.0) (2026-08-28)
+
+
+### Features
+
+* **deps:** admit graphql-scalars 2 in the peer range ([29a0bca](https://github.com/cubicecho/drizzle-graphql/commit/29a0bca6ef4d0fa41a58dbc9419e9ae728fae322))
+
 # [8.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v8.0.0...v8.1.0) (2026-08-28)
 
 
