@@ -15,7 +15,6 @@ import { GraphQLList, GraphQLNonNull } from 'graphql';
 import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import {
-  type DrizzleErrorContext,
   drizzleError,
   eagerLoadMutationRelations,
   extractFilters,
@@ -25,14 +24,11 @@ import {
   type RelationFilterBase,
   type ResolverPolicies,
   relationFilterCtx,
-  runMutation,
-  runWriteHook,
   stripContextValues,
   type TypeNameMapper,
   type TypeNameResolver,
-  toGraphQLError,
-  withErrorContext,
   withScope,
+  writeResolver,
 } from '../builders/common.ts';
 import { remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
 import { remapUpdateInput } from './field-updates.ts';
@@ -150,146 +146,113 @@ export const createUpdateManyGenerator = (
 
     // Derived once at build time — PK prop names don't change per request.
     const pkNames = primaryKeyPropNames(table);
-    const hooks = policies?.onWrite?.(tableName, 'updateMany');
-    const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'updateMany', field: fieldName };
 
-    return {
-      name: fieldName,
-      resolver: async (
-        _source,
-        args: { updates: { where?: Filters<Table>; set: Record<string, any> }[] },
-        context,
-        info,
-      ) => {
-        try {
-          return await runMutation(
-            db,
-            context,
-            info,
-            txCtx,
-            async (executor) => {
-              const { updates } = args;
-              if (!updates.length) {
-                throw drizzleError('No updates were provided!', { code: 'DRIZZLE_NO_VALUES' });
-              }
-              await runWriteHook(hooks, 'before', {
-                table: tableName,
-                operation: 'updateMany',
-                single: false,
-                args,
-                context,
-                info,
-                tx: executor,
-              });
-              const scope = policies?.scope?.(context);
-              const contextColumns = policies?.contextValues?.(tableName);
-
-              const parsedInfo = parseResolveInfo(info, {
-                deep: true,
-              }) as ResolveTree;
-
-              const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
-                relationMap,
-                tables,
-                tableName,
-                typeName,
-                typeNameMapper,
-                resolveName,
-                table,
-                pkNames,
-                parsedInfo,
-                limits,
-                scope,
-                defaultOrderBy: policies?.defaultOrderBy,
-              });
-
-              // Remap and validate every entry before the transaction opens, so a malformed
-              // entry rejects the request instead of rolling back mid-batch.
-              const entries: UpdateManyEntry[] = updates.map(({ where, set }) => {
-                const split = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
-                const ops = split && nested!.hasOps(split.ops) ? split.ops : undefined;
-                const input = stripContextValues(
-                  remapUpdateInput(split ? split.columns : set, table, tableName),
-                  contextColumns,
-                );
-                // An entry that only writes through a relation still has work to do.
-                if (!Object.keys(input).length && !ops) {
-                  throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
-                }
-                return {
-                  set: input,
-                  ops,
-                  filters: withScope(
-                    scope,
-                    tableName,
-                    table,
-                    where
-                      ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName))
-                      : undefined,
-                  ),
-                };
-              });
-
-              const anyNested = entries.some((entry) => entry.ops);
-              const returning = anyNested
-                ? nested!.withJoinColumns(
-                    tableName,
-                    mergedOps(entries.map((entry) => ({ ops: entry.ops ?? {} }))),
-                    { ...columns },
-                    table,
-                  )
-                : columns;
-
-              const perEntry = await runBatch({
-                executor,
-                entries,
-                table,
-                returning,
-                anyNested,
-                nested,
-                tableName,
-                context,
-              });
-
-              const flatRows = perEntry.flat();
-              await runWriteHook(hooks, 'after', {
-                table: tableName,
-                operation: 'updateMany',
-                single: false,
-                args,
-                rows: flatRows,
-                context,
-                info,
-                tx: executor,
-              });
-
-              const enriched = hasRelations
-                ? await eagerLoadMutationRelations(executor, tableName, flatRows, pkNames, withParams)
-                : flatRows;
-
-              // Rebuild the per-entry slots: a no-match entry contributes `null`, a multi-match
-              // entry contributes each of its rows.
-              const output: (Record<string, any> | null)[] = [];
-              let offset = 0;
-              for (const rows of perEntry) {
-                if (!rows.length) {
-                  output.push(null);
-                  continue;
-                }
-                for (let i = 0; i < rows.length; i++) {
-                  output.push(remapToGraphQLSingleOutput(enriched[offset + i], tableName, table, relationMap));
-                }
-                offset += rows.length;
-              }
-              return output;
-            },
-            !!hooks,
-          );
-        } catch (e) {
-          throw withErrorContext(toGraphQLError(e), errorCtx);
-        }
-      },
+    return writeResolver<{ updates: { where?: Filters<Table>; set: Record<string, any> }[] }>({
+      db,
+      tableName,
+      operation: 'updateMany',
+      single: false,
+      fieldName,
+      txCtx,
+      policies,
       args: queryArgs,
-    };
+      run: async ({ executor, args, context, info, before, after }) => {
+        const { updates } = args;
+        if (!updates.length) {
+          throw drizzleError('No updates were provided!', { code: 'DRIZZLE_NO_VALUES' });
+        }
+        await before();
+        const scope = policies?.scope?.(context);
+        const contextColumns = policies?.contextValues?.(tableName);
+
+        const parsedInfo = parseResolveInfo(info, {
+          deep: true,
+        }) as ResolveTree;
+
+        const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+          relationMap,
+          tables,
+          tableName,
+          typeName,
+          typeNameMapper,
+          resolveName,
+          table,
+          pkNames,
+          parsedInfo,
+          limits,
+          scope,
+          defaultOrderBy: policies?.defaultOrderBy,
+        });
+
+        // Remap and validate every entry before the transaction opens, so a malformed
+        // entry rejects the request instead of rolling back mid-batch.
+        const entries: UpdateManyEntry[] = updates.map(({ where, set }) => {
+          const split = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
+          const ops = split && nested!.hasOps(split.ops) ? split.ops : undefined;
+          const input = stripContextValues(
+            remapUpdateInput(split ? split.columns : set, table, tableName),
+            contextColumns,
+          );
+          // An entry that only writes through a relation still has work to do.
+          if (!Object.keys(input).length && !ops) {
+            throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
+          }
+          return {
+            set: input,
+            ops,
+            filters: withScope(
+              scope,
+              tableName,
+              table,
+              where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
+            ),
+          };
+        });
+
+        const anyNested = entries.some((entry) => entry.ops);
+        const returning = anyNested
+          ? nested!.withJoinColumns(
+              tableName,
+              mergedOps(entries.map((entry) => ({ ops: entry.ops ?? {} }))),
+              { ...columns },
+              table,
+            )
+          : columns;
+
+        const perEntry = await runBatch({
+          executor,
+          entries,
+          table,
+          returning,
+          anyNested,
+          nested,
+          tableName,
+          context,
+        });
+
+        const flatRows = perEntry.flat();
+        await after(flatRows);
+
+        const enriched = hasRelations
+          ? await eagerLoadMutationRelations(executor, tableName, flatRows, pkNames, withParams)
+          : flatRows;
+
+        // Rebuild the per-entry slots: a no-match entry contributes `null`, a multi-match
+        // entry contributes each of its rows.
+        const output: (Record<string, any> | null)[] = [];
+        let offset = 0;
+        for (const rows of perEntry) {
+          if (!rows.length) {
+            output.push(null);
+            continue;
+          }
+          for (let i = 0; i < rows.length; i++) {
+            output.push(remapToGraphQLSingleOutput(enriched[offset + i], tableName, table, relationMap));
+          }
+          offset += rows.length;
+        }
+        return output;
+      },
+    });
   };
 };

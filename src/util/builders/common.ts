@@ -153,3 +153,5 @@ export type {
   WriteOperation,
 } from './common/write-hooks.ts';
 export { normalizeWriteHooks, runWriteHook } from './common/write-hooks.ts';
+export type { WriteBody, WriteHookEmitter, WriteResolverSpec } from './common/write-scaffold.ts';
+export { writeResolver } from './common/write-scaffold.ts';

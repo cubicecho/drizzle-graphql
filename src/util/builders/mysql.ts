@@ -1,6 +1,5 @@
 import type { Table } from 'drizzle-orm';
 import { getTableConfig, type MySqlDatabase, MySqlTable } from 'drizzle-orm/mysql-core';
-import type { GraphQLFieldConfigArgumentMap } from 'graphql';
 import {
   GraphQLBoolean,
   type GraphQLInputObjectType,
@@ -15,7 +14,6 @@ import {
   applyContextValuesAll,
   assertSingleMatch,
   computeResolverFieldNames,
-  type DrizzleErrorContext,
   drizzleError,
   extractFilters,
   extractRequiredFilters,
@@ -31,20 +29,21 @@ import {
   type ResolverPolicies,
   relationFilterCtx,
   resolveConflictPlan,
-  runMutation,
-  runWriteHook,
   stripContextValues,
   type TablesRelationalConfig,
-  toGraphQLError,
   type WriteOperation,
-  withErrorContext,
   withScope,
+  writeResolver,
 } from '../builders/common.ts';
 import { remapFromGraphQLArrayInput, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
 import { type DrizzleMutationMeta, tableFieldExtensions } from '../extensions.ts';
 import { createSchemaBuilder } from './build-context.ts';
 import { remapUpdateInput } from './field-updates.ts';
 import type { CreatedResolver, Filters, SchemaGeneratorOptions } from './types.ts';
+
+// Every MySQL mutation answers `{ isSuccess: true }`: with no RETURNING clause there is
+// nothing else the statement can report.
+const isSuccess = { isSuccess: true };
 
 const generateInsertArray = (
   db: MySqlDatabase<any, any, any, any>,
@@ -54,68 +53,37 @@ const generateInsertArray = (
   fieldName: string,
   txCtx?: MutationTxCtx,
   policies?: ResolverPolicies,
-): CreatedResolver => {
-  const queryArgs: GraphQLFieldConfigArgumentMap = {
-    values: {
-      type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(baseType))),
+): CreatedResolver =>
+  writeResolver<{ values: Record<string, any>[] }>({
+    db,
+    tableName,
+    operation: 'insert',
+    single: false,
+    fieldName,
+    txCtx,
+    policies,
+    args: {
+      values: {
+        type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(baseType))),
+      },
     },
-  };
-
-  const hooks = policies?.onWrite?.(tableName, 'insert');
-  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'insert', field: fieldName };
-
-  return {
-    name: fieldName,
-    resolver: async (_source, args: { values: Record<string, any>[] }, context, info) => {
-      try {
-        return await runMutation(
-          db,
-          context,
-          info,
-          txCtx,
-          async (executor) => {
-            const input = applyContextValuesAll(
-              remapFromGraphQLArrayInput(args.values, table),
-              policies?.contextValues?.(tableName),
-              context,
-            );
-            if (!input.length) {
-              throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
-            }
-            await runWriteHook(hooks, 'before', {
-              table: tableName,
-              operation: 'insert',
-              single: false,
-              args,
-              context,
-              info,
-              tx: executor,
-            });
-
-            await executor.insert(table).values(input);
-
-            await runWriteHook(hooks, 'after', {
-              table: tableName,
-              operation: 'insert',
-              single: false,
-              args,
-              rows: [],
-              context,
-              info,
-              tx: executor,
-            });
-
-            return { isSuccess: true };
-          },
-          !!hooks,
-        );
-      } catch (e) {
-        throw withErrorContext(toGraphQLError(e), errorCtx);
+    run: async ({ executor, args, context, before, after }) => {
+      const input = applyContextValuesAll(
+        remapFromGraphQLArrayInput(args.values, table),
+        policies?.contextValues?.(tableName),
+        context,
+      );
+      if (!input.length) {
+        throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
       }
+      await before();
+
+      await executor.insert(table).values(input);
+
+      await after();
+      return isSuccess;
     },
-    args: queryArgs,
-  };
-};
+  });
 
 const generateInsertSingle = (
   db: MySqlDatabase<any, any, any, any>,
@@ -125,65 +93,34 @@ const generateInsertSingle = (
   fieldName: string,
   txCtx?: MutationTxCtx,
   policies?: ResolverPolicies,
-): CreatedResolver => {
-  const queryArgs: GraphQLFieldConfigArgumentMap = {
-    values: {
-      type: new GraphQLNonNull(baseType),
+): CreatedResolver =>
+  writeResolver<{ values: Record<string, any> }>({
+    db,
+    tableName,
+    operation: 'insert',
+    single: true,
+    fieldName,
+    txCtx,
+    policies,
+    args: {
+      values: {
+        type: new GraphQLNonNull(baseType),
+      },
     },
-  };
+    run: async ({ executor, args, context, before, after }) => {
+      await before();
+      const input = applyContextValues(
+        remapFromGraphQLSingleInput(args.values, table),
+        policies?.contextValues?.(tableName),
+        context,
+      );
 
-  const hooks = policies?.onWrite?.(tableName, 'insert');
-  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'insert', field: fieldName };
+      await executor.insert(table).values(input);
 
-  return {
-    name: fieldName,
-    resolver: async (_source, args: { values: Record<string, any> }, context, info) => {
-      try {
-        return await runMutation(
-          db,
-          context,
-          info,
-          txCtx,
-          async (executor) => {
-            await runWriteHook(hooks, 'before', {
-              table: tableName,
-              operation: 'insert',
-              single: true,
-              args,
-              context,
-              info,
-              tx: executor,
-            });
-            const input = applyContextValues(
-              remapFromGraphQLSingleInput(args.values, table),
-              policies?.contextValues?.(tableName),
-              context,
-            );
-
-            await executor.insert(table).values(input);
-
-            await runWriteHook(hooks, 'after', {
-              table: tableName,
-              operation: 'insert',
-              single: true,
-              args,
-              rows: [],
-              context,
-              info,
-              tx: executor,
-            });
-
-            return { isSuccess: true };
-          },
-          !!hooks,
-        );
-      } catch (e) {
-        throw withErrorContext(toGraphQLError(e), errorCtx);
-      }
+      await after();
+      return isSuccess;
     },
-    args: queryArgs,
-  };
-};
+  });
 
 const generateUpsert = (
   db: MySqlDatabase<any, any, any, any>,
@@ -196,96 +133,61 @@ const generateUpsert = (
   txCtx?: MutationTxCtx,
   policies?: ResolverPolicies,
 ): CreatedResolver => {
-  const queryArgs: GraphQLFieldConfigArgumentMap = {
-    values: {
-      type: single ? new GraphQLNonNull(baseType) : new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(baseType))),
-    },
-    onConflict: {
-      type: onConflictType,
-      description: 'How a conflicting row is resolved. Defaults to overwriting it.',
-    },
-  };
-
   const pkNames = mysqlPrimaryKeyPropNames(table);
 
-  const hooks = policies?.onWrite?.(tableName, 'upsert');
-  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'upsert', field: fieldName };
-
-  return {
-    name: fieldName,
-    resolver: async (
-      _source,
-      args: { values: Record<string, any> | Record<string, any>[]; onConflict?: OnConflictArg },
-      context,
-      info,
-    ) => {
-      try {
-        return await runMutation(
-          db,
-          context,
-          info,
-          txCtx,
-          async (executor) => {
-            const input = applyContextValuesAll(
-              single
-                ? [remapFromGraphQLSingleInput(args.values as Record<string, any>, table)]
-                : remapFromGraphQLArrayInput(args.values as Record<string, any>[], table),
-              policies?.contextValues?.(tableName),
-              context,
-            );
-            if (!input.length) {
-              throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
-            }
-            await runWriteHook(hooks, 'before', {
-              table: tableName,
-              operation: 'upsert',
-              single,
-              args,
-              context,
-              info,
-              tx: executor,
-            });
-
-            // MySQL's ON DUPLICATE KEY UPDATE fires on whichever unique key was violated, so
-            // there is no target to resolve and no predicate to attach.
-            const plan = resolveConflictPlan({
-              table,
-              values: input,
-              onConflict: args.onConflict,
-              pkNames,
-              uniqueSets: [],
-              excludedRef: mysqlValuesColumnRef,
-              withTarget: false,
-            });
-
-            if (plan.action === 'NOTHING') {
-              // INSERT IGNORE is the closest MySQL gets to DO NOTHING.
-              await executor.insert(table).ignore().values(input);
-            } else {
-              await executor.insert(table).values(input).onDuplicateKeyUpdate({ set: plan.set });
-            }
-
-            await runWriteHook(hooks, 'after', {
-              table: tableName,
-              operation: 'upsert',
-              single,
-              args,
-              rows: [],
-              context,
-              info,
-              tx: executor,
-            });
-
-            return { isSuccess: true };
-          },
-          !!hooks,
-        );
-      } catch (e) {
-        throw withErrorContext(toGraphQLError(e), errorCtx);
-      }
+  return writeResolver<{ values: Record<string, any> | Record<string, any>[]; onConflict?: OnConflictArg }>({
+    db,
+    tableName,
+    operation: 'upsert',
+    single,
+    fieldName,
+    txCtx,
+    policies,
+    args: {
+      values: {
+        type: single ? new GraphQLNonNull(baseType) : new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(baseType))),
+      },
+      onConflict: {
+        type: onConflictType,
+        description: 'How a conflicting row is resolved. Defaults to overwriting it.',
+      },
     },
-    args: queryArgs,
-  };
+    run: async ({ executor, args, context, before, after }) => {
+      const input = applyContextValuesAll(
+        single
+          ? [remapFromGraphQLSingleInput(args.values as Record<string, any>, table)]
+          : remapFromGraphQLArrayInput(args.values as Record<string, any>[], table),
+        policies?.contextValues?.(tableName),
+        context,
+      );
+      if (!input.length) {
+        throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
+      }
+      await before();
+
+      // MySQL's ON DUPLICATE KEY UPDATE fires on whichever unique key was violated, so
+      // there is no target to resolve and no predicate to attach.
+      const plan = resolveConflictPlan({
+        table,
+        values: input,
+        onConflict: args.onConflict,
+        pkNames,
+        uniqueSets: [],
+        excludedRef: mysqlValuesColumnRef,
+        withTarget: false,
+      });
+
+      if (plan.action === 'NOTHING') {
+        // INSERT IGNORE is the closest MySQL gets to DO NOTHING.
+        await executor.insert(table).ignore().values(input);
+      } else {
+        await executor.insert(table).values(input).onDuplicateKeyUpdate({ set: plan.set });
+      }
+
+      await after();
+      return isSuccess;
+    },
+  });
 };
 
 const generateUpdate = (
@@ -300,97 +202,63 @@ const generateUpdate = (
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
   policies?: ResolverPolicies,
-): CreatedResolver => {
-  const queryArgs = {
-    set: {
-      type: new GraphQLNonNull(setArgs),
+): CreatedResolver =>
+  writeResolver<{ where?: Filters<Table>; set: Record<string, any> }>({
+    db,
+    tableName,
+    operation: 'update',
+    single,
+    fieldName,
+    txCtx,
+    policies,
+    args: {
+      set: {
+        type: new GraphQLNonNull(setArgs),
+      },
+      where: {
+        type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
+      },
     },
-    where: {
-      type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
-    },
-  } as const satisfies GraphQLFieldConfigArgumentMap;
+    run: async ({ executor, args, context, before, after }) => {
+      const { where, set } = args;
+      const scope = policies?.scope?.(context);
 
-  const hooks = policies?.onWrite?.(tableName, 'update');
-  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'update', field: fieldName };
-
-  return {
-    name: fieldName,
-    resolver: async (_source, args: { where?: Filters<Table>; set: Record<string, any> }, context, info) => {
-      try {
-        return await runMutation(
-          db,
-          context,
-          info,
-          txCtx,
-          async (executor) => {
-            const { where, set } = args;
-            const scope = policies?.scope?.(context);
-
-            // A context-derived column is the server's to set, so an update never reassigns
-            // one — that is what stops a row being handed to another owner.
-            const input = stripContextValues(
-              remapUpdateInput(set, table, tableName),
-              policies?.contextValues?.(tableName),
-            );
-            if (!Object.keys(input).length) {
-              throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
-            }
-            await runWriteHook(hooks, 'before', {
-              table: tableName,
-              operation: 'update',
-              single,
-              args,
-              context,
-              info,
-              tx: executor,
-            });
-
-            const relationCtx = relationFilterCtx(filterCtx, tableName);
-            // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
-            const filters = withScope(
-              scope,
-              tableName,
-              table,
-              single || requireWhere
-                ? extractRequiredFilters(table, tableName, where, relationCtx)
-                : where
-                  ? extractFilters(table, tableName, where, relationCtx)
-                  : undefined,
-            );
-
-            if (single) {
-              await assertSingleMatch(executor, table, filters!);
-            }
-
-            let query = executor.update(table).set(input);
-            if (filters) {
-              query = query.where(filters) as any;
-            }
-
-            await query;
-
-            await runWriteHook(hooks, 'after', {
-              table: tableName,
-              operation: 'update',
-              single,
-              args,
-              rows: [],
-              context,
-              info,
-              tx: executor,
-            });
-
-            return { isSuccess: true };
-          },
-          !!hooks,
-        );
-      } catch (e) {
-        throw withErrorContext(toGraphQLError(e), errorCtx);
+      // A context-derived column is the server's to set, so an update never reassigns
+      // one — that is what stops a row being handed to another owner.
+      const input = stripContextValues(remapUpdateInput(set, table, tableName), policies?.contextValues?.(tableName));
+      if (!Object.keys(input).length) {
+        throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
       }
+      await before();
+
+      const relationCtx = relationFilterCtx(filterCtx, tableName);
+      // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
+      const filters = withScope(
+        scope,
+        tableName,
+        table,
+        single || requireWhere
+          ? extractRequiredFilters(table, tableName, where, relationCtx)
+          : where
+            ? extractFilters(table, tableName, where, relationCtx)
+            : undefined,
+      );
+
+      if (single) {
+        await assertSingleMatch(executor, table, filters!);
+      }
+
+      let query = executor.update(table).set(input);
+      if (filters) {
+        query = query.where(filters) as any;
+      }
+
+      await query;
+
+      await after();
+      return isSuccess;
     },
-    args: queryArgs,
-  };
-};
+  });
 
 /**
  * `update<Table>Many` — batch update with a per-entry `set` and `where`.
@@ -410,100 +278,64 @@ const generateUpdateMany = (
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
   policies?: ResolverPolicies,
-): CreatedResolver => {
-  const queryArgs = {
-    updates: {
-      type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(updateManyInput))),
+): CreatedResolver =>
+  writeResolver<{ updates: { where?: Filters<Table>; set: Record<string, any> }[] }>({
+    db,
+    tableName,
+    operation: 'updateMany',
+    single: false,
+    fieldName,
+    txCtx,
+    policies,
+    args: {
+      updates: {
+        type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(updateManyInput))),
+      },
     },
-  } as const satisfies GraphQLFieldConfigArgumentMap;
-
-  const hooks = policies?.onWrite?.(tableName, 'updateMany');
-  const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'updateMany', field: fieldName };
-
-  return {
-    name: fieldName,
-    resolver: async (
-      _source,
-      args: { updates: { where?: Filters<Table>; set: Record<string, any> }[] },
-      context,
-      info,
-    ) => {
-      try {
-        return await runMutation(
-          db,
-          context,
-          info,
-          txCtx,
-          async (executor) => {
-            const { updates } = args;
-            if (!updates.length) {
-              throw drizzleError('No updates were provided!', { code: 'DRIZZLE_NO_VALUES' });
-            }
-            await runWriteHook(hooks, 'before', {
-              table: tableName,
-              operation: 'updateMany',
-              single: false,
-              args,
-              context,
-              info,
-              tx: executor,
-            });
-            const scope = policies?.scope?.(context);
-            const contextColumns = policies?.contextValues?.(tableName);
-
-            // Remap and validate every entry before the transaction opens, so a malformed
-            // entry rejects the request instead of rolling back mid-batch.
-            const entries = updates.map(({ where, set }) => {
-              const input = stripContextValues(remapUpdateInput(set, table, tableName), contextColumns);
-              if (!Object.keys(input).length) {
-                throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
-              }
-              return {
-                set: input,
-                filters: withScope(
-                  scope,
-                  tableName,
-                  table,
-                  where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
-                ),
-              };
-            });
-
-            // On a caller-supplied transaction — or the shared multi-mutation transaction
-            // opened by `runMutation` — this opens a savepoint, so the batch stays atomic
-            // without breaking the outer transaction.
-            await executor.transaction(async (tx: any) => {
-              for (const entry of entries) {
-                let query = tx.update(table).set(entry.set);
-                if (entry.filters) {
-                  query = query.where(entry.filters) as any;
-                }
-                await query;
-              }
-            });
-
-            await runWriteHook(hooks, 'after', {
-              table: tableName,
-              operation: 'updateMany',
-              single: false,
-              args,
-              rows: [],
-              context,
-              info,
-              tx: executor,
-            });
-
-            return { isSuccess: true };
-          },
-          !!hooks,
-        );
-      } catch (e) {
-        throw withErrorContext(toGraphQLError(e), errorCtx);
+    run: async ({ executor, args, context, before, after }) => {
+      const { updates } = args;
+      if (!updates.length) {
+        throw drizzleError('No updates were provided!', { code: 'DRIZZLE_NO_VALUES' });
       }
+      await before();
+      const scope = policies?.scope?.(context);
+      const contextColumns = policies?.contextValues?.(tableName);
+
+      // Remap and validate every entry before the transaction opens, so a malformed
+      // entry rejects the request instead of rolling back mid-batch.
+      const entries = updates.map(({ where, set }) => {
+        const input = stripContextValues(remapUpdateInput(set, table, tableName), contextColumns);
+        if (!Object.keys(input).length) {
+          throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
+        }
+        return {
+          set: input,
+          filters: withScope(
+            scope,
+            tableName,
+            table,
+            where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
+          ),
+        };
+      });
+
+      // On a caller-supplied transaction — or the shared multi-mutation transaction
+      // opened by `runMutation` — this opens a savepoint, so the batch stays atomic
+      // without breaking the outer transaction.
+      await executor.transaction(async (tx: any) => {
+        for (const entry of entries) {
+          let query = tx.update(table).set(entry.set);
+          if (entry.filters) {
+            query = query.where(entry.filters) as any;
+          }
+          await query;
+        }
+      });
+
+      await after();
+      return isSuccess;
     },
-    args: queryArgs,
-  };
-};
+  });
 
 /**
  * `delete<Table>` and, for a table that declares a soft-delete column, `restore<Table>`.
@@ -531,97 +363,68 @@ const generateDelete = (
   // Only a soft-deleting table that opted in gets the argument, so the schema itself says
   // which tables can be purged — and `restore` never takes one, having nothing to remove.
   const canHardDelete = !restore && softDelete?.hardDelete === true;
-  const queryArgs = {
-    where: {
-      type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
+
+  return writeResolver<{ where?: Filters<Table>; hard?: boolean }>({
+    db,
+    tableName,
+    operation,
+    single,
+    fieldName,
+    txCtx,
+    policies,
+    args: {
+      where: {
+        type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
+      },
+      ...(canHardDelete ? { hard: hardDeleteArg } : {}),
     },
-    ...(canHardDelete ? { hard: hardDeleteArg } : {}),
-  } as GraphQLFieldConfigArgumentMap;
+    run: async ({ executor, args, context, before, after }) => {
+      await before();
+      const { where } = args;
+      // `canHardDelete` decides whether the argument exists; this decides what it does,
+      // so a stitched-in `hard: true` on a table that never opted in stays a soft delete.
+      const hard = canHardDelete && args.hard === true;
+      const scope = policies?.scope?.(context);
 
-  const hooks = policies?.onWrite?.(tableName, operation);
-  const errorCtx: DrizzleErrorContext = { table: tableName, operation, field: fieldName };
+      const relationCtx = relationFilterCtx(filterCtx, tableName);
+      // Same rule as update: the scope is ANDed on last, so a delete can only ever reach
+      // rows inside it — an out-of-scope row is not matched rather than being refused.
+      // A soft-deleting table adds the marker predicate the same way: `delete` only sees
+      // rows that are not already marked, `restore` only sees the ones that are.
+      const filters = withScope(
+        scope,
+        tableName,
+        table,
+        single || requireWhere
+          ? extractRequiredFilters(table, tableName, where, relationCtx)
+          : where
+            ? extractFilters(table, tableName, where, relationCtx)
+            : undefined,
+        // A hard delete reads at INCLUDE: the rows it mostly exists to remove are the
+        // ones already marked, which the default EXCLUDE could not reach at all.
+        restore ? 'ONLY' : hard ? 'INCLUDE' : undefined,
+      );
 
-  return {
-    name: fieldName,
-    resolver: async (_source, args: { where?: Filters<Table>; hard?: boolean }, context, info) => {
-      try {
-        return await runMutation(
-          db,
-          context,
-          info,
-          txCtx,
-          async (executor) => {
-            await runWriteHook(hooks, 'before', {
-              table: tableName,
-              operation,
-              single,
-              args,
-              context,
-              info,
-              tx: executor,
-            });
-            const { where } = args;
-            // `canHardDelete` decides whether the argument exists; this decides what it does,
-            // so a stitched-in `hard: true` on a table that never opted in stays a soft delete.
-            const hard = canHardDelete && args.hard === true;
-            const scope = policies?.scope?.(context);
-
-            const relationCtx = relationFilterCtx(filterCtx, tableName);
-            // Same rule as update: the scope is ANDed on last, so a delete can only ever reach
-            // rows inside it — an out-of-scope row is not matched rather than being refused.
-            // A soft-deleting table adds the marker predicate the same way: `delete` only sees
-            // rows that are not already marked, `restore` only sees the ones that are.
-            const filters = withScope(
-              scope,
-              tableName,
-              table,
-              single || requireWhere
-                ? extractRequiredFilters(table, tableName, where, relationCtx)
-                : where
-                  ? extractFilters(table, tableName, where, relationCtx)
-                  : undefined,
-              // A hard delete reads at INCLUDE: the rows it mostly exists to remove are the
-              // ones already marked, which the default EXCLUDE could not reach at all.
-              restore ? 'ONLY' : hard ? 'INCLUDE' : undefined,
-            );
-
-            if (single) {
-              await assertSingleMatch(executor, table, filters!);
-            }
-
-            let query =
-              softDelete && !hard
-                ? executor
-                    .update(table)
-                    .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
-                : executor.delete(table);
-            if (filters) {
-              query = query.where(filters) as any;
-            }
-
-            await query;
-
-            await runWriteHook(hooks, 'after', {
-              table: tableName,
-              operation,
-              single,
-              args,
-              rows: [],
-              context,
-              info,
-              tx: executor,
-            });
-
-            return { isSuccess: true };
-          },
-          !!hooks,
-        );
-      } catch (e) {
-        throw withErrorContext(toGraphQLError(e), errorCtx);
+      if (single) {
+        await assertSingleMatch(executor, table, filters!);
       }
+
+      let query =
+        softDelete && !hard
+          ? executor
+              .update(table)
+              .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
+          : executor.delete(table);
+      if (filters) {
+        query = query.where(filters) as any;
+      }
+
+      await query;
+
+      await after();
+      return isSuccess;
     },
-    args: queryArgs,
-  };
+  });
 };
 
 /** Primary-key property names for a MySQL table, including table-level composite keys. */
