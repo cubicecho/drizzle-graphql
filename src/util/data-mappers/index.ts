@@ -1,5 +1,5 @@
 import { type Column, getTableColumns, is, One, type Table } from 'drizzle-orm';
-import { GraphQLError } from 'graphql';
+import { drizzleError } from '../builders/common/errors.ts';
 import type { TableNamedRelations } from '../builders/index.ts';
 import { getColumnScalarOverride } from '../type-converter/index.ts';
 
@@ -177,7 +177,7 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
   if (isTimestampColumn) {
     const formatted = new Date(value);
     if (Number.isNaN(formatted.getTime())) {
-      throw new GraphQLError(`Field '${columnName}' is not a valid date!`);
+      throw drizzleError(`Field '${columnName}' is not a valid date!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
     }
 
     return formatted;
@@ -192,7 +192,7 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
     // Validate it's a real date by parsing
     const check = new Date(dateOnly!);
     if (Number.isNaN(check.getTime())) {
-      throw new GraphQLError(`Field '${columnName}' is not a valid date!`);
+      throw drizzleError(`Field '${columnName}' is not a valid date!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
     }
 
     return dateOnly;
@@ -203,7 +203,7 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
     try {
       return BigInt(value);
     } catch {
-      throw new GraphQLError(`Field '${columnName}' is not a BigInt!`);
+      throw drizzleError(`Field '${columnName}' is not a BigInt!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
     }
   }
 
@@ -219,7 +219,7 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
     case 'date': {
       const formatted = new Date(value);
       if (Number.isNaN(formatted.getTime())) {
-        throw new GraphQLError(`Field '${columnName}' is not a valid date!`);
+        throw drizzleError(`Field '${columnName}' is not a valid date!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
       }
 
       return formatted;
@@ -227,7 +227,7 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
 
     case 'buffer': {
       if (!Array.isArray(value)) {
-        throw new GraphQLError(`Field '${columnName}' is not an array!`);
+        throw drizzleError(`Field '${columnName}' is not an array!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
       }
 
       return Buffer.from(value);
@@ -241,20 +241,24 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
       try {
         return JSON.parse(value);
       } catch (e) {
-        throw new GraphQLError(
+        throw drizzleError(
           `Invalid JSON in field '${columnName}':\n${e instanceof Error ? e.message : 'Unknown error'}`,
+          {
+            code: 'DRIZZLE_INVALID_INPUT_VALUE',
+          },
         );
       }
     }
 
     case 'array': {
       if (!Array.isArray(value)) {
-        throw new GraphQLError(`Field '${columnName}' is not an array!`);
+        throw drizzleError(`Field '${columnName}' is not an array!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
       }
 
       if (column.columnType === 'PgGeometry' && value.length !== 2) {
-        throw new GraphQLError(
+        throw drizzleError(
           `Invalid float tuple in field '${columnName}': expected array with length of 2, received ${value.length}`,
+          { code: 'DRIZZLE_INVALID_INPUT_VALUE' },
         );
       }
 
@@ -265,7 +269,7 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
       try {
         return BigInt(value);
       } catch (_error) {
-        throw new GraphQLError(`Field '${columnName}' is not a BigInt!`);
+        throw drizzleError(`Field '${columnName}' is not a BigInt!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
       }
     }
 
@@ -289,7 +293,7 @@ export const remapFromGraphQLSingleInput = (queryInput: Record<string, any>, tab
     } else {
       const column = getTableColumns(table)[key];
       if (!column) {
-        throw new GraphQLError(`Unknown column: ${key}`);
+        throw drizzleError(`Unknown column: ${key}`, { code: 'DRIZZLE_UNKNOWN_COLUMN' });
       }
 
       if (value === null && column.notNull) {

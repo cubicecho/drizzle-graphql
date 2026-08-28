@@ -1818,10 +1818,22 @@ to match on prose:
 
 -   `code` classifies the failure — `DRIZZLE_MULTI_ROW_MATCH`, `DRIZZLE_WHERE_REQUIRED`,
     `DRIZZLE_LIMIT_EXCEEDED`, `DRIZZLE_NO_VALUES`, `DRIZZLE_INVALID_FILTER`,
-    `DRIZZLE_INVALID_CURSOR`, and so on. The full union is exported as `DrizzleErrorCode`.
+    `DRIZZLE_INVALID_CURSOR`, `DRIZZLE_INVALID_INPUT_VALUE`, and so on. The full union is
+    exported as `DrizzleErrorCode`.
 -   `drizzle` says what it was about: the Drizzle schema key of the `table`, the `operation`,
     the generated `field`, and the `relation` for a relation field. The type is exported as
     `DrizzleErrorContext`.
+
+A value the request could not supply is `DRIZZLE_INVALID_INPUT_VALUE` — a date that does not
+parse, a `BigInt` argument that is not an integer, a malformed JSON column value — and a write
+naming something that is not a column of its table is `DRIZZLE_UNKNOWN_COLUMN`. The mirror
+image, a stored value the scalar transporting it cannot represent, is
+`DRIZZLE_UNREPRESENTABLE_VALUE`; it says the data is out of range, not that the request was
+wrong.
+
+The `drizzle` block is only on errors raised from inside a field. An argument rejected while
+GraphQL coerces the request — a `BigInt` variable that is not an integer, say — is rejected
+before any resolver runs, so it carries its `code` but no `drizzle` and no `path`.
 
 The **generated** field name is in `extensions.drizzle.field` rather than in the message on
 purpose. A schema that republishes these fields under other names — `RenameRootFields`, a
