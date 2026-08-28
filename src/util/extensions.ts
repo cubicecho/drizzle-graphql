@@ -104,6 +104,12 @@ export const tableFieldExtensions =
   });
 
 /**
+ * One table's bound extension builder — what {@link tableFieldExtensions} returns. Named so
+ * the shared build helpers can take one without restating the signature.
+ */
+export type TableFieldExtensionFactory = ReturnType<typeof tableFieldExtensions>;
+
+/**
  * The parts of a mutation's identity that differ between mutations. Dialect builders that
  * assign every mutation in one loop pair each generated mutation with one of these.
  */

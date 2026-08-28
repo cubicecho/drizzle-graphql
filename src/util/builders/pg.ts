@@ -17,6 +17,8 @@ const pgSchemaData = createSchemaDataGenerator({
   primaryKeyPropNames: pgPrimaryKeyPropNames,
   // PostgreSQL sorts NULLs as the largest values (last in ASC).
   nullOrdering: 'nulls-largest',
+  // Writes come back with their rows, so the table types carry the `${Table}Item` outputs.
+  returnsRows: true,
   generateUpdateMany,
 });
 

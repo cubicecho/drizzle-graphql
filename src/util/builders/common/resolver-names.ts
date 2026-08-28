@@ -4,16 +4,8 @@
 import { capitalize, uncapitalize } from '../../case-ops/index.ts';
 import type { TypeNameMapper } from './naming.ts';
 
-/**
- * Derives the generated query/mutation field names for a table from the naming config
- * (typeNameMapper + prefixes/suffixes). Shared by all three dialect builders.
- */
-export const computeResolverFieldNames = (
-  tableName: string,
-  typeNameMapper: TypeNameMapper | undefined,
-  prefixes: { insert: string; update: string; delete: string; upsert?: string; restore?: string },
-  suffixes: { list: string; single: string },
-): {
+/** The query and mutation field names one table generates. */
+export type ResolverFieldNames = {
   typeName: string;
   listFieldName: string;
   singleFieldName: string;
@@ -32,7 +24,18 @@ export const computeResolverFieldNames = (
   restoreFieldName: string;
   restoreSingleFieldName: string;
   deleteCountFieldName: string;
-} => {
+};
+
+/**
+ * Derives the generated query/mutation field names for a table from the naming config
+ * (typeNameMapper + prefixes/suffixes). Shared by all three dialect builders.
+ */
+export const computeResolverFieldNames = (
+  tableName: string,
+  typeNameMapper: TypeNameMapper | undefined,
+  prefixes: { insert: string; update: string; delete: string; upsert?: string; restore?: string },
+  suffixes: { list: string; single: string },
+): ResolverFieldNames => {
   const mapped = typeNameMapper?.(tableName);
   const typeName = mapped ? capitalize(mapped.singular) : capitalize(tableName);
   const listFieldName = (mapped?.plural ?? uncapitalize(tableName)) + suffixes.list;
