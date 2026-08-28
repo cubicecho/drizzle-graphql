@@ -1,7 +1,7 @@
 import { is } from 'drizzle-orm';
-import { MySqlDatabase } from 'drizzle-orm/mysql-core';
+import { MySqlAsyncDatabase } from 'drizzle-orm/mysql-core';
 import { PgAsyncDatabase } from 'drizzle-orm/pg-core';
-import { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
+import { SQLiteAsyncDatabase } from 'drizzle-orm/sqlite-core';
 import {
   type GraphQLFieldConfig,
   type GraphQLInputObjectType,
@@ -120,18 +120,17 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
   config?: BuildSchemaConfig,
 ): GeneratedData<TDbClient> => {
   const relations = db._.relations;
-  // drizzle-orm v1 rc.2 removed fullSchema from PgAsyncDatabase._
-  // For PG, reconstruct a schema-like map from db._.relations (each entry has { table }).
-  // MySQL and SQLite still expose fullSchema directly.
-  const schema =
-    (db._ as any).fullSchema ??
-    Object.fromEntries(
-      Object.entries(relations as Record<string, any>)
-        .filter(([, config]) => config?.table != null)
-        .map(([key, config]) => [key, config.table]),
-    );
+  // The relations config is the only table map a v1 handle carries: `_.fullSchema` is gone
+  // from all three dialects, and the constructor's separate `schema` argument no longer
+  // reaches the handle at all. Each entry carries its own table, so the map is rebuilt from
+  // there — a table left out of the relations config is simply not part of the schema.
+  const schema = Object.fromEntries(
+    Object.entries(relations as Record<string, any>)
+      .filter(([, config]) => config?.table != null)
+      .map(([key, config]) => [key, config.table]),
+  );
 
-  if (!schema || !Object.keys(schema).length) {
+  if (!Object.keys(schema).length) {
     throw new Error(
       'Drizzle-GraphQL Error: Schema not found in drizzle instance. Pass relations (from buildRelations/defineRelations) to the drizzle constructor so drizzle-graphql can detect your tables.',
     );
@@ -140,11 +139,11 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
   const generatorOptions = resolveBuildConfig(config, schema as Record<string, unknown>);
 
   let generatorOutput;
-  if (is(db, MySqlDatabase)) {
+  if (is(db, MySqlAsyncDatabase)) {
     generatorOutput = generateMySQL(db, schema, relations, generatorOptions);
   } else if (is(db, PgAsyncDatabase)) {
     generatorOutput = generatePG(db, schema, relations, generatorOptions);
-  } else if (is(db, BaseSQLiteDatabase)) {
+  } else if (is(db, SQLiteAsyncDatabase)) {
     generatorOutput = generateSQLite(db, schema, relations, generatorOptions);
   } else {
     throw new Error('Drizzle-GraphQL Error: Unknown database instance type');

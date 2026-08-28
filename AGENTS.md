@@ -310,3 +310,5 @@ The `exports` field in `package.json` is the authoritative routing table. Never 
 
 ### Peer dependencies
 `drizzle-orm`, `graphql`, `graphql-parse-resolve-info`, and `graphql-scalars` are peer dependencies — they must be provided by the consumer. The library has zero production runtime dependencies except `pluralize`.
+
+`drizzle-orm` is peered at `^1.0.0-rc.4`, and the floor is deliberate rather than cautious: rc.4 renamed `MySqlDatabase` to `MySqlAsyncDatabase` and `BaseSQLiteDatabase` to `SQLiteAsyncDatabase`, dropped the MySQL `mode` option, and finished removing the drizzle constructor's separate `schema` argument, so rc.2 and rc.3 genuinely do not work. Widening the floor back means restoring those names. Note also that a prerelease range admits drizzle's snapshot builds — `1.0.0-rc.4-5d5b77c` sorts *above* `1.0.0-rc.4`, because an alphanumeric prerelease identifier outranks a numeric one — so a consumer on `^1.0.0-rc.4` can land on a build nobody tested.

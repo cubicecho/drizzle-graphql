@@ -3,7 +3,7 @@ import path from 'node:path';
 import { type Client, createClient } from '@libsql/client';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/libsql';
-import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
+import type { SQLiteAsyncDatabase } from 'drizzle-orm/sqlite-core';
 import {
   type GraphQLEnumType,
   GraphQLInputObjectType,
@@ -38,10 +38,10 @@ import * as schema from './schema/sqlite';
 import { GraphQLClient } from './util/query';
 
 interface Context {
-  db: BaseSQLiteDatabase<'async', any, typeof schema>;
+  db: SQLiteAsyncDatabase<'async', any, typeof schema.relations>;
   client: Client;
   schema: GraphQLSchema;
-  entities: GeneratedEntities<BaseSQLiteDatabase<'async', any, typeof schema>>;
+  entities: GeneratedEntities<SQLiteAsyncDatabase<'async', any, typeof schema.relations>>;
   server: Server;
   gql: GraphQLClient;
 }
@@ -75,7 +75,6 @@ beforeAll(async () => {
 
   ctx.db = drizzle({
     client: ctx.client,
-    schema,
     relations: schema.relations,
     logger: !!process.env['LOG_SQL'],
   });
@@ -3437,7 +3436,7 @@ describe.sequential('Type tests', () => {
   it('Queries', () => {
     expectTypeOf(ctx.entities.queries).toEqualTypeOf<
       {
-        readonly customers: {
+        customers: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
             offset: { type: GraphQLScalarType<number, number> };
@@ -3448,7 +3447,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: SelectResolver<typeof schema.Customers, ExtractTables<typeof schema>, never>;
         };
-        readonly posts: {
+        posts: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
             offset: { type: GraphQLScalarType<number, number> };
@@ -3459,7 +3458,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: SelectResolver<typeof schema.Posts, ExtractTables<typeof schema>, never>;
         };
-        readonly users: {
+        users: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
             offset: { type: GraphQLScalarType<number, number> };
@@ -3471,7 +3470,7 @@ describe.sequential('Type tests', () => {
           resolve: SelectResolver<typeof schema.Users, ExtractTables<typeof schema>, never>;
         };
       } & {
-        readonly customersSingle: {
+        customersSingle: {
           type: GraphQLObjectType;
           args: {
             offset: { type: GraphQLScalarType<number, number> };
@@ -3480,7 +3479,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: SelectSingleResolver<typeof schema.Customers, ExtractTables<typeof schema>, never>;
         };
-        readonly postsSingle: {
+        postsSingle: {
           type: GraphQLObjectType;
           args: {
             offset: { type: GraphQLScalarType<number, number> };
@@ -3489,7 +3488,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: SelectSingleResolver<typeof schema.Posts, ExtractTables<typeof schema>, never>;
         };
-        readonly usersSingle: {
+        usersSingle: {
           type: GraphQLObjectType;
           args: {
             offset: { type: GraphQLScalarType<number, number> };
@@ -3499,21 +3498,21 @@ describe.sequential('Type tests', () => {
           resolve: SelectSingleResolver<typeof schema.Users, ExtractTables<typeof schema>, never>;
         };
       } & {
-        readonly customersAggregate: {
+        customersAggregate: {
           type: GraphQLNonNull<GraphQLObjectType>;
           args: {
             where: { type: GraphQLInputObjectType };
           };
           resolve: AggregateResolver<typeof schema.Customers>;
         };
-        readonly postsAggregate: {
+        postsAggregate: {
           type: GraphQLNonNull<GraphQLObjectType>;
           args: {
             where: { type: GraphQLInputObjectType };
           };
           resolve: AggregateResolver<typeof schema.Posts>;
         };
-        readonly usersAggregate: {
+        usersAggregate: {
           type: GraphQLNonNull<GraphQLObjectType>;
           args: {
             where: { type: GraphQLInputObjectType };
@@ -3527,7 +3526,7 @@ describe.sequential('Type tests', () => {
   it('Mutations', () => {
     expectTypeOf(ctx.entities.mutations).toEqualTypeOf<
       {
-        readonly createCustomers: {
+        createCustomers: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
             values: {
@@ -3536,7 +3535,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: InsertArrResolver<typeof schema.Customers, false>;
         };
-        readonly createPosts: {
+        createPosts: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
             values: {
@@ -3545,7 +3544,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: InsertArrResolver<typeof schema.Posts, false>;
         };
-        readonly createUsers: {
+        createUsers: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
             values: {
@@ -3555,7 +3554,7 @@ describe.sequential('Type tests', () => {
           resolve: InsertArrResolver<typeof schema.Users, false>;
         };
       } & {
-        readonly createCustomersSingle: {
+        createCustomersSingle: {
           type: GraphQLObjectType;
           args: {
             values: {
@@ -3564,7 +3563,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: InsertResolver<typeof schema.Customers, false>;
         };
-        readonly createPostsSingle: {
+        createPostsSingle: {
           type: GraphQLObjectType;
           args: {
             values: {
@@ -3573,7 +3572,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: InsertResolver<typeof schema.Posts, false>;
         };
-        readonly createUsersSingle: {
+        createUsersSingle: {
           type: GraphQLObjectType;
           args: {
             values: {
@@ -3583,7 +3582,7 @@ describe.sequential('Type tests', () => {
           resolve: InsertResolver<typeof schema.Users, false>;
         };
       } & {
-        readonly upsertCustomers?: {
+        upsertCustomers?: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
             values: {
@@ -3593,7 +3592,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: UpsertArrResolver<typeof schema.Customers, false>;
         };
-        readonly upsertPosts?: {
+        upsertPosts?: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
             values: {
@@ -3603,7 +3602,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: UpsertArrResolver<typeof schema.Posts, false>;
         };
-        readonly upsertUsers?: {
+        upsertUsers?: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
             values: {
@@ -3614,7 +3613,7 @@ describe.sequential('Type tests', () => {
           resolve: UpsertArrResolver<typeof schema.Users, false>;
         };
       } & {
-        readonly upsertCustomersSingle?: {
+        upsertCustomersSingle?: {
           type: GraphQLObjectType;
           args: {
             values: {
@@ -3624,7 +3623,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: UpsertResolver<typeof schema.Customers, false>;
         };
-        readonly upsertPostsSingle?: {
+        upsertPostsSingle?: {
           type: GraphQLObjectType;
           args: {
             values: {
@@ -3634,7 +3633,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: UpsertResolver<typeof schema.Posts, false>;
         };
-        readonly upsertUsersSingle?: {
+        upsertUsersSingle?: {
           type: GraphQLObjectType;
           args: {
             values: {
@@ -3645,7 +3644,7 @@ describe.sequential('Type tests', () => {
           resolve: UpsertResolver<typeof schema.Users, false>;
         };
       } & {
-        readonly updateCustomers: {
+        updateCustomers: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
             set: {
@@ -3655,7 +3654,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: UpdateResolver<typeof schema.Customers, false>;
         };
-        readonly updatePosts: {
+        updatePosts: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
             set: {
@@ -3665,7 +3664,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: UpdateResolver<typeof schema.Posts, false>;
         };
-        readonly updateUsers: {
+        updateUsers: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
             set: {
@@ -3676,7 +3675,7 @@ describe.sequential('Type tests', () => {
           resolve: UpdateResolver<typeof schema.Users, false>;
         };
       } & {
-        readonly updateCustomersMany: {
+        updateCustomersMany: {
           type: GraphQLNonNull<GraphQLList<GraphQLObjectType>>;
           args: {
             updates: {
@@ -3685,7 +3684,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: UpdateManyResolver<typeof schema.Customers, false>;
         };
-        readonly updatePostsMany: {
+        updatePostsMany: {
           type: GraphQLNonNull<GraphQLList<GraphQLObjectType>>;
           args: {
             updates: {
@@ -3694,7 +3693,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: UpdateManyResolver<typeof schema.Posts, false>;
         };
-        readonly updateUsersMany: {
+        updateUsersMany: {
           type: GraphQLNonNull<GraphQLList<GraphQLObjectType>>;
           args: {
             updates: {
@@ -3704,7 +3703,7 @@ describe.sequential('Type tests', () => {
           resolve: UpdateManyResolver<typeof schema.Users, false>;
         };
       } & {
-        readonly updateCustomersSingle: {
+        updateCustomersSingle: {
           type: GraphQLObjectType;
           args: {
             set: {
@@ -3714,7 +3713,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: UpdateSingleResolver<typeof schema.Customers, false>;
         };
-        readonly updatePostsSingle: {
+        updatePostsSingle: {
           type: GraphQLObjectType;
           args: {
             set: {
@@ -3724,7 +3723,7 @@ describe.sequential('Type tests', () => {
           };
           resolve: UpdateSingleResolver<typeof schema.Posts, false>;
         };
-        readonly updateUsersSingle: {
+        updateUsersSingle: {
           type: GraphQLObjectType;
           args: {
             set: {
@@ -3735,21 +3734,21 @@ describe.sequential('Type tests', () => {
           resolve: UpdateSingleResolver<typeof schema.Users, false>;
         };
       } & {
-        readonly deleteCustomers: {
+        deleteCustomers: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
             where: { type: GraphQLInputObjectType };
           };
           resolve: DeleteResolver<typeof schema.Customers, false>;
         };
-        readonly deletePosts: {
+        deletePosts: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
             where: { type: GraphQLInputObjectType };
           };
           resolve: DeleteResolver<typeof schema.Posts, false>;
         };
-        readonly deleteUsers: {
+        deleteUsers: {
           type: GraphQLNonNull<GraphQLList<GraphQLNonNull<GraphQLObjectType>>>;
           args: {
             where: { type: GraphQLInputObjectType };
@@ -3757,21 +3756,21 @@ describe.sequential('Type tests', () => {
           resolve: DeleteResolver<typeof schema.Users, false>;
         };
       } & {
-        readonly deleteCustomersSingle: {
+        deleteCustomersSingle: {
           type: GraphQLObjectType;
           args: {
             where: { type: GraphQLNonNull<GraphQLInputObjectType> };
           };
           resolve: DeleteSingleResolver<typeof schema.Customers, false>;
         };
-        readonly deletePostsSingle: {
+        deletePostsSingle: {
           type: GraphQLObjectType;
           args: {
             where: { type: GraphQLNonNull<GraphQLInputObjectType> };
           };
           resolve: DeleteSingleResolver<typeof schema.Posts, false>;
         };
-        readonly deleteUsersSingle: {
+        deleteUsersSingle: {
           type: GraphQLObjectType;
           args: {
             where: { type: GraphQLNonNull<GraphQLInputObjectType> };
@@ -3785,17 +3784,17 @@ describe.sequential('Type tests', () => {
   it('Types', () => {
     expectTypeOf(ctx.entities.types).toEqualTypeOf<
       {
-        readonly Customers: GraphQLObjectType;
-        readonly Posts: GraphQLObjectType;
-        readonly Users: GraphQLObjectType;
+        Customers: GraphQLObjectType;
+        Posts: GraphQLObjectType;
+        Users: GraphQLObjectType;
       } & {
-        readonly CustomersAggregate: GraphQLObjectType;
-        readonly PostsAggregate: GraphQLObjectType;
-        readonly UsersAggregate: GraphQLObjectType;
+        CustomersAggregate: GraphQLObjectType;
+        PostsAggregate: GraphQLObjectType;
+        UsersAggregate: GraphQLObjectType;
       } & {
-        readonly Customers: GraphQLObjectType;
-        readonly Posts: GraphQLObjectType;
-        readonly Users: GraphQLObjectType;
+        Customers: GraphQLObjectType;
+        Posts: GraphQLObjectType;
+        Users: GraphQLObjectType;
       }
     >();
   });
@@ -3803,25 +3802,25 @@ describe.sequential('Type tests', () => {
   it('Inputs', () => {
     expectTypeOf(ctx.entities.inputs).toEqualTypeOf<
       {
-        readonly CreateCustomersInput: GraphQLInputObjectType;
-        readonly CreatePostsInput: GraphQLInputObjectType;
-        readonly CreateUsersInput: GraphQLInputObjectType;
+        CreateCustomersInput: GraphQLInputObjectType;
+        CreatePostsInput: GraphQLInputObjectType;
+        CreateUsersInput: GraphQLInputObjectType;
       } & {
-        readonly UpdateCustomersInput: GraphQLInputObjectType;
-        readonly UpdatePostsInput: GraphQLInputObjectType;
-        readonly UpdateUsersInput: GraphQLInputObjectType;
+        UpdateCustomersInput: GraphQLInputObjectType;
+        UpdatePostsInput: GraphQLInputObjectType;
+        UpdateUsersInput: GraphQLInputObjectType;
       } & {
-        readonly UpdateCustomersManyInput: GraphQLInputObjectType;
-        readonly UpdatePostsManyInput: GraphQLInputObjectType;
-        readonly UpdateUsersManyInput: GraphQLInputObjectType;
+        UpdateCustomersManyInput: GraphQLInputObjectType;
+        UpdatePostsManyInput: GraphQLInputObjectType;
+        UpdateUsersManyInput: GraphQLInputObjectType;
       } & {
-        readonly CustomersOrderBy: GraphQLInputObjectType;
-        readonly PostsOrderBy: GraphQLInputObjectType;
-        readonly UsersOrderBy: GraphQLInputObjectType;
+        CustomersOrderBy: GraphQLInputObjectType;
+        PostsOrderBy: GraphQLInputObjectType;
+        UsersOrderBy: GraphQLInputObjectType;
       } & {
-        readonly CustomersFilters: GraphQLInputObjectType;
-        readonly PostsFilters: GraphQLInputObjectType;
-        readonly UsersFilters: GraphQLInputObjectType;
+        CustomersFilters: GraphQLInputObjectType;
+        PostsFilters: GraphQLInputObjectType;
+        UsersFilters: GraphQLInputObjectType;
       }
     >();
   });

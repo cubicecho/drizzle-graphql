@@ -1,5 +1,5 @@
 import type { Table } from 'drizzle-orm';
-import { getTableConfig, type MySqlDatabase, MySqlTable } from 'drizzle-orm/mysql-core';
+import { getTableConfig, type MySqlAsyncDatabase, MySqlTable } from 'drizzle-orm/mysql-core';
 import {
   GraphQLBoolean,
   type GraphQLInputObjectType,
@@ -46,7 +46,7 @@ import type { CreatedResolver, Filters, SchemaGeneratorOptions } from './types.t
 const isSuccess = { isSuccess: true };
 
 const generateInsertArray = (
-  db: MySqlDatabase<any, any, any, any>,
+  db: MySqlAsyncDatabase<any, any>,
   tableName: string,
   table: MySqlTable,
   baseType: GraphQLInputObjectType,
@@ -86,7 +86,7 @@ const generateInsertArray = (
   });
 
 const generateInsertSingle = (
-  db: MySqlDatabase<any, any, any, any>,
+  db: MySqlAsyncDatabase<any, any>,
   tableName: string,
   table: MySqlTable,
   baseType: GraphQLInputObjectType,
@@ -123,7 +123,7 @@ const generateInsertSingle = (
   });
 
 const generateUpsert = (
-  db: MySqlDatabase<any, any, any, any>,
+  db: MySqlAsyncDatabase<any, any>,
   tableName: string,
   table: MySqlTable,
   baseType: GraphQLInputObjectType,
@@ -191,7 +191,7 @@ const generateUpsert = (
 };
 
 const generateUpdate = (
-  db: MySqlDatabase<any, any, any>,
+  db: MySqlAsyncDatabase<any, any>,
   tableName: string,
   table: MySqlTable,
   setArgs: GraphQLInputObjectType,
@@ -270,7 +270,7 @@ const generateUpdate = (
  * `{ isSuccess: true }` rather than the updated rows.
  */
 const generateUpdateMany = (
-  db: MySqlDatabase<any, any, any>,
+  db: MySqlAsyncDatabase<any, any>,
   tableName: string,
   table: MySqlTable,
   updateManyInput: GraphQLInputObjectType,
@@ -346,7 +346,7 @@ const generateUpdateMany = (
  * `DELETE` instead of writing the marker, reading at `INCLUDE` so it reaches marked rows.
  */
 const generateDelete = (
-  db: MySqlDatabase<any, any, any>,
+  db: MySqlAsyncDatabase<any, any>,
   tableName: string,
   table: MySqlTable,
   filterArgs: GraphQLInputObjectType,
@@ -450,7 +450,7 @@ const { prepareBuild, addReadFields, finalizeBuild } = createSchemaBuilder({
 });
 
 export const generateSchemaData = <
-  TDrizzleInstance extends MySqlDatabase<any, any, any, any>,
+  TDrizzleInstance extends MySqlAsyncDatabase<any, any>,
   TSchema extends Record<string, Table | unknown>,
 >(
   db: TDrizzleInstance,

@@ -1,7 +1,7 @@
 import { type Client, createClient } from '@libsql/client';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/libsql';
-import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
+import type { SQLiteAsyncDatabase } from 'drizzle-orm/sqlite-core';
 import { type GraphQLSchema, graphql } from 'graphql';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildSchema } from '@/index';
@@ -9,7 +9,7 @@ import * as schema from './schema/sqlite';
 
 interface Ctx {
   client: Client;
-  db: BaseSQLiteDatabase<'async', any, typeof schema>;
+  db: SQLiteAsyncDatabase<'async', any, typeof schema.relations>;
   strict: GraphQLSchema;
   lenient: GraphQLSchema;
 }
@@ -24,7 +24,7 @@ const insertDuplicate = (gqlSchema: GraphQLSchema) =>
 
 beforeAll(async () => {
   ctx.client = createClient({ url: 'file::memory:?cache=shared' });
-  ctx.db = drizzle({ client: ctx.client, schema, relations: schema.relations });
+  ctx.db = drizzle({ client: ctx.client, relations: schema.relations });
 
   ctx.strict = buildSchema(ctx.db).schema;
   ctx.lenient = buildSchema(ctx.db, { conflictDoNothing: true }).schema;

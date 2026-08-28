@@ -15,10 +15,10 @@ import { GraphQLClient } from './util/query';
 interface Context {
   docker: Docker;
   mysqlContainer: Docker.Container;
-  db: MySql2Database<typeof schema>;
+  db: MySql2Database<typeof schema.relations>;
   client: mysql.Connection;
   schema: GraphQLSchema;
-  entities: GeneratedEntities<MySql2Database<typeof schema>>;
+  entities: GeneratedEntities<MySql2Database<typeof schema.relations>>;
   server: Server;
   gql: GraphQLClient;
 }
@@ -82,10 +82,8 @@ beforeAll(async (_t) => {
 
   ctx.db = drizzle({
     client: ctx.client,
-    schema,
     relations: schema.relations,
     logger: !!process.env['LOG_SQL'],
-    mode: 'default',
   });
 
   const { entities } = buildSchema(ctx.db);

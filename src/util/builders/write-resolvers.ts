@@ -12,7 +12,7 @@
 
 import type { Table } from 'drizzle-orm';
 import type { PgAsyncDatabase } from 'drizzle-orm/pg-core';
-import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
+import type { SQLiteAsyncDatabase } from 'drizzle-orm/sqlite-core';
 import { type GraphQLFieldConfigArgumentMap, type GraphQLInputObjectType, GraphQLList, GraphQLNonNull } from 'graphql';
 import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { parseResolveInfo } from 'graphql-parse-resolve-info';
@@ -55,7 +55,7 @@ import { mergedOps, type NestedWriteRuntime, updateWithNestedOps, writeWithNeste
 import type { CreatedResolver, Filters, TableNamedRelations } from './types.ts';
 
 /** Every database handle these resolvers can run on. `runMutation` takes `any`, so this is purely a call-site guard. */
-export type WriteDatabase = PgAsyncDatabase<any, any> | BaseSQLiteDatabase<any, any, any, any>;
+export type WriteDatabase = PgAsyncDatabase<any, any> | SQLiteAsyncDatabase<any, any, any>;
 
 /**
  * The dialect's build-time primary-key lookup (`getTableConfig`-based, so it cannot be shared).

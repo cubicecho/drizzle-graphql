@@ -6,11 +6,11 @@ type Relations<TTable extends string = string, TConfig extends Record<string, Re
   config: (helpers: unknown) => TConfig;
 };
 
-import type { MySqlDatabase } from 'drizzle-orm/mysql-core';
+import type { MySqlAsyncDatabase } from 'drizzle-orm/mysql-core';
 import type { RelationalQueryBuilder as MySqlQuery } from 'drizzle-orm/mysql-core/query-builders/query';
 import type { PgAsyncDatabase } from 'drizzle-orm/pg-core';
 import type { RelationalQueryBuilder as PgQuery } from 'drizzle-orm/pg-core/query-builders/query';
-import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
+import type { SQLiteAsyncDatabase } from 'drizzle-orm/sqlite-core';
 import type { RelationalQueryBuilder as SQLiteQuery } from 'drizzle-orm/sqlite-core/query-builders/query';
 import type {
   GraphQLEnumType,
@@ -45,23 +45,23 @@ export type MakeRequired<T> = T & { [P in keyof T]-?: T[P] };
 
 export type AnyDrizzleDB<TSchema extends Record<string, any>> =
   | PgAsyncDatabase<any, TSchema>
-  | BaseSQLiteDatabase<any, any, TSchema>
-  | MySqlDatabase<any, any, TSchema>;
+  | SQLiteAsyncDatabase<any, any, TSchema>
+  | MySqlAsyncDatabase<any, TSchema>;
 
 export type AnyQueryBuiler<TConfig extends TablesRelationalConfig = any, TFields extends TableRelationalConfig = any> =
   | PgQuery<TConfig, TFields>
-  | MySqlQuery<any, TConfig, TFields>
+  | MySqlQuery<TConfig, TFields>
   | SQLiteQuery<any, TConfig, TFields>;
 
 /**
  * The tables a database handle knows about, keyed by their schema key.
  *
- * Two shapes reach this type, because drizzle-orm v1 changed what a database's generic slot
- * holds. SQLite and MySQL handles still carry the schema module itself, so the tables are
- * picked out of it directly. PostgreSQL handles carry only the relations config built by
- * `buildRelations` — a `Record<string, { table; name; relations }>` — so the tables are read
- * off its `table` members instead. Without the second branch every PG-derived type collapses
- * to `never`.
+ * Two shapes reach this type. Every dialect's handle now carries the relations config built
+ * by `buildRelations` — a `Record<string, { table; name; relations }>` — so the tables are
+ * read off its `table` members. The second branch keeps working for a plain schema module
+ * passed in directly, which is what a caller writing `ExtractTables<typeof schema>` hands it.
+ * The two branches differ in one detail: a module's members are `readonly`, a
+ * relations config's are not, so the derived entity types are `readonly` only on that path.
  */
 export type ExtractTables<TSchema extends Record<string, Table | unknown>> = TSchema extends TablesRelationalConfig
   ? {
@@ -648,15 +648,15 @@ export type GeneratedEntities<
   TInputs extends GeneratedInputs<TSchemaTables> = GeneratedInputs<TSchemaTables>,
   TOutputs extends GeneratedOutputs<
     TSchemaTables,
-    TDatabase extends MySqlDatabase<any, any, any, any> ? true : false
-  > = GeneratedOutputs<TSchemaTables, TDatabase extends MySqlDatabase<any, any, any, any> ? true : false>,
+    TDatabase extends MySqlAsyncDatabase<any, any> ? true : false
+  > = GeneratedOutputs<TSchemaTables, TDatabase extends MySqlAsyncDatabase<any, any> ? true : false>,
 > = {
   queries: QueriesCore<TSchemaTables, TSchemaRelations, TInputs, TOutputs>;
   mutations: MutationsCore<
     TSchemaTables,
     TInputs,
     TOutputs,
-    TDatabase extends MySqlDatabase<any, any, any, any> ? true : false
+    TDatabase extends MySqlAsyncDatabase<any, any> ? true : false
   >;
   inputs: TInputs;
   types: TOutputs;
