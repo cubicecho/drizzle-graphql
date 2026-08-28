@@ -308,6 +308,9 @@ if (!schema) {
 ### Dual-package exports
 The `exports` field in `package.json` is the authoritative routing table. Never import from `dist/` paths directly in consuming code.
 
+### TypeScript 7
+Not yet. Both tsconfig projects typecheck clean under 7.0, and `tsconfig.json` has already dropped the removed `baseUrl` in favour of a relative `paths` entry, which 5.x accepts too. What blocks the bump is the build: `tsup` bundles `rollup-plugin-dts` 6.1.1, which throws `Cannot read properties of undefined (reading 'useCaseSensitiveFileNames')` on a TS 7 compiler, so `dist/*.d.ts` never gets written. `rollup-plugin-dts` 6.5+ supports 7, but tsup has to ship it — an override cannot reach a vendored copy. Retry when tsup releases past 8.5.1.
+
 ### Peer dependencies
 `drizzle-orm`, `graphql`, `graphql-parse-resolve-info`, and `graphql-scalars` are peer dependencies — they must be provided by the consumer. The library has zero production runtime dependencies except `pluralize`.
 
