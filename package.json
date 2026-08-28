@@ -2,7 +2,7 @@
   "name": "@vantreeseba/drizzle-graphql",
   "type": "module",
   "author": "Drizzle Team",
-  "version": "8.0.0",
+  "version": "8.1.0",
   "description": "Automatically generate GraphQL schema or customizable schema config fields from Drizzle ORM schema",
   "scripts": {
     "build": "tsx scripts/build.ts",
@@ -54,7 +54,7 @@
     "drizzle-orm": "1.0.0-rc.4",
     "get-port": "^7.0.0",
     "graphql-parse-resolve-info": "^4.14.1",
-    "graphql-scalars": "^1.25.0",
+    "graphql-scalars": "^2.0.0",
     "graphql-yoga": "^5.1.1",
     "mysql2": "^3.9.2",
     "pg": "^8.12.0",
@@ -99,7 +99,7 @@
     "drizzle-orm": "^1.0.0-rc.4",
     "graphql": ">=16.3.0 <17",
     "graphql-parse-resolve-info": "^4.13.0",
-    "graphql-scalars": "^1.25.0"
+    "graphql-scalars": "^1.25.0 || ^2.0.0"
   },
   "dependencies": {
     "pluralize": "^8.0.0"

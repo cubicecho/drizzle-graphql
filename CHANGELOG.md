@@ -1,3 +1,10 @@
+# [8.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v8.0.0...v8.1.0) (2026-08-28)
+
+
+### Features
+
+* **errors:** classify the value-coercion errors a client can hit ([5eed98c](https://github.com/cubicecho/drizzle-graphql/commit/5eed98c3de2d88fa9443f5d0fcadb7a88c570ece)), closes [#106](https://github.com/cubicecho/drizzle-graphql/issues/106)
+
 # [8.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v7.9.1...v8.0.0) (2026-08-27)
 
 
