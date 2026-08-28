@@ -9,3 +9,12 @@ on:
 jobs:
   checks:
     uses: ./.github/workflows/checks.yaml
+
+  # `graphql-scalars` is a peer dependency whose range admits both majors, and a lockfile can
+  # only pin one of them. The job above runs against the pinned one; this runs the same checks
+  # against the other, so the range stays something we test rather than something we assert.
+  # It costs runner minutes, not wall clock — the two jobs run side by side.
+  checks-graphql-scalars-v1:
+    uses: ./.github/workflows/checks.yaml
+    with:
+      graphql-scalars: ^1.25.0

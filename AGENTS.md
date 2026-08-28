@@ -42,7 +42,7 @@ drizzle-graphql/
 ├── dist/                            # Build output
 ├── .github/workflows/
 │   ├── checks.yaml              # Lint + typecheck + full suite; called by both below
-│   ├── ci.yaml                  # Runs the checks on every pull request
+│   ├── ci.yaml                  # Checks on every PR, once per graphql-scalars major
 │   └── release.yaml             # Checks, then semantic-release, on push to main
 ├── .releaserc.json                  # semantic-release config
 ├── biome.json                       # Linter + formatter config
@@ -310,3 +310,5 @@ The `exports` field in `package.json` is the authoritative routing table. Never 
 
 ### Peer dependencies
 `drizzle-orm`, `graphql`, `graphql-parse-resolve-info`, and `graphql-scalars` are peer dependencies — they must be provided by the consumer. The library has zero production runtime dependencies except `pluralize`.
+
+`graphql-scalars` is peered at `^1.25.0 || ^2.0.0`. The lockfile pins v2; CI runs the whole suite a second time against v1, so widening or narrowing that range means changing the matrix in `ci.yaml` too.
