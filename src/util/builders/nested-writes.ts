@@ -771,7 +771,7 @@ export const createNestedWriteRuntime = (params: {
 
       for (const [relationName, op] of Object.entries(ops)) {
         const plan = tablePlans[relationName];
-        if (!plan || plan.fkSide !== 'parent') {
+        if (plan?.fkSide !== 'parent') {
           continue;
         }
         assertSingleOperation(plan, op);
@@ -820,7 +820,7 @@ export const createNestedWriteRuntime = (params: {
 
       for (const [relationName, op] of Object.entries(ops)) {
         const plan = tablePlans[relationName];
-        if (!plan || plan.fkSide !== 'child') {
+        if (plan?.fkSide !== 'child') {
           continue;
         }
         if (plan.isOne) {

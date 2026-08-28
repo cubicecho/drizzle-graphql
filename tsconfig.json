@@ -37,9 +37,8 @@
     "noErrorTruncation": true /* Disable truncating types in error messages. */,
     "checkJs": true,
     "allowImportingTsExtensions": true,
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     },
     "outDir": "dist"
   },

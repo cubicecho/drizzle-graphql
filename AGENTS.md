@@ -308,8 +308,13 @@ if (!schema) {
 ### Dual-package exports
 The `exports` field in `package.json` is the authoritative routing table. Never import from `dist/` paths directly in consuming code.
 
+### TypeScript 7
+Not yet. Both tsconfig projects typecheck clean under 7.0, and `tsconfig.json` has already dropped the removed `baseUrl` in favour of a relative `paths` entry, which 5.x accepts too. What blocks the bump is the build: `tsup` bundles `rollup-plugin-dts` 6.1.1, which throws `Cannot read properties of undefined (reading 'useCaseSensitiveFileNames')` on a TS 7 compiler, so `dist/*.d.ts` never gets written. `rollup-plugin-dts` 6.5+ supports 7, but tsup has to ship it — an override cannot reach a vendored copy. Retry when tsup releases past 8.5.1.
+
 ### Peer dependencies
 `drizzle-orm`, `graphql`, `graphql-parse-resolve-info`, and `graphql-scalars` are peer dependencies — they must be provided by the consumer. The library has zero production runtime dependencies except `pluralize`.
+
+`graphql` is peered at `>=16.3.0 <17`, and the upper bound is not caution. `graphql-parse-resolve-info` — also a peer here, and used on every resolver — peers `graphql` at `^16.3.0` with no 17 entry, so a consumer on graphql 17 cannot get a working install of this library's own required peer; npm refuses the combination outright. Lift the bound when `graphql-parse-resolve-info` ships 17 support.
 
 `drizzle-orm` is peered at `^1.0.0-rc.4`, and the floor is deliberate rather than cautious: rc.4 renamed `MySqlDatabase` to `MySqlAsyncDatabase` and `BaseSQLiteDatabase` to `SQLiteAsyncDatabase`, dropped the MySQL `mode` option, and finished removing the drizzle constructor's separate `schema` argument, so rc.2 and rc.3 genuinely do not work. Widening the floor back means restoring those names. Note also that a prerelease range admits drizzle's snapshot builds — `1.0.0-rc.4-5d5b77c` sorts *above* `1.0.0-rc.4`, because an alphanumeric prerelease identifier outranks a numeric one — so a consumer on `^1.0.0-rc.4` can land on a build nobody tested. That is why the devDependency is pinned exactly — `npm update` against the caret range really does pull the latest snapshot, and the lockfile has to stay on the version CI runs.
 

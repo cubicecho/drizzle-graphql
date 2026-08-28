@@ -198,7 +198,7 @@ describe.sequential('MySQL soft delete', () => {
     const res = await run(gqlSchema, `mutation { deleteItems(where: { id: { eq: 1 } }) { isSuccess } }`);
 
     expect(res.errors).toBeUndefined();
-    expect(res.data?.['deleteItems']).toEqual({ isSuccess: true });
+    expect(res.data!['deleteItems']).toEqual({ isSuccess: true });
 
     // The answer says nothing about what happened, so the table has to.
     const rows = await itemsInDb();
@@ -213,18 +213,18 @@ describe.sequential('MySQL soft delete', () => {
       `{ items { id } itemsSingle(where: { id: { eq: 3 } }) { id } itemsAggregate { count } }`,
     );
     expect(res.errors).toBeUndefined();
-    expect(res.data?.['items']).toEqual([{ id: 1 }, { id: 2 }]);
-    expect(res.data?.['itemsSingle']).toBeNull();
-    expect((res.data?.['itemsAggregate'] as any).count).toBe(2);
+    expect(res.data!['items']).toEqual([{ id: 1 }, { id: 2 }]);
+    expect(res.data!['itemsSingle']).toBeNull();
+    expect((res.data!['itemsAggregate'] as any).count).toBe(2);
 
     const opened = await run(
       gqlSchema,
       `{ items(deleted: INCLUDE) { id } only: items(deleted: ONLY) { id } itemsAggregate(deleted: INCLUDE) { count } }`,
     );
     expect(opened.errors).toBeUndefined();
-    expect((opened.data?.['items'] as any[]).map((i) => i.id)).toEqual([1, 2, 3]);
-    expect((opened.data?.['only'] as any[]).map((i) => i.id)).toEqual([3]);
-    expect((opened.data?.['itemsAggregate'] as any).count).toBe(3);
+    expect((opened.data!['items'] as any[]).map((i) => i.id)).toEqual([1, 2, 3]);
+    expect((opened.data!['only'] as any[]).map((i) => i.id)).toEqual([3]);
+    expect((opened.data!['itemsAggregate'] as any).count).toBe(3);
   });
 
   it('hides marked rows inside a relation field and its aggregate', async () => {
@@ -237,7 +237,7 @@ describe.sequential('MySQL soft delete', () => {
     );
 
     expect(res.errors).toBeUndefined();
-    const orgs = res.data?.['orgs'] as any[];
+    const orgs = res.data!['orgs'] as any[];
     expect(orgs[1].items).toEqual([]);
     expect(orgs[1].itemsAggregate.count).toBe(0);
     expect((orgs[1].all as any[]).map((i) => i.id)).toEqual([3]);
@@ -258,7 +258,7 @@ describe.sequential('MySQL soft delete', () => {
     expect((await itemsInDb()).find((row) => row.id === 3).deletedAt).toBeNull();
 
     const after = await run(gqlSchema, `{ items { id } }`);
-    expect((after.data?.['items'] as any[]).map((i) => i.id)).toEqual([1, 2, 3]);
+    expect((after.data!['items'] as any[]).map((i) => i.id)).toEqual([1, 2, 3]);
   });
 
   it('works the same way for a NOT NULL boolean marker', async () => {
@@ -267,12 +267,12 @@ describe.sequential('MySQL soft delete', () => {
     expect(deleted.errors).toBeUndefined();
 
     const only = await run(gqlSchema, `{ flags(deleted: ONLY) { id } }`);
-    expect((only.data?.['flags'] as any[]).map((f) => f.id).sort()).toEqual([1, 2]);
+    expect((only.data!['flags'] as any[]).map((f) => f.id).sort()).toEqual([1, 2]);
 
     const restored = await run(gqlSchema, `mutation { restoreFlags(where: { id: { eq: 1 } }) { isSuccess } }`);
     expect(restored.errors).toBeUndefined();
     const live = await run(gqlSchema, `{ flags { id } }`);
-    expect((live.data?.['flags'] as any[]).map((f) => f.id).sort()).toEqual([1]);
+    expect((live.data!['flags'] as any[]).map((f) => f.id).sort()).toEqual([1]);
   });
 
   it('keeps the marker out of the write inputs, and leaves an undeclared table alone', async () => {
@@ -317,13 +317,13 @@ describe.sequential('MySQL soft delete', () => {
 
     const mine = await run(gqlSchema, `{ items { id } }`, { orgId: 1 });
     expect(mine.errors).toBeUndefined();
-    expect((mine.data?.['items'] as any[]).map((i) => i.id)).toEqual([1, 2]);
+    expect((mine.data!['items'] as any[]).map((i) => i.id)).toEqual([1, 2]);
 
     // Org 2 owns only the marked row, so even INCLUDE stays inside the scope.
     const theirs = await run(gqlSchema, `{ items(deleted: INCLUDE) { id } }`, { orgId: 2 });
-    expect((theirs.data?.['items'] as any[]).map((i) => i.id)).toEqual([3]);
+    expect((theirs.data!['items'] as any[]).map((i) => i.id)).toEqual([3]);
     const theirsDefault = await run(gqlSchema, `{ items { id } }`, { orgId: 2 });
-    expect(theirsDefault.data?.['items']).toEqual([]);
+    expect(theirsDefault.data!['items']).toEqual([]);
   });
 });
 
@@ -337,8 +337,8 @@ describe.sequential('MySQL scope', () => {
     const res = await run(gqlSchema, `{ items { id } itemsAggregate { count } }`, { orgId: 1 });
 
     expect(res.errors).toBeUndefined();
-    expect((res.data?.['items'] as any[]).map((i) => i.id)).toEqual([1, 2]);
-    expect((res.data?.['itemsAggregate'] as any).count).toBe(2);
+    expect((res.data!['items'] as any[]).map((i) => i.id)).toEqual([1, 2]);
+    expect((res.data!['itemsAggregate'] as any).count).toBe(2);
   });
 
   // The interesting half on MySQL: an out-of-scope write still answers `{ isSuccess: true }`,
@@ -352,7 +352,7 @@ describe.sequential('MySQL scope', () => {
     );
 
     expect(res.errors).toBeUndefined();
-    expect(res.data?.['updateItems']).toEqual({ isSuccess: true });
+    expect(res.data!['updateItems']).toEqual({ isSuccess: true });
     expect((await itemsInDb()).find((row) => row.id === 3).name).toBe('G1');
   });
 
@@ -370,7 +370,7 @@ describe.sequential('MySQL scope', () => {
     const gqlSchema = buildWith(scoped);
     const res = await run(gqlSchema, `{ orgs { id } }`, { orgId: 1 });
 
-    expect((res.data?.['orgs'] as any[]).map((o) => o.id)).toEqual([1, 2]);
+    expect((res.data!['orgs'] as any[]).map((o) => o.id)).toEqual([1, 2]);
   });
 });
 
@@ -482,6 +482,6 @@ describe.sequential('MySQL limits', () => {
     const res = await run(gqlSchema, `{ items { id } }`);
 
     expect(res.errors).toBeUndefined();
-    expect(res.data?.['items']).toHaveLength(1);
+    expect(res.data!['items']).toHaveLength(1);
   });
 });
