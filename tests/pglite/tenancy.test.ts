@@ -71,7 +71,7 @@ describe.sequential('row scope', () => {
     const res = await run(gqlSchema, `{ posts { id } }`, { userId: 1 });
 
     expect(res.errors).toBeUndefined();
-    expect((res.data?.['posts'] as any[]).map((post) => post.id).sort()).toEqual([1, 2, 3, 6]);
+    expect((res.data!['posts'] as any[]).map((post) => post.id).sort()).toEqual([1, 2, 3, 6]);
   });
 
   it('narrows, and is never widened by, a client filter', async () => {
@@ -164,7 +164,7 @@ describe.sequential('row scope', () => {
     const res = await run(gqlSchema, `{ posts { id } }`, { userName: 'FifthUser' });
 
     expect(res.errors).toBeUndefined();
-    expect((res.data?.['posts'] as any[]).map((post) => post.id).sort()).toEqual([4, 5]);
+    expect((res.data!['posts'] as any[]).map((post) => post.id).sort()).toEqual([4, 5]);
   });
 
   it('treats an undefined return as no restriction', async () => {

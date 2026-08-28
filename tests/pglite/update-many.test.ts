@@ -228,7 +228,7 @@ describe.sequential('updateMany: behavior', () => {
         });
 
         expect(result.errors).toBeUndefined();
-        expect((result.data?.['updateItemsMany'] as any[])[0].qty).toBe(10);
+        expect((result.data!['updateItemsMany'] as any[])[0].qty).toBe(10);
 
         // The write is visible inside the caller's transaction...
         const inside = await tx.select().from(Items).orderBy(Items.id);

@@ -5462,7 +5462,7 @@ describe.sequential('Atomic column updates, count mutations and relation paginat
     `);
 
     expect(first.errors).toBeUndefined();
-    const page = (first.data?.['users'] as any[])[0]!['posts'];
+    const page = (first.data!['users'] as any[])[0]!['posts'];
     expect(page.map((row: any) => row['id'])).toStrictEqual([1, 2]);
 
     const second = await run(
@@ -5479,7 +5479,7 @@ describe.sequential('Atomic column updates, count mutations and relation paginat
     );
 
     expect(second.errors).toBeUndefined();
-    expect(((second.data?.['users'] as any[])[0]!['posts'] as any[]).map((row) => row['id'])).toStrictEqual([3, 6]);
+    expect(((second.data!['users'] as any[])[0]!['posts'] as any[]).map((row) => row['id'])).toStrictEqual([3, 6]);
   });
 
   it('keeps one row per distinct value within each parent', async () => {
@@ -5497,7 +5497,7 @@ describe.sequential('Atomic column updates, count mutations and relation paginat
 
     expect(res.errors).toBeUndefined();
     const byUser = Object.fromEntries(
-      (res.data?.['users'] as any[]).map((user) => [user['id'], user['posts'].map((post: any) => post['id'])]),
+      (res.data!['users'] as any[]).map((user) => [user['id'], user['posts'].map((post: any) => post['id'])]),
     );
     // User 1 wrote 1MESSAGE, 2MESSAGE, 3MESSAGE and 4MESSAGE — all distinct, so all survive.
     expect(byUser[1]).toStrictEqual([1, 2, 3, 6]);

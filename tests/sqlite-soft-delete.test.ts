@@ -111,16 +111,16 @@ describe.sequential('SQLite soft delete', () => {
     expect(res.errors).toBeUndefined();
     expect(res.data?.['items']).toEqual([{ id: 1 }, { id: 2 }]);
     expect(res.data?.['itemsSingle']).toBeNull();
-    expect((res.data?.['itemsAggregate'] as any).count).toBe(2);
+    expect((res.data!['itemsAggregate'] as any).count).toBe(2);
 
     const opened = await run(
       gqlSchema,
       `{ items(deleted: INCLUDE) { id } only: items(deleted: ONLY) { id } itemsAggregate(deleted: INCLUDE) { count } }`,
     );
     expect(opened.errors).toBeUndefined();
-    expect((opened.data?.['items'] as any[]).map((i) => i.id)).toEqual([1, 2, 3]);
-    expect((opened.data?.['only'] as any[]).map((i) => i.id)).toEqual([3]);
-    expect((opened.data?.['itemsAggregate'] as any).count).toBe(3);
+    expect((opened.data!['items'] as any[]).map((i) => i.id)).toEqual([1, 2, 3]);
+    expect((opened.data!['only'] as any[]).map((i) => i.id)).toEqual([3]);
+    expect((opened.data!['itemsAggregate'] as any).count).toBe(3);
   });
 
   it('hides marked rows inside a relation field and its aggregate', async () => {
@@ -150,23 +150,23 @@ describe.sequential('SQLite soft delete', () => {
 
     const restored = await run(gqlSchema, `mutation { restoreItems(where: { id: { eq: 3 } }) { id deletedAt } }`);
     expect(restored.errors).toBeUndefined();
-    expect((restored.data?.['restoreItems'] as any[])[0].deletedAt).toBeNull();
+    expect((restored.data!['restoreItems'] as any[])[0].deletedAt).toBeNull();
 
     const after = await run(gqlSchema, `{ items { id } }`);
-    expect((after.data?.['items'] as any[]).map((i) => i.id)).toEqual([1, 2, 3]);
+    expect((after.data!['items'] as any[]).map((i) => i.id)).toEqual([1, 2, 3]);
   });
 
   it('works the same way for a NOT NULL boolean marker', async () => {
     const gqlSchema = buildWith(softDelete);
     const deleted = await run(gqlSchema, `mutation { deleteFlags(where: { id: { eq: 1 } }) { id isArchived } }`);
     expect(deleted.errors).toBeUndefined();
-    expect((deleted.data?.['deleteFlags'] as any[])[0].isArchived).toBe(true);
+    expect((deleted.data!['deleteFlags'] as any[])[0].isArchived).toBe(true);
 
     const only = await run(gqlSchema, `{ flags(deleted: ONLY) { id } }`);
-    expect((only.data?.['flags'] as any[]).map((f) => f.id).sort()).toEqual([1, 2]);
+    expect((only.data!['flags'] as any[]).map((f) => f.id).sort()).toEqual([1, 2]);
 
     const restored = await run(gqlSchema, `mutation { restoreFlags(where: { id: { eq: 1 } }) { id isArchived } }`);
-    expect((restored.data?.['restoreFlags'] as any[])[0].isArchived).toBe(false);
+    expect((restored.data!['restoreFlags'] as any[])[0].isArchived).toBe(false);
   });
 
   it('keeps the marker out of the write inputs, and leaves an undeclared table alone', async () => {
@@ -201,11 +201,11 @@ describe.sequential('SQLite soft delete', () => {
 
     const mine = await run(gqlSchema, `{ items { id } }`, { orgId: 1 });
     expect(mine.errors).toBeUndefined();
-    expect((mine.data?.['items'] as any[]).map((i) => i.id)).toEqual([1, 2]);
+    expect((mine.data!['items'] as any[]).map((i) => i.id)).toEqual([1, 2]);
 
     // Org 2 owns only the marked row, so even INCLUDE stays inside the scope.
     const theirs = await run(gqlSchema, `{ items(deleted: INCLUDE) { id } }`, { orgId: 2 });
-    expect((theirs.data?.['items'] as any[]).map((i) => i.id)).toEqual([3]);
+    expect((theirs.data!['items'] as any[]).map((i) => i.id)).toEqual([3]);
     const theirsDefault = await run(gqlSchema, `{ items { id } }`, { orgId: 2 });
     expect(theirsDefault.data?.['items']).toEqual([]);
   });

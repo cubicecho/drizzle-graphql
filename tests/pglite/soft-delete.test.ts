@@ -190,7 +190,7 @@ describe.sequential('soft delete', () => {
     const gqlSchema = buildWith(softDelete);
     const list = await run(gqlSchema, `{ articles { id } }`);
     expect(list.errors).toBeUndefined();
-    expect((list.data?.['articles'] as any[]).map((a) => a.id)).toEqual([1, 2]);
+    expect((list.data!['articles'] as any[]).map((a) => a.id)).toEqual([1, 2]);
 
     const single = await run(gqlSchema, `{ articlesSingle(where: { id: { eq: 3 } }) { id } }`);
     expect(single.errors).toBeUndefined();
@@ -202,33 +202,33 @@ describe.sequential('soft delete', () => {
     const res = await run(gqlSchema, `{ articles(where: { id: { inArray: [2, 3] } }) { id } }`);
 
     expect(res.errors).toBeUndefined();
-    expect((res.data?.['articles'] as any[]).map((a) => a.id)).toEqual([2]);
+    expect((res.data!['articles'] as any[]).map((a) => a.id)).toEqual([2]);
   });
 
   it('deleted: INCLUDE returns both, ONLY returns just the marked ones', async () => {
     const gqlSchema = buildWith(softDelete);
     const included = await run(gqlSchema, `{ articles(deleted: INCLUDE) { id } }`);
     expect(included.errors).toBeUndefined();
-    expect((included.data?.['articles'] as any[]).map((a) => a.id)).toEqual([1, 2, 3]);
+    expect((included.data!['articles'] as any[]).map((a) => a.id)).toEqual([1, 2, 3]);
 
     // The trash view the issue asks for: no second hand-written field needed.
     const only = await run(gqlSchema, `{ articles(deleted: ONLY) { id } }`);
     expect(only.errors).toBeUndefined();
-    expect((only.data?.['articles'] as any[]).map((a) => a.id)).toEqual([3]);
+    expect((only.data!['articles'] as any[]).map((a) => a.id)).toEqual([3]);
 
     const single = await run(gqlSchema, `{ articlesSingle(where: { id: { eq: 3 } }, deleted: ONLY) { id } }`);
     expect(single.errors).toBeUndefined();
-    expect((single.data?.['articlesSingle'] as any).id).toBe(3);
+    expect((single.data!['articlesSingle'] as any).id).toBe(3);
   });
 
   it('excludes marked rows from aggregates and groupBy, and honours the argument there too', async () => {
     const gqlSchema = buildWith(softDelete);
     const excluded = await run(gqlSchema, `{ articlesAggregate { count } }`);
     expect(excluded.errors).toBeUndefined();
-    expect((excluded.data?.['articlesAggregate'] as any).count).toBe(2);
+    expect((excluded.data!['articlesAggregate'] as any).count).toBe(2);
 
     const included = await run(gqlSchema, `{ articlesAggregate(deleted: INCLUDE) { count } }`);
-    expect((included.data?.['articlesAggregate'] as any).count).toBe(3);
+    expect((included.data!['articlesAggregate'] as any).count).toBe(3);
 
     const grouped = await run(gqlSchema, `{ articlesGroupBy(groupBy: [authorId]) { group { authorId } count } }`);
     expect(grouped.errors).toBeUndefined();
@@ -239,7 +239,7 @@ describe.sequential('soft delete', () => {
       gqlSchema,
       `{ articlesGroupBy(groupBy: [authorId], deleted: INCLUDE) { group { authorId } count } }`,
     );
-    expect((groupedAll.data?.['articlesGroupBy'] as any[]).length).toBe(2);
+    expect((groupedAll.data!['articlesGroupBy'] as any[]).length).toBe(2);
   });
 
   it('hides marked rows inside a relation field — the case a client argument cannot cover', async () => {
@@ -254,7 +254,7 @@ describe.sequential('soft delete', () => {
 
     const included = await run(gqlSchema, `{ authors { id articles(deleted: INCLUDE) { id } } }`);
     expect(included.errors).toBeUndefined();
-    expect((included.data?.['authors'] as any[]).find((a) => a.id === 2).articles.map((a: any) => a.id)).toEqual([3]);
+    expect((included.data!['authors'] as any[]).find((a) => a.id === 2).articles.map((a: any) => a.id)).toEqual([3]);
   });
 
   it('hides them on the batch-loader path too', async () => {
@@ -270,7 +270,7 @@ describe.sequential('soft delete', () => {
 
     const only = await run(gqlSchema, `{ authors { id articles(deleted: ONLY) { id } } }`);
     expect(only.errors).toBeUndefined();
-    expect((only.data?.['authors'] as any[]).find((a) => a.id === 2).articles.map((a: any) => a.id)).toEqual([3]);
+    expect((only.data!['authors'] as any[]).find((a) => a.id === 2).articles.map((a: any) => a.id)).toEqual([3]);
   });
 
   it('counts only unmarked rows in a relation aggregate', async () => {
@@ -283,7 +283,7 @@ describe.sequential('soft delete', () => {
     expect(authors.find((a) => a.id === 2).articlesAggregate.count).toBe(0);
 
     const included = await run(gqlSchema, `{ authors { id articlesAggregate(deleted: INCLUDE) { count } } }`);
-    expect((included.data?.['authors'] as any[]).find((a) => a.id === 2).articlesAggregate.count).toBe(1);
+    expect((included.data!['authors'] as any[]).find((a) => a.id === 2).articlesAggregate.count).toBe(1);
   });
 
   it('keeps a write from reaching a marked row', async () => {
@@ -313,10 +313,10 @@ describe.sequential('soft delete', () => {
     );
 
     expect(restored.errors).toBeUndefined();
-    expect((restored.data?.['restoreArticlesSingle'] as any).deletedAt).toBeNull();
+    expect((restored.data!['restoreArticlesSingle'] as any).deletedAt).toBeNull();
 
     const list = await run(gqlSchema, `{ articles { id } }`);
-    expect((list.data?.['articles'] as any[]).map((a) => a.id)).toEqual([1, 2, 3]);
+    expect((list.data!['articles'] as any[]).map((a) => a.id)).toEqual([1, 2, 3]);
 
     // Article 1 was never marked, so there is nothing for restore to match.
     const noop = await run(gqlSchema, `mutation { restoreArticlesSingle(where: { id: { eq: 1 } }) { id } }`);
@@ -343,18 +343,18 @@ describe.sequential('soft delete', () => {
     const gqlSchema = buildWith(softDelete);
     const list = await run(gqlSchema, `{ flags { id } }`);
     expect(list.errors).toBeUndefined();
-    expect((list.data?.['flags'] as any[]).map((f) => f.id)).toEqual([1]);
+    expect((list.data!['flags'] as any[]).map((f) => f.id)).toEqual([1]);
 
     const deleted = await run(gqlSchema, `mutation { deleteFlags(where: { id: { eq: 1 } }) { id isArchived } }`);
     expect(deleted.errors).toBeUndefined();
-    expect((deleted.data?.['deleteFlags'] as any[])[0].isArchived).toBe(true);
+    expect((deleted.data!['deleteFlags'] as any[])[0].isArchived).toBe(true);
     expect(await rowsOf(Flags)).toHaveLength(2);
 
     const only = await run(gqlSchema, `{ flags(deleted: ONLY) { id } }`);
-    expect((only.data?.['flags'] as any[]).map((f) => f.id).sort()).toEqual([1, 2]);
+    expect((only.data!['flags'] as any[]).map((f) => f.id).sort()).toEqual([1, 2]);
 
     const restored = await run(gqlSchema, `mutation { restoreFlags(where: { id: { eq: 1 } }) { id isArchived } }`);
-    expect((restored.data?.['restoreFlags'] as any[])[0].isArchived).toBe(false);
+    expect((restored.data!['restoreFlags'] as any[])[0].isArchived).toBe(false);
   });
 
   it('honours an explicit deletedValue on a nullable marker column', async () => {
@@ -363,15 +363,15 @@ describe.sequential('soft delete', () => {
     // The live row and the un-backfilled NULL row are both alive; only the marked one is not.
     const list = await run(gqlSchema, `{ docs { id } }`);
     expect(list.errors).toBeUndefined();
-    expect((list.data?.['docs'] as any[]).map((d) => d.id).sort()).toEqual([1, 3]);
+    expect((list.data!['docs'] as any[]).map((d) => d.id).sort()).toEqual([1, 3]);
 
     const included = await run(gqlSchema, `{ docs(deleted: INCLUDE) { id } }`);
-    expect((included.data?.['docs'] as any[]).map((d) => d.id).sort()).toEqual([1, 2, 3]);
+    expect((included.data!['docs'] as any[]).map((d) => d.id).sort()).toEqual([1, 2, 3]);
 
     // The trash view is the marked row alone — not every row, which is what reading the
     // column as NULL-means-alive would have given.
     const only = await run(gqlSchema, `{ docs(deleted: ONLY) { id } }`);
-    expect((only.data?.['docs'] as any[]).map((d) => d.id)).toEqual([2]);
+    expect((only.data!['docs'] as any[]).map((d) => d.id)).toEqual([2]);
   });
 
   it('writes the configured values on a nullable marker column', async () => {
@@ -379,11 +379,11 @@ describe.sequential('soft delete', () => {
 
     const deleted = await run(gqlSchema, `mutation { deleteDocs(where: { id: { eq: 1 } }) { id isDeleted } }`);
     expect(deleted.errors).toBeUndefined();
-    expect((deleted.data?.['deleteDocs'] as any[])[0].isDeleted).toBe(true);
+    expect((deleted.data!['deleteDocs'] as any[])[0].isDeleted).toBe(true);
     expect(await rowsOf(Docs)).toHaveLength(3);
 
     const restored = await run(gqlSchema, `mutation { restoreDocs(where: { id: { eq: 1 } }) { id isDeleted } }`);
-    expect((restored.data?.['restoreDocs'] as any[])[0].isDeleted).toBe(false);
+    expect((restored.data!['restoreDocs'] as any[])[0].isDeleted).toBe(false);
   });
 
   it('keeps the NULL-means-alive reading when no deletedValue is configured', async () => {
@@ -391,7 +391,7 @@ describe.sequential('soft delete', () => {
     // all is what marks the row.
     const gqlSchema = buildWith({ softDelete: { Articles: 'deletedAt' } });
     const only = await run(gqlSchema, `{ articles(deleted: ONLY) { id } }`);
-    expect((only.data?.['articles'] as any[]).map((a) => a.id)).toEqual([3]);
+    expect((only.data!['articles'] as any[]).map((a) => a.id)).toEqual([3]);
   });
 
   it('reads a marked row through a required to-one relation rather than losing the parent', async () => {
@@ -406,7 +406,7 @@ describe.sequential('soft delete', () => {
 
     // The root fields still hide it — the exception is the relation, not the table.
     const kinds = await run(gqlSchema, `{ kinds { id } }`);
-    expect((kinds.data?.['kinds'] as any[]).map((k) => k.id)).toEqual([1]);
+    expect((kinds.data!['kinds'] as any[]).map((k) => k.id)).toEqual([1]);
   });
 
   it('applies the required-to-one exception on the batch-loader path too', async () => {
@@ -414,7 +414,7 @@ describe.sequential('soft delete', () => {
     const res = await run(gqlSchema, `{ items { id kind { id } } }`);
 
     expect(res.errors).toBeUndefined();
-    expect((res.data?.['items'] as any[]).find((i) => i.id === 2).kind).toEqual({ id: 2 });
+    expect((res.data!['items'] as any[]).find((i) => i.id === 2).kind).toEqual({ id: 2 });
   });
 
   it('still hides a marked row behind a nullable relation by default', async () => {
@@ -422,11 +422,11 @@ describe.sequential('soft delete', () => {
     const res = await run(gqlSchema, `{ items { id altKind { id } } }`);
 
     expect(res.errors).toBeUndefined();
-    expect((res.data?.['items'] as any[]).find((i) => i.id === 2).altKind).toBeNull();
+    expect((res.data!['items'] as any[]).find((i) => i.id === 2).altKind).toBeNull();
 
     // And the argument still reaches it.
     const included = await run(gqlSchema, `{ items { id altKind(deleted: INCLUDE) { id } } }`);
-    expect((included.data?.['items'] as any[]).find((i) => i.id === 2).altKind).toEqual({ id: 2 });
+    expect((included.data!['items'] as any[]).find((i) => i.id === 2).altKind).toEqual({ id: 2 });
   });
 
   it("scope: 'root' leaves every relation field unscoped", async () => {
@@ -438,15 +438,15 @@ describe.sequential('soft delete', () => {
       `{ items { id altKind { id } } kinds(deleted: INCLUDE) { id items { id } itemsAggregate { count } } }`,
     );
     expect(res.errors).toBeUndefined();
-    expect((res.data?.['items'] as any[]).find((i) => i.id === 2).altKind).toEqual({ id: 2 });
-    const retired = (res.data?.['kinds'] as any[]).find((k) => k.id === 2);
+    expect((res.data!['items'] as any[]).find((i) => i.id === 2).altKind).toEqual({ id: 2 });
+    const retired = (res.data!['kinds'] as any[]).find((k) => k.id === 2);
     expect(retired.items.map((i: any) => i.id)).toEqual([2]);
     expect(retired.itemsAggregate.count).toBe(1);
 
     // The root fields are scoped exactly as before.
     const roots = await run(gqlSchema, `{ kinds { id } kindsAggregate { count } }`);
-    expect((roots.data?.['kinds'] as any[]).map((k) => k.id)).toEqual([1]);
-    expect((roots.data?.['kindsAggregate'] as any).count).toBe(1);
+    expect((roots.data!['kinds'] as any[]).map((k) => k.id)).toEqual([1]);
+    expect((roots.data!['kindsAggregate'] as any).count).toBe(1);
   });
 
   it("scope: 'root' keeps the argument on relation fields, so either default can be overridden", async () => {
@@ -454,7 +454,7 @@ describe.sequential('soft delete', () => {
     const res = await run(gqlSchema, `{ items { id altKind(deleted: EXCLUDE) { id } } }`);
 
     expect(res.errors).toBeUndefined();
-    expect((res.data?.['items'] as any[]).find((i) => i.id === 2).altKind).toBeNull();
+    expect((res.data!['items'] as any[]).find((i) => i.id === 2).altKind).toBeNull();
   });
 
   it('leaves a table that declares nothing alone', async () => {
@@ -481,7 +481,7 @@ describe.sequential('soft delete', () => {
 
     const res = await run(gqlSchema, `{ articles { id } }`);
     expect(res.errors).toBeUndefined();
-    expect((res.data?.['articles'] as any[]).map((a) => a.id)).toEqual([1, 2]);
+    expect((res.data!['articles'] as any[]).map((a) => a.id)).toEqual([1, 2]);
     // Flags has no `deletedAt`, so the rule passes over it.
     expect(Object.keys(gqlSchema.getMutationType()!.getFields())).not.toContain('restoreFlags');
   });
@@ -495,11 +495,11 @@ describe.sequential('soft delete', () => {
     // Author 1 owns 1 and 2; nothing of theirs is marked.
     const mine = await run(gqlSchema, `{ articles { id } }`, { authorId: 1 });
     expect(mine.errors).toBeUndefined();
-    expect((mine.data?.['articles'] as any[]).map((a) => a.id)).toEqual([1, 2]);
+    expect((mine.data!['articles'] as any[]).map((a) => a.id)).toEqual([1, 2]);
 
     // Author 2 owns only the marked article, so even INCLUDE stays inside the scope.
     const theirs = await run(gqlSchema, `{ articles(deleted: INCLUDE) { id } }`, { authorId: 2 });
-    expect((theirs.data?.['articles'] as any[]).map((a) => a.id)).toEqual([3]);
+    expect((theirs.data!['articles'] as any[]).map((a) => a.id)).toEqual([3]);
     const theirsDefault = await run(gqlSchema, `{ articles { id } }`, { authorId: 2 });
     expect(theirsDefault.data?.['articles']).toEqual([]);
   });
@@ -592,7 +592,7 @@ describe.sequential('soft delete', () => {
 
     expect(res.errors).toBeUndefined();
     // Including the row that was already marked — the reset the issue asks for.
-    expect((res.data?.['deleteArticles'] as any[]).map((row: any) => row.id).sort()).toEqual([1, 2, 3]);
+    expect((res.data!['deleteArticles'] as any[]).map((row: any) => row.id).sort()).toEqual([1, 2, 3]);
     expect(await rowsOf(Articles)).toHaveLength(0);
   });
 
@@ -605,7 +605,7 @@ describe.sequential('soft delete', () => {
     // Article 3 belongs to author 2 and is marked; author 1 can reach neither.
     const res = await run(gqlSchema, `mutation { deleteArticles(hard: true) { id } }`, { authorId: 1 });
     expect(res.errors).toBeUndefined();
-    expect((res.data?.['deleteArticles'] as any[]).map((row: any) => row.id).sort()).toEqual([1, 2]);
+    expect((res.data!['deleteArticles'] as any[]).map((row: any) => row.id).sort()).toEqual([1, 2]);
     expect((await rowsOf(Articles)).map((row: any) => row.id)).toEqual([3]);
   });
 

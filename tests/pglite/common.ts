@@ -9,7 +9,7 @@ import { buildSchema, type GeneratedEntities } from '@/index';
 import * as schema from '../schema/pg';
 import { GraphQLClient } from '../util/query';
 
-export { sql, schema };
+export { schema, sql };
 
 /**
  * drizzle-orm v1's database generic is the relations config produced by `buildRelations`,
