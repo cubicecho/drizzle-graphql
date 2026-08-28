@@ -4,6 +4,14 @@ name: Checks
 
 on:
   workflow_call:
+    inputs:
+      graphql-scalars:
+        description: >-
+          Version range to install over the lockfile's, so the peer range can be checked
+          against a major the lockfile does not pin. Empty means use the lockfile.
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -25,6 +33,12 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # Not saved: the lockfile stays the source of truth for everything else, and only
+      # this one package is swapped for the run.
+      - name: Install graphql-scalars ${{ inputs.graphql-scalars }}
+        if: inputs.graphql-scalars != ''
+        run: npm install --no-save graphql-scalars@"${{ inputs.graphql-scalars }}"
 
       - name: Lint
         run: npx biome check .

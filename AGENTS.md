@@ -42,7 +42,7 @@ drizzle-graphql/
 ├── dist/                            # Build output
 ├── .github/workflows/
 │   ├── checks.yaml              # Lint + typecheck + full suite; called by both below
-│   ├── ci.yaml                  # Runs the checks on every pull request
+│   ├── ci.yaml                  # Checks on every PR, once per graphql-scalars major
 │   └── release.yaml             # Checks, then semantic-release, on push to main
 ├── .releaserc.json                  # semantic-release config
 ├── biome.json                       # Linter + formatter config
@@ -312,3 +312,5 @@ The `exports` field in `package.json` is the authoritative routing table. Never 
 `drizzle-orm`, `graphql`, `graphql-parse-resolve-info`, and `graphql-scalars` are peer dependencies — they must be provided by the consumer. The library has zero production runtime dependencies except `pluralize`.
 
 `drizzle-orm` is peered at `^1.0.0-rc.4`, and the floor is deliberate rather than cautious: rc.4 renamed `MySqlDatabase` to `MySqlAsyncDatabase` and `BaseSQLiteDatabase` to `SQLiteAsyncDatabase`, dropped the MySQL `mode` option, and finished removing the drizzle constructor's separate `schema` argument, so rc.2 and rc.3 genuinely do not work. Widening the floor back means restoring those names. Note also that a prerelease range admits drizzle's snapshot builds — `1.0.0-rc.4-5d5b77c` sorts *above* `1.0.0-rc.4`, because an alphanumeric prerelease identifier outranks a numeric one — so a consumer on `^1.0.0-rc.4` can land on a build nobody tested. That is why the devDependency is pinned exactly — `npm update` against the caret range really does pull the latest snapshot, and the lockfile has to stay on the version CI runs.
+
+`graphql-scalars` is peered at `^1.25.0 || ^2.0.0`. The lockfile pins v2; CI runs the whole suite a second time against v1, so widening or narrowing that range means changing the matrix in `ci.yaml` too.
