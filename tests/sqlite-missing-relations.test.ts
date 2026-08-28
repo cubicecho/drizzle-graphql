@@ -5,10 +5,10 @@ import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { describe, expect, it } from 'vitest';
 import { buildSchema } from '@/index';
 
-// `db.query` is keyed by the relations config, while SQLite and MySQL take the schema
-// separately — so these two can disagree. A table in one but not the other used to fail with
-// "Did you forget to pass schema to drizzle constructor?", which is the one thing the caller
-// did do.
+// The relations config is the whole table map: drizzle-orm v1 dropped the separate `schema`
+// constructor argument, so a table that is not in `buildRelations` is not in the generated
+// schema either. Earlier release candidates took both and could disagree, which is what
+// `missingQueryBuilderError` was written for; these tests pin the behaviour that replaced it.
 
 const Users = sqliteTable('users', {
   id: integer('id').primaryKey(),
@@ -23,22 +23,24 @@ const Loner = sqliteTable('loner', {
 const dbWith = (relationTables: Record<string, any>) =>
   drizzle({
     client: createClient({ url: ':memory:' }),
-    schema: { Users, Loner },
     relations: buildRelations(relationTables, {}),
   } as any);
 
-describe('a schema table missing from the relations config', () => {
-  it('names the real cause', () => {
-    expect(() => buildSchema(dbWith({ Users }) as any)).toThrow(
-      /Table 'Loner' was passed to the drizzle constructor's schema but is missing from its relations config/,
-    );
+describe('a table missing from the relations config', () => {
+  it('is left out of the generated schema rather than failing the build', () => {
+    const { schema } = buildSchema(dbWith({ Users }) as any);
+
+    expect(schema.getQueryType()?.getFields()).toHaveProperty('users');
+    expect(schema.getQueryType()?.getFields()).not.toHaveProperty('loner');
   });
 
-  it('builds once the table is in the relations config, even with no relations of its own', () => {
-    expect(() => buildSchema(dbWith({ Users, Loner }) as any)).not.toThrow();
+  it('is generated once it is in the relations config, even with no relations of its own', () => {
+    const { schema } = buildSchema(dbWith({ Users, Loner }) as any);
+
+    expect(schema.getQueryType()?.getFields()).toHaveProperty('loner');
   });
 
-  it('builds when the table is excluded instead', () => {
-    expect(() => buildSchema(dbWith({ Users }) as any, { exclude: { tables: ['Loner'] } })).not.toThrow();
+  it('fails the build when nothing at all is in the relations config', () => {
+    expect(() => buildSchema(dbWith({}) as any)).toThrow(/Schema not found in drizzle instance/);
   });
 });

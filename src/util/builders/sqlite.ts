@@ -1,5 +1,5 @@
 import type { Table } from 'drizzle-orm';
-import { type BaseSQLiteDatabase, getTableConfig, SQLiteTable } from 'drizzle-orm/sqlite-core';
+import { getTableConfig, type SQLiteAsyncDatabase, SQLiteTable } from 'drizzle-orm/sqlite-core';
 
 import type { GeneratedEntities } from '../../types.ts';
 import { getPrimaryKeyPropNamesFromConfig, type TablesRelationalConfig } from '../builders/common.ts';
@@ -122,7 +122,7 @@ const sqliteSchemaData = createSchemaDataGenerator({
 });
 
 export const generateSchemaData = <
-  TDrizzleInstance extends BaseSQLiteDatabase<any, any, any, any>,
+  TDrizzleInstance extends SQLiteAsyncDatabase<any, any, any>,
   TSchema extends Record<string, Table | unknown>,
 >(
   db: TDrizzleInstance,

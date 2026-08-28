@@ -1,7 +1,7 @@
 import { is, Table } from 'drizzle-orm';
-import { getTableConfig as getMySqlTableConfig, MySqlDatabase } from 'drizzle-orm/mysql-core';
+import { getTableConfig as getMySqlTableConfig, MySqlAsyncDatabase } from 'drizzle-orm/mysql-core';
 import { getTableConfig as getPgTableConfig, PgAsyncDatabase } from 'drizzle-orm/pg-core';
-import { BaseSQLiteDatabase, getTableConfig as getSQLiteTableConfig } from 'drizzle-orm/sqlite-core';
+import { getTableConfig as getSQLiteTableConfig, SQLiteAsyncDatabase } from 'drizzle-orm/sqlite-core';
 import type { GraphQLResolveInfo } from 'graphql';
 import { parseResolveInfo, type ResolveTree } from 'graphql-parse-resolve-info';
 import type { AnyDrizzleDB } from '../types.ts';
@@ -38,13 +38,13 @@ const contextCache = new WeakMap<object, SelectionContext>();
 
 /** The dialect's `getTableConfig`, which is the only place a composite primary key shows up. */
 const tableConfigFor = (db: AnyDrizzleDB<any>) => {
-  if (is(db, MySqlDatabase)) {
+  if (is(db, MySqlAsyncDatabase)) {
     return getMySqlTableConfig as (table: Table) => { primaryKeys: { columns: { name: string }[] }[] };
   }
   if (is(db, PgAsyncDatabase)) {
     return getPgTableConfig as unknown as (table: Table) => { primaryKeys: { columns: { name: string }[] }[] };
   }
-  if (is(db, BaseSQLiteDatabase)) {
+  if (is(db, SQLiteAsyncDatabase)) {
     return getSQLiteTableConfig as unknown as (table: Table) => { primaryKeys: { columns: { name: string }[] }[] };
   }
   throw new Error('Drizzle-GraphQL Error: unsupported database instance — expected a PostgreSQL, MySQL or SQLite one.');
@@ -57,15 +57,13 @@ const contextFor = (db: AnyDrizzleDB<any>): SelectionContext => {
   }
 
   const relations = (db as any)._.relations ?? {};
-  // Same reconstruction `buildSchema` does: PG no longer exposes `fullSchema`, so the table
-  // map is rebuilt from the relations config, whose entries each carry their table.
-  const schema =
-    (db as any)._.fullSchema ??
-    Object.fromEntries(
-      Object.entries(relations as Record<string, any>)
-        .filter(([, config]) => config?.table != null)
-        .map(([key, config]) => [key, config.table]),
-    );
+  // Same reconstruction `buildSchema` does: the relations config is the only table map a v1
+  // handle carries, and each of its entries carries its table.
+  const schema = Object.fromEntries(
+    Object.entries(relations as Record<string, any>)
+      .filter(([, config]) => config?.table != null)
+      .map(([key, config]) => [key, config.table]),
+  );
 
   const tableEntries = Object.entries(schema as Record<string, unknown>).filter(([, value]) => is(value, Table)) as [
     string,

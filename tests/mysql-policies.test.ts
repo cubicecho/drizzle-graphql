@@ -55,7 +55,6 @@ const relations = buildRelations(
     Items: { org: r.one.Orgs({ from: r.Items.orgId, to: r.Orgs.id }) },
   },
 );
-const schema = { Orgs, Items, Flags, Audit, relations };
 
 let docker: Docker;
 let container: Docker.Container;
@@ -135,7 +134,9 @@ beforeAll(async () => {
     throw lastError;
   }
 
-  db = (drizzle as any)({ client, schema, relations, logger: !!process.env['LOG_SQL'], mode: 'default' });
+  // rc.4 dropped both the separate `schema` argument and the `mode` option: the relations
+  // config is the whole table map now.
+  db = (drizzle as any)({ client, relations, logger: !!process.env['LOG_SQL'] });
 
   await db.execute(sql`CREATE TABLE \`orgs\` (
     \`id\` int NOT NULL,

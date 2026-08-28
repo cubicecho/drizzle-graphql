@@ -1,15 +1,15 @@
 /**
  * A table the drizzle instance has no relational query builder for.
  *
- * `db.query` is keyed by the *relations* config, while SQLite and MySQL take the schema
- * separately — so a table passed as `schema` but left out of `buildRelations`/`defineRelations`
- * is generated for, then has nothing to read through. (A table with no relations of its own is
- * fine; it only has to appear in the relations config.) PostgreSQL cannot reach this: its
- * schema is derived from the relations config, so the two can never disagree.
- *
- * The old message blamed a missing `schema`, which is the one thing the caller did do.
+ * Both the generated schema and `db.query` are keyed by the relations config, so under
+ * drizzle-orm v1 the two agree by construction and this should never fire — a table left out
+ * of the relations config is simply never generated for. It stays as a guard because the
+ * alternative is a `TypeError` on `undefined` deep inside a resolver, and because earlier v1
+ * release candidates *could* disagree: they took the schema as a separate constructor
+ * argument, so a table passed there but left out of `buildRelations`/`defineRelations` was
+ * generated for and then had nothing to read through.
  */
 export const missingQueryBuilderError = (tableName: string): Error =>
   new Error(
-    `Drizzle-GraphQL Error: Table '${tableName}' was passed to the drizzle constructor's schema but is missing from its relations config, so drizzle-orm exposes no query builder for it. Include it in the relations you pass to buildRelations/defineRelations, or drop it from the generated schema with config.exclude.tables.`,
+    `Drizzle-GraphQL Error: Table '${tableName}' has no query builder on the drizzle instance, so there is nothing for its resolvers to read through. Include it in the relations you pass to buildRelations/defineRelations, or drop it from the generated schema with config.exclude.tables.`,
   );

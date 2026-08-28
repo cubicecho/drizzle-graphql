@@ -3,7 +3,7 @@ import path from 'node:path';
 import { type Client, createClient } from '@libsql/client';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/libsql';
-import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
+import type { SQLiteAsyncDatabase } from 'drizzle-orm/sqlite-core';
 import { GraphQLObjectType, GraphQLSchema } from 'graphql';
 import { createYoga } from 'graphql-yoga';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -12,10 +12,10 @@ import * as schema from './schema/sqlite';
 import { GraphQLClient } from './util/query';
 
 interface Context {
-  db: BaseSQLiteDatabase<'async', any, typeof schema, typeof schema.relations>;
+  db: SQLiteAsyncDatabase<'async', any, typeof schema.relations>;
   client: Client;
   schema: GraphQLSchema;
-  entities: GeneratedEntities<BaseSQLiteDatabase<'async', any, typeof schema>>;
+  entities: GeneratedEntities<SQLiteAsyncDatabase<'async', any, typeof schema.relations>>;
   server: Server;
   gql: GraphQLClient;
 }
@@ -49,7 +49,6 @@ beforeAll(async () => {
 
   ctx.db = drizzle({
     client: ctx.client,
-    schema,
     relations: schema.relations,
     logger: !!process.env['LOG_SQL'],
   });
