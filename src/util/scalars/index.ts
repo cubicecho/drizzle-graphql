@@ -1,32 +1,46 @@
-import { GraphQLError, GraphQLScalarType, Kind } from 'graphql';
+import { GraphQLScalarType, Kind } from 'graphql';
 import { GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQLUUID } from 'graphql-scalars';
+import { type DrizzleErrorCode, drizzleError } from '../builders/common/errors.ts';
 
-const asDecimalString = (value: unknown): string => {
-  if (typeof value === 'bigint') {
-    return value.toString();
-  }
+// Both scalars below coerce the same way in both directions, so each helper is built once per
+// direction with the code that direction reports: a rejected argument is the client's value to
+// fix, while a rejected column value is the stored data's. graphql-js wraps a `parseValue`
+// throw when it coerces variables, but the wrapper inherits the original's `extensions`, so
+// the code survives that trip.
+const INVALID_INPUT: DrizzleErrorCode = 'DRIZZLE_INVALID_INPUT_VALUE';
+const UNREPRESENTABLE: DrizzleErrorCode = 'DRIZZLE_UNREPRESENTABLE_VALUE';
 
-  if (typeof value === 'number') {
-    if (!Number.isInteger(value)) {
-      throw new GraphQLError(`BigInt cannot represent non-integer value: ${value}`);
+const decimalString =
+  (code: DrizzleErrorCode) =>
+  (value: unknown): string => {
+    if (typeof value === 'bigint') {
+      return value.toString();
     }
-    if (!Number.isSafeInteger(value)) {
-      throw new GraphQLError(
-        `BigInt cannot represent the number ${value} without precision loss — pass it as a string instead`,
-      );
-    }
-    return String(value);
-  }
 
-  if (typeof value === 'string') {
-    if (!/^-?\d+$/.test(value)) {
-      throw new GraphQLError(`BigInt cannot represent non-integer value: "${value}"`);
+    if (typeof value === 'number') {
+      if (!Number.isInteger(value)) {
+        throw drizzleError(`BigInt cannot represent non-integer value: ${value}`, { code });
+      }
+      if (!Number.isSafeInteger(value)) {
+        throw drizzleError(
+          `BigInt cannot represent the number ${value} without precision loss — pass it as a string instead`,
+          { code },
+        );
+      }
+      return String(value);
     }
-    return value;
-  }
 
-  throw new GraphQLError(`BigInt cannot represent value: ${JSON.stringify(value)}`);
-};
+    if (typeof value === 'string') {
+      if (!/^-?\d+$/.test(value)) {
+        throw drizzleError(`BigInt cannot represent non-integer value: "${value}"`, { code });
+      }
+      return value;
+    }
+
+    throw drizzleError(`BigInt cannot represent value: ${JSON.stringify(value)}`, { code });
+  };
+
+const parseDecimal = decimalString(INVALID_INPUT);
 
 /**
  * A 64-bit integer. Always transported as a decimal string, in both directions, so no value
@@ -39,13 +53,13 @@ export const GraphQLBigIntString = new GraphQLScalarType<string, string>({
   description:
     'A 64-bit integer, transported as a decimal string so that values beyond ' +
     "JavaScript's safe integer range survive the round-trip intact.",
-  serialize: asDecimalString,
-  parseValue: asDecimalString,
+  serialize: decimalString(UNREPRESENTABLE),
+  parseValue: parseDecimal,
   parseLiteral: (ast) => {
     if (ast.kind !== Kind.STRING && ast.kind !== Kind.INT) {
-      throw new GraphQLError(`BigInt cannot represent a ${ast.kind}`, { nodes: ast });
+      throw drizzleError(`BigInt cannot represent a ${ast.kind}`, { code: INVALID_INPUT, nodes: ast });
     }
-    return asDecimalString(ast.value);
+    return parseDecimal(ast.value);
   },
 });
 
@@ -54,27 +68,31 @@ export const GraphQLBigIntString = new GraphQLScalarType<string, string>({
 // even though some databases would accept them.
 const numericStringPattern = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
 
-const asNumericString = (value: unknown): string => {
-  if (typeof value === 'bigint') {
-    return value.toString();
-  }
-
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) {
-      throw new GraphQLError(`Decimal cannot represent non-finite value: ${value}`);
+const numericString =
+  (code: DrizzleErrorCode) =>
+  (value: unknown): string => {
+    if (typeof value === 'bigint') {
+      return value.toString();
     }
-    return String(value);
-  }
 
-  if (typeof value === 'string') {
-    if (!numericStringPattern.test(value)) {
-      throw new GraphQLError(`Decimal cannot represent non-numeric value: "${value}"`);
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        throw drizzleError(`Decimal cannot represent non-finite value: ${value}`, { code });
+      }
+      return String(value);
     }
-    return value;
-  }
 
-  throw new GraphQLError(`Decimal cannot represent value: ${JSON.stringify(value)}`);
-};
+    if (typeof value === 'string') {
+      if (!numericStringPattern.test(value)) {
+        throw drizzleError(`Decimal cannot represent non-numeric value: "${value}"`, { code });
+      }
+      return value;
+    }
+
+    throw drizzleError(`Decimal cannot represent value: ${JSON.stringify(value)}`, { code });
+  };
+
+const parseNumeric = numericString(INVALID_INPUT);
 
 /**
  * An arbitrary-precision decimal (`numeric` / `decimal` columns). Always transported as a
@@ -87,13 +105,13 @@ export const GraphQLDecimalString = new GraphQLScalarType<string, string>({
   description:
     'An arbitrary-precision decimal, transported as a numeric string so that values ' +
     "beyond JavaScript's double-precision range survive the round-trip intact.",
-  serialize: asNumericString,
-  parseValue: asNumericString,
+  serialize: numericString(UNREPRESENTABLE),
+  parseValue: parseNumeric,
   parseLiteral: (ast) => {
     if (ast.kind !== Kind.STRING && ast.kind !== Kind.INT && ast.kind !== Kind.FLOAT) {
-      throw new GraphQLError(`Decimal cannot represent a ${ast.kind}`, { nodes: ast });
+      throw drizzleError(`Decimal cannot represent a ${ast.kind}`, { code: INVALID_INPUT, nodes: ast });
     }
-    return asNumericString(ast.value);
+    return parseNumeric(ast.value);
   },
 });
 

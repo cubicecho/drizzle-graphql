@@ -1,7 +1,7 @@
 // The `onError` boundary: what a resolver's throw is turned into, the default mapper, and the
 // plumbing that lets a caller replace it.
 
-import { GraphQLError } from 'graphql';
+import { type ASTNode, GraphQLError } from 'graphql';
 import type { DrizzleFieldOperation } from '../../extensions.ts';
 
 /**
@@ -42,6 +42,12 @@ export type DrizzleErrorCode =
   | 'DRIZZLE_INVALID_DISTINCT'
   /** An `onConflict` named a target or update column the upsert cannot use. */
   | 'DRIZZLE_INVALID_ON_CONFLICT'
+  /** A written value could not be converted to what its column stores. */
+  | 'DRIZZLE_INVALID_INPUT_VALUE'
+  /** A write's input named a key that is not a column of the table. */
+  | 'DRIZZLE_UNKNOWN_COLUMN'
+  /** A stored value could not be represented by the scalar that transports it. */
+  | 'DRIZZLE_UNREPRESENTABLE_VALUE'
   /** The request's shared mutation transaction was rolled back, so this field never ran. */
   | 'DRIZZLE_TRANSACTION_ABORTED';
 
@@ -71,9 +77,18 @@ export type DrizzleErrorContext = {
  */
 export const drizzleError = (
   message: string,
-  { code, ...context }: DrizzleErrorContext & { code: DrizzleErrorCode },
+  {
+    code,
+    nodes,
+    ...context
+  }: DrizzleErrorContext & {
+    code: DrizzleErrorCode;
+    /** The AST the error is about, where the throw site has one — it becomes the `locations`. */
+    nodes?: ASTNode | readonly ASTNode[];
+  },
 ): GraphQLError =>
   new GraphQLError(message, {
+    nodes,
     extensions: Object.keys(context).length ? { code, drizzle: context } : { code },
   });
 
