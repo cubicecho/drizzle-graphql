@@ -97,7 +97,7 @@
   "homepage": "https://github.com/cubicecho/drizzle-graphql",
   "peerDependencies": {
     "drizzle-orm": "^1.0.0-rc.4",
-    "graphql": ">=16.3.0",
+    "graphql": ">=16.3.0 <17",
     "graphql-parse-resolve-info": "^4.13.0",
     "graphql-scalars": "^1.25.0"
   },
