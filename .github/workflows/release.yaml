@@ -6,7 +6,13 @@ on:
       - main
 
 jobs:
+  # The same checks the pull request ran. Repeating them on `main` is what makes the
+  # release gate real: a merge commit is not the commit either branch was tested as.
+  checks:
+    uses: ./.github/workflows/checks.yaml
+
   release:
+    needs: checks
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -26,20 +32,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Lint
-        run: npx biome check .
-
-      - name: Type check (src)
-        run: npx tsc --noEmit
-
-      # Type-checks tests/ too, which is what makes the `expectTypeOf` assertions
-      # in the dialect suites actually fail the build when the public types drift.
-      - name: Type check (tests)
-        run: npx tsc --noEmit -p tests/tsconfig.json
-
-      - name: Test (PGlite + SQLite — no Docker required)
-        run: npx vitest run tests/pglite tests/sqlite.test.ts tests/sqlite-conflict.test.ts tests/sqlite-custom.test.ts tests/sqlite-groupby.test.ts tests/sqlite-nested-writes.test.ts tests/sqlite-on-write.test.ts tests/sqlite-soft-delete.test.ts tests/sqlite-tenancy.test.ts tests/sqlite-update-ops-counts.test.ts tests/sqlite-upsert.test.ts
 
       - name: Release
         run: npx semantic-release

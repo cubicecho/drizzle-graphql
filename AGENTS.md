@@ -40,7 +40,10 @@ drizzle-graphql/
 ├── scripts/
 │   └── build.ts                     # tsup build script (ESM + CJS + types)
 ├── dist/                            # Build output
-├── .github/workflows/release.yaml   # Automated release via semantic-release
+├── .github/workflows/
+│   ├── checks.yaml              # Lint + typecheck + full suite; called by both below
+│   ├── ci.yaml                  # Runs the checks on every pull request
+│   └── release.yaml             # Checks, then semantic-release, on push to main
 ├── .releaserc.json                  # semantic-release config
 ├── biome.json                       # Linter + formatter config
 ├── vitest.config.ts                 # Vitest config

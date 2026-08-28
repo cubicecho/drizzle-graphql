@@ -1,0 +1,11 @@
+# Runs the checks on every pull request, so a change is verified before it is merged
+# rather than after. The release workflow runs the same checks again on `main`.
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yaml
