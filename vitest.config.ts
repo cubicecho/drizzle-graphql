@@ -1,5 +1,4 @@
 import { viteCommonjs } from '@originjs/vite-plugin-commonjs';
-import tsconfigPaths from 'vite-tsconfig-paths';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
@@ -18,6 +17,7 @@ export default defineConfig({
     maxWorkers: 3,
     minWorkers: 1,
   },
-  plugins: [viteCommonjs(), tsconfigPaths()],
-  resolve: { alias: { graphql: 'graphql/index.js' } },
+  plugins: [viteCommonjs()],
+  // Vite resolves `@/*` from tsconfig natively since 7.2; `vite-tsconfig-paths` used to do it.
+  resolve: { tsconfigPaths: true, alias: { graphql: 'graphql/index.js' } },
 });

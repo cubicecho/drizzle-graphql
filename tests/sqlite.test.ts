@@ -95,11 +95,11 @@ beforeAll(async () => {
   ctx.gql = gql;
 });
 
-afterAll(async (_t) => {
+afterAll(async () => {
   ctx.client.close();
 });
 
-beforeEach(async (_t) => {
+beforeEach(async () => {
   await ctx.db.run(sql`CREATE TABLE IF NOT EXISTS \`customers\` (
 		\`id\` integer PRIMARY KEY NOT NULL,
 		\`address\` text NOT NULL,
@@ -208,7 +208,7 @@ beforeEach(async (_t) => {
   ]);
 });
 
-afterEach(async (_t) => {
+afterEach(async () => {
   await ctx.db.run(sql`PRAGMA foreign_keys = OFF;`);
   await ctx.db.run(sql`DROP TABLE IF EXISTS \`customers\`;`);
   await ctx.db.run(sql`DROP TABLE IF EXISTS \`posts\`;`);

@@ -81,7 +81,7 @@ async function createDockerDB(): Promise<string> {
   return `mysql://root:mysql@127.0.0.1:${port}/drizzle`;
 }
 
-beforeAll(async (_t) => {
+beforeAll(async () => {
   const connectionString = await createDockerDB();
 
   const sleep = 1000;
@@ -136,12 +136,12 @@ beforeAll(async (_t) => {
   ctx.gql = gql;
 });
 
-afterAll(async (_t) => {
+afterAll(async () => {
   await ctx.client?.end().catch(console.error);
   await ctx.mysqlContainer?.stop().catch(console.error);
 });
 
-beforeEach(async (_t) => {
+beforeEach(async () => {
   await ctx.db.execute(sql`CREATE TABLE IF NOT EXISTS \`customers\` (
 		\`id\` int AUTO_INCREMENT NOT NULL,
 		\`address\` text NOT NULL,
@@ -257,7 +257,7 @@ beforeEach(async (_t) => {
   ]);
 });
 
-afterEach(async (_t) => {
+afterEach(async () => {
   await ctx.db.execute(sql`SET FOREIGN_KEY_CHECKS = 0;`);
   await ctx.db.execute(sql`DROP TABLE IF EXISTS \`customers\` CASCADE;`);
   await ctx.db.execute(sql`DROP TABLE IF EXISTS \`posts\` CASCADE;`);
