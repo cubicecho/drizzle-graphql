@@ -219,6 +219,15 @@ All commits must follow the [Conventional Commits](https://www.conventionalcommi
 | `ci` | none | CI/CD changes |
 | `build` | none | build system changes |
 
+The `!` marker only works because `.releaserc.json` sets both `commit-analyzer` and
+`release-notes-generator` to the `conventionalcommits` preset. semantic-release defaults to the
+`angular` preset, whose header pattern is `/^(\w*)(?:\((.*)\))?: (.*)$/` — it does not allow a
+`!`, so under that default a `fix(deps)!:` header parses to a `null` type and the commit becomes
+invisible to *both* plugins: no version bump, and no changelog entry either. That is not
+hypothetical; it is how the drizzle-orm rc.4 peer-floor bump shipped as 8.2.1. Do not remove the
+preset, and if you are ever unsure, add an explicit `BREAKING CHANGE:` footer as well — the footer
+is parsed independently of the header and works under either preset.
+
 **Examples:**
 ```
 feat: add singularTypes option to BuildSchemaConfig
