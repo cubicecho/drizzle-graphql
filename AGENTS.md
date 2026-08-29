@@ -228,6 +228,12 @@ hypothetical; it is how the drizzle-orm rc.4 peer-floor bump shipped as 8.2.1. D
 preset, and if you are ever unsure, add an explicit `BREAKING CHANGE:` footer as well — the footer
 is parsed independently of the header and works under either preset.
 
+The preset is pinned to `conventional-changelog-conventionalcommits@9` on purpose. Version 10
+requires `conventional-changelog-writer@9` or newer, and semantic-release 25 resolves
+`conventional-changelog-writer@8`, so v10 throws `Missing helper` at the `generateNotes` step —
+*after* `analyzeCommits` has already succeeded, which means a dry run that only checks the computed
+version will not catch it. Bump the preset past 9 only once semantic-release ships a writer 9.
+
 **Examples:**
 ```
 feat: add singularTypes option to BuildSchemaConfig
