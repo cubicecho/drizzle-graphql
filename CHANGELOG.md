@@ -1,3 +1,21 @@
+## [9.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v8.2.1...v9.0.0) (2026-08-29)
+
+### ⚠ BREAKING CHANGES
+
+* **release:** the drizzle-orm peer range is `^1.0.0-rc.4`. rc.2 and rc.3 do
+not work: rc.4 renamed `MySqlDatabase` to `MySqlAsyncDatabase` and
+`BaseSQLiteDatabase` to `SQLiteAsyncDatabase`, dropped the MySQL `mode` option,
+and removed the drizzle constructor's separate `schema` argument along with
+`_.fullSchema`. This landed in 8.2.1 but was released as a patch because of the
+preset bug above, so this release restates it at the correct version. The
+`graphql` peer range is also now bounded below 17, since
+`graphql-parse-resolve-info` — a required peer here — has no graphql 17 support.
+
+### Bug Fixes
+
+* **release:** detect breaking changes marked with `!` ([b3f2aa5](https://github.com/cubicecho/drizzle-graphql/commit/b3f2aa5ed0c5fe0e55613ce5712e4af8f7502fdf))
+* **release:** pin the conventionalcommits preset to v9 ([ef264e8](https://github.com/cubicecho/drizzle-graphql/commit/ef264e8f05da0c9d3e6161970cf034cd7392ce0e))
+
 ## [8.2.1](https://github.com/cubicecho/drizzle-graphql/compare/v8.2.0...v8.2.1) (2026-08-28)
 
 
