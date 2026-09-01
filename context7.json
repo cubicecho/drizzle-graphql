@@ -6,15 +6,7 @@
   "public_key": "pk_n3EeElMVDKA7IZOdUTuM1",
   "folders": [],
   "excludeFolders": ["node_modules", "dist", "coverage", "tests", ".github"],
-  "excludeFiles": [
-    "index.cjs",
-    "index.js",
-    "index.cjs.map",
-    "index.js.map",
-    "index.d.cts",
-    "package-lock.json",
-    "CHANGELOG.md"
-  ],
+  "excludeFiles": ["package-lock.json", "CHANGELOG.md"],
   "rules": [
     "Generate a GraphQL schema with `buildSchema(db, config?)`, which returns `{ schema, entities }`. `db` is a Drizzle instance constructed with relations (from `defineRelations`/`buildRelations`).",
     "Use `schema` directly with any server that consumes a `GraphQLSchema` (e.g. GraphQL Yoga); use `entities` ({ queries, mutations, inputs, types, fieldResolvers }) to compose a custom schema.",

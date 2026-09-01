@@ -171,7 +171,10 @@ export const createSelectGenerators = (
     orderArgs,
     filterArgs,
     fieldName,
-    typeName,
+    // The list field's only use for the default type name is naming its `distinct` enum,
+    // and a single-row read has no `distinct` argument. The slot stays so the two
+    // generators keep one positional shape at the call site in `build-context.ts`.
+    _typeName,
     typeNameMapper,
     filterCtx,
     limits,

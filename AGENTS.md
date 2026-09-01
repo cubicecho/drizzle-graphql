@@ -4,7 +4,7 @@
 
 `drizzle-graphql` is a TypeScript library that automatically generates a fully-typed GraphQL schema from a Drizzle ORM schema. It supports PostgreSQL, MySQL, and SQLite. The output is a `GraphQLSchema` object plus typed resolver helpers that consumers can extend.
 
-Published to npm as `drizzle-graphql`. GitHub: `github.com/vantreeseba/drizzle-graphql`.
+Published to npm as `@vantreeseba/drizzle-graphql`. This repo is `github.com/cubicecho/drizzle-graphql` (the `origin` remote) — issues, pull requests and the CHANGELOG's links all point there. `github.com/vantreeseba/drizzle-graphql` is the `upstream` remote it forks from, and is not where work lands.
 
 ## Source Structure
 
