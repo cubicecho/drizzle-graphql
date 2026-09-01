@@ -37,8 +37,6 @@ drizzle-graphql/
 │   ├── mysql-custom.test.ts         # MySQL custom resolver tests (Docker)
 │   ├── sqlite.test.ts               # SQLite integration tests
 │   └── sqlite-custom.test.ts        # SQLite custom resolver tests
-├── scripts/
-│   └── build.ts                     # tsup build script (ESM + CJS + types)
 ├── dist/                            # Build output
 ├── .github/workflows/
 │   ├── checks.yaml              # Lint + typecheck + full suite; called by both below
@@ -46,6 +44,7 @@ drizzle-graphql/
 │   └── release.yaml             # Checks, then semantic-release, on push to main
 ├── .releaserc.json                  # semantic-release config
 ├── biome.json                       # Linter + formatter config
+├── tsdown.config.ts                 # Build config (ESM + CJS + types)
 ├── vitest.config.ts                 # Vitest config
 ├── tsconfig.json                    # TypeScript config (strict, bundler resolution)
 └── package.json
@@ -284,7 +283,7 @@ npm publish package.tgz
 
 ## Build System
 
-`scripts/build.ts` uses [tsup](https://tsup.egoist.dev/) to produce a dual ESM + CJS package:
+`tsdown.config.ts` uses [tsdown](https://tsdown.dev/) — the rolldown-based successor to tsup — to produce a dual ESM + CJS package. `npm run build` invokes the `tsdown` binary directly; there is no wrapper script.
 
 | Output file | Format |
 |-------------|--------|
@@ -295,7 +294,9 @@ npm publish package.tgz
 
 The `exports` map in `package.json` gates which format is loaded at import time. The `files` field in `package.json` controls what gets published — only `dist/` is included.
 
-The build also copies `package.json` and `README.md` into `dist/` so the published tarball is self-contained.
+tsdown defaults to `.mjs` / `.d.mts` for the ESM half, which the `exports` map does not point at, so `outExtensions` in `tsdown.config.ts` pins all four names. That map is the published contract: change the extensions there and consumers break, so the config must keep producing exactly the four files in the table above. The `copy` option copies `package.json` and `README.md` into `dist/` so the published tarball is self-contained.
+
+`npm run build` is wired to npm's `prepare` lifecycle, so it also runs on `npm pack` and during semantic-release publishing. Any change to the build has to work when invoked that way, not just directly.
 
 ## Key Architectural Patterns
 
@@ -324,7 +325,7 @@ if (!schema) {
 The `exports` field in `package.json` is the authoritative routing table. Never import from `dist/` paths directly in consuming code.
 
 ### TypeScript 7
-Not yet. Both tsconfig projects typecheck clean under 7.0, and `tsconfig.json` has already dropped the removed `baseUrl` in favour of a relative `paths` entry, which 5.x accepts too. What blocks the bump is the build: `tsup` bundles `rollup-plugin-dts` 6.1.1, which throws `Cannot read properties of undefined (reading 'useCaseSensitiveFileNames')` on a TS 7 compiler, so `dist/*.d.ts` never gets written. `rollup-plugin-dts` 6.5+ supports 7, but tsup has to ship it — an override cannot reach a vendored copy. Retry when tsup releases past 8.5.1.
+The devDependency is on `^7.0.2`. Do not move the build back to `tsup`: tsup 8.5.1 bundles a vendored `rollup-plugin-dts` 6.1.1 that throws `Cannot read properties of undefined (reading 'useCaseSensitiveFileNames')` against a TS 7 compiler, so `dist/*.d.ts` never gets written. An npm `override` cannot reach a copy compiled into `tsup/dist/rollup.js`. tsdown builds declarations through `rolldown-plugin-dts`, which peers TypeScript 7 directly. tsdown does warn that the TS 7 API is still experimental; that warning is expected, not a failure.
 
 ### Peer dependencies
 `drizzle-orm`, `graphql`, `graphql-parse-resolve-info`, and `graphql-scalars` are peer dependencies — they must be provided by the consumer. The library has zero production runtime dependencies except `pluralize`.

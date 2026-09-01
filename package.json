@@ -5,7 +5,7 @@
   "version": "9.0.0",
   "description": "Automatically generate GraphQL schema or customizable schema config fields from Drizzle ORM schema",
   "scripts": {
-    "build": "tsx scripts/build.ts",
+    "build": "tsdown",
     "b": "npm run build",
     "prepare": "npm run build",
     "pack": "(cd dist && npm pack --pack-destination ..) && rm -f package.tgz && mv *.tgz package.tgz",
@@ -46,6 +46,7 @@
     "@semantic-release/github": "^12.0.9",
     "@semantic-release/npm": "^13.1.5",
     "@types/dockerode": "^4.0.1",
+    "@types/node": "^26.4.1",
     "@types/pg": "^8.11.6",
     "@types/pluralize": "^0.0.33",
     "axios": "^1.6.8",
@@ -61,13 +62,12 @@
     "pg": "^8.12.0",
     "postgres": "^3.4.3",
     "semantic-release": "^25.0.9",
-    "tsup": "^8.5.1",
+    "tsdown": "^0.22.14",
     "tsx": "^4.7.1",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
     "uuid": "^14.0.2",
     "vitest": "^4.1.11",
-    "zod": "^4.4.3",
-    "zx": "^8.8.5"
+    "zod": "^4.4.3"
   },
   "keywords": [
     "drizzle",
