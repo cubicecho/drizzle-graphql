@@ -249,9 +249,13 @@ export const splitFieldUpdateOperations = (
  *
  * Safe to call on every update path regardless of `features.fieldUpdateOperations` — see the
  * shape check in {@link splitFieldUpdateOperations}.
+ *
+ * This is the single funnel every update goes through — the plural and `Single` mutations,
+ * `updateMany`, the `Count` mutations and the MySQL builder's own — which is why it is the
+ * one place that has to tell the remapper it is serving an update rather than an insert.
  */
 export const remapUpdateInput = (values: Record<string, any>, table: Table, tableName: string): Record<string, any> => {
   const { columns, expressions } = splitFieldUpdateOperations(values, table, tableName);
-  const remapped = remapFromGraphQLSingleInput(columns, table);
+  const remapped = remapFromGraphQLSingleInput(columns, table, 'update');
   return Object.keys(expressions).length ? { ...remapped, ...expressions } : remapped;
 };

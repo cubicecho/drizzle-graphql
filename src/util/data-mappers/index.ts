@@ -286,7 +286,17 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
   }
 };
 
-export const remapFromGraphQLSingleInput = (queryInput: Record<string, any>, table: Table) => {
+/**
+ * Which write an input is being remapped for. It decides one thing only: what an explicit
+ * `null` means for a `notNull` column — see {@link remapFromGraphQLSingleInput}.
+ */
+export type RemapInputOperation = 'insert' | 'update';
+
+export const remapFromGraphQLSingleInput = (
+  queryInput: Record<string, any>,
+  table: Table,
+  operation: RemapInputOperation = 'insert',
+) => {
   for (const [key, value] of Object.entries(queryInput)) {
     if (value === undefined) {
       delete queryInput[key];
@@ -296,7 +306,25 @@ export const remapFromGraphQLSingleInput = (queryInput: Record<string, any>, tab
         throw drizzleError(`Unknown column: ${key}`, { code: 'DRIZZLE_UNKNOWN_COLUMN' });
       }
 
+      // An explicit `null` for a column that cannot hold one reads differently on each side
+      // of a write, because the generated input types mean different things by nullability.
+      //
+      // On INSERT a `notNull` column's field is only nullable when the database or drizzle
+      // can fill it in — `defaultIsNullable` is passed for the create input, so the field is
+      // non-null unless the column has a default, or a nested `create` supplies it. So the
+      // only nulls that reach here are ones the schema itself offered as "I am not supplying
+      // this", and dropping the key is what lets the default apply. That contract is pinned
+      // by `upsert-null-key.test.ts` and `not-null-writes.test.ts`.
+      //
+      // On UPDATE every field is nullable — the update input forces it, whatever the column
+      // — so nullability says nothing, and there is no default to fall back to. `null` can
+      // only mean "write null", which this column cannot hold. Dropping it used to report
+      // either a wrong success (the rest of the `set` landed, this column silently kept its
+      // old value) or a misleading `DRIZZLE_NO_VALUES` when it was the only field.
       if (value === null && column.notNull) {
+        if (operation === 'update') {
+          throw drizzleError(`Column '${key}' cannot be set to null.`, { code: 'DRIZZLE_NOT_NULL' });
+        }
         delete queryInput[key];
         continue;
       }
@@ -308,9 +336,13 @@ export const remapFromGraphQLSingleInput = (queryInput: Record<string, any>, tab
   return queryInput;
 };
 
-export const remapFromGraphQLArrayInput = (queryInput: Record<string, any>[], table: Table) => {
+export const remapFromGraphQLArrayInput = (
+  queryInput: Record<string, any>[],
+  table: Table,
+  operation: RemapInputOperation = 'insert',
+) => {
   for (const entry of queryInput) {
-    remapFromGraphQLSingleInput(entry, table);
+    remapFromGraphQLSingleInput(entry, table, operation);
   }
 
   return queryInput;

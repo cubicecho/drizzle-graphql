@@ -44,6 +44,8 @@ export type DrizzleErrorCode =
   | 'DRIZZLE_INVALID_ON_CONFLICT'
   /** A written value could not be converted to what its column stores. */
   | 'DRIZZLE_INVALID_INPUT_VALUE'
+  /** An update's `set` gave a column that cannot hold null an explicit null. */
+  | 'DRIZZLE_NOT_NULL'
   /** A write's input named a key that is not a column of the table. */
   | 'DRIZZLE_UNKNOWN_COLUMN'
   /** A stored value could not be represented by the scalar that transports it. */
