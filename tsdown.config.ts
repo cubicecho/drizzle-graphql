@@ -11,7 +11,4 @@ export default defineConfig({
   // tsdown would otherwise emit `.mjs` / `.d.mts` for ESM. The `exports` map in
   // package.json is the published contract, so pin the names it already points at.
   outExtensions: ({ format }) => (format === 'cjs' ? { js: '.cjs', dts: '.d.cts' } : { js: '.js', dts: '.d.ts' }),
-  // The published tarball is expected to be self-contained: `dist/` carries its
-  // own copy of the manifest and the readme.
-  copy: ['package.json', 'README.md'],
 });

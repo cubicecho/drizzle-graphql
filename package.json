@@ -8,7 +8,7 @@
     "build": "tsdown",
     "b": "npm run build",
     "prepare": "npm run build",
-    "pack": "(cd dist && npm pack --pack-destination ..) && rm -f package.tgz && mv *.tgz package.tgz",
+    "pack": "npm pack --pack-destination . && rm -f package.tgz && mv *.tgz package.tgz",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tests/tsconfig.json",
     "server-test:pg": "DB_TYPE=pg tsx watch server/server.ts",
@@ -27,7 +27,7 @@
         "default": "./dist/index.js"
       },
       "require": {
-        "types": "./dist/index.d.cjs",
+        "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
       }
     }
