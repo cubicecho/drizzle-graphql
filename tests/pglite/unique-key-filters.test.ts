@@ -6,6 +6,7 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { type GraphQLSchema, graphql, printType } from 'graphql';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildSchema } from '@/index';
+import { missingRequiredInputField, unknownInputField } from '../util/validation-messages';
 
 // ── One table per shape a unique constraint comes in ──────────────────────────
 const Stock = pgTable(
@@ -135,7 +136,7 @@ describe.sequential('unique key filters', () => {
     const res = await run(`{ stockSingle(where: { itemId_locationId: { itemId: "widget" } }) { id } }`);
 
     expect(res.data).toBeUndefined();
-    expect(res.errors?.[0]?.message).toContain('Field "StockItemIdLocationIdKey.locationId" of required type');
+    expect(res.errors?.[0]?.message).toMatch(missingRequiredInputField('StockItemIdLocationIdKey', 'locationId'));
   });
 
   it('takes the key from variables', async () => {
@@ -223,6 +224,6 @@ describe.sequential('unique key filters', () => {
       contextValue: {},
     });
 
-    expect(res.errors?.[0]?.message).toContain('Field "itemId_locationId" is not defined');
+    expect(res.errors?.[0]?.message).toMatch(unknownInputField('itemId_locationId'));
   });
 });

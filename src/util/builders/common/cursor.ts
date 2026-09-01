@@ -3,7 +3,7 @@
 
 import type { Table } from 'drizzle-orm';
 import { and, eq, getColumns, gt, isNotNull, isNull, lt, or, type SQL, sql } from 'drizzle-orm';
-import type { ResolveTree } from 'graphql-parse-resolve-info';
+import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { drizzleError } from './errors.ts';
 import type { OrderNullsOption } from './order-by.ts';
 import { orderByEntries, orderExpressions } from './order-by.ts';

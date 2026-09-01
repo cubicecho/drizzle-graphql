@@ -13,8 +13,20 @@ jobs:
   # `graphql-scalars` is a peer dependency whose range admits both majors, and a lockfile can
   # only pin one of them. The job above runs against the pinned one; this runs the same checks
   # against the other, so the range stays something we test rather than something we assert.
-  # It costs runner minutes, not wall clock — the two jobs run side by side.
+  # It costs runner minutes, not wall clock — the jobs run side by side.
   checks-graphql-scalars-v1:
     uses: ./.github/workflows/checks.yaml
     with:
       graphql-scalars: ^1.25.0
+
+  # Same argument for `graphql`, whose peer range has had no upper bound since the resolve-info
+  # parser was vendored in. The lockfile pins 16 — deliberately, via a `^16` devDependency that
+  # exists only to stop npm's peer auto-install floating an unbounded range up to the newest
+  # major — so the default leg keeps testing 16, which leaves 17 tested only here. This is
+  # the leg that would catch graphql 17 changing the resolve-info shape out from under the
+  # vendored parser, and it type-checks too: 17 brands its type classes, so a `GraphQLNonNull`
+  # handed somewhere a nullable type is expected is an error there and not under 16.
+  checks-graphql-17:
+    uses: ./.github/workflows/checks.yaml
+    with:
+      graphql: ^17.0.0

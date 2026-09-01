@@ -1831,6 +1831,19 @@ image, a stored value the scalar transporting it cannot represent, is
 `DRIZZLE_UNREPRESENTABLE_VALUE`; it says the data is out of range, not that the request was
 wrong.
 
+An `update`'s `set` giving a `NOT NULL` column an explicit `null` is `DRIZZLE_NOT_NULL`, and the
+error names the column. Every field of an update input is nullable — that is what makes a partial
+`set` possible — so the nullability says nothing about the column, and an update has no default to
+fall back on: `null` there can only mean "write null". Nothing is written, including the rest of
+the `set`. To leave a column alone, omit it.
+
+An **insert** reads the same `null` the other way, and is unchanged. A `NOT NULL` column's field
+on a create input is non-null unless the database, drizzle, or a nested `create` can fill it in,
+so the only nulls that reach a resolver are ones the schema offered as "I am not supplying this" —
+and they let the default apply, which is what makes `id: $id` with a null variable insert a new
+row. A `NOT NULL` column with nothing to fill it is rejected while GraphQL coerces the request.
+Upserts take the create input, so they follow the insert rule.
+
 The `drizzle` block is only on errors raised from inside a field. An argument rejected while
 GraphQL coerces the request — a `BigInt` variable that is not an integer, say — is rejected
 before any resolver runs, so it carries its `code` but no `drizzle` and no `path`.

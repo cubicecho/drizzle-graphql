@@ -3,7 +3,7 @@
 
 import type { Table } from 'drizzle-orm';
 import { is, One } from 'drizzle-orm';
-import type { ResolveTree } from 'graphql-parse-resolve-info';
+import type { ResolveTree } from '../../parse-resolve-info.ts';
 import type { ProcessedTableSelectArgs, TableNamedRelations, TableSelectArgs } from '../types.ts';
 import { isCursorFieldSelected } from './cursor.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
@@ -50,7 +50,7 @@ export const extractRelationsParamsInner = (
     // The relation field resolves to the target table's own type, e.g. "Posts" not "UsersPostsRelation".
     const relTypeName = resolveObjectTypeName(targetTableName, typeNameMapper, resolveName);
     // Look up by field name OR by alias (when the caller uses an alias for the relation).
-    // graphql-parse-resolve-info keys fieldsByTypeName entries by alias.
+    // The parsed tree keys fieldsByTypeName entries by response key, which is the alias.
     const field = baseField[relName] ?? Object.values(baseField).find((f) => (f as ResolveTree).name === relName);
     if (!field) {
       continue;

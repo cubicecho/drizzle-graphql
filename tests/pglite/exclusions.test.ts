@@ -12,6 +12,7 @@ import {
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { buildSchema, type SchemaExclusions } from '@/index';
 import * as schema from '../schema/pg';
+import { unknownInputField } from '../util/validation-messages';
 import { setupTables } from './common';
 
 const DATA_DIR = `./tests/.temp/pgdata-exclusions-${Date.now()}`;
@@ -171,7 +172,7 @@ describe.sequential('schema exclusions', () => {
       expect(selected.errors?.[0]?.message).toMatch(/Cannot query field "content"/);
 
       const filtered = await run(gqlSchema, `{ posts(where: { content: { eq: "1MESSAGE" } }) { id } }`);
-      expect(filtered.errors?.[0]?.message).toMatch(/Field "content" is not defined/);
+      expect(filtered.errors?.[0]?.message).toMatch(unknownInputField('content'));
     });
 
     it('leaves the rest of the table working, including inserts', async () => {

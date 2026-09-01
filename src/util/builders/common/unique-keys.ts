@@ -13,7 +13,7 @@ import { GraphQLInputObjectType, GraphQLNonNull } from 'graphql';
 import { capitalize } from '../../case-ops/index.ts';
 import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
 import { drizzleColumnToGraphQLType } from '../../type-converter/index.ts';
-import type { ConvertedInputColumn } from '../../type-converter/types.ts';
+import type { ConvertedInputColumn, NullableConvertedColumnType } from '../../type-converter/types.ts';
 import { drizzleError } from './errors.ts';
 import { visibleColumns } from './exclusions.ts';
 import type { TypeNameMapper } from './naming.ts';
@@ -82,8 +82,11 @@ export const generateUniqueKeyFilterFields = (
           members.map((member) => [
             member,
             {
+              // `forceNullable` is on, so the conversion never returns an already-wrapped type;
+              // the cast is only to narrow the union graphql 17 refuses to wrap.
               type: new GraphQLNonNull(
-                drizzleColumnToGraphQLType(columns[member]!, member, tableName, true, false, true).type,
+                drizzleColumnToGraphQLType(columns[member]!, member, tableName, true, false, true)
+                  .type as NullableConvertedColumnType<true>,
               ),
             },
           ]),

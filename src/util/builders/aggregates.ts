@@ -27,11 +27,11 @@ import {
   GraphQLNonNull,
   GraphQLObjectType,
 } from 'graphql';
-import type { ResolveTree } from 'graphql-parse-resolve-info';
-import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import { getOrCreateLoader } from '../batch-loader/index.ts';
 import { capitalize } from '../case-ops/index.ts';
 import { remapToGraphQLCore } from '../data-mappers/index.ts';
+import type { ResolveTree } from '../parse-resolve-info.ts';
+import { parseResolveInfo } from '../parse-resolve-info.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type { ConvertedColumn } from '../type-converter/types.ts';
 import {

@@ -6,7 +6,7 @@ import { type GraphQLInputObjectType, type GraphQLSchema, graphql } from 'graphq
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildSchema, drizzleExecutorKey } from '@/index';
 
-// `name` is NOT NULL so a `set: { name: null }` entry can force a mid-batch failure.
+// `name` is NOT NULL so a `set: { name: null }` entry can force an entry to fail.
 const Items = pgTable('items', {
   id: integer('id').primaryKey(),
   name: text('name').notNull(),
@@ -193,7 +193,10 @@ describe.sequential('updateMany: behavior', () => {
       ],
     });
 
-    expect(result.errors).toBeDefined();
+    // Named, so the batch is rejected for the reason it looks like: before the null on a
+    // NOT NULL column was refused outright, this dropped the key and the entry failed as an
+    // empty `set` instead, which is the same colour of failure for a different reason.
+    expect(result.errors?.[0]?.extensions?.['code']).toBe('DRIZZLE_NOT_NULL');
     // The first entry's update was rolled back with the failing one.
     expect(await items()).toEqual([
       { id: 1, name: 'One', qty: 1, category: 'a' },

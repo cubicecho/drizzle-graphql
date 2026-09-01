@@ -23,6 +23,7 @@ drizzle-graphql/
 │       │   └── types.ts             # Builder-specific types
 │       ├── case-ops/index.ts        # String case utilities
 │       ├── data-mappers/index.ts    # Maps Drizzle row data to GraphQL types
+│       ├── parse-resolve-info.ts    # Vendored resolve-info walker (see Peer dependencies)
 │       └── type-converter/          # Converts Drizzle column types to GraphQL scalars
 ├── tests/
 │   ├── schema/                      # Drizzle schema fixtures for tests
@@ -30,7 +31,7 @@ drizzle-graphql/
 │   │   ├── mysql.ts                 # MySQL test schema
 │   │   └── sqlite.ts                # SQLite test schema
 │   ├── pglite/                      # PGlite integration tests (no Docker required)
-│   ├── util/                        # Test helpers (GraphQL query client)
+│   ├── util/                        # Test helpers (GraphQL query client, message matchers)
 │   ├── pg.test.ts                   # PostgreSQL integration tests (Docker)
 │   ├── pg-custom.test.ts            # PostgreSQL custom resolver tests (Docker)
 │   ├── mysql.test.ts                # MySQL integration tests (Docker)
@@ -40,7 +41,7 @@ drizzle-graphql/
 ├── dist/                            # Build output
 ├── .github/workflows/
 │   ├── checks.yaml              # Lint + typecheck + full suite; called by both below
-│   ├── ci.yaml                  # Checks on every PR, once per graphql-scalars major
+│   ├── ci.yaml                  # Checks on every PR, once per graphql / graphql-scalars major
 │   └── release.yaml             # Checks, then semantic-release, on push to main
 ├── .releaserc.json                  # semantic-release config
 ├── biome.json                       # Linter + formatter config
@@ -149,6 +150,7 @@ npx vitest run -t "some test name"     # filter by name
 - Use `beforeEach` / `afterEach` for table setup and teardown between tests
 - Create a fresh `Context` object per test file for isolation
 - Use `describe.sequential` when tests share mutable database state
+- Never assert a graphql validation error verbatim: 16 and 17 word them differently and the suite runs against both. `tests/util/validation-messages.ts` has matchers for the ones already hit; add to it rather than pinning a sentence
 
 ### Test types
 | Test | Infrastructure | Speed |
@@ -328,9 +330,17 @@ The `exports` field in `package.json` is the authoritative routing table. Never 
 The devDependency is on `^7.0.2`. Do not move the build back to `tsup`: tsup 8.5.1 bundles a vendored `rollup-plugin-dts` 6.1.1 that throws `Cannot read properties of undefined (reading 'useCaseSensitiveFileNames')` against a TS 7 compiler, so `dist/*.d.ts` never gets written. An npm `override` cannot reach a copy compiled into `tsup/dist/rollup.js`. tsdown builds declarations through `rolldown-plugin-dts`, which peers TypeScript 7 directly. tsdown does warn that the TS 7 API is still experimental; that warning is expected, not a failure.
 
 ### Peer dependencies
-`drizzle-orm`, `graphql`, `graphql-parse-resolve-info`, and `graphql-scalars` are peer dependencies — they must be provided by the consumer. The library has zero production runtime dependencies except `pluralize`.
+`drizzle-orm`, `graphql`, and `graphql-scalars` are peer dependencies — they must be provided by the consumer. The library has zero production runtime dependencies except `pluralize`.
 
-`graphql` is peered at `>=16.3.0 <17`, and the upper bound is not caution. `graphql-parse-resolve-info` — also a peer here, and used on every resolver — peers `graphql` at `^16.3.0` with no 17 entry, so a consumer on graphql 17 cannot get a working install of this library's own required peer; npm refuses the combination outright. Lift the bound when `graphql-parse-resolve-info` ships 17 support.
+`graphql` is peered at `>=16.4.0`, with no upper bound: both 16 and 17 work, and CI runs the whole suite against each. It used to be capped below 17, because `graphql-parse-resolve-info` was a fourth peer, used on every resolver, and peered `graphql` at `^16.3.0` with no 17 entry. That package is now vendored — `src/util/parse-resolve-info.ts` — and the peer is gone.
+
+Vendoring was not impatience. Upstream is dead (4.14.1, unchanged since 2025-04-27, and its own peer range stops at 16), and the package fails under 17 without saying so. It is CommonJS, so it reaches graphql through `require`, and it asks "does this field have sub-selections?" with an `instanceof` against whatever that `require` returned. graphql 17 ships several builds of itself from one package — a `development` export condition routes to a whole second copy under `__dev__/`, and `.js`/`.mjs` sit behind the format conditions — so any loader that resolves the CommonJS graph differently from the ESM one hands it a *different* instance of the same version than the one that built the schema. The `instanceof` then answers "no", the walk returns `fieldsByTypeName: {}`, and every resolver reads a selection of nothing: schema build and validation pass, and the first query dies in `extractSelectedColumnsFromTree` on `Object.entries(undefined)`. Plain `node` happens to resolve both graphs to one instance, so the failure looks intermittent rather than absent — under `tsx` it reproduces on this repo's own schema, and adding `--conditions=development` escalates it to a thrown `Cannot use GraphQLNonNull "[Users!]!" from another module or realm`. The vendored parser asks the same questions structurally (`getFields` / `getTypes` / `ofType`), so it cannot disagree with whichever instance is executing.
+
+The floor is 16.4.0, not 16.3.0, and that one minor is deliberate: the parser uses graphql's own `getArgumentValues` rather than re-deriving argument coercion, and 16.3.0 is the last release that does not re-export it from the package root. It is reachable there only at the internal `graphql/execution/values` path — exactly the kind of deep import that produced the problem above. 16.4.0 is April 2022; re-deriving spec-correct coercion for variables, defaults, enums, input objects and list/non-null wrapping to reach it would be trading a real correctness risk for a theoretical install.
+
+`graphql` is also carried as a `^16` devDependency even though it is a peer. Without it npm's peer auto-install resolves the unbounded range to the newest major and the lockfile floats to 17, which would leave 16 — the major most consumers are on — untested. The lockfile pins 16; the `checks-graphql-17` leg in `ci.yaml` covers the other side.
+
+Under Vitest the same split is why `vitest.config.ts` aliases `graphql` to `createRequire(import.meta.url).resolve('graphql')` — the one file Node itself would load. Vitest transforms the repo's own sources but leaves `graphql-scalars` and `graphql-yoga` to Node, and Vite and Node disagree about which of the several files the package ships is the entry: under 16 there is no `exports` map, so Vite follows `module` to `index.mjs` while Node follows `main` to `index.js`; under 17 there is one, and it routes a `development` condition — Vite sets it, Node does not — to a whole second copy under `__dev__/`. Either way the two sides end up holding different instances and every schema dies on `Cannot use GraphQLScalarType "JSON" from another module or realm`. The alias used to be the hard-coded `graphql/index.js`, which was right for 16 by luck and wrong for 17; resolving it makes it right for both. This is a harness artifact — plain Node has one resolver for the whole graph and never sees it.
 
 `drizzle-orm` is peered at `^1.0.0-rc.4`, and the floor is deliberate rather than cautious: rc.4 renamed `MySqlDatabase` to `MySqlAsyncDatabase` and `BaseSQLiteDatabase` to `SQLiteAsyncDatabase`, dropped the MySQL `mode` option, and finished removing the drizzle constructor's separate `schema` argument, so rc.2 and rc.3 genuinely do not work. Widening the floor back means restoring those names. Note also that a prerelease range admits drizzle's snapshot builds — `1.0.0-rc.4-5d5b77c` sorts *above* `1.0.0-rc.4`, because an alphanumeric prerelease identifier outranks a numeric one — so a consumer on `^1.0.0-rc.4` can land on a build nobody tested. That is why the devDependency is pinned exactly — `npm update` against the caret range really does pull the latest snapshot, and the lockfile has to stay on the version CI runs.
 
