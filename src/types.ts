@@ -23,7 +23,7 @@ import type {
   GraphQLSchema,
 } from 'graphql';
 
-import type { DerivedTypeNameMapper, WriteHooks } from './util/builders/common.ts';
+import type { DerivedTypeNameMapper, TypeNameMapper, WriteHooks } from './util/builders/common.ts';
 import type {
   Filters,
   GetRemappedTableDataType,
@@ -1000,15 +1000,16 @@ export type SoftDeleteColumn =
     };
 
 /**
- * The write-hook and generated-type-naming types, re-exported from the builders that define
- * them so a consumer can type a hook or a name mapper without reaching into the package's
- * internals. See {@link BuildSchemaConfig.onWrite} and
+ * The write-hook and type-naming types, re-exported from the builders that define them so a
+ * consumer can type a hook or a name mapper without reaching into the package's internals.
+ * See {@link BuildSchemaConfig.onWrite}, {@link BuildSchemaConfig.typeNameMapper} and
  * {@link BuildSchemaConfig.derivedTypeNameMapper}.
  */
 export type {
   DerivedTypeNameMapper,
   GeneratedTypeInfo,
   GeneratedTypeKind,
+  TypeNameMapper,
   WriteHook,
   WriteHookPayload,
   WriteHookPositions,
@@ -1483,8 +1484,12 @@ export type BuildSchemaConfig = {
    *
    * The same function is exported as `singularizeMapper` for wrapping — e.g. to keep one
    * table's names as they are: `(t) => (t === 'audit_log' ? undefined : singularizeMapper(t))`.
+   *
+   * The function half is the exported {@link TypeNameMapper}, so a mapper can be declared once
+   * and handed both to `buildSchema` and to `selectionToWith` / `resolveSelection`, which need
+   * the same naming rule to read a selection back out of a schema built with it.
    */
-  typeNameMapper?: 'singularize' | ((tableName: string) => { singular: string; plural: string } | undefined);
+  typeNameMapper?: 'singularize' | TypeNameMapper;
   /**
    * Renames the types generated *around* a table — the filter, the write inputs, the
    * order-by, the aggregate family, the group-by types, the conflict input, the shared scalar
