@@ -5,6 +5,13 @@ name: Checks
 on:
   workflow_call:
     inputs:
+      graphql:
+        description: >-
+          Version range to install over the lockfile's, so the peer range can be checked
+          against a major the lockfile does not pin. Empty means use the lockfile.
+        type: string
+        required: false
+        default: ''
       graphql-scalars:
         description: >-
           Version range to install over the lockfile's, so the peer range can be checked
@@ -35,7 +42,18 @@ jobs:
         run: npm ci
 
       # Not saved: the lockfile stays the source of truth for everything else, and only
-      # this one package is swapped for the run.
+      # the package a leg names is swapped for the run.
+      #
+      # graphql 17 needs no extra setup here, but it is worth knowing why: it routes a
+      # `development` export condition to a second complete copy of itself, and Vite sets that
+      # condition while Node does not — so the repo's sources and `graphql-scalars` can end up
+      # holding different instances of one installed package, surfacing as `Cannot use
+      # GraphQLScalarType "JSON" from another module or realm`. `vitest.config.ts` aliases
+      # `graphql` to the file Node itself resolves, which settles it for both majors.
+      - name: Install graphql ${{ inputs.graphql }}
+        if: inputs.graphql != ''
+        run: npm install --no-save graphql@"${{ inputs.graphql }}"
+
       - name: Install graphql-scalars ${{ inputs.graphql-scalars }}
         if: inputs.graphql-scalars != ''
         run: npm install --no-save graphql-scalars@"${{ inputs.graphql-scalars }}"
