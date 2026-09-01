@@ -10,8 +10,6 @@
 import type { Table } from 'drizzle-orm';
 import type { RelationalQueryBuilder } from 'drizzle-orm/mysql-core/query-builders/query';
 import type { GraphQLInputObjectType } from 'graphql';
-import type { ResolveTree } from 'graphql-parse-resolve-info';
-import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import {
   applyLimitPolicy,
   type DrizzleErrorContext,
@@ -31,6 +29,8 @@ import {
   withDefaultOrderBy,
   withErrorContext,
 } from '../builders/common.ts';
+import type { ResolveTree } from '../parse-resolve-info.ts';
+import { parseResolveInfo } from '../parse-resolve-info.ts';
 import { missingQueryBuilderError } from './errors.ts';
 import type { CreatedResolver, TableNamedRelations, TableSelectArgs } from './types.ts';
 

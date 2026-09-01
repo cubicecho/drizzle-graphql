@@ -14,14 +14,14 @@ import type { Table } from 'drizzle-orm';
 import type { PgAsyncDatabase } from 'drizzle-orm/pg-core';
 import type { SQLiteAsyncDatabase } from 'drizzle-orm/sqlite-core';
 import { type GraphQLFieldConfigArgumentMap, type GraphQLInputObjectType, GraphQLList, GraphQLNonNull } from 'graphql';
-import type { ResolveTree } from 'graphql-parse-resolve-info';
-import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import {
   remapFromGraphQLArrayInput,
   remapFromGraphQLSingleInput,
   remapToGraphQLArrayOutput,
   remapToGraphQLSingleOutput,
 } from '../data-mappers/index.ts';
+import type { ResolveTree } from '../parse-resolve-info.ts';
+import { parseResolveInfo } from '../parse-resolve-info.ts';
 import {
   applyContextValues,
   applyContextValuesAll,
