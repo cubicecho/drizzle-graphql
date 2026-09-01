@@ -1,3 +1,9 @@
+## [9.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v9.0.0...v9.1.0) (2026-09-01)
+
+### Features
+
+* export the type-naming hook types from the package root ([55af5df](https://github.com/cubicecho/drizzle-graphql/commit/55af5df18ebf714158bc57c86e90040d627ce889)), closes [#116](https://github.com/cubicecho/drizzle-graphql/issues/116)
+
 ## [9.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v8.2.1...v9.0.0) (2026-08-29)
 
 ### ⚠ BREAKING CHANGES
