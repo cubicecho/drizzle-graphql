@@ -1,3 +1,10 @@
+## [9.1.1](https://github.com/cubicecho/drizzle-graphql/compare/v9.1.0...v9.1.1) (2026-09-01)
+
+### Bug Fixes
+
+* **build:** pack from the root, and stop copying the manifest into dist ([b9fd7a2](https://github.com/cubicecho/drizzle-graphql/commit/b9fd7a2d0da0132f4be7e3e345eaa2f8f89f8c12)), closes [#123](https://github.com/cubicecho/drizzle-graphql/issues/123)
+* **types:** point the CJS types condition at the file the build emits ([aece7a6](https://github.com/cubicecho/drizzle-graphql/commit/aece7a6cfeb78f63c16c9c07b159c77b6be9929d)), closes [#124](https://github.com/cubicecho/drizzle-graphql/issues/124)
+
 ## [9.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v9.0.0...v9.1.0) (2026-09-01)
 
 ### Features
