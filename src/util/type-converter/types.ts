@@ -113,6 +113,27 @@ export type SchemaDocs = {
   deprecateColumn?: ColumnDeprecator;
 };
 
+/**
+ * The nullable half of a {@link ConvertedColumn} `type` union — what `new GraphQLNonNull(...)`
+ * accepts.
+ *
+ * graphql 17 brands its type classes, so its `GraphQLNonNull` constructor rejects an argument
+ * whose type still admits `GraphQLNonNull` members. graphql 16's `GraphQLList` and
+ * `GraphQLNonNull` are structurally identical, so the same call type-checked there by accident.
+ * A call site that knows it holds an unwrapped column type narrows to this before wrapping.
+ *
+ * Spelled out member by member rather than derived as `Exclude<..., GraphQLNonNull<any>>`:
+ * under graphql 16 that would strip the `GraphQLList` members too, for the same reason.
+ */
+export type NullableConvertedColumnType<TIsInput extends boolean = false> =
+  | GraphQLScalarType
+  | GraphQLEnumType
+  | GraphQLList<GraphQLScalarType>
+  | GraphQLList<GraphQLNonNull<GraphQLScalarType>>
+  | (TIsInput extends true
+      ? GraphQLInputObjectType | GraphQLList<GraphQLInputObjectType>
+      : GraphQLObjectType | GraphQLList<GraphQLObjectType>);
+
 export type ConvertedColumn<TIsInput extends boolean = false> = {
   type:
     | GraphQLScalarType
