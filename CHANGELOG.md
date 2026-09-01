@@ -1,3 +1,34 @@
+## [10.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v9.1.1...v10.0.0) (2026-09-01)
+
+### ⚠ BREAKING CHANGES
+
+* **deps:** the `graphql` peer range is now `>=16.4.0`. It admits graphql
+17, which the previous range excluded, but it also drops graphql 16.3.0 — the
+vendored resolve-info parser calls `getArgumentValues`, which 16.3.0 exposes
+only at an internal path. Consumers on 16.3.0 must move to 16.4.0 or later.
+`graphql-parse-resolve-info` is no longer a peer dependency and can be removed
+from consumer installs.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01DbQroMwKrEdCsANtuCn4Gv
+* an update whose `set` gives a `NOT NULL` column an explicit
+`null` now fails with `DRIZZLE_NOT_NULL` and writes nothing, where it
+previously dropped the key and carried on. A client that serializes every
+field of a form — sending `null` for the ones it is not changing — used to get
+a partial write reported as a success and now gets an error on every such
+update. To leave a column alone, omit it from the `set`; `null` means "write
+null". Inserts, upserts and nested `create`s are unchanged: an explicit `null`
+for a `NOT NULL` column that has a default still lets the default apply.
+
+### Features
+
+* **deps:** support graphql 17 and drop the graphql-parse-resolve-info peer ([66838e4](https://github.com/cubicecho/drizzle-graphql/commit/66838e45f8c166a1897551e7b168ea94f20947fd))
+* vendor the resolve-info parser ([98b54ae](https://github.com/cubicecho/drizzle-graphql/commit/98b54aeae8dcc6a9fd08b5e9cf312152025e698a))
+
+### Bug Fixes
+
+* refuse an update that sets a NOT NULL column to null ([5e1be43](https://github.com/cubicecho/drizzle-graphql/commit/5e1be4347f5b07d0abdcb4f0b9c1f3941c23fd59)), closes [#119](https://github.com/cubicecho/drizzle-graphql/issues/119)
+
 ## [9.1.1](https://github.com/cubicecho/drizzle-graphql/compare/v9.1.0...v9.1.1) (2026-09-01)
 
 ### Bug Fixes
