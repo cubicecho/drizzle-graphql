@@ -88,6 +88,8 @@ export type {
   IdentifiedRows,
 } from './util/extensions.ts';
 export { drizzleExtension, identifyRows, isDrizzleFieldExtension } from './util/extensions.ts';
+export type { FieldsByTypeName, ParseResolveInfoOptions, ResolveTree } from './util/parse-resolve-info.ts';
+export { parseResolveInfo } from './util/parse-resolve-info.ts';
 export {
   GraphQLBigIntString,
   GraphQLDate,

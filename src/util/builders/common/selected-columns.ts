@@ -3,7 +3,7 @@
 
 import type { Column, Table } from 'drizzle-orm';
 import { getColumns } from 'drizzle-orm';
-import type { ResolveTree } from 'graphql-parse-resolve-info';
+import type { ResolveTree } from '../../parse-resolve-info.ts';
 import type { SelectedColumnsRaw, SelectedSQLColumns, TableNamedRelations } from '../types.ts';
 import { extractRelationJoinColumns } from './relations.ts';
 

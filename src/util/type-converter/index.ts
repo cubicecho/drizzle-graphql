@@ -30,6 +30,7 @@ import type {
   ColumnTypeMapper,
   ConvertedColumn,
   EnumNameMapper,
+  NullableConvertedColumnType,
   ScalarOverride,
   ScalarOverridesConfig,
 } from './types.ts';
@@ -384,7 +385,9 @@ export const drizzleColumnToGraphQLType = <TColumn extends Column, TIsInput exte
   }
   if (column.notNull && !(defaultIsNullable && (column.hasDefault || column.defaultFn))) {
     return {
-      type: new GraphQLNonNull(typeDesc.type),
+      // Neither branch above wraps, so this is the only wrapper the column ever gets; the cast
+      // narrows the declared union to the nullable half graphql 17's constructor accepts.
+      type: new GraphQLNonNull(typeDesc.type as NullableConvertedColumnType<boolean>),
       typeLabel: typeDesc.typeLabel,
     } as ConvertedColumn<TIsInput>;
   }

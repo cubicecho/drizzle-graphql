@@ -24,7 +24,7 @@ import {
   GraphQLUUID,
 } from '../../scalars/index.ts';
 import { drizzleColumnToGraphQLType, getColumnScalarOverride } from '../../type-converter/index.ts';
-import type { ConvertedColumn } from '../../type-converter/types.ts';
+import type { ConvertedColumn, NullableConvertedColumnType } from '../../type-converter/types.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
 import { sharedType, type TypeNameResolver } from './type-names.ts';
 
@@ -335,7 +335,9 @@ export const generateColumnFilterValues = (
     return cached;
   }
 
-  const colType = columnGraphQLType.type;
+  // Built with `forceNullable`, so the value is never a `GraphQLNonNull` — only the union is
+  // wide enough to say so, and graphql 17's branded constructor cares.
+  const colType = columnGraphQLType.type as NullableConvertedColumnType<true>;
   const colArr = new GraphQLList(new GraphQLNonNull(colType));
 
   // Uuid and numeric filters omit the string pattern operators

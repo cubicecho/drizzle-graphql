@@ -5,8 +5,8 @@ import type { Column, Table } from 'drizzle-orm';
 import { type SQL, sql } from 'drizzle-orm';
 import type { GraphQLFieldConfigArgumentMap } from 'graphql';
 import { GraphQLBoolean, GraphQLInputObjectType, GraphQLNonNull } from 'graphql';
-import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { capitalize } from '../../case-ops/index.ts';
+import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { remapUpdateInput } from '../field-updates.ts';
 // Type-only: the nested-write module imports this one at runtime, so the dependency has to
 // stay one-directional. The implementation is injected by the dialect builder.

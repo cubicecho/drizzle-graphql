@@ -3,8 +3,8 @@
 
 import type { Table } from 'drizzle-orm';
 import { and, inArray, type SQL, sql } from 'drizzle-orm';
-import type { ResolveTree } from 'graphql-parse-resolve-info';
 import { remapToGraphQLArrayOutput, remapToGraphQLSingleOutput } from '../../data-mappers/index.ts';
+import type { ResolveTree } from '../../parse-resolve-info.ts';
 import type { ProcessedTableSelectArgs, TableNamedRelations } from '../types.ts';
 import type { CursorOrderEntry, NullOrdering } from './cursor.ts';
 import {

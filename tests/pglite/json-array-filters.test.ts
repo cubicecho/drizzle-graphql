@@ -6,6 +6,7 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { type GraphQLInputObjectType, type GraphQLSchema, graphql } from 'graphql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildSchema } from '@/index';
+import { unknownInputField } from '../util/validation-messages';
 
 // ── Schema covering json + int/text array columns ────────────────────────────
 const Items = pgTable('items', {
@@ -153,7 +154,7 @@ describe.sequential('filter input shape', () => {
     // (whole-array IN) and covered by the string-array regression tests for issue #15.
     for (const where of ['{ meta: { like: "x" } }', '{ nums: { lt: [1] } }']) {
       const res = await run(`{ items(where: ${where}) { id } }`);
-      expect(res.errors?.[0]?.message).toMatch(/is not defined by type/);
+      expect(res.errors?.[0]?.message).toMatch(unknownInputField(where.includes('like') ? 'like' : 'lt'));
     }
   });
 });

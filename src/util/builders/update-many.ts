@@ -12,8 +12,6 @@
 import type { Table } from 'drizzle-orm';
 import type { GraphQLFieldConfigArgumentMap, GraphQLInputObjectType } from 'graphql';
 import { GraphQLList, GraphQLNonNull } from 'graphql';
-import type { ResolveTree } from 'graphql-parse-resolve-info';
-import { parseResolveInfo } from 'graphql-parse-resolve-info';
 import {
   drizzleError,
   eagerLoadMutationRelations,
@@ -31,6 +29,8 @@ import {
   writeResolver,
 } from '../builders/common.ts';
 import { remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
+import type { ResolveTree } from '../parse-resolve-info.ts';
+import { parseResolveInfo } from '../parse-resolve-info.ts';
 import { remapUpdateInput } from './field-updates.ts';
 import { mergedOps, type NestedWriteRuntime } from './nested-writes.ts';
 import type { UpdateManyGenerator } from './schema-data.ts';

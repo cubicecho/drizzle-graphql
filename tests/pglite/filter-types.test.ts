@@ -5,6 +5,7 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { type GraphQLInputObjectType, type GraphQLSchema, graphql } from 'graphql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildSchema } from '@/index';
+import { unknownInputField } from '../util/validation-messages';
 
 // ── Schema mixing id-named columns of different data types ────────────────────
 // The filter a column gets must follow its data type, never its name: a
@@ -160,7 +161,7 @@ describe.sequential('filter selection by column type', () => {
     });
 
     expect(result.errors).toBeDefined();
-    expect(result.errors![0]!.message).toMatch(/field "like" is not defined/i);
+    expect(result.errors![0]!.message).toMatch(unknownInputField('like'));
   });
 
   it('still filters an integer id column by equality and range at runtime', async () => {

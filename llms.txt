@@ -9,7 +9,7 @@ Key facts:
 - `buildSchema(db, config?)` returns `{ schema, entities }`.
 - `schema` is a `graphql` `GraphQLSchema` — usable directly by any server that consumes one (e.g. GraphQL Yoga, Apollo).
 - `entities` is `{ queries, mutations, inputs, types, fieldResolvers }` for building a custom schema by hand.
-- Peer dependencies: `drizzle-orm ^1.0.0-rc.2`, `graphql >=16.3.0`, `graphql-parse-resolve-info ^4.13.0`, `graphql-scalars ^1.25.0`.
+- Peer dependencies: `drizzle-orm ^1.0.0-rc.4`, `graphql >=16.4.0` (16 and 17 both supported), `graphql-scalars ^1.25.0 || ^2.0.0`.
 
 ## Quick start
 

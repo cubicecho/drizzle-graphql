@@ -3,7 +3,6 @@ import { getTableConfig as getMySqlTableConfig, MySqlAsyncDatabase } from 'drizz
 import { getTableConfig as getPgTableConfig, PgAsyncDatabase } from 'drizzle-orm/pg-core';
 import { getTableConfig as getSQLiteTableConfig, SQLiteAsyncDatabase } from 'drizzle-orm/sqlite-core';
 import type { GraphQLResolveInfo } from 'graphql';
-import { parseResolveInfo, type ResolveTree } from 'graphql-parse-resolve-info';
 import type { AnyDrizzleDB } from '../types.ts';
 import {
   attachTargetPrimaryKeys,
@@ -19,6 +18,7 @@ import {
   type TypeNameResolver,
 } from './builders/common.ts';
 import type { TableNamedRelations } from './builders/types.ts';
+import { parseResolveInfo, type ResolveTree } from './parse-resolve-info.ts';
 
 /**
  * Everything the translation needs about a drizzle instance: the tables it holds, the
