@@ -51,7 +51,7 @@ Automatically create GraphQL schema or customizable schema config fields from Dr
                 // Create a custom one
                 customUsers: {
                     // You can reuse and customize types from original schema
-                    type: new GraphQLList(new GraphQLNonNull(entities.types.UsersItem)),
+                    type: new GraphQLList(new GraphQLNonNull(entities.types.Users)),
                     args: {
                         // You can reuse inputs as well
                         where: {
@@ -79,11 +79,19 @@ Automatically create GraphQL schema or customizable schema config fields from Dr
     const yoga = createYoga({
         schema
     })
+    const server = createServer(yoga)
 
     server.listen(4000, () => {
         console.info('Server is running on http://localhost:4000/graphql')
     })
     ```
+
+    The keys on `entities` follow the naming rules below: with the defaults, table `users`
+    gives type `entities.types.Users`, inputs `entities.inputs.UsersFilters` /
+    `UsersOrderBy` / `CreateUsersInput` / `UpdateUsersInput`, queries
+    `entities.queries.users` / `usersSingle`, and mutations
+    `entities.mutations.createUsers` / `updateUsers` / `deleteUsers`. A `typeNameMapper`
+    changes these keys too, so a composed schema has to use the mapped names.
 
 ## Naming the generated types and fields
 
