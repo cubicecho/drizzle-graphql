@@ -1,5 +1,16 @@
 node_modules
 dist
+
+# The build writes into dist/ and nowhere else, so root-level bundle output is always
+# stale. A tracked copy lived here until it was removed; these are anchored to the repo
+# root so a stray build cannot quietly re-add it, and so they never shadow src/ or dist/.
+/index.js
+/index.cjs
+/index.d.ts
+/index.d.cts
+/index.js.map
+/index.cjs.map
+
 *.sqlite
 drizzle.config.ts
 *.tgz
