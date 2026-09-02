@@ -82,40 +82,63 @@ const relationJoinColumns = (
   return needed;
 };
 
+/**
+ * The column the extractors fall back to when a selection names none of its own — a query that
+ * asked only for `__typename`, or only for relation fields. The relational query builder still
+ * needs at least one column, and some SQLite column types crash it when they are the only one
+ * selected, so a column of any other type is preferred and the first column is the last resort.
+ */
+const fallbackColumnName = (tableColumns: Record<string, Column>): string => {
+  const columnKeys = Object.entries(tableColumns);
+  return columnKeys.find(([, column]) => !rqbCrashTypes.includes(column.columnType))?.[0] ?? columnKeys[0]![0];
+};
+
+/**
+ * Property names of the columns a selection reads: the ones it names itself, plus the join
+ * columns its relation fields correlate on, plus the fallback when that leaves nothing.
+ */
+const selectedColumnNames = (
+  tree: Record<string, ResolveTree>,
+  table: Table,
+  selectionCtx: SelectionCtx | undefined,
+): string[] => {
+  const tableColumns = getColumns(table);
+  const names: string[] = [];
+
+  for (const fieldData of Object.values(tree)) {
+    if (!tableColumns[fieldData.name]) {
+      continue;
+    }
+
+    names.push(fieldData.name);
+  }
+
+  names.push(...relationJoinColumns(tree, table, selectionCtx));
+
+  if (!names.length) {
+    names.push(fallbackColumnName(tableColumns));
+  }
+
+  return names;
+};
+
+/** The requested columns as the relational query builder's `columns` map. */
 export const extractSelectedColumnsFromTree = (
   tree: Record<string, ResolveTree>,
   table: Table,
   selectionCtx?: SelectionCtx,
 ): Record<string, true> => {
-  const tableColumns = getColumns(table);
-
-  const treeEntries = Object.entries(tree);
-  const selectedColumns: SelectedColumnsRaw = [];
-
-  for (const [_fieldName, fieldData] of treeEntries) {
-    if (!tableColumns[fieldData.name]) {
-      continue;
-    }
-
-    selectedColumns.push([fieldData.name, true]);
-  }
-
-  for (const columnName of relationJoinColumns(tree, table, selectionCtx)) {
-    selectedColumns.push([columnName, true]);
-  }
-
-  if (!selectedColumns.length) {
-    const columnKeys = Object.entries(tableColumns);
-    const columnName =
-      columnKeys.find((e) => rqbCrashTypes.find((haram) => e[1].columnType !== haram))?.[0] ?? columnKeys[0]![0];
-
-    selectedColumns.push([columnName, true]);
-  }
+  const selectedColumns: SelectedColumnsRaw = selectedColumnNames(tree, table, selectionCtx).map((columnName) => [
+    columnName,
+    true,
+  ]);
 
   return Object.fromEntries(selectedColumns);
 };
 
 /**
+ * The same columns as a SQL select list.
+ *
  * Can't automatically determine column type on type level
  * Since drizzle table types extend eachother
  */
@@ -125,29 +148,10 @@ export const extractSelectedColumnsFromTreeSQLFormat = <TColType extends Column 
   selectionCtx?: SelectionCtx,
 ): Record<string, TColType> => {
   const tableColumns = getColumns(table);
-
-  const treeEntries = Object.entries(tree);
-  const selectedColumns: SelectedSQLColumns = [];
-
-  for (const [_fieldName, fieldData] of treeEntries) {
-    if (!tableColumns[fieldData.name]) {
-      continue;
-    }
-
-    selectedColumns.push([fieldData.name, tableColumns[fieldData.name]!]);
-  }
-
-  for (const columnName of relationJoinColumns(tree, table, selectionCtx)) {
-    selectedColumns.push([columnName, tableColumns[columnName]!]);
-  }
-
-  if (!selectedColumns.length) {
-    const columnKeys = Object.entries(tableColumns);
-    const columnName =
-      columnKeys.find((e) => rqbCrashTypes.find((haram) => e[1].columnType !== haram))?.[0] ?? columnKeys[0]![0];
-
-    selectedColumns.push([columnName, tableColumns[columnName]!]);
-  }
+  const selectedColumns: SelectedSQLColumns = selectedColumnNames(tree, table, selectionCtx).map((columnName) => [
+    columnName,
+    tableColumns[columnName]!,
+  ]);
 
   return Object.fromEntries(selectedColumns) as Record<string, TColType>;
 };
