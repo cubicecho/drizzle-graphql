@@ -1,11 +1,18 @@
 import type { Table } from 'drizzle-orm';
-import { getTableConfig, type SQLiteAsyncDatabase, SQLiteTable } from 'drizzle-orm/sqlite-core';
+import { type SQLiteAsyncDatabase, SQLiteTable, getTableConfig as sqliteTableConfig } from 'drizzle-orm/sqlite-core';
 
 import type { GeneratedEntities } from '../../types.ts';
-import { getPrimaryKeyPropNamesFromConfig, type TablesRelationalConfig } from '../builders/common.ts';
+import {
+  getPrimaryKeyPropNamesFromConfig,
+  memoizeTableConfig,
+  type TablesRelationalConfig,
+} from '../builders/common.ts';
 import { createSchemaDataGenerator } from './schema-data.ts';
 import type { SchemaGeneratorOptions } from './types.ts';
 import { createUpdateManyGenerator, type UpdateManyBatchRunner, type UpdateManyEntry } from './update-many.ts';
+
+/** The dialect's table config, cached per table — see {@link memoizeTableConfig}. */
+const getTableConfig = memoizeTableConfig(sqliteTableConfig);
 
 /** Primary-key property names for a SQLite table, including table-level composite keys. */
 const sqlitePrimaryKeyPropNames = (table: SQLiteTable): string[] =>

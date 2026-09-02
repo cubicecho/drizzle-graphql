@@ -1,10 +1,17 @@
 import type { Table } from 'drizzle-orm';
-import { getTableConfig, type PgAsyncDatabase, PgTable } from 'drizzle-orm/pg-core';
+import { type PgAsyncDatabase, PgTable, getTableConfig as pgTableConfig } from 'drizzle-orm/pg-core';
 import type { GeneratedEntities } from '../../types.ts';
-import { getPrimaryKeyPropNamesFromConfig, type TablesRelationalConfig } from '../builders/common.ts';
+import {
+  getPrimaryKeyPropNamesFromConfig,
+  memoizeTableConfig,
+  type TablesRelationalConfig,
+} from '../builders/common.ts';
 import { createSchemaDataGenerator } from './schema-data.ts';
 import type { SchemaGeneratorOptions } from './types.ts';
 import { createUpdateManyGenerator } from './update-many.ts';
+
+/** The dialect's table config, cached per table — see {@link memoizeTableConfig}. */
+const getTableConfig = memoizeTableConfig(pgTableConfig);
 
 /** Primary-key property names for a PG table, including table-level composite keys. */
 const pgPrimaryKeyPropNames = (table: PgTable): string[] => getPrimaryKeyPropNamesFromConfig(table, getTableConfig);

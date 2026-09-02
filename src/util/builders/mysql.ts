@@ -1,5 +1,5 @@
 import type { Table } from 'drizzle-orm';
-import { getTableConfig, type MySqlAsyncDatabase, MySqlTable } from 'drizzle-orm/mysql-core';
+import { type MySqlAsyncDatabase, MySqlTable, getTableConfig as mysqlTableConfig } from 'drizzle-orm/mysql-core';
 import {
   GraphQLBoolean,
   type GraphQLInputObjectType,
@@ -23,6 +23,7 @@ import {
   getPrimaryKeyPropNamesFromConfig,
   hardDeleteArg,
   type MutationTxCtx,
+  memoizeTableConfig,
   mysqlValuesColumnRef,
   type OnConflictArg,
   type RelationFilterBase,
@@ -426,6 +427,9 @@ const generateDelete = (
     },
   });
 };
+
+/** The dialect's table config, cached per table — see {@link memoizeTableConfig}. */
+const getTableConfig = memoizeTableConfig(mysqlTableConfig);
 
 /** Primary-key property names for a MySQL table, including table-level composite keys. */
 const mysqlPrimaryKeyPropNames = (table: MySqlTable): string[] =>
