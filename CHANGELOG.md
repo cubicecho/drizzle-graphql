@@ -1,3 +1,14 @@
+## [10.0.1](https://github.com/cubicecho/drizzle-graphql/compare/v10.0.0...v10.0.1) (2026-09-02)
+
+### Bug Fixes
+
+* pick a usable fallback column when a selection names none ([f9c37e1](https://github.com/cubicecho/drizzle-graphql/commit/f9c37e174fdcaa2dd43919f9e445e2fc92785b7b))
+
+### Performance Improvements
+
+* cache the dialect getTableConfig per table ([6f88b56](https://github.com/cubicecho/drizzle-graphql/commit/6f88b56127edd0eb6dfbbadec53baa9c377b9777))
+* hoist per-request invariants out of hot paths ([fce00f2](https://github.com/cubicecho/drizzle-graphql/commit/fce00f22cbc3a98a234ca8b7965f0ad70bfbbbe3)), closes [#138](https://github.com/cubicecho/drizzle-graphql/issues/138) [#149](https://github.com/cubicecho/drizzle-graphql/issues/149) [#150](https://github.com/cubicecho/drizzle-graphql/issues/150) [#140](https://github.com/cubicecho/drizzle-graphql/issues/140) [#143](https://github.com/cubicecho/drizzle-graphql/issues/143) [#138](https://github.com/cubicecho/drizzle-graphql/issues/138) [#140](https://github.com/cubicecho/drizzle-graphql/issues/140) [#143](https://github.com/cubicecho/drizzle-graphql/issues/143) [#149](https://github.com/cubicecho/drizzle-graphql/issues/149) [#150](https://github.com/cubicecho/drizzle-graphql/issues/150)
+
 ## [10.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v9.1.1...v10.0.0) (2026-09-01)
 
 ### ⚠ BREAKING CHANGES
