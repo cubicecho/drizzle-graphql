@@ -1,7 +1,7 @@
 import { is, Table } from 'drizzle-orm';
-import { getTableConfig as getMySqlTableConfig, MySqlAsyncDatabase } from 'drizzle-orm/mysql-core';
-import { getTableConfig as getPgTableConfig, PgAsyncDatabase } from 'drizzle-orm/pg-core';
-import { getTableConfig as getSQLiteTableConfig, SQLiteAsyncDatabase } from 'drizzle-orm/sqlite-core';
+import { MySqlAsyncDatabase, getTableConfig as mysqlTableConfig } from 'drizzle-orm/mysql-core';
+import { PgAsyncDatabase, getTableConfig as pgTableConfig } from 'drizzle-orm/pg-core';
+import { SQLiteAsyncDatabase, getTableConfig as sqliteTableConfig } from 'drizzle-orm/sqlite-core';
 import type { GraphQLResolveInfo } from 'graphql';
 import type { AnyDrizzleDB } from '../types.ts';
 import {
@@ -10,6 +10,7 @@ import {
   type DerivedTypeNameMapper,
   extractRelationsParams,
   getPrimaryKeyPropNamesFromConfig,
+  memoizeTableConfig,
   type RelationFilterBase,
   resolveGeneratedTypeNames,
   resolveObjectTypeName,
@@ -36,16 +37,24 @@ type SelectionContext = {
 
 const contextCache = new WeakMap<object, SelectionContext>();
 
+type TableConfigLookup = (table: Table) => { primaryKeys: { columns: { name: string }[] }[] };
+
+// Cached per table, and bound at module scope so the cache is shared with every selection
+// this process translates — the same memoization each dialect builder applies.
+const getMySqlTableConfig = memoizeTableConfig(mysqlTableConfig as unknown as TableConfigLookup);
+const getPgTableConfig = memoizeTableConfig(pgTableConfig as unknown as TableConfigLookup);
+const getSQLiteTableConfig = memoizeTableConfig(sqliteTableConfig as unknown as TableConfigLookup);
+
 /** The dialect's `getTableConfig`, which is the only place a composite primary key shows up. */
-const tableConfigFor = (db: AnyDrizzleDB<any>) => {
+const tableConfigFor = (db: AnyDrizzleDB<any>): TableConfigLookup => {
   if (is(db, MySqlAsyncDatabase)) {
-    return getMySqlTableConfig as (table: Table) => { primaryKeys: { columns: { name: string }[] }[] };
+    return getMySqlTableConfig;
   }
   if (is(db, PgAsyncDatabase)) {
-    return getPgTableConfig as unknown as (table: Table) => { primaryKeys: { columns: { name: string }[] }[] };
+    return getPgTableConfig;
   }
   if (is(db, SQLiteAsyncDatabase)) {
-    return getSQLiteTableConfig as unknown as (table: Table) => { primaryKeys: { columns: { name: string }[] }[] };
+    return getSQLiteTableConfig;
   }
   throw new Error('Drizzle-GraphQL Error: unsupported database instance — expected a PostgreSQL, MySQL or SQLite one.');
 };

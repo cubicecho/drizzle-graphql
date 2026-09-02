@@ -62,6 +62,34 @@ export const withPrimaryKeyColumns = <T extends Record<string, any>>(
 };
 
 /**
+ * Wraps a dialect's `getTableConfig` in a per-table cache.
+ *
+ * The dialect implementations are not lookups: each call re-runs the table's
+ * `extraConfigBuilder` and rebuilds every index, check, unique constraint, primary key and
+ * foreign key it declares. Nothing about a table changes after it is defined, so the result
+ * is the same every time — but a build asks for it many times per table (primary-key names,
+ * unique column sets, conflict targets, one per relation that keys off the target's PK), and
+ * an overriding resolver asks again at request time.
+ *
+ * The cache is a `WeakMap` on the table object, so it costs nothing once the table is gone.
+ * Bind it once per dialect module, at module scope, so the cache outlives a single
+ * `buildSchema` call.
+ */
+export const memoizeTableConfig = <TTable extends Table, TConfig>(
+  getTableConfig: (table: TTable) => TConfig,
+): ((table: TTable) => TConfig) => {
+  const cache = new WeakMap<TTable, TConfig>();
+  return (table: TTable): TConfig => {
+    let config = cache.get(table);
+    if (config === undefined) {
+      config = getTableConfig(table);
+      cache.set(table, config);
+    }
+    return config;
+  };
+};
+
+/**
  * Resolves a table's primary-key property names using a dialect's `getTableConfig` to
  * surface table-level composite keys (whose member columns aren't flagged `.primary`).
  * Each dialect builder binds this with its own getTableConfig and reuses the binding for

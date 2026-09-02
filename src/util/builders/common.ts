@@ -67,6 +67,7 @@ export {
   getPrimaryKeyPropNames,
   getPrimaryKeyPropNamesFromConfig,
   getUniqueColumnSets,
+  memoizeTableConfig,
   primaryKeyOrderExprs,
   withPrimaryKeyColumns,
 } from './common/keys.ts';
