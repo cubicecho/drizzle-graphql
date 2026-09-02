@@ -37,8 +37,11 @@ export const orderByEntries = (
   orderArgs: Record<string, any>,
 ): [string, 'asc' | 'desc', OrderNullsOption | undefined][] =>
   Object.entries(orderArgs)
-    .sort((a, b) => (b[1]?.priority ?? 0) - (a[1]?.priority ?? 0))
+    // Filtered before the sort: an unset key contributes no entry, so sorting it is work
+    // thrown away — and `sort` is stable, so dropping first leaves the same relative order
+    // among equal priorities.
     .filter(([, config]) => config)
+    .sort((a, b) => (b[1]?.priority ?? 0) - (a[1]?.priority ?? 0))
     .map(([column, config]) => {
       if (typeof config === 'object' && config.direction === undefined) {
         throw drizzleError(`ORDER BY ${column}: ordering through a relation is not supported in this query`, {
