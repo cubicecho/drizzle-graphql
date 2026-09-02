@@ -310,6 +310,19 @@ const jsonPathCondition = (column: Column, columnName: string, filter: Record<st
   return variants.length ? (variants.length > 1 ? and(...variants) : variants[0]) : undefined;
 };
 
+// The operator dispatch tables. Constant, and hoisted out of `extractFiltersColumn` — which
+// recurses once per AND/OR/NOT branch of every filter of every request — so they are built
+// once per process rather than five objects per call.
+const singleValueOps: Record<string, (...args: any[]) => SQL> = { eq, ne, gt, gte, lt, lte };
+const stringValueOps: Record<string, (...args: any[]) => SQL> = { like, notLike, ilike, notIlike };
+const arrayValueOps: Record<string, (...args: any[]) => SQL> = { inArray, notInArray };
+/** Membership operators for array columns: element list → SQL. Empty lists are rejected below. */
+const arrayMembershipOps: Record<string, (...args: any[]) => SQL> = {
+  hasSome: arrayOverlaps,
+  hasEvery: arrayContains,
+};
+const nullableOps: Record<string, (...args: any[]) => SQL> = { isNull, isNotNull };
+
 export const extractFiltersColumn = <TColumn extends Column>(
   column: TColumn,
   columnName: string,
@@ -325,16 +338,6 @@ export const extractFiltersColumn = <TColumn extends Column>(
   const foldCase = insensitive === true;
 
   const entries = Object.entries(restOperators as FilterColumnOperatorsCore<TColumn>);
-
-  const singleValueOps: Record<string, (...args: any[]) => SQL> = { eq, ne, gt, gte, lt, lte };
-  const stringValueOps: Record<string, (...args: any[]) => SQL> = { like, notLike, ilike, notIlike };
-  const arrayValueOps: Record<string, (...args: any[]) => SQL> = { inArray, notInArray };
-  // Membership operators for array columns: element list → SQL. Empty lists are rejected below.
-  const arrayMembershipOps: Record<string, (...args: any[]) => SQL> = {
-    hasSome: arrayOverlaps,
-    hasEvery: arrayContains,
-  };
-  const nullableOps: Record<string, (...args: any[]) => SQL> = { isNull, isNotNull };
 
   const variants = [] as SQL[];
   for (const [operatorName, operatorValue] of entries) {

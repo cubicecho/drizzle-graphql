@@ -186,6 +186,9 @@ const collectSelections = (
     fields = {};
     tree[parentTypeName] = fields;
   }
+  // Loop-invariant: the parent type is the same for every selection in this set, and this
+  // walk runs on every resolve of every request.
+  const parentFields = fieldsOf(parentType);
 
   for (const selection of selections) {
     if (isExcluded(info, selection)) {
@@ -198,7 +201,7 @@ const collectSelections = (
         continue;
       }
 
-      const fieldDef = fieldsOf(parentType)?.[name];
+      const fieldDef = parentFields?.[name];
       // A field the parent type does not declare: either a union's own selection set, which
       // carries nothing but meta-fields, or a document that never passed validation.
       if (!fieldDef) {
@@ -294,7 +297,13 @@ const collectSelections = (
   return tree;
 };
 
-const firstKey = (object: Record<string, unknown>): string | undefined => Object.keys(object)[0];
+/** The first key of an object, without materializing the whole key array to discard it. */
+const firstKey = (object: Record<string, unknown>): string | undefined => {
+  for (const key in object) {
+    return key;
+  }
+  return undefined;
+};
 
 /**
  * Reads the selection under a resolver's own field out of its `info`, as a tree of

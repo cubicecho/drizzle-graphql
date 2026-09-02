@@ -97,7 +97,37 @@ interface AggregateColumnSets {
  * arrays (including array-typed number columns), JSON, buffers, and object-shaped columns
  * (e.g. geometry) are excluded entirely.
  */
+/**
+ * Cache for {@link classifyAggregateColumns}. Keyed on the table object, then on the name it
+ * was classified under — the name only reaches `drizzleColumnToGraphQLType` for enum naming,
+ * but a table registered under two names would name its enums differently, so it is part of
+ * the key rather than assumed irrelevant.
+ *
+ * The entries hold this build's GraphQL types and this build's column exclusions, so the
+ * cache lives exactly as long as a build: {@link resetAggregateColumnCache} runs at the start
+ * of every one, alongside the other per-build registries. Kept across builds it would hand a
+ * second build the first build's enum instances, which is a schema with two types of one name.
+ */
+let aggregateColumnSetsCache = new WeakMap<Table, Map<string, AggregateColumnSets>>();
+
+/** Drops the classifications cached for the previous build. Called once per `generateSchemaData`. */
+export const resetAggregateColumnCache = (): void => {
+  aggregateColumnSetsCache = new WeakMap();
+};
+
 const classifyAggregateColumns = (table: Table, tableName: string): AggregateColumnSets => {
+  // Called from every aggregate/group-by generator for the same table — five times per table
+  // at build time, plus twice per to-many relation — and each call re-converts every column.
+  let byName = aggregateColumnSetsCache.get(table);
+  if (!byName) {
+    byName = new Map();
+    aggregateColumnSetsCache.set(table, byName);
+  }
+  const cached = byName.get(tableName);
+  if (cached) {
+    return cached;
+  }
+
   const numeric: AggregateColumnSets['numeric'] = {};
   const orderable: AggregateColumnSets['orderable'] = {};
   const all: AggregateColumnSets['all'] = {};
@@ -130,7 +160,10 @@ const classifyAggregateColumns = (table: Table, tableName: string): AggregateCol
     }
   }
 
-  return { numeric, orderable, all };
+  const sets = { numeric, orderable, all };
+  byName.set(tableName, sets);
+
+  return sets;
 };
 
 /**

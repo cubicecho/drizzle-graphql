@@ -126,12 +126,25 @@ const decodeCursorValue = (value: any): any => {
  * payload holding the ordering spec (`o`) and the row's values for it (`v`). The spec rides
  * along so a later request can verify the cursor was issued for the same ordering it is using.
  */
-export const encodeCursor = (entries: CursorOrderEntry[], row: Record<string, any>): string => {
-  const payload = {
-    o: entries,
-    v: entries.map(([column]) => encodeCursorValue(row[column] ?? null)),
+export const encodeCursor = (entries: CursorOrderEntry[], row: Record<string, any>): string =>
+  cursorEncoder(entries)(row);
+
+/**
+ * `encodeCursor` bound to one ordering, for encoding a whole page.
+ *
+ * The ordering spec is the same for every row of a page, so it is serialized once here and
+ * spliced into each row's payload rather than re-serialized per row. The bytes are identical
+ * to what building the payload object and stringifying it produces — same keys, same order —
+ * so cursors stay interchangeable with ones issued before this was split out.
+ */
+const cursorEncoder = (entries: CursorOrderEntry[]): ((row: Record<string, any>) => string) => {
+  const spec = JSON.stringify(entries);
+  const columns = entries.map(([column]) => column);
+
+  return (row) => {
+    const values = JSON.stringify(columns.map((column) => encodeCursorValue(row[column] ?? null)));
+    return Buffer.from(`{"o":${spec},"v":${values}}`, 'utf8').toString('base64url');
   };
-  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
 };
 
 /**
@@ -294,8 +307,9 @@ export const selectsCursorField = (info: any, table: Table): boolean => {
  * dates and bigints into their transport forms.
  */
 export const attachRowCursors = (rows: Record<string, any>[], entries: CursorOrderEntry[]): void => {
+  const encode = cursorEncoder(entries);
   for (const row of rows) {
-    row[ROW_CURSOR_PROP] = encodeCursor(entries, row);
+    row[ROW_CURSOR_PROP] = encode(row);
   }
 };
 
