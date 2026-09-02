@@ -28,6 +28,7 @@ import {
   buildUniqueKeyMap,
   createMutationTxCtx,
   createRelationResolverFactory,
+  defineRootField,
   extractRelationJoinColumns,
   generateTableTypes,
   getUniqueColumnSets,
@@ -455,7 +456,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
           )
         : undefined;
 
-    ctx.queries[selectArrGenerated.name] = {
+    defineRootField(ctx.queries, 'query', selectArrGenerated.name, {
       type: selectArrOutput,
       args: selectArrGenerated.args,
       resolve: selectArrGenerated.resolver,
@@ -463,17 +464,17 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
         drizzle: drizzleMeta({ kind: 'query', operation: 'select', single: false, targetArg: 'where' }),
         ...(complexity ? { complexity: listFieldComplexity(complexity, limits?.(tableName)) } : {}),
       },
-    };
-    ctx.queries[selectSingleGenerated.name] = {
+    });
+    defineRootField(ctx.queries, 'query', selectSingleGenerated.name, {
       type: selectSingleOutput,
       args: selectSingleGenerated.args,
       resolve: selectSingleGenerated.resolver,
       extensions: {
         drizzle: drizzleMeta({ kind: 'query', operation: 'select', single: true, targetArg: 'where' }),
       },
-    };
+    });
     if (aggregateGenerated && aggregateType) {
-      ctx.queries[aggregateGenerated.name] = {
+      defineRootField(ctx.queries, 'query', aggregateGenerated.name, {
         type: new GraphQLNonNull(aggregateType),
         args: aggregateGenerated.args,
         resolve: aggregateGenerated.resolver,
@@ -481,10 +482,10 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
           drizzle: drizzleMeta({ kind: 'aggregate', operation: 'aggregate', single: true, targetArg: 'where' }),
           ...(complexity ? { complexity: aggregateFieldComplexity(complexity) } : {}),
         },
-      };
+      });
     }
     if (groupByGenerated && groupByType) {
-      ctx.queries[groupByGenerated.name] = {
+      defineRootField(ctx.queries, 'query', groupByGenerated.name, {
         type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(groupByType))),
         args: groupByGenerated.args,
         resolve: groupByGenerated.resolver,
@@ -492,7 +493,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
           drizzle: drizzleMeta({ kind: 'aggregate', operation: 'groupBy', single: false, targetArg: 'where' }),
           ...(complexity ? { complexity: aggregateFieldComplexity(complexity) } : {}),
         },
-      };
+      });
     }
 
     return { aggregateType, groupByType, havingInput };

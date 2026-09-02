@@ -353,9 +353,23 @@ const { schema } = buildSchema(db, {
 })
 ```
 
+Both suffixes reach every operation that comes in a list/single pair, mutations included:
+the config above gives `usersAll` / `users` on the query side and `addUsersAll` / `addUsers`,
+`editUsersAll` / `editUsers`, `removeUsersAll` / `removeUsers` on the mutation side. The
+variants that carry their own disambiguator — `usersAggregate`, `usersGroupBy`,
+`updateUsersMany`, `updateUsersCount`, `deleteUsersCount` — take neither suffix.
+
 The list and single suffixes cannot be identical unless a `typeNameMapper` is also given —
 `users` and `usersSingle` would otherwise collapse onto one field name, and `buildSchema`
-throws rather than generating a schema that silently drops one of them.
+throws rather than generating a schema that silently drops one of them. With a mapper the
+plural and singular nouns keep the queries and the inserts apart, but the bulk update,
+delete and restore mutations are singular on both sides, so those three keep a `Single`
+suffix whenever the two configured suffixes are the same string.
+
+That check compares the configured suffixes, which is only part of what a name is made of.
+Every generated root field is also registered by name, and a build that puts two operations
+on one field name throws naming the field rather than dropping whichever registered first —
+whatever combination of prefixes, suffixes and mapper produced it.
 
 `typeNameMapper` renames the table itself, which is what a plural-keyed schema usually wants:
 `export const users = pgTable('users', …)` otherwise produces `type Users` and a

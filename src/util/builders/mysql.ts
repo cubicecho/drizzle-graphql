@@ -14,6 +14,7 @@ import {
   applyContextValuesAll,
   assertSingleMatch,
   computeResolverFieldNames,
+  defineRootField,
   drizzleError,
   extractFilters,
   extractRequiredFilters,
@@ -757,33 +758,33 @@ export const generateSchemaData = <
     ];
     for (const [generated, meta] of generatedMutations) {
       if (generated) {
-        mutations[generated.name] = {
+        defineRootField(mutations, 'mutation', generated.name, {
           type: mutationReturnType,
           args: generated.args,
           resolve: generated.resolver,
           extensions: { drizzle: drizzleMeta({ kind: 'mutation', ...meta }) },
-        };
+        });
       }
     }
     // Apart from the loop above: the count mutations are the one pair whose return value is
     // not MySQL's shared `isSuccess` shape.
     if (updateCountGenerated) {
-      mutations[updateCountGenerated.name] = {
+      defineRootField(mutations, 'mutation', updateCountGenerated.name, {
         type: new GraphQLNonNull(GraphQLInt),
         args: updateCountGenerated.args,
         resolve: updateCountGenerated.resolver,
         description:
           'How many rows the update touched. The rows themselves are not read back, which is the point of this mutation.',
-      };
+      });
     }
     if (deleteCountGenerated) {
-      mutations[deleteCountGenerated.name] = {
+      defineRootField(mutations, 'mutation', deleteCountGenerated.name, {
         type: new GraphQLNonNull(GraphQLInt),
         args: deleteCountGenerated.args,
         resolve: deleteCountGenerated.resolver,
         description:
           'How many rows the delete removed. The rows themselves are not read back, which is the point of this mutation.',
-      };
+      });
     }
     // The insert/update inputs are still built (they type the mutations that survive) but
     // only reach the schema's type map when a mutation actually references them.
