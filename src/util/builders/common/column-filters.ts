@@ -43,6 +43,25 @@ export const columnDialect = (column: Column): 'pg' | 'mysql' | 'sqlite' | undef
   return undefined;
 };
 
+/**
+ * Whether the column stores JSON.
+ *
+ * Decided on drizzle's `dataType`, its semantic marker, rather than on `columnType`, which
+ * names the implementing class. drizzle-orm v1 uses compound dataType strings (`"object
+ * json"` for every json/jsonb column across the three dialects), hence the inclusion test.
+ *
+ * `PgGeometryObject` is excluded explicitly. That is currently redundant — it reports
+ * `"object geometry"` — but it is stored as json, has its own object type in the generated
+ * schema, and must not be reclassified if drizzle ever spells its dataType differently.
+ *
+ * One predicate for two callers that must agree: the filter builder, whose `path` and
+ * `contains` operators mean structural JSON containment rather than the string operators,
+ * and the data mappers, which transport a JSON value as-is instead of remapping it. They
+ * previously had a copy each, asking different questions of the column.
+ */
+export const isJsonColumn = (column: Column): boolean =>
+  ((column as any).dataType ?? '').includes('json') && (column as any).columnType !== 'PgGeometryObject';
+
 /** How a column's generic filter input should be shaped, alongside the cache key to store it under. */
 interface GenericFilterDescriptor {
   name: string;

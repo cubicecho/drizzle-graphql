@@ -191,12 +191,7 @@ export const selectionToWith = (
     table,
     parsed,
     resolveObjectTypeName(table, typeNameMapper, resolveName),
-    typeNameMapper,
-    filterCtx,
-    undefined,
-    undefined,
-    undefined,
-    resolveName,
+    { typeNameMapper, filterCtx, resolveName },
   );
   // A selection with no relations in it gets no `with` clause at all, rather than an empty
   // object the query builder would have to be asked to ignore.

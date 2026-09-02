@@ -237,7 +237,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
       // pagination surface a root list of that table does. `after` and `distinct` are the
       // two drizzle's `with:` clause cannot express, so a request that passes either drops
       // the relation out of the eager fetch and resolves it through the batch loader, which
-      // implements both — see extractRelationsParamsInner.
+      // implements both — see extractRelationsParams.
       const targetDistinctEnum = cacheCtx.featureOf(targetTableName).distinct
         ? generateDistinctEnum(
             tables[targetTableName]!,
