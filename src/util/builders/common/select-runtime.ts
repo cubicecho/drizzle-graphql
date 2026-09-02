@@ -117,7 +117,7 @@ export const runRelationalSelect = async (opts: {
   // Taking a slice of an unordered result lets the database return any rows it likes, so
   // `limit`/`offset` pages can overlap or skip rows between requests, and a single query
   // can return a different row each time. Default to the primary key whenever the query is
-  // narrowed to a subset, mirroring the relation-level default in extractRelationsParamsInner.
+  // narrowed to a subset, mirroring the relation-level default in extractRelationsParams.
   const needsDefaultOrder = single || offset != null || opts.limit != null;
 
   // `distinct` runs as its own pass — the relational query builder cannot express it — and
@@ -201,19 +201,14 @@ export const runRelationalSelect = async (opts: {
           }
         : undefined,
     with: relationMap[tableName]
-      ? extractRelationsParams(
-          relationMap,
-          tables,
-          tableName,
-          parsedInfo,
-          typeName,
+      ? extractRelationsParams(relationMap, tables, tableName, parsedInfo, typeName, {
           typeNameMapper,
           filterCtx,
-          opts.limits,
+          limits: opts.limits,
           scope,
-          opts.defaultOrderBy,
-          opts.resolveName,
-        )
+          defaultOrderBy: opts.defaultOrderBy,
+          resolveName: opts.resolveName,
+        })
       : undefined,
   };
 

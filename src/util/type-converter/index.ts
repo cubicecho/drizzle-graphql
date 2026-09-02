@@ -1,5 +1,5 @@
 import type { Column, Table } from 'drizzle-orm';
-import { extractExtendedColumnType, getTableColumns, is } from 'drizzle-orm';
+import { extractExtendedColumnType, getColumns, is } from 'drizzle-orm';
 import { MySqlInt, MySqlSerial } from 'drizzle-orm/mysql-core';
 import { PgDate, PgDateString, PgInteger, PgSerial, PgTimestamp, PgTimestampString, PgUUID } from 'drizzle-orm/pg-core';
 import { SQLiteInteger } from 'drizzle-orm/sqlite-core';
@@ -331,7 +331,7 @@ export const registerScalarOverrides = (
   config: { scalars?: ScalarOverridesConfig; mapColumnType?: ColumnTypeMapper },
 ): void => {
   for (const [tableName, table] of Object.entries(tables)) {
-    for (const [columnName, column] of Object.entries(getTableColumns(table))) {
+    for (const [columnName, column] of Object.entries(getColumns(table))) {
       const declared = config.scalars?.[tableName]?.[columnName];
 
       let resolved: { output?: GraphQLScalarType; input?: GraphQLScalarType } | undefined;

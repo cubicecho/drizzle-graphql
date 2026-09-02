@@ -19,26 +19,40 @@ import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractSelectedColumnsFromTree } from './selected-columns.ts';
 import type { TypeNameResolver } from './type-names.ts';
 
-export const extractRelationsParamsInner = (
+/**
+ * The build-wide policy the walk carries down unchanged. Grouped rather than passed
+ * positionally because the recursion below re-passes every one of them as it descends, and
+ * five of the six are object-or-undefined — a positional list of those is a silent hazard
+ * (a caller that means "no limits, no scope" writes three bare `undefined`s in a row).
+ */
+export interface RelationParamsOptions {
+  typeNameMapper?: TypeNameMapper;
+  filterCtx?: RelationFilterBase;
+  limits?: LimitPolicyFor;
+  scope?: ScopeResolver;
+  defaultOrderBy?: DefaultOrderByFor;
+  resolveName?: TypeNameResolver;
+}
+
+export const extractRelationsParams = (
   relationMap: Record<string, Record<string, TableNamedRelations>>,
   tables: Record<string, Table>,
   tableName: string,
+  info: ResolveTree | undefined,
   typeName: string,
-  originField: ResolveTree,
-  typeNameMapper?: TypeNameMapper,
-  _isInitial: boolean = false,
-  filterCtx?: RelationFilterBase,
-  limits?: LimitPolicyFor,
-  scope?: ScopeResolver,
-  defaultOrderBy?: DefaultOrderByFor,
-  resolveName?: TypeNameResolver,
-) => {
+  options: RelationParamsOptions = {},
+): Record<string, Partial<ProcessedTableSelectArgs>> | undefined => {
+  const { typeNameMapper, filterCtx, limits, scope, defaultOrderBy, resolveName } = options;
+  if (!info) {
+    return undefined;
+  }
+
   const relationsForTable = relationMap[tableName];
   if (!relationsForTable) {
     return undefined;
   }
 
-  const baseField = Object.entries(originField.fieldsByTypeName).find(([key, _value]) => key === typeName)?.[1];
+  const baseField = Object.entries(info.fieldsByTypeName).find(([key, _value]) => key === typeName)?.[1];
   if (!baseField) {
     return undefined;
   }
@@ -174,61 +188,13 @@ export const extractRelationsParamsInner = (
     thisRecord.offset = offset;
     thisRecord.limit = limit;
 
-    const relWith = relationField
-      ? extractRelationsParamsInner(
-          relationMap,
-          tables,
-          targetTableName,
-          relTypeName,
-          relationField,
-          typeNameMapper,
-          false,
-          filterCtx,
-          limits,
-          scope,
-          defaultOrderBy,
-          resolveName,
-        )
-      : undefined;
+    const relWith = extractRelationsParams(relationMap, tables, targetTableName, relationField, relTypeName, options);
     thisRecord.with = relWith;
 
     args[relName] = thisRecord;
   }
 
   return args;
-};
-
-export const extractRelationsParams = (
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  tables: Record<string, Table>,
-  tableName: string,
-  info: ResolveTree | undefined,
-  typeName: string,
-  typeNameMapper?: TypeNameMapper,
-  filterCtx?: RelationFilterBase,
-  limits?: LimitPolicyFor,
-  scope?: ScopeResolver,
-  defaultOrderBy?: DefaultOrderByFor,
-  resolveName?: TypeNameResolver,
-): Record<string, Partial<ProcessedTableSelectArgs>> | undefined => {
-  if (!info) {
-    return undefined;
-  }
-
-  return extractRelationsParamsInner(
-    relationMap,
-    tables,
-    tableName,
-    typeName,
-    info,
-    typeNameMapper,
-    true,
-    filterCtx,
-    limits,
-    scope,
-    defaultOrderBy,
-    resolveName,
-  );
 };
 
 /**

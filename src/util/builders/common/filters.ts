@@ -27,7 +27,7 @@ import {
 } from 'drizzle-orm';
 import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
 import type { FilterColumnOperators, FilterColumnOperatorsCore } from '../types.ts';
-import { columnDialect } from './column-filters.ts';
+import { columnDialect, isJsonColumn } from './column-filters.ts';
 import { drizzleError } from './errors.ts';
 
 /**
@@ -110,12 +110,6 @@ const lowerMembership = (column: Column, values: unknown[], negated: boolean): S
   );
   return negated ? sql`lower(${column}) not in (${lowered})` : sql`lower(${column}) in (${lowered})`;
 };
-
-/**
- * Whether the column stores JSON — its `contains` operator is structural containment,
- * not the safe substring operator string columns get.
- */
-const isJsonColumn = (column: Column): boolean => (((column as any).columnType ?? '') as string).includes('Json');
 
 /**
  * Structural JSON containment for the `contains` operator on json/jsonb columns.

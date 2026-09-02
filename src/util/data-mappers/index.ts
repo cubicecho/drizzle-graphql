@@ -1,12 +1,8 @@
-import { type Column, getTableColumns, is, One, type Table } from 'drizzle-orm';
+import { type Column, getColumns, is, One, type Table } from 'drizzle-orm';
+import { isJsonColumn } from '../builders/common/column-filters.ts';
 import { drizzleError } from '../builders/common/errors.ts';
 import type { TableNamedRelations } from '../builders/index.ts';
 import { getColumnScalarOverride } from '../type-converter/index.ts';
-
-// drizzle-orm v1 uses compound dataType strings (e.g. "object json"), so inclusion rather
-// than equality. PgGeometryObject is stored as json but has its own object type.
-const isJsonColumn = (column: Column): boolean =>
-  ((column as any).dataType ?? '').includes('json') && (column as any).columnType !== 'PgGeometryObject';
 
 export const remapToGraphQLCore = (
   key: string,
@@ -101,7 +97,7 @@ export const remapToGraphQLSingleOutput = (
   table: Table,
   relationMap?: Record<string, Record<string, TableNamedRelations>>,
 ) => {
-  const columns = getTableColumns(table);
+  const columns = getColumns(table);
 
   for (const [key, value] of Object.entries(queryOutput)) {
     if (value === undefined || value === null) {
@@ -297,11 +293,13 @@ export const remapFromGraphQLSingleInput = (
   table: Table,
   operation: RemapInputOperation = 'insert',
 ) => {
+  const columns = getColumns(table);
+
   for (const [key, value] of Object.entries(queryInput)) {
     if (value === undefined) {
       delete queryInput[key];
     } else {
-      const column = getTableColumns(table)[key];
+      const column = columns[key];
       if (!column) {
         throw drizzleError(`Unknown column: ${key}`, { code: 'DRIZZLE_UNKNOWN_COLUMN' });
       }

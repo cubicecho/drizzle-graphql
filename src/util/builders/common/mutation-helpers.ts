@@ -67,19 +67,13 @@ export const prepareMutationRelationColumns = (params: {
   const { relationMap, tables, tableName, typeNameMapper, table, pkNames, parsedInfo, resolveName } = params;
   const typeName = resolveObjectTypeName(tableName, typeNameMapper, resolveName);
   const withParams = relationMap[tableName]
-    ? extractRelationsParams(
-        relationMap,
-        tables,
-        tableName,
-        parsedInfo,
-        typeName,
+    ? extractRelationsParams(relationMap, tables, tableName, parsedInfo, typeName, {
         typeNameMapper,
-        undefined,
-        params.limits,
-        params.scope,
-        params.defaultOrderBy,
+        limits: params.limits,
+        scope: params.scope,
+        defaultOrderBy: params.defaultOrderBy,
         resolveName,
-      )
+      })
     : undefined;
   const hasRelations = !!(withParams && Object.keys(withParams).length);
   const baseColumns = extractSelectedColumnsFromTreeSQLFormat(parsedInfo.fieldsByTypeName[typeName]!, table, {
