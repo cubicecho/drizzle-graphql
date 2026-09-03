@@ -12,7 +12,7 @@
 // =============================================================================
 
 import type { Table } from 'drizzle-orm';
-import type { GraphQLInputObjectType } from 'graphql';
+import type { GraphQLInputObjectType, GraphQLOutputType } from 'graphql';
 import { GraphQLInt, GraphQLList, GraphQLNonNull } from 'graphql';
 import {
   computeResolverFieldNames,
@@ -23,7 +23,7 @@ import {
   getUniqueColumnSets,
   type TablesRelationalConfig,
 } from '../builders/common.ts';
-import { tableFieldExtensions } from '../extensions.ts';
+import { type DrizzleMutationMeta, tableFieldExtensions } from '../extensions.ts';
 import { createSchemaBuilder, type SchemaBuildAdapter } from './build-context.ts';
 import type { CreatedResolver, SchemaGeneratorOptions } from './types.ts';
 import { buildWriteResolvers, type WriteBuildOptions } from './write-resolvers.ts';
@@ -332,152 +332,103 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
               txCtx: mutationTxCtx,
             })
           : undefined;
-      if (insertArrGenerated) {
-        defineRootField(mutations, 'mutation', insertArrGenerated.name, {
+      // Each mutation is paired with the type it returns and the identity it publishes on
+      // `extensions.drizzle`, so a consumer can tell an insert from an upsert without unpicking
+      // the configured prefixes — and, for a delete, whether the field can purge rather than
+      // mark. The count pair is the one entry with a description and no meta: it answers with a
+      // number rather than rows, so there is no row operation for a consumer to dispatch on.
+      const hardDeleteMeta = softDeleteInfo?.hardDelete ? ({ hardDelete: true } as const) : {};
+      const generatedMutations: {
+        generated: CreatedResolver | undefined;
+        type: GraphQLOutputType;
+        meta?: DrizzleMutationMeta;
+        description?: string;
+      }[] = [
+        {
+          generated: insertArrGenerated,
           type: arrTableItemOutput,
-          args: insertArrGenerated.args,
-          resolve: insertArrGenerated.resolver,
-          extensions: {
-            drizzle: drizzleMeta({ kind: 'mutation', operation: 'insert', single: false, targetArg: 'values' }),
-          },
-        });
-      }
-      if (insertSingleGenerated) {
-        defineRootField(mutations, 'mutation', insertSingleGenerated.name, {
+          meta: { operation: 'insert', single: false, targetArg: 'values' },
+        },
+        {
+          generated: insertSingleGenerated,
           // An insert either returns the row it inserted or throws — the one path to `null` is
           // `conflictDoNothing` swallowing the insert, so the field is nullable only there.
           type: conflictDoNothing ? singleTableItemOutput : new GraphQLNonNull(singleTableItemOutput),
-          args: insertSingleGenerated.args,
-          resolve: insertSingleGenerated.resolver,
-          extensions: {
-            drizzle: drizzleMeta({ kind: 'mutation', operation: 'insert', single: true, targetArg: 'values' }),
-          },
-        });
-      }
-      if (upsertArrGenerated) {
-        defineRootField(mutations, 'mutation', upsertArrGenerated.name, {
+          meta: { operation: 'insert', single: true, targetArg: 'values' },
+        },
+        {
+          generated: upsertArrGenerated,
           type: arrTableItemOutput,
-          args: upsertArrGenerated.args,
-          resolve: upsertArrGenerated.resolver,
-          extensions: {
-            drizzle: drizzleMeta({ kind: 'mutation', operation: 'upsert', single: false, targetArg: 'values' }),
-          },
-        });
-      }
-      if (upsertSingleGenerated) {
-        defineRootField(mutations, 'mutation', upsertSingleGenerated.name, {
+          meta: { operation: 'upsert', single: false, targetArg: 'values' },
+        },
+        {
+          generated: upsertSingleGenerated,
           type: singleTableItemOutput,
-          args: upsertSingleGenerated.args,
-          resolve: upsertSingleGenerated.resolver,
-          extensions: {
-            drizzle: drizzleMeta({ kind: 'mutation', operation: 'upsert', single: true, targetArg: 'values' }),
-          },
-        });
-      }
-      if (updateGenerated) {
-        defineRootField(mutations, 'mutation', updateGenerated.name, {
+          meta: { operation: 'upsert', single: true, targetArg: 'values' },
+        },
+        {
+          generated: updateGenerated,
           type: arrTableItemOutput,
-          args: updateGenerated.args,
-          resolve: updateGenerated.resolver,
-          extensions: {
-            drizzle: drizzleMeta({ kind: 'mutation', operation: 'update', single: false, targetArg: 'where' }),
-          },
-        });
-      }
-      if (updateManyGenerated) {
-        defineRootField(mutations, 'mutation', updateManyGenerated.name, {
+          meta: { operation: 'update', single: false, targetArg: 'where' },
+        },
+        {
+          generated: updateManyGenerated,
           type: new GraphQLNonNull(new GraphQLList(singleTableItemOutput)),
-          args: updateManyGenerated.args,
-          resolve: updateManyGenerated.resolver,
-          extensions: {
-            drizzle: drizzleMeta({ kind: 'mutation', operation: 'updateMany', single: false, targetArg: 'updates' }),
-          },
+          meta: { operation: 'updateMany', single: false, targetArg: 'updates' },
           // The nullable element is deliberate, and the reason this mutation's return type
           // differs from every sibling's: the result is aligned with the input, one slot per
           // entry, so an entry that matched nothing has to be able to say so.
           description:
             "Each entry's updated rows, in entry order. An entry whose `where` matched no rows contributes `null` in its slot; an entry that matched several contributes each of its rows.",
-        });
-      }
-      if (updateSingleGenerated) {
-        defineRootField(mutations, 'mutation', updateSingleGenerated.name, {
+        },
+        {
+          generated: updateSingleGenerated,
           type: singleTableItemOutput,
-          args: updateSingleGenerated.args,
-          resolve: updateSingleGenerated.resolver,
-          extensions: {
-            drizzle: drizzleMeta({ kind: 'mutation', operation: 'update', single: true, targetArg: 'where' }),
-          },
-        });
-      }
-      if (deleteGenerated) {
-        defineRootField(mutations, 'mutation', deleteGenerated.name, {
+          meta: { operation: 'update', single: true, targetArg: 'where' },
+        },
+        {
+          generated: deleteGenerated,
           type: arrTableItemOutput,
-          args: deleteGenerated.args,
-          resolve: deleteGenerated.resolver,
-          extensions: {
-            drizzle: drizzleMeta({
-              kind: 'mutation',
-              operation: 'delete',
-              single: false,
-              targetArg: 'where',
-              ...(softDeleteInfo?.hardDelete ? { hardDelete: true } : {}),
-            }),
-          },
-        });
-      }
-      if (deleteSingleGenerated) {
-        defineRootField(mutations, 'mutation', deleteSingleGenerated.name, {
+          meta: { operation: 'delete', single: false, targetArg: 'where', ...hardDeleteMeta },
+        },
+        {
+          generated: deleteSingleGenerated,
           type: singleTableItemOutput,
-          args: deleteSingleGenerated.args,
-          resolve: deleteSingleGenerated.resolver,
-          extensions: {
-            drizzle: drizzleMeta({
-              kind: 'mutation',
-              operation: 'delete',
-              single: true,
-              targetArg: 'where',
-              ...(softDeleteInfo?.hardDelete ? { hardDelete: true } : {}),
-            }),
-          },
-        });
-      }
-      if (restoreGenerated) {
-        defineRootField(mutations, 'mutation', restoreGenerated.name, {
+          meta: { operation: 'delete', single: true, targetArg: 'where', ...hardDeleteMeta },
+        },
+        {
+          generated: restoreGenerated,
           type: arrTableItemOutput,
-          args: restoreGenerated.args,
-          resolve: restoreGenerated.resolver,
-          extensions: {
-            drizzle: drizzleMeta({ kind: 'mutation', operation: 'restore', single: false, targetArg: 'where' }),
-          },
-        });
-      }
-      if (restoreSingleGenerated) {
-        defineRootField(mutations, 'mutation', restoreSingleGenerated.name, {
+          meta: { operation: 'restore', single: false, targetArg: 'where' },
+        },
+        {
+          generated: restoreSingleGenerated,
           type: singleTableItemOutput,
-          args: restoreSingleGenerated.args,
-          resolve: restoreSingleGenerated.resolver,
-          extensions: {
-            drizzle: drizzleMeta({ kind: 'mutation', operation: 'restore', single: true, targetArg: 'where' }),
-          },
-        });
-      }
-      if (updateCountGenerated) {
-        defineRootField(mutations, 'mutation', updateCountGenerated.name, {
+          meta: { operation: 'restore', single: true, targetArg: 'where' },
+        },
+        {
+          generated: updateCountGenerated,
           type: new GraphQLNonNull(GraphQLInt),
-          args: updateCountGenerated.args,
-          resolve: updateCountGenerated.resolver,
           description:
             'How many rows the update touched. The rows themselves are not read back, which is the point of this mutation.',
-        });
-      }
-      if (deleteCountGenerated) {
-        defineRootField(mutations, 'mutation', deleteCountGenerated.name, {
+        },
+        {
+          generated: deleteCountGenerated,
           type: new GraphQLNonNull(GraphQLInt),
-          args: deleteCountGenerated.args,
-          resolve: deleteCountGenerated.resolver,
           description:
             'How many rows the delete removed. The rows themselves are not read back, which is the point of this mutation.',
-        });
+        },
+      ];
+      for (const { generated, type, meta, description } of generatedMutations) {
+        if (generated) {
+          defineRootField(mutations, 'mutation', generated.name, {
+            type,
+            args: generated.args,
+            resolve: generated.resolver,
+            ...(meta ? { extensions: { drizzle: drizzleMeta({ kind: 'mutation', ...meta }) } } : {}),
+            ...(description ? { description } : {}),
+          });
+        }
       }
       // The insert/update inputs are still built (they type the mutations that survive) but
       // only reach the schema's type map when a mutation actually references them.
