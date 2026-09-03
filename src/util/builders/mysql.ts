@@ -13,8 +13,6 @@ import {
   applyContextValues,
   applyContextValuesAll,
   assertSingleMatch,
-  computeResolverFieldNames,
-  defineRootField,
   drizzleError,
   extractFilters,
   generateOnConflictInput,
@@ -38,8 +36,8 @@ import {
   writeResolver,
 } from '../builders/common.ts';
 import { remapFromGraphQLArrayInput, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
-import { type DrizzleMutationMeta, tableFieldExtensions } from '../extensions.ts';
-import { createSchemaBuilder } from './build-context.ts';
+import type { DrizzleMutationMeta } from '../extensions.ts';
+import { createSchemaBuilder, type MutationRegistration } from './build-context.ts';
 import { remapUpdateInput } from './field-updates.ts';
 import type { CreatedResolver, Filters, SchemaGeneratorOptions } from './types.ts';
 
@@ -433,7 +431,7 @@ const mysqlPrimaryKeyPropNames = (table: MySqlTable): string[] =>
   getPrimaryKeyPropNamesFromConfig(table, getTableConfig);
 
 // MySQL sorts NULLs as the smallest values (first in ASC), and its writes return no rows.
-const { prepareBuild, addReadFields, finalizeBuild } = createSchemaBuilder({
+const { prepareBuild, forEachTable, finalizeBuild } = createSchemaBuilder({
   tableClass: MySqlTable,
   getTableConfig,
   primaryKeyPropNames: mysqlPrimaryKeyPropNames,
@@ -459,25 +457,13 @@ export const generateSchemaData = <
   relations: TablesRelationalConfig,
   options: SchemaGeneratorOptions,
 ): GeneratedEntities<TDrizzleInstance, TSchema> => {
-  const { prefixes, suffixes, typeNameMapper } = options;
+  const { prefixes } = options;
 
   // Table discovery, the relation graph, the per-build registries, the filter context, the
   // type cache and every table's types — all of it dialect-independent, so all of it lives
   // in `build-context.ts` and is shared with the PostgreSQL/SQLite builder.
   const ctx = prepareBuild(db, schema as Record<string, unknown>, relations, options);
-  const {
-    featureOf,
-    anyTable,
-    filterCtx,
-    policies,
-    softDeleteOf,
-    cacheCtx,
-    mutationTxCtx,
-    gqlSchemaTypes,
-    mutations,
-    inputs,
-    outputs,
-  } = ctx;
+  const { anyTable, filterCtx, policies, cacheCtx, mutationTxCtx, outputs } = ctx;
 
   // MySQL cannot return the rows a write touched, so every mutation reports only whether it
   // succeeded — one shared type for the whole build.
@@ -495,17 +481,8 @@ export const generateSchemaData = <
     outputs['MutationReturn'] = mutationReturnType;
   }
 
-  for (const [tableName, tableTypes] of Object.entries(gqlSchemaTypes)) {
-    // Everything this table generates, with any per-table predicate already run.
-    const tableFeatures = featureOf(tableName);
-    // What every field this table generates publishes about itself under `extensions.drizzle`,
-    // so a wrapper can read a field's identity instead of parsing its configurable name.
-    const drizzleMeta = tableFieldExtensions(tableName, mysqlPrimaryKeyPropNames(schema[tableName] as MySqlTable));
-    const { insertInput, updateInput, tableFilters, tableOrder } = tableTypes.inputs;
-    const { selectSingleOutput } = tableTypes.outputs;
-
-    // Compute field names using the mapper logic
-    const names = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
+  forEachTable(ctx, ({ tableName, tableFeatures, names, types, softDeleteInfo }) => {
+    const { insertInput, updateInput, tableFilters } = types.inputs;
     const {
       typeName,
       createArrayFieldName,
@@ -522,14 +499,6 @@ export const generateSchemaData = <
       restoreSingleFieldName,
       deleteCountFieldName,
     } = names;
-    // A table that marks rows deleted instead of removing them also gets the mutation that
-    // reverses it — clearing the column through an ordinary update is not possible, since the
-    // column is not in the update input and a marked row is invisible to a `where` anyway.
-    const softDeleteInfo = softDeleteOf?.(tableName);
-
-    // Both selects, the aggregate and the group-by: generated and hung off the query root
-    // by the shared builder, since a read is a read on every dialect.
-    const { aggregateType, groupByType, havingInput } = addReadFields(ctx, tableName, names, tableTypes, drizzleMeta);
 
     const insertArrGenerated = tableFeatures.insert
       ? generateInsertArray(
@@ -737,74 +706,43 @@ export const generateSchemaData = <
         : undefined;
     // Each mutation is paired with the identity it publishes on `extensions.drizzle`, so a
     // consumer can tell an insert from an upsert without unpicking the configured prefixes —
-    // and, for a delete, whether the field can purge rather than mark.
+    // and, for a delete, whether the field can purge rather than mark. Every row-touching
+    // mutation shares one return type here, since MySQL answers with `isSuccess` rather than
+    // with rows; the count pair is the exception, and carries a description instead of a meta.
     const hardDeleteMeta = softDeleteInfo?.hardDelete ? ({ hardDelete: true } as const) : {};
-    const generatedMutations: [typeof insertArrGenerated, DrizzleMutationMeta][] = [
-      [insertArrGenerated, { operation: 'insert', single: false, targetArg: 'values' }],
-      [insertSingleGenerated, { operation: 'insert', single: true, targetArg: 'values' }],
-      [upsertArrGenerated, { operation: 'upsert', single: false, targetArg: 'values' }],
-      [upsertSingleGenerated, { operation: 'upsert', single: true, targetArg: 'values' }],
-      [updateGenerated, { operation: 'update', single: false, targetArg: 'where' }],
-      [updateManyGenerated, { operation: 'updateMany', single: false, targetArg: 'updates' }],
-      [updateSingleGenerated, { operation: 'update', single: true, targetArg: 'where' }],
-      [deleteGenerated, { operation: 'delete', single: false, targetArg: 'where', ...hardDeleteMeta }],
-      [deleteSingleGenerated, { operation: 'delete', single: true, targetArg: 'where', ...hardDeleteMeta }],
-      [restoreGenerated, { operation: 'restore', single: false, targetArg: 'where' }],
-      [restoreSingleGenerated, { operation: 'restore', single: true, targetArg: 'where' }],
-    ];
-    for (const [generated, meta] of generatedMutations) {
-      if (generated) {
-        defineRootField(mutations, 'mutation', generated.name, {
-          type: mutationReturnType,
-          args: generated.args,
-          resolve: generated.resolver,
-          extensions: { drizzle: drizzleMeta({ kind: 'mutation', ...meta }) },
-        });
-      }
-    }
-    // Apart from the loop above: the count mutations are the one pair whose return value is
-    // not MySQL's shared `isSuccess` shape.
-    if (updateCountGenerated) {
-      defineRootField(mutations, 'mutation', updateCountGenerated.name, {
+    const withMeta = (generated: CreatedResolver | undefined, meta: DrizzleMutationMeta): MutationRegistration => ({
+      generated,
+      type: mutationReturnType,
+      meta,
+    });
+    const generatedMutations: MutationRegistration[] = [
+      withMeta(insertArrGenerated, { operation: 'insert', single: false, targetArg: 'values' }),
+      withMeta(insertSingleGenerated, { operation: 'insert', single: true, targetArg: 'values' }),
+      withMeta(upsertArrGenerated, { operation: 'upsert', single: false, targetArg: 'values' }),
+      withMeta(upsertSingleGenerated, { operation: 'upsert', single: true, targetArg: 'values' }),
+      withMeta(updateGenerated, { operation: 'update', single: false, targetArg: 'where' }),
+      withMeta(updateManyGenerated, { operation: 'updateMany', single: false, targetArg: 'updates' }),
+      withMeta(updateSingleGenerated, { operation: 'update', single: true, targetArg: 'where' }),
+      withMeta(deleteGenerated, { operation: 'delete', single: false, targetArg: 'where', ...hardDeleteMeta }),
+      withMeta(deleteSingleGenerated, { operation: 'delete', single: true, targetArg: 'where', ...hardDeleteMeta }),
+      withMeta(restoreGenerated, { operation: 'restore', single: false, targetArg: 'where' }),
+      withMeta(restoreSingleGenerated, { operation: 'restore', single: true, targetArg: 'where' }),
+      {
+        generated: updateCountGenerated,
         type: new GraphQLNonNull(GraphQLInt),
-        args: updateCountGenerated.args,
-        resolve: updateCountGenerated.resolver,
         description:
           'How many rows the update touched. The rows themselves are not read back, which is the point of this mutation.',
-      });
-    }
-    if (deleteCountGenerated) {
-      defineRootField(mutations, 'mutation', deleteCountGenerated.name, {
+      },
+      {
+        generated: deleteCountGenerated,
         type: new GraphQLNonNull(GraphQLInt),
-        args: deleteCountGenerated.args,
-        resolve: deleteCountGenerated.resolver,
         description:
           'How many rows the delete removed. The rows themselves are not read back, which is the point of this mutation.',
-      });
-    }
-    // The insert/update inputs are still built (they type the mutations that survive) but
-    // only reach the schema's type map when a mutation actually references them.
-    const activeInputs = [
-      // The insert input types the upsert mutations too, so either feature keeps it.
-      ...(tableFeatures.insert || onConflictInput ? [insertInput] : []),
-      ...(onConflictInput ? [onConflictInput] : []),
-      ...(tableFeatures.update ? [updateInput] : []),
-      ...(updateManyInput ? [updateManyInput] : []),
-      tableFilters,
-      tableOrder,
+      },
     ];
-    activeInputs.forEach((e) => {
-      inputs[e.name] = e;
-    });
-    outputs[selectSingleOutput.name] = selectSingleOutput;
-    if (aggregateType) {
-      outputs[aggregateType.name] = aggregateType;
-    }
-    if (groupByType && havingInput) {
-      outputs[groupByType.name] = groupByType;
-      inputs[havingInput.name] = havingInput;
-    }
-  }
+
+    return { mutations: generatedMutations, onConflictInput, updateManyInput };
+  });
 
   return finalizeBuild(ctx);
 };

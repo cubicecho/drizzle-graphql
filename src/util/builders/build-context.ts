@@ -8,9 +8,12 @@
 // select fields, the aggregate field and the group-by field — is identical down to
 // the argument lists.
 //
-// This module holds all three stretches once. What a dialect still owns is its
-// mutation half: PostgreSQL and SQLite return the rows they wrote, MySQL cannot,
-// so its mutation fields, return types and resolvers differ throughout.
+// The per-table loop is shared as well: `forEachTable` works out what every dialect
+// needs per table, calls the dialect back for the mutations it generated, and then
+// registers those and the inputs and outputs they reference. What a dialect still
+// owns is the mutation half itself — PostgreSQL and SQLite return the rows they
+// wrote, MySQL cannot, so its mutation fields, return types and resolvers differ
+// throughout.
 //
 // Keeping this shared is not just deduplication. A feature added to the prelude
 // used to reach two of the three dialects — `uniqueKeyFilters` (#90) shipped as a
@@ -18,7 +21,7 @@
 // =============================================================================
 
 import { is, One, type Table } from 'drizzle-orm';
-import type { GraphQLFieldConfig, GraphQLInputObjectType, GraphQLObjectType } from 'graphql';
+import type { GraphQLFieldConfig, GraphQLInputObjectType, GraphQLObjectType, GraphQLOutputType } from 'graphql';
 import { GraphQLList, GraphQLNonNull } from 'graphql';
 import {
   aggregateFieldComplexity,
@@ -26,6 +29,7 @@ import {
   bindPolicies,
   buildNamedRelations,
   buildUniqueKeyMap,
+  computeResolverFieldNames,
   createMutationTxCtx,
   createRelationResolverFactory,
   defineRootField,
@@ -43,13 +47,14 @@ import {
   type ResolverFieldNames,
   type ResolverPolicies,
   registerColumnExclusions,
+  type SoftDeleteInfo,
   type TablesRelationalConfig,
   type TypeCacheCtx,
   type TypeNameMapper,
   type UniqueKeyMap,
   visibleColumns,
 } from '../builders/common.ts';
-import type { TableFieldExtensionFactory } from '../extensions.ts';
+import { type DrizzleMutationMeta, type TableFieldExtensionFactory, tableFieldExtensions } from '../extensions.ts';
 import { resolveTableFeatures } from '../features.ts';
 import { registerEnumConfig, registerScalarOverrides } from '../type-converter/index.ts';
 import {
@@ -70,7 +75,14 @@ import {
   type NestedWriteTypes,
 } from './nested-writes.ts';
 import { createSelectGenerators } from './select.ts';
-import type { GeneratedTableTypes, SchemaGeneratorOptions, TableFeatures, TableNamedRelations } from './types.ts';
+import type {
+  CreatedResolver,
+  GeneratedTableTypes,
+  GeneratedTableTypesOutputs,
+  SchemaGeneratorOptions,
+  TableFeatures,
+  TableNamedRelations,
+} from './types.ts';
 
 /** What {@link createSchemaBuilder} cannot work out for itself. */
 export type SchemaBuildAdapter<WithReturning extends boolean = boolean> = {
@@ -139,6 +151,51 @@ export type SchemaBuildContext<WithReturning extends boolean = boolean> = {
   outputs: Record<string, GraphQLObjectType>;
   limits: LimitPolicyFor | undefined;
   typeNameMapper: TypeNameMapper | undefined;
+};
+
+/**
+ * One generated mutation, ready to be hung off the mutation root: what the field returns,
+ * and what it says about itself. A dialect's per-table callback answers with a list of these
+ * rather than registering fields itself, so the registration — and the collision check in
+ * {@link defineRootField} — happens in one place for all three dialects.
+ */
+export type MutationRegistration = {
+  /** Undefined when this table's features left the mutation ungenerated. */
+  generated: CreatedResolver | undefined;
+  type: GraphQLOutputType;
+  /**
+   * The identity published on `extensions.drizzle`. Omitted by the count mutations, which
+   * answer with a number rather than rows and so have no row operation to dispatch on.
+   */
+  meta?: DrizzleMutationMeta;
+  description?: string;
+};
+
+/** What a dialect's per-table callback hands back for {@link forEachTable} to register. */
+export type TableMutations = {
+  /** In registration order, which is the order the fields appear in the schema. */
+  mutations: MutationRegistration[];
+  /**
+   * The two inputs whose presence is decided by the mutation half rather than by a feature
+   * flag, and which the shared loop needs in order to know whether to publish them.
+   */
+  onConflictInput?: GraphQLInputObjectType;
+  updateManyInput?: GraphQLInputObjectType;
+};
+
+/** The per-table values {@link forEachTable} has already worked out, handed to the dialect. */
+export type TableBuild<WithReturning extends boolean = boolean> = {
+  tableName: string;
+  table: Table;
+  /** This table's feature flags, with any per-table predicate already run. */
+  tableFeatures: TableFeatures;
+  /** Builds what a field of this table publishes under `extensions.drizzle`. */
+  drizzleMeta: TableFieldExtensionFactory;
+  /** The generated field names, from the naming config. */
+  names: ResolverFieldNames;
+  types: GeneratedTableTypes<WithReturning>;
+  /** Set when the table marks rows deleted instead of removing them. */
+  softDeleteInfo: SoftDeleteInfo | undefined;
 };
 
 /**
@@ -499,6 +556,99 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     return { aggregateType, groupByType, havingInput };
   };
 
+  /**
+   * The per-table loop, run once for every table the build covers.
+   *
+   * The dialect's callback receives the values the loop has already worked out — the feature
+   * flags, the extension factory, the field names, the table's generated types and its
+   * soft-delete config — and answers with the mutations it generated. Registering them, and
+   * registering the inputs and outputs those mutations reference, happens here: both sides
+   * did it identically, down to the `description` strings on the count mutations, so a gate
+   * changed on one side and forgotten on the other used to be a silent dialect divergence.
+   *
+   * What stays in the dialect is what genuinely differs — which generators run, what each
+   * mutation returns, and (on MySQL) that a write cannot report the rows it touched.
+   */
+  const forEachTable = (
+    ctx: SchemaBuildContext<WithReturning>,
+    perTable: (build: TableBuild<WithReturning>) => TableMutations,
+  ): void => {
+    const { schema, featureOf, softDeleteOf, typeNameMapper, gqlSchemaTypes, mutations, inputs, outputs } = ctx;
+    const { prefixes, suffixes } = ctx.options;
+
+    for (const [tableName, tableTypes] of Object.entries(gqlSchemaTypes)) {
+      // Everything this table generates, with any per-table predicate already run.
+      const tableFeatures = featureOf(tableName);
+      // What every field this table generates publishes about itself under `extensions.drizzle`,
+      // so a wrapper can read a field's identity instead of parsing its configurable name.
+      const drizzleMeta = tableFieldExtensions(tableName, primaryKeyPropNames(schema[tableName] as Table));
+      // Compute field names using the mapper logic
+      const names = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
+      // A table that marks rows deleted instead of removing them also gets the mutation that
+      // reverses it — clearing the column through an ordinary update is not possible, since the
+      // column is not in the update input and a marked row is invisible to a `where` anyway.
+      const softDeleteInfo = softDeleteOf?.(tableName);
+
+      // Both selects, the aggregate and the group-by: generated and hung off the query root
+      // by the shared builder, since a read is a read on every dialect.
+      const readTypes = addReadFields(ctx, tableName, names, tableTypes, drizzleMeta);
+
+      const built = perTable({
+        tableName,
+        table: schema[tableName] as Table,
+        tableFeatures,
+        drizzleMeta,
+        names,
+        types: tableTypes,
+        softDeleteInfo,
+      });
+
+      for (const { generated, type, meta, description } of built.mutations) {
+        if (generated) {
+          defineRootField(mutations, 'mutation', generated.name, {
+            type,
+            args: generated.args,
+            resolve: generated.resolver,
+            ...(meta ? { extensions: { drizzle: drizzleMeta({ kind: 'mutation', ...meta }) } } : {}),
+            ...(description ? { description } : {}),
+          });
+        }
+      }
+
+      const { insertInput, updateInput, tableFilters, tableOrder } = tableTypes.inputs;
+      // The insert/update inputs are still built (they type the mutations that survive) but
+      // only reach the schema's type map when a mutation actually references them.
+      const activeInputs = [
+        // The insert input types the upsert mutations too, so either feature keeps it.
+        ...(tableFeatures.insert || built.onConflictInput ? [insertInput] : []),
+        ...(built.onConflictInput ? [built.onConflictInput] : []),
+        ...(tableFeatures.update ? [updateInput] : []),
+        ...(built.updateManyInput ? [built.updateManyInput] : []),
+        tableFilters,
+        tableOrder,
+      ];
+      activeInputs.forEach((e) => {
+        inputs[e.name] = e;
+      });
+      const { selectSingleOutput } = tableTypes.outputs;
+      outputs[selectSingleOutput.name] = selectSingleOutput;
+      if (adapter.returnsRows) {
+        // Only a dialect with RETURNING has a `${Table}Item` type — its mutations answer with
+        // one, where MySQL's answer with the build's shared `MutationReturn`.
+        const { singleTableItemOutput } = tableTypes.outputs as GeneratedTableTypesOutputs<true>;
+        outputs[singleTableItemOutput.name] = singleTableItemOutput;
+      }
+      const { aggregateType, groupByType, havingInput } = readTypes;
+      if (aggregateType) {
+        outputs[aggregateType.name] = aggregateType;
+      }
+      if (groupByType && havingInput) {
+        outputs[groupByType.name] = groupByType;
+        inputs[havingInput.name] = havingInput;
+      }
+    }
+  };
+
   /** The relation field resolvers and the transaction roster, once every root field exists. */
   const finalizeBuild = (ctx: SchemaBuildContext<WithReturning>): any => {
     // Every generated mutation name is now known — the first mutation resolver of a request
@@ -534,5 +684,5 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     };
   };
 
-  return { primaryKeyPropNames, uniqueColumnSets, prepareBuild, addReadFields, finalizeBuild };
+  return { primaryKeyPropNames, uniqueColumnSets, prepareBuild, forEachTable, finalizeBuild };
 };
