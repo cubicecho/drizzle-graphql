@@ -1,3 +1,9 @@
+## [11.0.1](https://github.com/cubicecho/drizzle-graphql/compare/v11.0.0...v11.0.1) (2026-09-03)
+
+### Performance Improvements
+
+* parse a relation aggregate's selection once per request ([8b16e2a](https://github.com/cubicecho/drizzle-graphql/commit/8b16e2a6ac9e04bc27175f61c44c6a31ecbe4f38)), closes [#144](https://github.com/cubicecho/drizzle-graphql/issues/144)
+
 ## [11.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v10.0.3...v11.0.0) (2026-09-03)
 
 ### ⚠ BREAKING CHANGES
