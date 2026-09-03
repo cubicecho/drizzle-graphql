@@ -14,23 +14,21 @@ import type { GraphQLFieldConfigArgumentMap, GraphQLInputObjectType } from 'grap
 import { GraphQLList, GraphQLNonNull } from 'graphql';
 import {
   drizzleError,
-  eagerLoadMutationRelations,
   extractFilters,
   type LimitPolicyFor,
   type MutationTxCtx,
-  prepareMutationRelationColumns,
+  mutationSelection,
   type RelationFilterBase,
   type ResolverPolicies,
   relationFilterCtx,
   stripContextValues,
   type TypeNameMapper,
   type TypeNameResolver,
+  withEagerRelations,
   withScope,
   writeResolver,
 } from '../builders/common.ts';
 import { remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
-import type { ResolveTree } from '../parse-resolve-info.ts';
-import { parseResolveInfo } from '../parse-resolve-info.ts';
 import { remapUpdateInput } from './field-updates.ts';
 import { mergedOps, type NestedWriteRuntime } from './nested-writes.ts';
 import type { UpdateManyGenerator } from './schema-data.ts';
@@ -165,11 +163,7 @@ export const createUpdateManyGenerator = (
         const scope = policies?.scope?.(context);
         const contextColumns = policies?.contextValues?.(tableName);
 
-        const parsedInfo = parseResolveInfo(info, {
-          deep: true,
-        }) as ResolveTree;
-
-        const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+        const { columns, hasRelations, withParams } = mutationSelection(info, {
           relationMap,
           tables,
           tableName,
@@ -178,7 +172,6 @@ export const createUpdateManyGenerator = (
           resolveName,
           table,
           pkNames,
-          parsedInfo,
           limits,
           scope,
           defaultOrderBy: policies?.defaultOrderBy,
@@ -233,9 +226,7 @@ export const createUpdateManyGenerator = (
         const flatRows = perEntry.flat();
         await after(flatRows);
 
-        const enriched = hasRelations
-          ? await eagerLoadMutationRelations(executor, tableName, flatRows, pkNames, withParams)
-          : flatRows;
+        const enriched = await withEagerRelations(executor, tableName, flatRows, pkNames, withParams, hasRelations);
 
         // Rebuild the per-entry slots: a no-match entry contributes `null`, a multi-match
         // entry contributes each of its rows.

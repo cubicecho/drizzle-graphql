@@ -7,6 +7,7 @@ import type { GraphQLFieldConfigArgumentMap } from 'graphql';
 import { GraphQLBoolean, GraphQLInputObjectType, GraphQLNonNull } from 'graphql';
 import { capitalize } from '../../case-ops/index.ts';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
+import { parseResolveInfo } from '../../parse-resolve-info.ts';
 import { remapUpdateInput } from '../field-updates.ts';
 // Type-only: the nested-write module imports this one at runtime, so the dependency has to
 // stay one-directional. The implementation is injected by the dialect builder.
@@ -17,10 +18,12 @@ import { withPrimaryKeyColumns } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import type { TypeNameMapper } from './naming.ts';
 import { resolveObjectTypeName } from './naming.ts';
-import type { ScopeResolver } from './policies.ts';
+import type { DeletedMode, ScopeResolver } from './policies.ts';
+import { withScope } from './policies.ts';
 import type { RelationFilterBase, RelationFilterContext } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractRelationsParams } from './relation-params.ts';
+import { eagerLoadMutationRelations } from './select-runtime.ts';
 import { extractSelectedColumnsFromTreeSQLFormat } from './selected-columns.ts';
 import type { MutationTxCtx } from './transactions.ts';
 import { runMutation } from './transactions.ts';
@@ -45,7 +48,7 @@ export const hardDeleteArg = {
  * then forces the primary key into the column set (so the post-mutation eager-load can
  * re-key rows). Returns everything the resolver needs to decide whether to eager-load.
  */
-export const prepareMutationRelationColumns = (params: {
+export interface PrepareMutationRelationColumnsParams {
   relationMap: Record<string, Record<string, TableNamedRelations>>;
   tables: Record<string, Table>;
   tableName: string;
@@ -59,7 +62,11 @@ export const prepareMutationRelationColumns = (params: {
   defaultOrderBy?: DefaultOrderByFor;
   /** The build's type-naming rule — the selection tree is keyed by the name it produced. */
   resolveName?: TypeNameResolver;
-}): {
+}
+
+export const prepareMutationRelationColumns = (
+  params: PrepareMutationRelationColumnsParams,
+): {
   columns: Record<string, Column>;
   hasRelations: boolean;
   withParams: Record<string, Partial<ProcessedTableSelectArgs>> | undefined;
@@ -84,6 +91,70 @@ export const prepareMutationRelationColumns = (params: {
   const columns = hasRelations ? withPrimaryKeyColumns(baseColumns, table, pkNames) : baseColumns;
   return { columns, hasRelations, withParams };
 };
+
+/**
+ * The prologue every write resolver runs: parse the resolve info, then work out the columns
+ * to return and the relations to eager-load from it. `parsedInfo` comes back too — the delete
+ * resolver reads its own columns off the tree rather than taking the prepared set.
+ */
+export const mutationSelection = (
+  info: any,
+  params: Omit<PrepareMutationRelationColumnsParams, 'parsedInfo'>,
+): {
+  parsedInfo: ResolveTree;
+  columns: Record<string, Column>;
+  hasRelations: boolean;
+  withParams: Record<string, Partial<ProcessedTableSelectArgs>> | undefined;
+} => {
+  const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
+  return { parsedInfo, ...prepareMutationRelationColumns({ ...params, parsedInfo }) };
+};
+
+/**
+ * The `where` a write runs under: the caller's filters — required when the mutation refuses to
+ * run unbounded — with the row scope ANDed on last, so a supplied filter can only narrow the
+ * scope and never widen it. An out-of-scope row is simply not matched.
+ *
+ * `deleted` states which soft-delete mode the match reads at, for the writes that need one:
+ * `restore` sees only marked rows, a hard delete has to see them too.
+ */
+export const scopedWhere = <TTable extends Table>(params: {
+  scope: ScopeResolver | undefined;
+  tableName: string;
+  table: TTable;
+  where: Filters<TTable> | undefined;
+  relationCtx?: RelationFilterContext;
+  /** The single-row writes always require a `where`; the plural ones do under `requireWhere`. */
+  required?: boolean;
+  deleted?: DeletedMode;
+}): SQL | undefined => {
+  const { scope, tableName, table, where, relationCtx, required, deleted } = params;
+  return withScope(
+    scope,
+    tableName,
+    table,
+    required
+      ? extractRequiredFilters(table, tableName, where, relationCtx)
+      : where
+        ? extractFilters(table, tableName, where, relationCtx)
+        : undefined,
+    deleted,
+  );
+};
+
+/**
+ * The epilogue: the written rows with their selected relations attached, or the rows as they
+ * came back when the selection asked for no relation at all.
+ */
+export const withEagerRelations = (
+  executor: any,
+  tableName: string,
+  rows: any[],
+  pkNames: readonly string[],
+  withParams: Record<string, Partial<ProcessedTableSelectArgs>> | undefined,
+  hasRelations: boolean,
+): Promise<any[]> | any[] =>
+  hasRelations ? eagerLoadMutationRelations(executor, tableName, rows, pkNames, withParams) : rows;
 
 /**
  * The per-entry input of `update<Table>Many`: `{ where, set }`, reusing the table's
@@ -242,12 +313,15 @@ export const generateWriteCount = ({
         return await runMutation(db, context, info, txCtx, async (executor) => {
           const { where, set } = args;
 
-          const relationCtx = relationFilterCtx(filterCtx, tableName);
-          const filters = requireWhere
-            ? extractRequiredFilters(table, tableName, where, relationCtx)
-            : where
-              ? extractFilters(table, tableName, where, relationCtx)
-              : undefined;
+          // No scope here: this mutation is only generated for tables without one.
+          const filters = scopedWhere({
+            scope: undefined,
+            tableName,
+            table,
+            where,
+            relationCtx: relationFilterCtx(filterCtx, tableName),
+            required: requireWhere,
+          });
 
           let query: any;
           if (kind === 'delete') {
