@@ -54,11 +54,50 @@ export interface RelationFilterContext {
  */
 export type RelationFilterBase = Pick<RelationFilterContext, 'tables' | 'relationMap' | 'uniqueKeys'>;
 
-/** Narrows the build-scoped relation filter context to the table a resolver is filtering. */
+/**
+ * The narrowed contexts already handed out, keyed by the build-scoped base and then by
+ * table. The base is created once per `buildSchema` and the result depends on nothing else,
+ * so every call for one table produces the same value — a `WeakMap` on the base keeps them
+ * for exactly as long as that build is reachable.
+ */
+const narrowedCtxCache = new WeakMap<RelationFilterBase, Map<string, RelationFilterContext>>();
+
+/**
+ * Narrows the build-scoped relation filter context to the table a resolver is filtering.
+ *
+ * Cached rather than rebuilt: the base carries the build's whole `tables` and `relationMap`,
+ * and the spread copied both on every call — three per parent row in the lazy relation
+ * resolver, one per parent row in the relation aggregate, and up to four per select, several
+ * of them inside callbacks drizzle invokes lazily.
+ *
+ * The one field written after the fact is `aliases`, the counter that keeps subquery aliases
+ * apart ({@link extractRelationFilter}). Sharing it is what makes the caching safe rather
+ * than a hazard: the counter now spans the process instead of restarting per extraction, and
+ * aliases only ever have to be unique *within* one statement, which a number that never
+ * repeats gives more surely than one that restarts.
+ */
 export const relationFilterCtx = (
   base: RelationFilterBase | undefined,
   tableKey: string,
-): RelationFilterContext | undefined => (base ? { ...base, tableKey } : undefined);
+): RelationFilterContext | undefined => {
+  if (!base) {
+    return undefined;
+  }
+
+  let byTable = narrowedCtxCache.get(base);
+  if (!byTable) {
+    byTable = new Map();
+    narrowedCtxCache.set(base, byTable);
+  }
+
+  let ctx = byTable.get(tableKey);
+  if (!ctx) {
+    ctx = { ...base, tableKey };
+    byTable.set(tableKey, ctx);
+  }
+
+  return ctx;
+};
 
 /** The three ways a to-many relation can be required to match, plus the to-one shorthand. */
 type RelationMatchMode = 'some' | 'none' | 'every';
