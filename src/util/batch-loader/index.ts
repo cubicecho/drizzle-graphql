@@ -1,4 +1,5 @@
 const DRIZZLE_LOADERS_KEY = Symbol('drizzle-graphql-loaders');
+const DRIZZLE_REQUEST_CACHE_KEY = Symbol('drizzle-graphql-request-cache');
 
 type BatchFn<K, V> = (keys: readonly K[]) => Promise<readonly V[]>;
 
@@ -51,4 +52,42 @@ export const getOrCreateLoader = <K, V>(context: any, key: string, batchFn: Batc
     loaders.set(key, new BatchLoader<K, V>(batchFn));
   }
   return loaders.get(key) as BatchLoader<K, V>;
+};
+
+/**
+ * Memoizes a value that a resolver derives from its own field — its args and its selection —
+ * for the length of one request. Resolvers run once per parent row, so anything derived only
+ * from the field is otherwise recomputed for every row of a batch.
+ *
+ * The cache lives on the context (weakly keyed by the AST node the value is derived from, so a
+ * document cached across requests never carries values between them) and `key` separates fields
+ * that share a node: one fragment selection can resolve for more than one parent type. Without a
+ * context object there is nowhere request-scoped to cache, so the value is simply computed.
+ *
+ * `compute` must not read the parent row.
+ */
+export const getOrCreateRequestValue = <T>(
+  context: any,
+  node: object | undefined,
+  key: string,
+  compute: () => T,
+): T => {
+  if (!context || typeof context !== 'object' || !node || typeof node !== 'object') {
+    return compute();
+  }
+  if (!context[DRIZZLE_REQUEST_CACHE_KEY]) {
+    context[DRIZZLE_REQUEST_CACHE_KEY] = new WeakMap<object, Map<string, unknown>>();
+  }
+  const cache = context[DRIZZLE_REQUEST_CACHE_KEY] as WeakMap<object, Map<string, unknown>>;
+  let entries = cache.get(node);
+  if (!entries) {
+    entries = new Map<string, unknown>();
+    cache.set(node, entries);
+  }
+  if (entries.has(key)) {
+    return entries.get(key) as T;
+  }
+  const value = compute();
+  entries.set(key, value);
+  return value;
 };
