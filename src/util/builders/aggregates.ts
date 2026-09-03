@@ -27,7 +27,7 @@ import {
   GraphQLNonNull,
   GraphQLObjectType,
 } from 'graphql';
-import { getOrCreateLoader } from '../batch-loader/index.ts';
+import { getOrCreateLoader, getOrCreateRequestValue } from '../batch-loader/index.ts';
 import { capitalize } from '../case-ops/index.ts';
 import { remapToGraphQLCore } from '../data-mappers/index.ts';
 import type { ResolveTree } from '../parse-resolve-info.ts';
@@ -531,7 +531,24 @@ export const createRelationAggregateFactory = (
       info: any,
     ) => {
       try {
-        const request = parseAggregateRequest(info, target);
+        // This resolver runs once per parent row, and the resolve-info walk and the loader key
+        // depend on the field alone, not on the row — so they are derived once per field per
+        // request and reused by every sibling the batch serves.
+        const { request, loaderKey } = getOrCreateRequestValue(
+          context,
+          info?.fieldNodes?.[0],
+          `aggregate:${tableName}::${relationName}`,
+          () => {
+            const request = parseAggregateRequest(info, target);
+            // Siblings only share a batch when they'd run the same query: same filters, same aggregates.
+            const argsKey = JSON.stringify({
+              where: args?.where ?? null,
+              deleted: args?.deleted ?? defaultDeleted ?? null,
+              selection: Object.keys(request.selection).sort(),
+            });
+            return { request, loaderKey: `${tableName}::${relationName}::aggregate::${argsKey}` };
+          },
+        );
         if (!Object.keys(request.selection).length) {
           return {};
         }
@@ -544,13 +561,6 @@ export const createRelationAggregateFactory = (
 
         const whereArg = args?.where;
         const deleted = args?.deleted;
-        // Siblings only share a batch when they'd run the same query: same filters, same aggregates.
-        const argsKey = JSON.stringify({
-          where: whereArg ?? null,
-          deleted: deleted ?? defaultDeleted ?? null,
-          selection: Object.keys(request.selection).sort(),
-        });
-        const loaderKey = `${tableName}::${relationName}::aggregate::${argsKey}`;
 
         const loader = getOrCreateLoader(context, loaderKey, async (parentIds: readonly any[]) => {
           // Loaders are cached per context, so the whole batch shares this request's executor.
