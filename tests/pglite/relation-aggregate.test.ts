@@ -199,6 +199,38 @@ describe.sequential('relation aggregates', () => {
     expect(result.data?.deleteUser).toEqual([{ id: 5, postsAggregate: { count: 2 } }]);
   });
 
+  // The parsed selection and the batch key are derived once per field per request, so two
+  // aliases of the same relation aggregate must stay apart: they are separate fields, with
+  // separate args and separate selections, even though they name one relation.
+  it('keeps aliases of the same aggregate apart when their filters differ', async () => {
+    const result = await ctx.gql.queryGql(`{
+      users(orderBy: { id: { direction: asc, priority: 1 } }) {
+        id
+        all: postsAggregate { count }
+        early: postsAggregate(where: { id: { lt: 4 } }) { count }
+      }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    expect(result.data?.users).toEqual([
+      { id: 1, all: { count: 4 }, early: { count: 3 } },
+      { id: 2, all: { count: 0 }, early: { count: 0 } },
+      { id: 5, all: { count: 2 }, early: { count: 0 } },
+    ]);
+  });
+
+  it('keeps aliases of the same aggregate apart when their selections differ', async () => {
+    const result = await ctx.gql.queryGql(`{
+      users(where: { id: { eq: 1 } }) {
+        counted: postsAggregate { count }
+        summed: postsAggregate { sum { id } }
+      }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    expect(result.data?.users).toEqual([{ counted: { count: 4 }, summed: { sum: { id: 12 } } }]);
+  });
+
   describe('schema shape', () => {
     const type = (name: string) => (ctx.entities.types as unknown as Record<string, GraphQLObjectType>)[name]!;
 
