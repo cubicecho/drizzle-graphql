@@ -5,26 +5,24 @@
 // {@link DialectSchemaAdapter}.
 //
 // The parts that are not even dialect-specific — everything up to each table's
-// types, the read fields, and the relation resolvers at the end — live in
-// `build-context.ts`, which MySQL shares. What remains here is the mutation half:
-// MySQL has no RETURNING clause, so its mutation fields, return types and
-// resolvers differ throughout.
+// types, the read fields, the per-table loop and the relation resolvers at the end
+// — live in `build-context.ts`, which MySQL shares. What remains here is the
+// mutation half, handed back to `forEachTable` for registration: MySQL has no
+// RETURNING clause, so its mutation fields, return types and resolvers differ
+// throughout.
 // =============================================================================
 
 import type { Table } from 'drizzle-orm';
-import type { GraphQLInputObjectType, GraphQLOutputType } from 'graphql';
+import type { GraphQLInputObjectType } from 'graphql';
 import { GraphQLInt, GraphQLList, GraphQLNonNull } from 'graphql';
 import {
-  computeResolverFieldNames,
-  defineRootField,
   generateOnConflictInput,
   generateUpdateManyInput,
   generateWriteCount,
   getUniqueColumnSets,
   type TablesRelationalConfig,
 } from '../builders/common.ts';
-import { type DrizzleMutationMeta, tableFieldExtensions } from '../extensions.ts';
-import { createSchemaBuilder, type SchemaBuildAdapter } from './build-context.ts';
+import { createSchemaBuilder, type MutationRegistration, type SchemaBuildAdapter } from './build-context.ts';
 import type { CreatedResolver, SchemaGeneratorOptions } from './types.ts';
 import { buildWriteResolvers, type WriteBuildOptions } from './write-resolvers.ts';
 
@@ -61,7 +59,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
   const { generateInsert, generateUpsert, generateUpdate, generateDelete } = buildWriteResolvers(primaryKeyPropNames);
   // The three stretches of a build that have nothing to do with the dialect: everything up to
   // each table's types, the read fields in the middle, and the relation resolvers at the end.
-  const { prepareBuild, addReadFields, finalizeBuild } = createSchemaBuilder(adapter);
+  const { prepareBuild, forEachTable, finalizeBuild } = createSchemaBuilder(adapter);
 
   return (
     db: any,
@@ -69,28 +67,13 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
     relations: TablesRelationalConfig,
     options: SchemaGeneratorOptions,
   ): any => {
-    const { prefixes, suffixes, conflictDoNothing, typeNameMapper, limits } = options;
+    const { prefixes, conflictDoNothing, typeNameMapper, limits } = options;
 
     // Table discovery, the relation graph, the per-build registries, the filter context, the
     // type cache and every table's types — all of it dialect-independent, so all of it lives
     // in `build-context.ts` and is shared with the MySQL builder.
     const ctx = prepareBuild(db, schema, relations, options);
-    const {
-      tables,
-      featureOf,
-      eagerRelations,
-      filterCtx,
-      policies,
-      softDeleteOf,
-      namedRelations,
-      cacheCtx,
-      nestedRuntime,
-      mutationTxCtx,
-      gqlSchemaTypes,
-      mutations,
-      inputs,
-      outputs,
-    } = ctx;
+    const { tables, eagerRelations, filterCtx, policies, namedRelations, cacheCtx, nestedRuntime, mutationTxCtx } = ctx;
 
     // Everything a write generator takes from the build rather than from the table. The same
     // object serves every table below, so each call names only what varies per table.
@@ -107,17 +90,9 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
       resolveName: cacheCtx.typeName,
     };
 
-    for (const [tableName, tableTypes] of Object.entries(gqlSchemaTypes)) {
-      // Everything this table generates, with any per-table predicate already run.
-      const tableFeatures = featureOf(tableName);
-      // What every field this table generates publishes about itself under `extensions.drizzle`,
-      // so a wrapper can read a field's identity instead of parsing its configurable name.
-      const drizzleMeta = tableFieldExtensions(tableName, primaryKeyPropNames(schema[tableName] as Table));
-      const { insertInput, updateInput, tableFilters, tableOrder } = tableTypes.inputs;
-      const { selectSingleOutput, singleTableItemOutput, arrTableItemOutput } = tableTypes.outputs;
-
-      // Compute field names using the mapper logic
-      const names = computeResolverFieldNames(tableName, typeNameMapper, prefixes, suffixes);
+    forEachTable(ctx, ({ tableName, tableFeatures, names, types, softDeleteInfo }) => {
+      const { insertInput, updateInput, tableFilters } = types.inputs;
+      const { singleTableItemOutput, arrTableItemOutput } = types.outputs;
       const {
         typeName,
         createArrayFieldName,
@@ -134,14 +109,6 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
         restoreSingleFieldName,
         deleteCountFieldName,
       } = names;
-      // A table that marks rows deleted instead of removing them also gets the mutation that
-      // reverses it — clearing the column through an ordinary update is not possible, since the
-      // column is not in the update input and a marked row is invisible to a `where` anyway.
-      const softDeleteInfo = softDeleteOf?.(tableName);
-
-      // Both selects, the aggregate and the group-by: generated and hung off the query root
-      // by the shared builder, since a read is a read on every dialect.
-      const { aggregateType, groupByType, havingInput } = addReadFields(ctx, tableName, names, tableTypes, drizzleMeta);
 
       const insertArrGenerated = tableFeatures.insert
         ? generateInsert(writeBuild, {
@@ -338,12 +305,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
       // mark. The count pair is the one entry with a description and no meta: it answers with a
       // number rather than rows, so there is no row operation for a consumer to dispatch on.
       const hardDeleteMeta = softDeleteInfo?.hardDelete ? ({ hardDelete: true } as const) : {};
-      const generatedMutations: {
-        generated: CreatedResolver | undefined;
-        type: GraphQLOutputType;
-        meta?: DrizzleMutationMeta;
-        description?: string;
-      }[] = [
+      const generatedMutations: MutationRegistration[] = [
         {
           generated: insertArrGenerated,
           type: arrTableItemOutput,
@@ -419,41 +381,9 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             'How many rows the delete removed. The rows themselves are not read back, which is the point of this mutation.',
         },
       ];
-      for (const { generated, type, meta, description } of generatedMutations) {
-        if (generated) {
-          defineRootField(mutations, 'mutation', generated.name, {
-            type,
-            args: generated.args,
-            resolve: generated.resolver,
-            ...(meta ? { extensions: { drizzle: drizzleMeta({ kind: 'mutation', ...meta }) } } : {}),
-            ...(description ? { description } : {}),
-          });
-        }
-      }
-      // The insert/update inputs are still built (they type the mutations that survive) but
-      // only reach the schema's type map when a mutation actually references them.
-      const activeInputs = [
-        // The insert input types the upsert mutations too, so either feature keeps it.
-        ...(tableFeatures.insert || onConflictInput ? [insertInput] : []),
-        ...(onConflictInput ? [onConflictInput] : []),
-        ...(tableFeatures.update ? [updateInput] : []),
-        ...(updateManyInput ? [updateManyInput] : []),
-        tableFilters,
-        tableOrder,
-      ];
-      activeInputs.forEach((e) => {
-        inputs[e.name] = e;
-      });
-      outputs[selectSingleOutput.name] = selectSingleOutput;
-      outputs[singleTableItemOutput.name] = singleTableItemOutput;
-      if (aggregateType) {
-        outputs[aggregateType.name] = aggregateType;
-      }
-      if (groupByType && havingInput) {
-        outputs[groupByType.name] = groupByType;
-        inputs[havingInput.name] = havingInput;
-      }
-    }
+
+      return { mutations: generatedMutations, onConflictInput, updateManyInput };
+    });
 
     return finalizeBuild(ctx);
   };
