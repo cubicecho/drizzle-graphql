@@ -66,6 +66,13 @@ export const isJsonColumn = (column: Column): boolean =>
 interface GenericFilterDescriptor {
   name: string;
   kind: 'scalar' | 'json' | 'array';
+  /**
+   * True for an enum column. Enum filter types are named after the enum, so they cannot be
+   * recognised by name the way the built-in filters below are — but they want the same lean
+   * operator set as `Boolean`: a closed set of members has nothing to pattern-match and no
+   * order beyond the accident of how the column was declared.
+   */
+  isEnum?: boolean;
 }
 
 /**
@@ -79,11 +86,12 @@ interface GenericFilterDescriptor {
  *                       StringArray, …) so arrays with different element types never share
  *                       one filter input; membership operators instead of scalar comparisons
  * - "Id"          → uuid-typed columns (no string pattern operators)
- * - "Boolean"     → boolean columns
+ * - "Boolean"     → boolean columns (equality and membership only — no ordering, no patterns)
  * - "BigInt"      → bigint columns (BigInt-scalar-typed operators, no string pattern operators)
  * - "Decimal"     → numeric/decimal columns (Decimal-scalar-typed operators, no string pattern operators)
- * - the enum GraphQL type name → enum columns (still unique per enum)
- * - "DateTime"    → timestamp and date columns
+ * - the enum GraphQL type name → enum columns (still unique per enum; equality and
+ *                       membership only, like Boolean)
+ * - "DateTime"    → timestamp and date columns (ordering kept, no string pattern operators)
  * - "Int"         → integer/serial columns (no string pattern operators)
  * - "Float"       → real/double columns (no string pattern operators)
  * - "String"      → all other text/varchar columns
@@ -115,7 +123,7 @@ const resolveGenericFilterDescriptor = (
   }
   // Enum type — keep unique per enum since values differ
   if (columnGraphQLType.type instanceof GraphQLEnumType) {
-    return { name: columnGraphQLType.type.name, kind: 'scalar' };
+    return { name: columnGraphQLType.type.name, kind: 'scalar', isEnum: true };
   }
   // Named numeric-string scalars — give them their own filters so the operators
   // are typed with the scalar (and validated by it) instead of a shared StringFilter.
@@ -287,11 +295,23 @@ const arrayFilterFields = (colType: GraphQLList<any>, colArr: GraphQLList<any>) 
 
 /**
  * Filters whose fields omit the string pattern operators (like/notLike/ilike/notIlike/
- * startsWith/contains/…): they are nonsensical on opaque uuids and invalid SQL on numeric
- * columns. Keyed on the generic filter name (i.e. on column type) — a string-typed column
- * keeps the string operators whatever it is called.
+ * startsWith/contains/… and the `insensitive` flag that modifies them): they are nonsensical
+ * on opaque uuids, booleans and enum members, invalid SQL on numeric columns, and on a
+ * timestamp they match whatever the session happens to render the value as rather than
+ * anything in the query. Keyed on the generic filter name (i.e. on column type) — a
+ * string-typed column keeps the string operators whatever it is called. Enum filters are
+ * named after their enum and are recognised by `isEnum` instead.
  */
-const FILTERS_WITHOUT_STRING_OPS = new Set(['Id', 'Int', 'Float', 'BigInt', 'Decimal']);
+const FILTERS_WITHOUT_STRING_OPS = new Set(['Id', 'Int', 'Float', 'BigInt', 'Decimal', 'Boolean', 'Date', 'DateTime']);
+
+/**
+ * Filters that additionally omit the ordering operators (lt/lte/gt/gte). Ordering two
+ * booleans is `eq` spelled as a puzzle (`gt: false` is `eq: true`), and ordering enum members
+ * compares their declaration order — an artefact of how the column was written rather than a
+ * fact about the domain. Timestamps and the numerics keep them: ranges are the point of
+ * having them. Enum filters are recognised by `isEnum`, as above.
+ */
+const FILTERS_WITHOUT_ORDERING_OPS = new Set(['Boolean']);
 
 /**
  * Scalars the built-in detection itself can produce. A scalar override to one of these
@@ -346,7 +366,11 @@ export const generateColumnFilterValues = (
   // same scalar share one filter type.
   const inputOverride = getColumnScalarOverride(column, true);
 
-  const { name: genericName, kind } = inputOverride
+  const {
+    name: genericName,
+    kind,
+    isEnum,
+  } = inputOverride
     ? resolveOverrideFilterDescriptor(inputOverride)
     : resolveGenericFilterDescriptor(column, columnGraphQLType);
   const cached = cacheCtx.genericFilterCache.get(genericName);
@@ -359,18 +383,20 @@ export const generateColumnFilterValues = (
   const colType = columnGraphQLType.type as NullableConvertedColumnType<true>;
   const colArr = new GraphQLList(new GraphQLNonNull(colType));
 
-  // Uuid and numeric filters omit the string pattern operators
-  // (like/ilike/startsWith/contains/…) — decided by column type, never by column name.
-  // A filter shared with the built-ins keeps that name-keyed rule even for an overridden
-  // column, so the shared type's shape never depends on which column built it first. A
-  // custom override scalar's own filter carries the pattern operators only when a pattern
-  // match is valid SQL on the underlying database column: string-typed, and not
-  // numeric/decimal (those transport as strings but reject LIKE).
+  // Which operators a column type gets is decided by the column type, never by the column
+  // name. A filter shared with the built-ins keeps that name-keyed rule even for an
+  // overridden column, so the shared type's shape never depends on which column built it
+  // first. A custom override scalar's own filter carries the pattern operators only when a
+  // pattern match is valid SQL on the underlying database column: string-typed, and not
+  // numeric/decimal (those transport as strings but reject LIKE). Ordering operators are
+  // dropped only for the built-in shapes where they are meaningless — a custom scalar says
+  // nothing about whether its column is orderable, so it keeps them.
   const customOverrideFilter = inputOverride !== undefined && !BUILTIN_FILTER_SCALARS.has(inputOverride);
   const underlying = extractExtendedColumnType(column);
   const omitStringOps = customOverrideFilter
     ? underlying.type !== 'string' || underlying.constraint === 'numeric'
-    : FILTERS_WITHOUT_STRING_OPS.has(genericName);
+    : isEnum || FILTERS_WITHOUT_STRING_OPS.has(genericName);
+  const omitOrderingOps = !customOverrideFilter && (isEnum || FILTERS_WITHOUT_ORDERING_OPS.has(genericName));
 
   const baseFields =
     kind === 'json'
@@ -380,10 +406,14 @@ export const generateColumnFilterValues = (
         : {
             eq: { type: colType, description: 'Equal to' },
             ne: { type: colType, description: 'Not equal to' },
-            lt: { type: colType, description: 'Less than' },
-            lte: { type: colType, description: 'Less than or equal to' },
-            gt: { type: colType, description: 'Greater than' },
-            gte: { type: colType, description: 'Greater than or equal to' },
+            ...(omitOrderingOps
+              ? {}
+              : {
+                  lt: { type: colType, description: 'Less than' },
+                  lte: { type: colType, description: 'Less than or equal to' },
+                  gt: { type: colType, description: 'Greater than' },
+                  gte: { type: colType, description: 'Greater than or equal to' },
+                }),
             ...(omitStringOps
               ? {}
               : {

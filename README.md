@@ -850,7 +850,51 @@ by hand. Under `insensitive` the operand stays a literal and stays a bound param
         the left side is a plain `lower(column)`, a `lower(column)` expression index can serve the
         lookup — which `ilike '%…%'` never can
 -   The flag appears only on filters whose column can take string operators, so it is absent
-        from the numeric, uuid and boolean filters
+        from the numeric, uuid, boolean, timestamp and enum filters (see
+        [Which operators a column gets](#which-operators-a-column-gets))
+
+## Which operators a column gets
+
+A filter input carries the operators that can express a question about that column type, and
+no others. The set follows the column's data type, never its name:
+
+| column type | `eq` `ne` `inArray` `notInArray` `isNull` `isNotNull` | `lt` `lte` `gt` `gte` | pattern operators + `insensitive` |
+| --- | --- | --- | --- |
+| text / varchar | yes | yes | yes |
+| timestamp, date | yes | yes | — |
+| int, float, bigint, decimal | yes | yes | — |
+| uuid | yes | yes | — |
+| boolean | yes | — | — |
+| enum | yes | — | — |
+
+The pattern operators are `like` / `notLike` / `ilike` / `notIlike`, the safe
+`startsWith` / `endsWith` / `contains` and their `i`-prefixed forms, plus the `insensitive`
+flag that modifies them.
+
+The omissions are the cases where the operator cannot ask anything a caller means:
+
+-   **Pattern matching a timestamp, a boolean or an enum member** compares whatever the value
+        is rendered as rather than anything in the row, and the answer depends on session
+        formatting. On a numeric column it is invalid SQL outright.
+-   **Ordering two booleans** is equality spelled as a puzzle — `gt: false` is `eq: true`.
+-   **Ordering enum members** compares their declaration order, which is an artefact of how the
+        column was written rather than a fact about the domain. `inArray` says the same thing
+        exactly.
+
+Timestamps keep the ordering operators — ranges are the point of having them — and `json` /
+`jsonb` and array columns have their own sets entirely (structural containment and membership;
+see [Filtering inside JSON documents](#filtering-inside-json-documents)).
+
+A column given a custom scalar through `scalarOverrides` keeps the pattern operators only when
+a `LIKE` against the underlying database column would be valid — string-typed and not
+numeric — and keeps the ordering operators either way, since a custom scalar says nothing about
+whether its column is orderable.
+
+> **Upgrading:** `BooleanFilter` and the generated `*EnumFilter`s used to carry the full
+> 24-operator string set, and `DateTimeFilter` the pattern half of it. Queries that sent one of
+> the removed operators are now validation errors; `eq` / `ne` / `inArray` / `notInArray` /
+> `isNull` / `isNotNull` and the boolean branches `AND` / `OR` / `NOT` are unchanged, as is
+> ordering on timestamps.
 
 ## Matching lists of values
 
