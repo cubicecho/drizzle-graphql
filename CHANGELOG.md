@@ -1,3 +1,19 @@
+## [12.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v11.0.2...v12.0.0) (2026-09-03)
+
+### ⚠ BREAKING CHANGES
+
+* `BooleanFilter` and the generated `*EnumFilter`s no
+longer accept the string pattern operators (`like`, `ilike`, `startsWith`,
+`contains`, their `i`-prefixed forms, `insensitive`) or the ordering
+operators (`lt`, `lte`, `gt`, `gte`); `DateTimeFilter` no longer accepts
+the pattern operators. Sending one is now a validation error. `eq`, `ne`,
+`inArray`, `notInArray`, `isNull`, `isNotNull`, `AND`/`OR`/`NOT` and
+ordering on timestamps are unchanged.
+
+### Features
+
+* give each column type the filter operators it can actually use ([#166](https://github.com/cubicecho/drizzle-graphql/issues/166)) ([1bdf0bc](https://github.com/cubicecho/drizzle-graphql/commit/1bdf0bcb341a4ae4b510c7c335f9454003f04f1f))
+
 ## [11.0.2](https://github.com/cubicecho/drizzle-graphql/compare/v11.0.1...v11.0.2) (2026-09-03)
 
 ### Performance Improvements
