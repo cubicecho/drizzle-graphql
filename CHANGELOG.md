@@ -1,3 +1,18 @@
+## [13.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v12.0.1...v13.0.0) (2026-09-03)
+
+### ⚠ BREAKING CHANGES
+
+* under a `typeNameMapper`, the update/delete/restore mutations
+are renamed. The list form takes the plural noun (`updateUser` -> `updateUsers`,
+`deleteUser` -> `deleteUsers`) and the single form takes the singular noun with
+no suffix (`updateUserSingle` -> `updateUser`, `deleteUserSingle` ->
+`deleteUser`). Builds without a mapper keep every name they had.
+
+### Features
+
+* name update/delete/restore by arity, not by suffix ([2925759](https://github.com/cubicecho/drizzle-graphql/commit/29257594e92fc24531f8bfb749bb9245e4bc457c)), closes [#171](https://github.com/cubicecho/drizzle-graphql/issues/171)
+* **types:** key the generated entities through the naming config ([9cfa99a](https://github.com/cubicecho/drizzle-graphql/commit/9cfa99a0b5af8f8ae73c3ed47b9cfaf921564ebb)), closes [#171](https://github.com/cubicecho/drizzle-graphql/issues/171)
+
 ## [12.0.1](https://github.com/cubicecho/drizzle-graphql/compare/v12.0.0...v12.0.1) (2026-09-03)
 
 ### Bug Fixes
