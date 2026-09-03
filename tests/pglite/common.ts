@@ -5,7 +5,7 @@ import { sql } from 'drizzle-orm';
 import { drizzle, type PgliteDatabase } from 'drizzle-orm/pglite';
 import type { GraphQLSchema } from 'graphql';
 import { createYoga } from 'graphql-yoga';
-import { buildSchema, type GeneratedEntities } from '@/index';
+import { buildSchema, type GeneratedData, type GeneratedEntities } from '@/index';
 import * as schema from '../schema/pg';
 import { GraphQLClient } from '../util/query';
 
@@ -19,11 +19,19 @@ export { schema, sql };
  */
 export type TestDatabase = PgliteDatabase<typeof schema.relations>;
 
+/**
+ * The entity maps a default build publishes: no `typeNameMapper`, so every key is the table
+ * key itself and the one-row operations keep their `Single` suffix. The fixtures below build
+ * with a mapper *function*, whose renames no type can predict, so their own `entities` are
+ * keyed loosely — the type suites pin this shape instead, since it is the documented one.
+ */
+export type DefaultEntities = GeneratedEntities<TestDatabase>;
+
 export interface Context {
   pglite: PGlite;
   db: TestDatabase;
   schema: GraphQLSchema;
-  entities: GeneratedEntities<TestDatabase>;
+  entities: GeneratedData<TestDatabase, 'loose'>['entities'];
   server: Server;
   gql: GraphQLClient;
 }
@@ -32,7 +40,7 @@ export interface MinimalContext {
   pglite: PGlite;
   db: TestDatabase;
   schema: GraphQLSchema;
-  entities: GeneratedEntities<TestDatabase>;
+  entities: GeneratedData<TestDatabase, 'loose'>['entities'];
 }
 
 export const createCtx = (): Context => ({}) as any;

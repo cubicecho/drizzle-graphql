@@ -9,7 +9,7 @@ import {
   GraphQLSchema,
   type GraphQLSchemaConfig,
 } from 'graphql';
-import type { AnyDrizzleDB, BuildSchemaConfig, GeneratedData, GeneratedEntities } from './types.ts';
+import type { AnyDrizzleDB, BuildSchemaConfig, GeneratedData, NamingOf } from './types.ts';
 import { resolveBuildConfig } from './util/build-config.ts';
 import { applyErrorMapper, defaultErrorMapper } from './util/builders/common.ts';
 import { generateMySQL, generatePG, generateSQLite } from './util/builders/index.ts';
@@ -41,6 +41,7 @@ export type {
   LimitsConfig,
   MutationReturnlessResult,
   MutationsCore,
+  NamingOf,
   OnWriteConfig,
   QueriesCore,
   RowScope,
@@ -118,13 +119,14 @@ export type {
   SchemaDocs,
   TableDescriber,
 } from './util/type-converter/types.ts';
+export type { Pluralize, Singularize, TypeNaming } from './util/type-naming.ts';
 
 type ObjMap<T> = Record<string, T>;
 
-export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
+export const buildSchema = <TDbClient extends AnyDrizzleDB<any>, TConfig extends BuildSchemaConfig = BuildSchemaConfig>(
   db: TDbClient,
-  config?: BuildSchemaConfig,
-): GeneratedData<TDbClient> => {
+  config?: TConfig,
+): GeneratedData<TDbClient, NamingOf<TConfig>> => {
   const relations = db._.relations;
   // The relations config is the only table map a v1 handle carries: `_.fullSchema` is gone
   // from all three dialects, and the constructor's separate `schema` argument no longer
@@ -189,5 +191,8 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>>(
   // The three dialect generators are typed on their own dialect's database, so their union
   // does not structurally match `GeneratedEntities<TDbClient>` for a still-generic TDbClient.
   // The runtime branch above is what guarantees the right one was built.
-  return { schema: outputSchema, entities: generatorOutput as unknown as GeneratedEntities<TDbClient> };
+  return {
+    schema: outputSchema,
+    entities: generatorOutput as unknown as GeneratedData<TDbClient, NamingOf<TConfig>>['entities'],
+  };
 };

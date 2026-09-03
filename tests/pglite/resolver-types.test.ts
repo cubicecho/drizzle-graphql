@@ -1,10 +1,10 @@
 import { describe, expectTypeOf, it } from 'vitest';
 import type { InsertArrResolver, InsertResolver, UpsertArrResolver, UpsertResolver } from '@/index';
 import type * as schema from '../schema/pg';
-import type { MinimalContext } from './common';
+import type { DefaultEntities } from './common';
 
 // Type-only: nothing here touches a database, so there is no setup/teardown.
-type Entities = MinimalContext['entities'];
+type Entities = DefaultEntities;
 type Users = typeof schema.Users;
 
 type Returns<T extends (...args: any) => any> = Awaited<ReturnType<T>>;
