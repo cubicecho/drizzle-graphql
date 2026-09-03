@@ -26,7 +26,7 @@ afterEach(async () => {
 describe.sequential('Error extensions', () => {
   it('classifies a multi-row refusal and names the table, operation and generated field', async () => {
     const res = await ctx.gql.queryGql(`
-      mutation { updateUserSingle(where: { id: { gt: 0 } }, set: { name: "X" }) { id } }
+      mutation { updateUser(where: { id: { gt: 0 } }, set: { name: "X" }) { id } }
     `);
 
     expect(res.errors).toBeDefined();
@@ -34,18 +34,18 @@ describe.sequential('Error extensions', () => {
     expect(error.message).toMatch(/matched more than one row/);
     expect(error.extensions).toStrictEqual({
       code: 'DRIZZLE_MULTI_ROW_MATCH',
-      drizzle: { table: 'Users', operation: 'update', field: 'updateUserSingle' },
+      drizzle: { table: 'Users', operation: 'update', field: 'updateUser' },
     });
   });
 
   it('keeps the generated field name out of the message, where a rename cannot reach it', async () => {
     const res = await ctx.gql.queryGql(`
-      mutation { updateUserSingle(where: { id: { gt: 0 } }, set: { name: "X" }) { id } }
+      mutation { updateUser(where: { id: { gt: 0 } }, set: { name: "X" }) { id } }
     `);
 
-    expect(res.errors![0]!.message).not.toContain('updateUserSingle');
+    expect(res.errors![0]!.message).not.toContain('updateUser');
     // The name the client asked for is in `path`, already correct under any rename.
-    expect(res.errors![0]!.path).toStrictEqual(['updateUserSingle']);
+    expect(res.errors![0]!.path).toStrictEqual(['updateUser']);
   });
 
   it('marks an empty insert as a no-values write', async () => {
@@ -59,12 +59,12 @@ describe.sequential('Error extensions', () => {
 
   it('marks an empty update set as a no-values write', async () => {
     const res = await ctx.gql.queryGql(`
-      mutation { updateUser(set: {}, where: { id: { eq: 1 } }) { id } }
+      mutation { updateUsers(set: {}, where: { id: { eq: 1 } }) { id } }
     `);
 
     expect(res.errors![0]!.extensions).toStrictEqual({
       code: 'DRIZZLE_NO_VALUES',
-      drizzle: { table: 'Users', operation: 'update', field: 'updateUser' },
+      drizzle: { table: 'Users', operation: 'update', field: 'updateUsers' },
     });
   });
 

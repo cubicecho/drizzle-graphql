@@ -10,7 +10,13 @@ import { PGlite } from '@electric-sql/pglite';
 import { drizzle, type PgliteDatabase } from 'drizzle-orm/pglite';
 import type { GraphQLSchema } from 'graphql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { type BuildSchemaConfig, buildSchema, type DrizzleFieldExtension, drizzleExtension } from '@/index';
+import {
+  type BuildSchemaConfig,
+  buildSchema,
+  type DrizzleFieldExtension,
+  drizzleExtension,
+  singularizeMapper,
+} from '@/index';
 import * as schema from '../schema/pg';
 
 let pglite: PGlite;
@@ -86,9 +92,10 @@ describe('suffixes reach the mutations too', () => {
     expect(mutations['deleteUsersSingle']).toBe('delete/single');
   });
 
-  it('keeps the Single fallback where the suffixes cannot separate the pair', () => {
-    // A mapper's singular/plural forms separate the queries, so both suffixes may be empty
-    // there — but update/delete are singular on both sides, so they still need the fallback.
+  it('lets a mapper separate the update/delete pair the way it separates the insert one', () => {
+    // update/delete used to take the singular noun on *both* sides — the list form included,
+    // which read as a single-row operation and was not one — so the pair could only be told
+    // apart by a `Single` the mapper had already made unnecessary everywhere else (#171).
     const mutations = mutationsFor(
       build({
         typeNameMapper: 'singularize',
@@ -97,10 +104,31 @@ describe('suffixes reach the mutations too', () => {
       'Users',
     );
 
-    expect(mutations['updateUser']).toBe('update/list');
-    expect(mutations['updateUserSingle']).toBe('update/single');
+    expect(mutations['updateUsers']).toBe('update/list');
+    expect(mutations['updateUser']).toBe('update/single');
+    expect(mutations['deleteUsers']).toBe('delete/list');
+    expect(mutations['deleteUser']).toBe('delete/single');
     expect(mutations['createUsers']).toBe('insert/list');
     expect(mutations['createUser']).toBe('insert/single');
+    expect(mutations['updateUserSingle']).toBeUndefined();
+    expect(mutations['deleteUserSingle']).toBeUndefined();
+  });
+
+  it('separates the pair with the single suffix when the mapper skips a table', () => {
+    // A mapper that returns undefined for one table leaves that table on the unmapped path,
+    // where both nouns are the table key and `suffixes.single` is the only separator left.
+    const tags = mutationsFor(
+      build({
+        typeNameMapper: (table) => (table === 'Tags' ? undefined : singularizeMapper(table)),
+        suffixes: { list: '', single: 'Single' },
+      }),
+      'Tags',
+    );
+
+    expect(tags['updateTags']).toBe('update/list');
+    expect(tags['updateTagsSingle']).toBe('update/single');
+    expect(tags['deleteTags']).toBe('delete/list');
+    expect(tags['deleteTagsSingle']).toBe('delete/single');
   });
 });
 
@@ -117,6 +145,18 @@ describe('colliding generated names', () => {
     expect(() => build({ prefixes: { update: 'delete' } })).toThrow(
       /two generated mutation fields are both named 'deleteUsers'/,
     );
+  });
+
+  it('catches a skipped table left with nothing to separate its pair', () => {
+    // Both suffixes empty is legal once a mapper is configured, because the mapper's
+    // singular/plural forms separate each pair — but a table the mapper returns undefined
+    // for has neither, and collides on its two query fields.
+    expect(() =>
+      build({
+        typeNameMapper: (table) => (table === 'Tags' ? undefined : singularizeMapper(table)),
+        suffixes: { list: '', single: '' },
+      }),
+    ).toThrow(/two generated query fields are both named 'tags'/);
   });
 
   it('catches a mapper that gives two tables the same name', () => {

@@ -189,14 +189,14 @@ describe.sequential('relation aggregates', () => {
   it('aggregates relations on a delete mutation payload', async () => {
     // `Posts.authorId` has no foreign key, so the posts outlive the deleted author.
     const result = await ctx.gql.queryGql(`mutation {
-      deleteUser(where: { id: { eq: 5 } }) {
+      deleteUsers(where: { id: { eq: 5 } }) {
         id
         postsAggregate { count }
       }
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.deleteUser).toEqual([{ id: 5, postsAggregate: { count: 2 } }]);
+    expect(result.data?.deleteUsers).toEqual([{ id: 5, postsAggregate: { count: 2 } }]);
   });
 
   // The parsed selection and the batch key are derived once per field per request, so two

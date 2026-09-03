@@ -72,7 +72,7 @@ describe.sequential('automatic multi-mutation transactions', () => {
     const result = await run(`mutation {
       first: createUser(values: { id: 201, name: "AutoTxOne" }) { id name }
       second: createUser(values: { id: 202, name: "AutoTxTwo" }) { id name }
-      renamed: updateUser(set: { name: "AutoTxOneRenamed" }, where: { id: { eq: 201 } }) { id name }
+      renamed: updateUsers(set: { name: "AutoTxOneRenamed" }, where: { id: { eq: 201 } }) { id name }
     }`);
 
     expect(result.errors).toBeUndefined();

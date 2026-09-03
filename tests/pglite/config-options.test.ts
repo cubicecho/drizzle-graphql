@@ -329,8 +329,17 @@ describe("typeNameMapper: 'singularize'", () => {
   it('names mutations singular or plural to match the operation', () => {
     const mutationKeys = Object.keys(built().mutations);
 
-    expect(mutationKeys).toEqual(expect.arrayContaining(['createUsers', 'createUser', 'updateUser', 'deleteUser']));
+    // Every write comes in a pair, and the noun is what separates them: plural for the form
+    // that operates on a set of rows, singular for the one that operates on one.
+    expect(mutationKeys).toEqual(
+      expect.arrayContaining(['createUsers', 'createUser', 'updateUsers', 'updateUser', 'deleteUsers', 'deleteUser']),
+    );
     expect(mutationKeys).not.toContain('createUsersSingle');
+    // update and delete used to put the singular noun on the *list* form, which left the
+    // one-row form no name but `Single` even here, where the mapper had already separated
+    // every other pair.
+    expect(mutationKeys).not.toContain('updateUserSingle');
+    expect(mutationKeys).not.toContain('deleteUserSingle');
   });
 
   it('is the same function as the exported singularizeMapper', () => {

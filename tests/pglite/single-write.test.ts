@@ -34,7 +34,7 @@ describe.sequential('updateSingle / deleteSingle mutations', () => {
   it('generates the Single variants with a non-null where and a single nullable return type', () => {
     const mutationFields = ctx.schema.getMutationType()!.getFields();
 
-    for (const fieldName of ['updateUserSingle', 'deleteUserSingle', 'updatePostSingle', 'deletePostSingle']) {
+    for (const fieldName of ['updateUser', 'deleteUser', 'updatePost', 'deletePost']) {
       const field = mutationFields[fieldName];
       expect(field).toBeDefined();
       const whereArg = field!.args.find((arg) => arg.name === 'where');
@@ -50,7 +50,7 @@ describe.sequential('updateSingle / deleteSingle mutations', () => {
   it('keeps where nullable on the plural update/delete mutations by default', () => {
     const mutationFields = ctx.schema.getMutationType()!.getFields();
 
-    for (const fieldName of ['updateUser', 'deleteUser']) {
+    for (const fieldName of ['updateUsers', 'deleteUsers']) {
       const whereArg = mutationFields[fieldName]!.args.find((arg) => arg.name === 'where');
       expect(whereArg).toBeDefined();
       expect(whereArg!.type).not.toBeInstanceOf(GraphQLNonNull);
@@ -59,14 +59,14 @@ describe.sequential('updateSingle / deleteSingle mutations', () => {
 
   it('exposes the Single variants on entities.mutations', () => {
     const mutations = ctx.entities.mutations as Record<string, any>;
-    expect(mutations['updateUserSingle']).toBeDefined();
-    expect(mutations['deleteUserSingle']).toBeDefined();
+    expect(mutations['updateUser']).toBeDefined();
+    expect(mutations['deleteUser']).toBeDefined();
   });
 
   it('updateSingle updates and returns the one matched row', async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			mutation {
-				updateUserSingle(where: { id: { eq: 2 } }, set: { name: "UpdatedSecondUser" }) {
+				updateUser(where: { id: { eq: 2 } }, set: { name: "UpdatedSecondUser" }) {
 					id
 					name
 				}
@@ -75,7 +75,7 @@ describe.sequential('updateSingle / deleteSingle mutations', () => {
 
     expect(res).toStrictEqual({
       data: {
-        updateUserSingle: {
+        updateUser: {
           id: 2,
           name: 'UpdatedSecondUser',
         },
@@ -96,20 +96,20 @@ describe.sequential('updateSingle / deleteSingle mutations', () => {
   it('updateSingle returns null when nothing matches', async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			mutation {
-				updateUserSingle(where: { id: { eq: 999 } }, set: { name: "Nobody" }) {
+				updateUser(where: { id: { eq: 999 } }, set: { name: "Nobody" }) {
 					id
 					name
 				}
 			}
 		`);
 
-    expect(res).toStrictEqual({ data: { updateUserSingle: null } });
+    expect(res).toStrictEqual({ data: { updateUser: null } });
   });
 
   it('updateSingle throws and writes nothing when where matches more than one row', async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			mutation {
-				updatePostSingle(where: { authorId: { eq: 1 } }, set: { content: "OVERWRITTEN" }) {
+				updatePost(where: { authorId: { eq: 1 } }, set: { content: "OVERWRITTEN" }) {
 					id
 					content
 				}
@@ -117,7 +117,7 @@ describe.sequential('updateSingle / deleteSingle mutations', () => {
 		`);
 
     // The field is nullable, so the error surfaces alongside a null field value.
-    expect(res.data?.updatePostSingle ?? null).toBeNull();
+    expect(res.data?.updatePost ?? null).toBeNull();
     expect(res.errors?.[0]?.message).toContain('matched more than one row');
 
     const overwritten = await ctx.db.select().from(schema.Posts).where(eq(schema.Posts.content, 'OVERWRITTEN'));
@@ -127,7 +127,7 @@ describe.sequential('updateSingle / deleteSingle mutations', () => {
   it('updateSingle without where is rejected by validation', async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			mutation {
-				updateUserSingle(set: { name: "Nobody" }) {
+				updateUser(set: { name: "Nobody" }) {
 					id
 				}
 			}
@@ -142,13 +142,13 @@ describe.sequential('updateSingle / deleteSingle mutations', () => {
   it('updateSingle rejects a where with no filters', async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			mutation {
-				updateUserSingle(where: {}, set: { name: "Nobody" }) {
+				updateUser(where: {}, set: { name: "Nobody" }) {
 					id
 				}
 			}
 		`);
 
-    expect(res.data?.updateUserSingle ?? null).toBeNull();
+    expect(res.data?.updateUser ?? null).toBeNull();
     expect(res.errors?.[0]?.message).toContain('at least one filter');
 
     const renamed = await ctx.db.select().from(schema.Users).where(eq(schema.Users.name, 'Nobody'));
@@ -158,7 +158,7 @@ describe.sequential('updateSingle / deleteSingle mutations', () => {
   it('deleteSingle deletes and returns the one matched row', async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			mutation {
-				deletePostSingle(where: { id: { eq: 6 } }) {
+				deletePost(where: { id: { eq: 6 } }) {
 					id
 					content
 				}
@@ -167,7 +167,7 @@ describe.sequential('updateSingle / deleteSingle mutations', () => {
 
     expect(res).toStrictEqual({
       data: {
-        deletePostSingle: {
+        deletePost: {
           id: 6,
           content: '4MESSAGE',
         },
@@ -182,13 +182,13 @@ describe.sequential('updateSingle / deleteSingle mutations', () => {
   it('deleteSingle returns null when nothing matches', async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			mutation {
-				deletePostSingle(where: { id: { eq: 999 } }) {
+				deletePost(where: { id: { eq: 999 } }) {
 					id
 				}
 			}
 		`);
 
-    expect(res).toStrictEqual({ data: { deletePostSingle: null } });
+    expect(res).toStrictEqual({ data: { deletePost: null } });
 
     const remaining = await ctx.db.select({ id: schema.Posts.id }).from(schema.Posts);
     expect(remaining).toHaveLength(6);
@@ -197,13 +197,13 @@ describe.sequential('updateSingle / deleteSingle mutations', () => {
   it('deleteSingle throws and deletes nothing when where matches more than one row', async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			mutation {
-				deletePostSingle(where: { authorId: { eq: 5 } }) {
+				deletePost(where: { authorId: { eq: 5 } }) {
 					id
 				}
 			}
 		`);
 
-    expect(res.data?.deletePostSingle ?? null).toBeNull();
+    expect(res.data?.deletePost ?? null).toBeNull();
     expect(res.errors?.[0]?.message).toContain('matched more than one row');
 
     const remaining = await ctx.db.select({ id: schema.Posts.id }).from(schema.Posts);
@@ -213,7 +213,7 @@ describe.sequential('updateSingle / deleteSingle mutations', () => {
   it('deleteSingle without where is rejected by validation', async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			mutation {
-				deletePostSingle {
+				deletePost {
 					id
 				}
 			}
@@ -228,13 +228,13 @@ describe.sequential('updateSingle / deleteSingle mutations', () => {
   it('deleteSingle rejects a where with no filters', async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			mutation {
-				deletePostSingle(where: {}) {
+				deletePost(where: {}) {
 					id
 				}
 			}
 		`);
 
-    expect(res.data?.deletePostSingle ?? null).toBeNull();
+    expect(res.data?.deletePost ?? null).toBeNull();
     expect(res.errors?.[0]?.message).toContain('at least one filter');
 
     const remaining = await ctx.db.select({ id: schema.Posts.id }).from(schema.Posts);

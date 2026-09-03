@@ -261,7 +261,7 @@ describe.sequential('Arguments tests', async () => {
   it('Update filters', async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			mutation {
-				updatePost(where: { OR: [{ id: { lte: 3 } }, { authorId: { eq: 5 } }] }, set: { content: "UPDATED" }) {
+				updatePosts(where: { OR: [{ id: { lte: 3 } }, { authorId: { eq: 5 } }] }, set: { content: "UPDATED" }) {
 					id
 					authorId
 					content
@@ -271,7 +271,7 @@ describe.sequential('Arguments tests', async () => {
 
     expect(res).toStrictEqual({
       data: {
-        updatePost: [
+        updatePosts: [
           {
             id: 1,
             authorId: 1,
@@ -305,7 +305,7 @@ describe.sequential('Arguments tests', async () => {
   it('Delete filters', async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			mutation {
-				deletePost(where: { OR: [{ id: { lte: 3 } }, { authorId: { eq: 5 } }] }) {
+				deletePosts(where: { OR: [{ id: { lte: 3 } }, { authorId: { eq: 5 } }] }) {
 					id
 					authorId
 					content
@@ -315,7 +315,7 @@ describe.sequential('Arguments tests', async () => {
 
     expect(res).toStrictEqual({
       data: {
-        deletePost: [
+        deletePosts: [
           {
             id: 1,
             authorId: 1,

@@ -51,7 +51,7 @@ describe.sequential('Empty-list filter operators', () => {
 describe.sequential('Mutation input validation errors', () => {
   it('update with empty set object returns a GraphQL error', async () => {
     const res = await ctx.gql.queryGql(`
-      mutation { updateUser(set: {}, where: { id: { eq: 1 } }) { id } }
+      mutation { updateUsers(set: {}, where: { id: { eq: 1 } }) { id } }
     `);
     expect(res.errors).toBeDefined();
     expect(res.errors![0]!.message).toMatch(/Unable to update with no values specified/);

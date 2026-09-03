@@ -1101,6 +1101,15 @@ export type BuildSchemaConfig = {
   /**
    * Customizes query name suffixes for generated GraphQL operations.
    *
+   * Both reach every operation that comes in a list/single pair, mutations included. The
+   * variants that carry their own disambiguator — `<plural>Aggregate`, `<plural>GroupBy`,
+   * `update<Table>Many`, `update<Table>Count`, `delete<Table>Count` — take neither.
+   *
+   * The two cannot be the same string unless a {@link BuildSchemaConfig.typeNameMapper} is
+   * also configured: without one both nouns are the table key, so the pair would collapse
+   * onto a single field name. With one, the mapper's singular/plural forms separate every
+   * pair on their own and the single side takes no suffix at all — see `typeNameMapper`.
+   *
    * @default { list: '', single: 'Single' }
    */
   suffixes?: {
@@ -1470,8 +1479,15 @@ export type BuildSchemaConfig = {
    * Return `undefined` for tables that should use the default naming.
    *
    * Example: `(name) => name === 'users' ? { singular: 'user', plural: 'users' } : undefined`
-   * produces type `User`, queries `users` / `user`, mutations `createUsers` / `createUser` for
-   * the `users` table, and leaves other tables with their default names.
+   * produces type `User`, queries `users` / `user`, mutations `createUsers` / `createUser`,
+   * `updateUsers` / `updateUser` and `deleteUsers` / `deleteUser` for the `users` table, and
+   * leaves other tables with their default names.
+   *
+   * The noun is what separates a mapped table's pairs — plural on the form that operates on
+   * a set of rows, singular on the one that operates on exactly one — so a mapped table's
+   * operations carry no `Single` suffix, whatever {@link BuildSchemaConfig.suffixes} says.
+   * A table the mapper returns `undefined` for is back on the default naming, where
+   * `suffixes.single` is the only thing separating its pairs.
    *
    * Pass the string `'singularize'` for the built-in preset, which derives both forms of every
    * table key with the library's own `pluralize` — the mapper most schemas with plural table

@@ -140,11 +140,11 @@ describe.sequential('relation filters', () => {
 
   it('applies relation filters to delete mutations', async () => {
     const result = await ctx.gql.queryGql(`mutation {
-      deletePost(where: { author: { name: { eq: "FifthUser" } } }) { id }
+      deletePosts(where: { author: { name: { eq: "FifthUser" } } }) { id }
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.deletePost).toEqual([{ id: 4 }, { id: 5 }]);
+    expect(result.data?.deletePosts).toEqual([{ id: 4 }, { id: 5 }]);
 
     const remaining = await ctx.gql.queryGql(`{ postsAggregate { count } }`);
     expect(remaining.data?.postsAggregate).toEqual({ count: 4 });
@@ -152,11 +152,11 @@ describe.sequential('relation filters', () => {
 
   it('applies relation filters to update mutations', async () => {
     const result = await ctx.gql.queryGql(`mutation {
-      updatePost(set: { content: "UPDATED" }, where: { author: { name: { eq: "FifthUser" } } }) { id content }
+      updatePosts(set: { content: "UPDATED" }, where: { author: { name: { eq: "FifthUser" } } }) { id content }
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.updatePost).toEqual([
+    expect(result.data?.updatePosts).toEqual([
       { id: 4, content: 'UPDATED' },
       { id: 5, content: 'UPDATED' },
     ]);

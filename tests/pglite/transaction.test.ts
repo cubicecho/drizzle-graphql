@@ -133,7 +133,7 @@ describe.sequential('context executor routing', () => {
 
     const updates: string[] = [];
     const update = await run(
-      `mutation { updateUser(set: { name: "Renamed" }, where: { id: { eq: 100 } }) { id name } }`,
+      `mutation { updateUsers(set: { name: "Renamed" }, where: { id: { eq: 100 } }) { id name } }`,
       recordingExecutor(ctx.db, updates),
     );
     expect(update.errors).toBeUndefined();
@@ -141,7 +141,7 @@ describe.sequential('context executor routing', () => {
 
     const deletes: string[] = [];
     const del = await run(
-      `mutation { deleteUser(where: { id: { eq: 100 } }) { id } }`,
+      `mutation { deleteUsers(where: { id: { eq: 100 } }) { id } }`,
       recordingExecutor(ctx.db, deletes),
     );
     expect(del.errors).toBeUndefined();

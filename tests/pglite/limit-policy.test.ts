@@ -228,11 +228,11 @@ describe.sequential('limit policy', () => {
       const gqlSchema = buildWith({ tables: { Posts: { defaultLimit: 2 } } });
       const res = await run(
         gqlSchema,
-        `mutation { updateUser(set: { profession: "changed" }, where: { id: { eq: 1 } }) { id posts { id } } }`,
+        `mutation { updateUsers(set: { profession: "changed" }, where: { id: { eq: 1 } }) { id posts { id } } }`,
       );
 
       expect(res.errors).toBeUndefined();
-      expect((res.data as any).updateUser[0].posts).toHaveLength(2); // user 1 has four
+      expect((res.data as any).updateUsers[0].posts).toHaveLength(2); // user 1 has four
     });
   });
 

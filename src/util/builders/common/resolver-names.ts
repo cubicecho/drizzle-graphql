@@ -59,33 +59,36 @@ export const computeResolverFieldNames = (
   const upsertSingleFieldName = mapped
     ? `${upsertPrefix}${capitalize(mapped.singular)}`
     : `${upsertPrefix}${capitalize(tableName)}${suffixes.single}`;
-  // The plural update/delete/restore mutations take the singular noun — they filter rather
-  // than enumerate — so, unlike create, they cannot rely on singular vs plural to stay
-  // distinct from their Single variants. The suffixes are what separates them.
-  const updateBase = `${prefixes.update}${singularNoun}`;
-  const deleteBase = `${prefixes.delete}${singularNoun}`;
-  // The soft-delete counterpart, named the same way so `deleteUser` / `restoreUser` read as a
-  // pair however the delete prefix and the suffixes are configured.
-  const restoreBase = `${prefixes.restore ?? 'restore'}${singularNoun}`;
-  const updateFieldName = `${updateBase}${suffixes.list}`;
+  const restorePrefix = prefixes.restore ?? 'restore';
+  // update/delete/restore are named the way create and upsert are: the plural noun on the
+  // form that operates on a set of rows, the singular noun on the one that operates on one.
+  // They used to put the *singular* noun on the list form — they filter rather than
+  // enumerate — which read as a single-row operation and was not one (`deleteUser(where:)`
+  // deleting every match), and which left the one-row variant no name but `Single` even
+  // under a mapper whose singular/plural pair had already separated every other operation.
+  const updateFieldName = `${prefixes.update}${pluralNoun}${suffixes.list}`;
   // The batch variant is plural like the array insert/upsert, with an explicit `Many`
   // suffix so it never collides with the single-set update.
   const updateManyFieldName = `${prefixes.update}${pluralNoun}Many`;
-  const deleteFieldName = `${deleteBase}${suffixes.list}`;
-  const restoreFieldName = `${restoreBase}${suffixes.list}`;
-  // An empty `single` suffix means "no suffix", the same as it does on the query side —
-  // except when it would name the Single variant exactly what the list variant above is
-  // called. That happens only when both suffixes are the same string, which `buildSchema`
-  // already rejects unless a `typeNameMapper` is present; the mapper's singular/plural pair
-  // rescues the queries but not these three, which are singular on both sides. There, and
-  // only there, the Single variants keep the 'Single' they have always had.
-  const writeSingleSuffix = suffixes.single === suffixes.list ? 'Single' : suffixes.single;
-  const updateSingleFieldName = `${updateBase}${writeSingleSuffix}`;
-  const deleteSingleFieldName = `${deleteBase}${writeSingleSuffix}`;
-  const restoreSingleFieldName = `${restoreBase}${writeSingleSuffix}`;
+  const deleteFieldName = `${prefixes.delete}${pluralNoun}${suffixes.list}`;
+  // The soft-delete counterpart, named the same way so `deleteUsers` / `restoreUsers` and
+  // `deleteUser` / `restoreUser` read as pairs however the prefixes and suffixes are set.
+  const restoreFieldName = `${restorePrefix}${pluralNoun}${suffixes.list}`;
+  // With a mapper the singular noun is separation enough, exactly as it is for the single
+  // query and the single insert, so those take no suffix at all. Without one both nouns are
+  // the table key and `suffixes.single` is what separates the pair — the same string the
+  // single query is separated by, so a build where it cannot separate them has already
+  // failed on the queries (or, with no mapper at all, on the suffix check in `buildSchema`)
+  // before reaching here. These used to carry a 'Single' fallback for that case; it was
+  // unreachable once the list forms above stopped taking the singular noun.
+  const singleWrite = (prefix: string) =>
+    mapped ? `${prefix}${singularNoun}` : `${prefix}${singularNoun}${suffixes.single}`;
+  const updateSingleFieldName = singleWrite(prefixes.update);
+  const deleteSingleFieldName = singleWrite(prefixes.delete);
+  const restoreSingleFieldName = singleWrite(restorePrefix);
   // The count variants are the plural write under another name, so they take the plural
-  // noun rather than the singular one the plural mutations inherited from the mapper. Their
-  // explicit `Count` is the disambiguator, so they take no configured suffix.
+  // noun the plural writes take. Their explicit `Count` is the disambiguator, so they take
+  // no configured suffix.
   const updateCountFieldName = `${prefixes.update}${pluralNoun}Count`;
   const deleteCountFieldName = `${prefixes.delete}${pluralNoun}Count`;
   return {

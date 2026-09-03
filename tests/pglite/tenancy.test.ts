@@ -191,14 +191,14 @@ describe.sequential('row scope', () => {
     const gqlSchema = buildWith(ownPosts);
     const res = await run(
       gqlSchema,
-      `mutation { updatePost(where: { id: { eq: 4 } }, set: { content: "TAKEN" }) { id } }`,
+      `mutation { updatePosts(where: { id: { eq: 4 } }, set: { content: "TAKEN" }) { id } }`,
       {
         userId: 1,
       },
     );
 
     expect(res.errors).toBeUndefined();
-    expect(res.data?.['updatePost']).toEqual([]);
+    expect(res.data?.['updatePosts']).toEqual([]);
     const [row] = await db.select().from(schema.Posts).where(eq(schema.Posts.id, 4));
     expect(row.content).toBe('1MESSAGE');
   });
@@ -222,10 +222,10 @@ describe.sequential('row scope', () => {
 
   it('stops a delete from reaching an out-of-scope row', async () => {
     const gqlSchema = buildWith(ownPosts);
-    const res = await run(gqlSchema, `mutation { deletePost(where: { id: { eq: 4 } }) { id } }`, { userId: 1 });
+    const res = await run(gqlSchema, `mutation { deletePosts(where: { id: { eq: 4 } }) { id } }`, { userId: 1 });
 
     expect(res.errors).toBeUndefined();
-    expect(res.data?.['deletePost']).toEqual([]);
+    expect(res.data?.['deletePosts']).toEqual([]);
     const rows = await db.select().from(schema.Posts).where(eq(schema.Posts.id, 4));
     expect(rows).toHaveLength(1);
   });
@@ -265,7 +265,7 @@ describe.sequential('row scope', () => {
     // Post 4 is user 5's, so user 2 cannot pull it in under user 1's scope.
     const res = await run(
       gqlSchema,
-      `mutation { updateUserSingle(where: { id: { eq: 2 } }, set: { posts: { connect: [{ id: { eq: 4 } }] } }) { id } }`,
+      `mutation { updateUser(where: { id: { eq: 2 } }, set: { posts: { connect: [{ id: { eq: 4 } }] } }) { id } }`,
       { userId: 1 },
     );
 
@@ -276,7 +276,7 @@ describe.sequential('row scope', () => {
     // Control: an in-scope post connects, so the filter is what the scope narrowed.
     const own = await run(
       gqlSchema,
-      `mutation { updateUserSingle(where: { id: { eq: 2 } }, set: { posts: { connect: [{ id: { eq: 3 } }] } }) { id } }`,
+      `mutation { updateUser(where: { id: { eq: 2 } }, set: { posts: { connect: [{ id: { eq: 3 } }] } }) { id } }`,
       { userId: 1 },
     );
     expect(own.errors).toBeUndefined();
@@ -335,13 +335,13 @@ describe.sequential('context-derived column values', () => {
     const gqlSchema = buildWith(stamped);
     const res = await run(
       gqlSchema,
-      `mutation { updatePost(where: { id: { eq: 4 } }, set: { content: "EDITED" }) { id authorId content } }`,
+      `mutation { updatePosts(where: { id: { eq: 4 } }, set: { content: "EDITED" }) { id authorId content } }`,
       { userId: 1 },
     );
 
     expect(res.errors).toBeUndefined();
     // The row keeps its original owner even though the request's context names another.
-    expect(res.data?.['updatePost']).toEqual([{ id: 4, authorId: 5, content: 'EDITED' }]);
+    expect(res.data?.['updatePosts']).toEqual([{ id: 4, authorId: 5, content: 'EDITED' }]);
   });
 
   it('stamps the column on a nested create', async () => {

@@ -112,11 +112,11 @@ describe.sequential('boolean filter tree (table level)', () => {
 
   it('applies the boolean tree to mutations too', async () => {
     const result = await ctx.gql.queryGql(`mutation {
-      deletePost(where: { authorId: { eq: 1 }, OR: [{ content: { eq: "1MESSAGE" } }, { content: { eq: "2MESSAGE" } }] }) { id }
+      deletePosts(where: { authorId: { eq: 1 }, OR: [{ content: { eq: "1MESSAGE" } }, { content: { eq: "2MESSAGE" } }] }) { id }
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.deletePost).toEqual([{ id: 1 }, { id: 2 }]);
+    expect(result.data?.deletePosts).toEqual([{ id: 1 }, { id: 2 }]);
 
     const remaining = await ctx.gql.queryGql(`{ postsAggregate { count } }`);
     expect(remaining.data?.postsAggregate).toEqual({ count: 4 });

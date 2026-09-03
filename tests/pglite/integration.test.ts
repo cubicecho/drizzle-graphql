@@ -565,7 +565,7 @@ describe.sequential('a full create/read/update/delete cycle', () => {
     const updated = await ctx.gql.queryGql(
       /* GraphQL */ `
 				mutation Update($id: Int!, $set: UpdateUserInput!) {
-					updateUserSingle(where: { id: { eq: $id } }, set: $set) {
+					updateUser(where: { id: { eq: $id } }, set: $set) {
 						id
 						name
 						email
@@ -577,7 +577,7 @@ describe.sequential('a full create/read/update/delete cycle', () => {
     expect(updated.errors).toBeUndefined();
     // `email` is nullable, so an explicit null here is a real update rather than an
     // omission to be dropped from the statement.
-    expect(updated.data.updateUserSingle).toEqual({
+    expect(updated.data.updateUser).toEqual({
       id: 100,
       name: 'Dana Renamed',
       email: null,
@@ -586,7 +586,7 @@ describe.sequential('a full create/read/update/delete cycle', () => {
     const deleted = await ctx.gql.queryGql(
       /* GraphQL */ `
 				mutation Delete($id: Int!) {
-					deleteUser(where: { id: { eq: $id } }) {
+					deleteUsers(where: { id: { eq: $id } }) {
 						id
 					}
 				}
@@ -594,7 +594,7 @@ describe.sequential('a full create/read/update/delete cycle', () => {
       { id: 100 },
     );
     expect(deleted.errors).toBeUndefined();
-    expect(deleted.data.deleteUser).toEqual([{ id: 100 }]);
+    expect(deleted.data.deleteUsers).toEqual([{ id: 100 }]);
 
     const gone = await ctx.gql.queryGql(
       /* GraphQL */ `
@@ -615,7 +615,7 @@ describe.sequential('a full create/read/update/delete cycle', () => {
     const res = await ctx.gql.queryGql(
       /* GraphQL */ `
 				mutation Break($id: Int!) {
-					updateUserSingle(where: { id: { eq: $id } }, set: { name: null }) {
+					updateUser(where: { id: { eq: $id } }, set: { name: null }) {
 						id
 					}
 				}

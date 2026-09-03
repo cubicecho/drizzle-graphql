@@ -104,8 +104,10 @@ as a preset:
 const { schema } = buildSchema(db, { typeNameMapper: 'singularize' })
 ```
 
-`tasks` then gives type `Task`, queries `tasks` (list) and `task` (single), mutations
-`createTasks` (array) and `createTask` (single), `updateTask`, `deleteTask`. Irregular
+`tasks` then gives type `Task`, queries `tasks` (list) and `task` (single), and each write
+as a pair named the same way: `createTasks` / `createTask`, `updateTasks` / `updateTask`,
+`deleteTasks` / `deleteTask` — plural for the form that operates on a set of rows, singular
+for the one that operates on exactly one. Irregular
 plurals go through `pluralize`, so `people` gives `Person` / `people` / `person` and
 `addresses` gives `Address` rather than the `addresss` a naive suffix would produce. A table
 key that is already singular is pluralized for the list side, and a capitalized key is
@@ -362,9 +364,9 @@ variants that carry their own disambiguator — `usersAggregate`, `usersGroupBy`
 The list and single suffixes cannot be identical unless a `typeNameMapper` is also given —
 `users` and `usersSingle` would otherwise collapse onto one field name, and `buildSchema`
 throws rather than generating a schema that silently drops one of them. With a mapper the
-plural and singular nouns keep the queries and the inserts apart, but the bulk update,
-delete and restore mutations are singular on both sides, so those three keep a `Single`
-suffix whenever the two configured suffixes are the same string.
+plural and singular nouns keep every pair apart on their own, so both suffixes may be empty
+and no operation carries a `Single` at all. A table the mapper returns `undefined` for is
+back on the default naming and still needs the suffixes to differ.
 
 That check compares the configured suffixes, which is only part of what a name is made of.
 Every generated root field is also registered by name, and a build that puts two operations
@@ -381,7 +383,8 @@ import pluralize from 'pluralize'
 const { schema } = buildSchema(db, {
     typeNameMapper: (table) => ({ singular: pluralize.singular(table), plural: table }),
 })
-// type User; queries `users` / `user`; mutations `createUsers` / `createUser`
+// type User; queries `users` / `user`; mutations `createUsers` / `createUser`,
+// `updateUsers` / `updateUser`, `deleteUsers` / `deleteUser`
 ```
 
 Return `undefined` for any table that should keep its default naming.
@@ -1590,7 +1593,9 @@ mutation {
 ## Single-row update & delete
 
 Alongside the plural `update<Table>` / `delete<Table>` mutations, every table gets an
-`update<Table>Single` / `delete<Table>Single` variant that targets exactly one row:
+`update<Table>Single` / `delete<Table>Single` variant that targets exactly one row. (Under a
+[`typeNameMapper`](#naming) the pair is separated by the noun instead — `updateUsers` /
+`updateUser` — and there is no `Single`.)
 
 ```graphql
 mutation {
@@ -1874,7 +1879,7 @@ to match on prose:
 ```json
 {
     "message": "'where' matched more than one row — nothing was written!",
-    "path": ["updateUser"],
+    "path": ["updateUsersSingle"],
     "extensions": {
         "code": "DRIZZLE_MULTI_ROW_MATCH",
         "drizzle": { "table": "Users", "operation": "update", "field": "updateUsersSingle" }
