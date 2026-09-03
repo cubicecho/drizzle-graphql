@@ -1,3 +1,9 @@
+## [12.0.1](https://github.com/cubicecho/drizzle-graphql/compare/v12.0.0...v12.0.1) (2026-09-03)
+
+### Bug Fixes
+
+* publish the internal write-builder refactors ([98f8ab3](https://github.com/cubicecho/drizzle-graphql/commit/98f8ab3f4ed1104fdf96ff12f80a205ba01df912)), closes [167-#170](https://github.com/cubicecho/167-/issues/170)
+
 ## [12.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v11.0.2...v12.0.0) (2026-09-03)
 
 ### ⚠ BREAKING CHANGES
