@@ -1,3 +1,9 @@
+## [10.0.3](https://github.com/cubicecho/drizzle-graphql/compare/v10.0.2...v10.0.3) (2026-09-03)
+
+### Performance Improvements
+
+* group the parent's selections once in extractRelationsParams ([9078aee](https://github.com/cubicecho/drizzle-graphql/commit/9078aee9562e9470a1466a47588eaa77aeb76875)), closes [#141](https://github.com/cubicecho/drizzle-graphql/issues/141)
+
 ## [10.0.2](https://github.com/cubicecho/drizzle-graphql/compare/v10.0.1...v10.0.2) (2026-09-03)
 
 ### Performance Improvements
