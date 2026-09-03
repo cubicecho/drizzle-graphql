@@ -646,8 +646,10 @@ export const createNestedWriteRuntime = (params: {
     operation: string,
     scope: ScopeResolver | undefined,
   ): Promise<any[]> => {
+    // Only the key the junction stores is read back, so the projection asks for that column
+    // alone — a wide target row is never dragged across the wire to pick one value off it.
     const rows = await executor
-      .select()
+      .select({ [plan.foreignColPropName]: plan.foreignCol })
       .from(plan.targetTable)
       .where(conditionOf(plan, filter, operation, scope));
     return rows
@@ -676,9 +678,12 @@ export const createNestedWriteRuntime = (params: {
 
     const link = async (operands: any[], operation: string) => {
       const existing = new Set(
-        (await executor.select().from(through.table).where(eq(through.sourceCol, key))).map(
-          (row: any) => row[through.targetColPropName],
-        ),
+        (
+          await executor
+            .select({ [through.targetColPropName]: through.targetCol })
+            .from(through.table)
+            .where(eq(through.sourceCol, key))
+        ).map((row: any) => row[through.targetColPropName]),
       );
       const rows: Record<string, any>[] = [];
       for (const filter of operands) {
@@ -782,7 +787,10 @@ export const createNestedWriteRuntime = (params: {
             contextValues?.(plan.targetTableName),
             context,
           );
-          const inserted = await executor.insert(plan.targetTable).values(values).returning();
+          const inserted = await executor
+            .insert(plan.targetTable)
+            .values(values)
+            .returning({ [plan.foreignColPropName]: plan.foreignCol });
           const created = inserted[0];
           if (!created) {
             throw drizzleError(
@@ -792,8 +800,10 @@ export const createNestedWriteRuntime = (params: {
           }
           patch[plan.localColPropName] = created[plan.foreignColPropName];
         } else if (op['connect'] !== undefined) {
+          // `rows.length` drives the match check and is unaffected by the projection, so the
+          // read asks only for the key that ends up on the parent's patch.
           const rows = await executor
-            .select()
+            .select({ [plan.foreignColPropName]: plan.foreignCol })
             .from(plan.targetTable)
             .where(conditionOf(plan, op['connect'], 'connect', scope));
           if (rows.length !== 1) {
