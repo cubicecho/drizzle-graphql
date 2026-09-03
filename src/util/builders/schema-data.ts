@@ -73,7 +73,7 @@ export type DialectSchemaAdapter = SchemaBuildAdapter<true> & {
 export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
   const primaryKeyPropNames = adapter.primaryKeyPropNames;
   const uniqueColumnSets = (table: Table): string[][] => getUniqueColumnSets(table, adapter.getTableConfig);
-  const { generateInsertArray, generateInsertSingle, generateUpsert, generateUpdate, generateDelete } =
+  const { generateInsert, generateUpsert, generateUpdate, generateDelete } =
     buildWriteResolvers(primaryKeyPropNames);
   // The three stretches of a build that have nothing to do with the dialect: everything up to
   // each table's types, the read fields in the middle, and the relation resolvers at the end.
@@ -145,7 +145,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
       const { aggregateType, groupByType, havingInput } = addReadFields(ctx, tableName, names, tableTypes, drizzleMeta);
 
       const insertArrGenerated = tableFeatures.insert
-        ? generateInsertArray(
+        ? generateInsert(
             db,
             tableName,
             schema[tableName] as Table,
@@ -154,6 +154,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             insertInput,
             createArrayFieldName,
             typeName,
+            false,
             typeNameMapper,
             conflictDoNothing,
             mutationTxCtx,
@@ -164,7 +165,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
           )
         : undefined;
       const insertSingleGenerated = tableFeatures.insert
-        ? generateInsertSingle(
+        ? generateInsert(
             db,
             tableName,
             schema[tableName] as Table,
@@ -173,6 +174,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             insertInput,
             createSingleFieldName,
             typeName,
+            true,
             typeNameMapper,
             conflictDoNothing,
             mutationTxCtx,

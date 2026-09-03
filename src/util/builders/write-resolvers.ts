@@ -69,7 +69,14 @@ export type PrimaryKeyPropNames = (table: any) => string[];
  * result, so the generator call sites read exactly as they did when the functions were local.
  */
 export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) => {
-  const generateInsertArray = (
+  /**
+   * `insert<Table>` / `insert<Table>Single` — one generator for both shapes, the way
+   * {@link generateUpsert} handles its pair. `single` decides the argument type, whether the
+   * result is remapped as a row or a list, and whether an empty return is an error; the write
+   * itself is the same multi-row statement either way, with the single variant supplying a
+   * one-element list.
+   */
+  const generateInsert = (
     db: WriteDatabase,
     tableName: string,
     table: Table,
@@ -78,6 +85,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
     baseType: GraphQLInputObjectType,
     fieldName: string,
     typeName: string,
+    single: boolean,
     typeNameMapper?: TypeNameMapper,
     conflictDoNothing: boolean = false,
     txCtx?: MutationTxCtx,
@@ -89,7 +97,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
   ): CreatedResolver => {
     const queryArgs: GraphQLFieldConfigArgumentMap = {
       values: {
-        type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(baseType))),
+        type: single ? new GraphQLNonNull(baseType) : new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(baseType))),
       },
     };
 
@@ -97,17 +105,18 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
     // rather than re-running getTableConfig on every mutation request.
     const pkNames = primaryKeyPropNames(table);
 
-    return writeResolver<{ values: Record<string, any>[] }>({
+    return writeResolver<{ values: Record<string, any> | Record<string, any>[] }>({
       db,
       tableName,
       operation: 'insert',
-      single: false,
+      single,
       fieldName,
       txCtx,
       policies,
       args: queryArgs,
       run: async ({ executor, args, context, info, before, after }) => {
-        if (!args.values.length) {
+        const supplied = single ? [args.values as Record<string, any>] : (args.values as Record<string, any>[]);
+        if (!supplied.length) {
           throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
         }
         await before();
@@ -115,7 +124,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         // Split each row's relation fields off its columns. Only when something is actually
         // nested does the write leave the single multi-row statement below.
         const entries = nested?.enabled(tableName)
-          ? args.values.map((values) => nested.split(tableName, values))
+          ? supplied.map((values) => nested.split(tableName, values))
           : undefined;
         const nestedEntries = entries?.some((entry) => nested!.hasOps(entry.ops)) ? entries : undefined;
         const contextColumns = policies?.contextValues?.(tableName);
@@ -123,7 +132,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         const input = nestedEntries
           ? []
           : applyContextValuesAll(
-              remapFromGraphQLArrayInput(entries ? entries.map((entry) => entry.columns) : args.values, table),
+              remapFromGraphQLArrayInput(entries ? entries.map((entry) => entry.columns) : supplied, table),
               contextColumns,
               context,
             );
@@ -169,105 +178,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
 
         await after(result);
 
-        const enriched = await withEagerRelations(executor, tableName, result, pkNames, withParams, hasRelations);
-
-        return remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
-      },
-    });
-  };
-
-  const generateInsertSingle = (
-    db: WriteDatabase,
-    tableName: string,
-    table: Table,
-    tables: Record<string, Table>,
-    relationMap: Record<string, Record<string, TableNamedRelations>>,
-    baseType: GraphQLInputObjectType,
-    fieldName: string,
-    typeName: string,
-    typeNameMapper?: TypeNameMapper,
-    conflictDoNothing: boolean = false,
-    txCtx?: MutationTxCtx,
-    nested?: NestedWriteRuntime,
-    limits?: LimitPolicyFor,
-    policies?: ResolverPolicies,
-    /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
-    resolveName?: TypeNameResolver,
-  ): CreatedResolver => {
-    const queryArgs: GraphQLFieldConfigArgumentMap = {
-      values: {
-        type: new GraphQLNonNull(baseType),
-      },
-    };
-
-    // Derived once at build time — PK prop names don't change per request.
-    const pkNames = primaryKeyPropNames(table);
-
-    return writeResolver<{ values: Record<string, any> }>({
-      db,
-      tableName,
-      operation: 'insert',
-      single: true,
-      fieldName,
-      txCtx,
-      policies,
-      args: queryArgs,
-      run: async ({ executor, args, context, info, before, after }) => {
-        await before();
-        const entry = nested?.enabled(tableName) ? nested.split(tableName, args.values) : undefined;
-        const nestedEntry = entry && nested!.hasOps(entry.ops) ? entry : undefined;
-        const contextColumns = policies?.contextValues?.(tableName);
-        const scope = policies?.scope?.(context);
-        const input = nestedEntry
-          ? {}
-          : applyContextValues(
-              remapFromGraphQLSingleInput(entry ? entry.columns : args.values, table),
-              contextColumns,
-              context,
-            );
-
-        const { columns, hasRelations, withParams } = mutationSelection(info, {
-          relationMap,
-          tables,
-          tableName,
-          typeName,
-          typeNameMapper,
-          resolveName,
-          table,
-          pkNames,
-          limits,
-          scope,
-          defaultOrderBy: policies?.defaultOrderBy,
-        });
-
-        const returning = nestedEntry
-          ? nested!.withJoinColumns(tableName, nestedEntry.ops, { ...columns }, table)
-          : columns;
-
-        const runInsert = async (target: any, values: Record<string, any>) => {
-          let query = target.insert(table).values(values).returning(returning);
-          if (conflictDoNothing) {
-            query = query.onConflictDoNothing() as any;
-          }
-          return (await query) as Record<string, any>[];
-        };
-
-        const result = nestedEntry
-          ? await writeWithNestedOps({
-              executor,
-              runtime: nested!,
-              tableName,
-              entries: [nestedEntry],
-              remapValues: (values) =>
-                applyContextValues(remapFromGraphQLSingleInput(values, table), contextColumns, context),
-              write: runInsert,
-              context,
-            })
-          : await runInsert(executor, input);
-
-        await after(result);
-
-        if (!result[0]) {
+        if (single && !result[0]) {
           // Only reachable under `conflictDoNothing`, which is why the field is nullable
           // there and non-null everywhere else.
           if (!conflictDoNothing) {
@@ -278,7 +189,9 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
 
         const enriched = await withEagerRelations(executor, tableName, result, pkNames, withParams, hasRelations);
 
-        return remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap);
+        return single
+          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
+          : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
       },
     });
   };
@@ -680,5 +593,5 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
       },
     });
   };
-  return { generateInsertArray, generateInsertSingle, generateUpsert, generateUpdate, generateDelete };
+  return { generateInsert, generateUpsert, generateUpdate, generateDelete };
 };
