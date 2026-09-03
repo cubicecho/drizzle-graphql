@@ -52,9 +52,23 @@ export const extractRelationsParams = (
     return undefined;
   }
 
-  const baseField = Object.entries(info.fieldsByTypeName).find(([key, _value]) => key === typeName)?.[1];
+  const baseField = info.fieldsByTypeName[typeName];
   if (!baseField) {
     return undefined;
+  }
+
+  // The parsed tree keys its entries by response key — the alias — so a relation is found by
+  // the `name` its selections carry, not by the key they sit under. Grouped once here rather
+  // than searched per relation: the loop below runs over every relation the table declares,
+  // selected or not, and used to walk the whole selection set three times for each of them.
+  const selectionsByName = new Map<string, ResolveTree[]>();
+  for (const selection of Object.values(baseField) as ResolveTree[]) {
+    const selections = selectionsByName.get(selection.name);
+    if (selections) {
+      selections.push(selection);
+    } else {
+      selectionsByName.set(selection.name, [selection]);
+    }
   }
 
   const args: Record<string, Partial<ProcessedTableSelectArgs>> = {};
@@ -63,12 +77,11 @@ export const extractRelationsParams = (
     const { targetTableName, targetPkNames } = relEntry;
     // The relation field resolves to the target table's own type, e.g. "Posts" not "UsersPostsRelation".
     const relTypeName = resolveObjectTypeName(targetTableName, typeNameMapper, resolveName);
-    // Look up by field name OR by alias (when the caller uses an alias for the relation).
-    // The parsed tree keys fieldsByTypeName entries by response key, which is the alias.
-    const field = baseField[relName] ?? Object.values(baseField).find((f) => (f as ResolveTree).name === relName);
-    if (!field) {
+    const selections = selectionsByName.get(relName);
+    if (!selections) {
       continue;
     }
+    const field = selections[0]!;
 
     // The `with:` clause is keyed by relation name, so one relation selected twice under
     // different aliases has no eager representation: the first selection's args and column
@@ -78,15 +91,10 @@ export const extractRelationsParams = (
     // relation out of `with:` and let every alias resolve through the field resolver's
     // batch loader, which keys its loader by the serialized args and so is per-alias
     // correct (and still batched across parents).
-    const selectionCount = Object.values(baseField).reduce(
-      (n, f) => n + ((f as ResolveTree).name === relName ? 1 : 0),
-      0,
-    );
-    if (selectionCount > 1) {
+    if (selections.length > 1) {
       continue;
     }
-    const relField = (field as ResolveTree)?.fieldsByTypeName;
-    const relFieldSelection = relField?.[relTypeName];
+    const relFieldSelection = field.fieldsByTypeName[relTypeName];
 
     // Guard: if the relation type is not in fieldsByTypeName, this field is
     // either an aliased scalar column (not an actual relation) or the relation
@@ -101,7 +109,7 @@ export const extractRelationsParams = (
     // window pass, and a cursor has to be computed from the raw row. As with an aliased
     // relation above, the fix is to leave the relation out of the eager clause — the field
     // resolver's batch loader implements all three, still in one query per relation.
-    const eagerArgs = (field as ResolveTree).args as Partial<TableSelectArgs> | undefined;
+    const eagerArgs = field.args as Partial<TableSelectArgs> | undefined;
     if (
       !is((relEntry as any).relation ?? relEntry, One) &&
       (eagerArgs?.after != null ||
@@ -121,13 +129,12 @@ export const extractRelationsParams = (
     const thisRecord: Partial<ProcessedTableSelectArgs> = {};
     thisRecord.columns = columns;
 
-    const relationField = Object.values(baseField).find((e) => e.name === relName);
     // The eager path reads its arguments off the AST rather than through the relation field's
     // resolver, so the target's default ordering has to be substituted here too — otherwise
     // an eagerly loaded relation would come back in a different order from a lazily loaded one.
     const relationArgs: Partial<TableSelectArgs> | undefined = is(relEntry.relation, One)
-      ? relationField?.args
-      : relationField && withDefaultOrderBy(relationField.args ?? {}, targetTableName, defaultOrderBy);
+      ? field.args
+      : withDefaultOrderBy(field.args ?? {}, targetTableName, defaultOrderBy);
 
     const offset = relationArgs?.offset ?? undefined;
     // The eager path reads its arguments off the AST rather than through the relation field's
@@ -188,7 +195,7 @@ export const extractRelationsParams = (
     thisRecord.offset = offset;
     thisRecord.limit = limit;
 
-    const relWith = extractRelationsParams(relationMap, tables, targetTableName, relationField, relTypeName, options);
+    const relWith = extractRelationsParams(relationMap, tables, targetTableName, field, relTypeName, options);
     thisRecord.with = relWith;
 
     args[relName] = thisRecord;
