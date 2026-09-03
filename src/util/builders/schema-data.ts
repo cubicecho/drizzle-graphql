@@ -16,6 +16,7 @@ import type { GraphQLInputObjectType } from 'graphql';
 import { GraphQLInt, GraphQLList, GraphQLNonNull } from 'graphql';
 import {
   computeResolverFieldNames,
+  defineRootField,
   generateOnConflictInput,
   generateUpdateManyInput,
   generateWriteCount,
@@ -419,17 +420,17 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             })
           : undefined;
       if (insertArrGenerated) {
-        mutations[insertArrGenerated.name] = {
+        defineRootField(mutations, 'mutation', insertArrGenerated.name, {
           type: arrTableItemOutput,
           args: insertArrGenerated.args,
           resolve: insertArrGenerated.resolver,
           extensions: {
             drizzle: drizzleMeta({ kind: 'mutation', operation: 'insert', single: false, targetArg: 'values' }),
           },
-        };
+        });
       }
       if (insertSingleGenerated) {
-        mutations[insertSingleGenerated.name] = {
+        defineRootField(mutations, 'mutation', insertSingleGenerated.name, {
           // An insert either returns the row it inserted or throws — the one path to `null` is
           // `conflictDoNothing` swallowing the insert, so the field is nullable only there.
           type: conflictDoNothing ? singleTableItemOutput : new GraphQLNonNull(singleTableItemOutput),
@@ -438,40 +439,40 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
           extensions: {
             drizzle: drizzleMeta({ kind: 'mutation', operation: 'insert', single: true, targetArg: 'values' }),
           },
-        };
+        });
       }
       if (upsertArrGenerated) {
-        mutations[upsertArrGenerated.name] = {
+        defineRootField(mutations, 'mutation', upsertArrGenerated.name, {
           type: arrTableItemOutput,
           args: upsertArrGenerated.args,
           resolve: upsertArrGenerated.resolver,
           extensions: {
             drizzle: drizzleMeta({ kind: 'mutation', operation: 'upsert', single: false, targetArg: 'values' }),
           },
-        };
+        });
       }
       if (upsertSingleGenerated) {
-        mutations[upsertSingleGenerated.name] = {
+        defineRootField(mutations, 'mutation', upsertSingleGenerated.name, {
           type: singleTableItemOutput,
           args: upsertSingleGenerated.args,
           resolve: upsertSingleGenerated.resolver,
           extensions: {
             drizzle: drizzleMeta({ kind: 'mutation', operation: 'upsert', single: true, targetArg: 'values' }),
           },
-        };
+        });
       }
       if (updateGenerated) {
-        mutations[updateGenerated.name] = {
+        defineRootField(mutations, 'mutation', updateGenerated.name, {
           type: arrTableItemOutput,
           args: updateGenerated.args,
           resolve: updateGenerated.resolver,
           extensions: {
             drizzle: drizzleMeta({ kind: 'mutation', operation: 'update', single: false, targetArg: 'where' }),
           },
-        };
+        });
       }
       if (updateManyGenerated) {
-        mutations[updateManyGenerated.name] = {
+        defineRootField(mutations, 'mutation', updateManyGenerated.name, {
           type: new GraphQLNonNull(new GraphQLList(singleTableItemOutput)),
           args: updateManyGenerated.args,
           resolve: updateManyGenerated.resolver,
@@ -483,20 +484,20 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
           // entry, so an entry that matched nothing has to be able to say so.
           description:
             "Each entry's updated rows, in entry order. An entry whose `where` matched no rows contributes `null` in its slot; an entry that matched several contributes each of its rows.",
-        };
+        });
       }
       if (updateSingleGenerated) {
-        mutations[updateSingleGenerated.name] = {
+        defineRootField(mutations, 'mutation', updateSingleGenerated.name, {
           type: singleTableItemOutput,
           args: updateSingleGenerated.args,
           resolve: updateSingleGenerated.resolver,
           extensions: {
             drizzle: drizzleMeta({ kind: 'mutation', operation: 'update', single: true, targetArg: 'where' }),
           },
-        };
+        });
       }
       if (deleteGenerated) {
-        mutations[deleteGenerated.name] = {
+        defineRootField(mutations, 'mutation', deleteGenerated.name, {
           type: arrTableItemOutput,
           args: deleteGenerated.args,
           resolve: deleteGenerated.resolver,
@@ -509,10 +510,10 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
               ...(softDeleteInfo?.hardDelete ? { hardDelete: true } : {}),
             }),
           },
-        };
+        });
       }
       if (deleteSingleGenerated) {
-        mutations[deleteSingleGenerated.name] = {
+        defineRootField(mutations, 'mutation', deleteSingleGenerated.name, {
           type: singleTableItemOutput,
           args: deleteSingleGenerated.args,
           resolve: deleteSingleGenerated.resolver,
@@ -525,45 +526,45 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
               ...(softDeleteInfo?.hardDelete ? { hardDelete: true } : {}),
             }),
           },
-        };
+        });
       }
       if (restoreGenerated) {
-        mutations[restoreGenerated.name] = {
+        defineRootField(mutations, 'mutation', restoreGenerated.name, {
           type: arrTableItemOutput,
           args: restoreGenerated.args,
           resolve: restoreGenerated.resolver,
           extensions: {
             drizzle: drizzleMeta({ kind: 'mutation', operation: 'restore', single: false, targetArg: 'where' }),
           },
-        };
+        });
       }
       if (restoreSingleGenerated) {
-        mutations[restoreSingleGenerated.name] = {
+        defineRootField(mutations, 'mutation', restoreSingleGenerated.name, {
           type: singleTableItemOutput,
           args: restoreSingleGenerated.args,
           resolve: restoreSingleGenerated.resolver,
           extensions: {
             drizzle: drizzleMeta({ kind: 'mutation', operation: 'restore', single: true, targetArg: 'where' }),
           },
-        };
+        });
       }
       if (updateCountGenerated) {
-        mutations[updateCountGenerated.name] = {
+        defineRootField(mutations, 'mutation', updateCountGenerated.name, {
           type: new GraphQLNonNull(GraphQLInt),
           args: updateCountGenerated.args,
           resolve: updateCountGenerated.resolver,
           description:
             'How many rows the update touched. The rows themselves are not read back, which is the point of this mutation.',
-        };
+        });
       }
       if (deleteCountGenerated) {
-        mutations[deleteCountGenerated.name] = {
+        defineRootField(mutations, 'mutation', deleteCountGenerated.name, {
           type: new GraphQLNonNull(GraphQLInt),
           args: deleteCountGenerated.args,
           resolve: deleteCountGenerated.resolver,
           description:
             'How many rows the delete removed. The rows themselves are not read back, which is the point of this mutation.',
-        };
+        });
       }
       // The insert/update inputs are still built (they type the mutations that survive) but
       // only reach the schema's type map when a mutation actually references them.
