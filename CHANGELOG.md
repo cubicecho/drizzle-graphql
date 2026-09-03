@@ -1,3 +1,9 @@
+## [10.0.2](https://github.com/cubicecho/drizzle-graphql/compare/v10.0.1...v10.0.2) (2026-09-03)
+
+### Performance Improvements
+
+* hand out the narrowed relation filter context instead of rebuilding it ([f3e37d0](https://github.com/cubicecho/drizzle-graphql/commit/f3e37d0f528a881f56fc7d6dabd1ef676cc46c24)), closes [#148](https://github.com/cubicecho/drizzle-graphql/issues/148)
+
 ## [10.0.1](https://github.com/cubicecho/drizzle-graphql/compare/v10.0.0...v10.0.1) (2026-09-02)
 
 ### Bug Fixes
