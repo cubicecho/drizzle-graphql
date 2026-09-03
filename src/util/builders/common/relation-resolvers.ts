@@ -4,7 +4,7 @@
 
 import type { Column, Table } from 'drizzle-orm';
 import { and, getColumns, gt, inArray, lte, type SQL, sql } from 'drizzle-orm';
-import { getOrCreateLoader } from '../../batch-loader/index.ts';
+import { getOrCreateLoader, getOrCreateRequestValue } from '../../batch-loader/index.ts';
 import { remapToGraphQLArrayOutput } from '../../data-mappers/index.ts';
 import { relationFieldExtension } from '../../extensions.ts';
 import type { TableNamedRelations } from '../types.ts';
@@ -160,63 +160,83 @@ export const createRelationResolverFactory =
       }
 
       const { where: whereArg, limit: requestedLimit, offset, after, deleted } = (args ?? {}) as any;
-      // A relation field falls back to the *target* table's default ordering, since that is
-      // the table it reads. A to-one relation is a single row and takes no ordering at all.
-      const orderByArg = isOne
-        ? (args as any)?.orderBy
-        : withDefaultOrderBy(args ?? {}, targetTableName, policies?.defaultOrderBy).orderBy;
-      const limit = applyLimitPolicy(requestedLimit, limitPolicy, errorCtx);
-      const distinct = ((args ?? {}) as any).distinct?.length ? ((args ?? {}) as any).distinct : undefined;
 
-      // ── keyset (cursor) pagination ──
-      // The same rules the root list follows, over the related rows of one parent: the cursor
-      // is defined over the request's orderBy plus the target's primary-key tiebreak, and the
-      // keyset predicate is a plain condition on the target's own columns — so it filters each
-      // parent's rows independently even though the batch fetches them all at once.
-      const cursorSelected = !isOne && !!info && selectsCursorField(info, targetTable);
-      let cursorEntries: CursorOrderEntry[] | undefined;
-      if (!isOne && (after != null || cursorSelected)) {
-        if (after != null && distinct) {
-          throw drizzleError("'after' cannot be combined with 'distinct'.", { code: 'DRIZZLE_INVALID_CURSOR' });
-        }
-        if (orderByHasRelationEntry(orderByArg)) {
-          if (after != null) {
-            throw drizzleError(
-              "'after' cannot be combined with an orderBy that orders through a relation — a related row's value cannot be encoded into a cursor.",
-              { code: 'DRIZZLE_INVALID_CURSOR' },
-            );
-          }
-          // `cursor` was selected under a relation ordering — the field resolves to null.
-        } else if (!targetPkNames.length) {
-          if (after != null) {
-            throw drizzleError(
-              `Table ${targetTableName} has no primary key, so cursor pagination cannot be used on it.`,
-              { code: 'DRIZZLE_INVALID_CURSOR' },
-            );
-          }
-          // `cursor` was selected but no total order exists — the field resolves to null.
-        } else {
-          cursorEntries = cursorOrderingEntries(orderByArg, targetPkNames);
-        }
-      }
-      const cursorValues = after != null && cursorEntries ? decodeCursor(after, cursorEntries) : undefined;
+      // Everything below is derived from this field alone — its args and its selection — so it is
+      // identical for every parent row the batch fetches. Resolvers run once per parent row, so it
+      // is computed once per field per request and reused, rather than re-reading the selection and
+      // re-stringifying the loader key N times.
+      const { orderByArg, limit, distinct, cursorEntries, cursorValues, loaderKey } = getOrCreateRequestValue(
+        context,
+        info?.fieldNodes?.[0],
+        `relation:${tableName}::${relationName}`,
+        () => {
+          // A relation field falls back to the *target* table's default ordering, since that is
+          // the table it reads. A to-one relation is a single row and takes no ordering at all.
+          const orderByArg = isOne
+            ? (args as any)?.orderBy
+            : withDefaultOrderBy(args ?? {}, targetTableName, policies?.defaultOrderBy).orderBy;
+          const limit = applyLimitPolicy(requestedLimit, limitPolicy, errorCtx);
+          const distinct = ((args ?? {}) as any).distinct?.length ? ((args ?? {}) as any).distinct : undefined;
 
-      // Batch path: collect all sibling calls in this tick and execute one query.
-      // Pagination args are part of the loader key so siblings sharing identical
-      // args batch together; per-parent limit/offset is applied inside the batch
-      // via a window function rather than bailing to a per-parent query (N+1).
-      // `cursorEntries` joins the key because it changes the ordering, not just the filter.
-      const argsKey = JSON.stringify({
-        where: whereArg ?? null,
-        orderBy: orderByArg ?? null,
-        limit: limit ?? null,
-        offset: offset ?? null,
-        deleted: deleted ?? defaultDeleted ?? null,
-        after: after ?? null,
-        distinct: distinct ?? null,
-        cursor: cursorEntries ? 1 : 0,
-      });
-      const loaderKey = `${tableName}::${relationName}::${argsKey}`;
+          // ── keyset (cursor) pagination ──
+          // The same rules the root list follows, over the related rows of one parent: the cursor
+          // is defined over the request's orderBy plus the target's primary-key tiebreak, and the
+          // keyset predicate is a plain condition on the target's own columns — so it filters each
+          // parent's rows independently even though the batch fetches them all at once.
+          const cursorSelected = !isOne && !!info && selectsCursorField(info, targetTable);
+          let cursorEntries: CursorOrderEntry[] | undefined;
+          if (!isOne && (after != null || cursorSelected)) {
+            if (after != null && distinct) {
+              throw drizzleError("'after' cannot be combined with 'distinct'.", { code: 'DRIZZLE_INVALID_CURSOR' });
+            }
+            if (orderByHasRelationEntry(orderByArg)) {
+              if (after != null) {
+                throw drizzleError(
+                  "'after' cannot be combined with an orderBy that orders through a relation — a related row's value cannot be encoded into a cursor.",
+                  { code: 'DRIZZLE_INVALID_CURSOR' },
+                );
+              }
+              // `cursor` was selected under a relation ordering — the field resolves to null.
+            } else if (!targetPkNames.length) {
+              if (after != null) {
+                throw drizzleError(
+                  `Table ${targetTableName} has no primary key, so cursor pagination cannot be used on it.`,
+                  { code: 'DRIZZLE_INVALID_CURSOR' },
+                );
+              }
+              // `cursor` was selected but no total order exists — the field resolves to null.
+            } else {
+              cursorEntries = cursorOrderingEntries(orderByArg, targetPkNames);
+            }
+          }
+          const cursorValues = after != null && cursorEntries ? decodeCursor(after, cursorEntries) : undefined;
+
+          // Batch path: collect all sibling calls in this tick and execute one query.
+          // Pagination args are part of the loader key so siblings sharing identical
+          // args batch together; per-parent limit/offset is applied inside the batch
+          // via a window function rather than bailing to a per-parent query (N+1).
+          // `cursorEntries` joins the key because it changes the ordering, not just the filter.
+          const argsKey = JSON.stringify({
+            where: whereArg ?? null,
+            orderBy: orderByArg ?? null,
+            limit: limit ?? null,
+            offset: offset ?? null,
+            deleted: deleted ?? defaultDeleted ?? null,
+            after: after ?? null,
+            distinct: distinct ?? null,
+            cursor: cursorEntries ? 1 : 0,
+          });
+
+          return {
+            orderByArg,
+            limit,
+            distinct,
+            cursorEntries,
+            cursorValues,
+            loaderKey: `${tableName}::${relationName}::${argsKey}`,
+          };
+        },
+      );
 
       const loader = getOrCreateLoader(context, loaderKey, async (parentIds: readonly any[]) => {
         // Loaders are cached per context, so every call batched here shares this request's
