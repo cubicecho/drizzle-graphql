@@ -16,7 +16,7 @@ import * as schema from '../schema/pg';
 let pglite: PGlite;
 let db: PgliteDatabase<typeof schema.relations>;
 
-const build = (config: BuildSchemaConfig<any>): GraphQLSchema => buildSchema(db, config).schema;
+const build = (config: BuildSchemaConfig): GraphQLSchema => buildSchema(db, config).schema;
 
 /** The generated mutations for one table, as `name → { operation, single }`. */
 const mutationsFor = (gqlSchema: GraphQLSchema, table: string): Record<string, string> => {
