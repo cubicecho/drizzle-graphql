@@ -1,3 +1,10 @@
+## [11.0.2](https://github.com/cubicecho/drizzle-graphql/compare/v11.0.1...v11.0.2) (2026-09-03)
+
+### Performance Improvements
+
+* read only the columns a lazy relation selection needs ([#163](https://github.com/cubicecho/drizzle-graphql/issues/163)) ([2e69675](https://github.com/cubicecho/drizzle-graphql/commit/2e69675360c4c5805bd0d2809b65eb85ec8d25e9)), closes [#129](https://github.com/cubicecho/drizzle-graphql/issues/129)
+* read only the keys a nested write uses ([#161](https://github.com/cubicecho/drizzle-graphql/issues/161)) ([bf81911](https://github.com/cubicecho/drizzle-graphql/commit/bf81911a032c9049b5ddcf46685b32b83decde9d)), closes [#147](https://github.com/cubicecho/drizzle-graphql/issues/147)
+
 ## [11.0.1](https://github.com/cubicecho/drizzle-graphql/compare/v11.0.0...v11.0.1) (2026-09-03)
 
 ### Performance Improvements
