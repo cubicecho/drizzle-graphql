@@ -28,25 +28,25 @@ import {
   applyObjectTypeName,
   assertSingleMatch,
   drizzleError,
-  eagerLoadMutationRelations,
   excludedColumnRef,
   extractFilters,
-  extractRequiredFilters,
   extractSelectedColumnsFromTreeSQLFormat,
   hardDeleteArg,
   type LimitPolicyFor,
   type MutationTxCtx,
+  mutationSelection,
   type OnConflictArg,
-  prepareMutationRelationColumns,
   type RelationFilterBase,
   type ResolverPolicies,
   relationFilterCtx,
   resolveConflictPlan,
   type SelectionCtx,
+  scopedWhere,
   stripContextValues,
   type TypeNameMapper,
   type TypeNameResolver,
   type WriteOperation,
+  withEagerRelations,
   withScope,
   writeResolver,
 } from './common.ts';
@@ -128,11 +128,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
               context,
             );
 
-        const parsedInfo = parseResolveInfo(info, {
-          deep: true,
-        }) as ResolveTree;
-
-        const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+        const { columns, hasRelations, withParams } = mutationSelection(info, {
           relationMap,
           tables,
           tableName,
@@ -141,7 +137,6 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           resolveName,
           table,
           pkNames,
-          parsedInfo,
           limits,
           scope,
           defaultOrderBy: policies?.defaultOrderBy,
@@ -174,9 +169,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
 
         await after(result);
 
-        const enriched = hasRelations
-          ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
-          : result;
+        const enriched = await withEagerRelations(executor, tableName, result, pkNames, withParams, hasRelations);
 
         return remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
       },
@@ -233,11 +226,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
               context,
             );
 
-        const parsedInfo = parseResolveInfo(info, {
-          deep: true,
-        }) as ResolveTree;
-
-        const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+        const { columns, hasRelations, withParams } = mutationSelection(info, {
           relationMap,
           tables,
           tableName,
@@ -246,7 +235,6 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           resolveName,
           table,
           pkNames,
-          parsedInfo,
           limits,
           scope,
           defaultOrderBy: policies?.defaultOrderBy,
@@ -288,9 +276,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           return undefined;
         }
 
-        const enriched = hasRelations
-          ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
-          : result;
+        const enriched = await withEagerRelations(executor, tableName, result, pkNames, withParams, hasRelations);
 
         return remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap);
       },
@@ -366,9 +352,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
               context,
             );
 
-        const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
-
-        const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+        const { columns, hasRelations, withParams } = mutationSelection(info, {
           relationMap,
           tables,
           tableName,
@@ -377,7 +361,6 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           resolveName,
           table,
           pkNames,
-          parsedInfo,
           limits,
           scope,
           defaultOrderBy: policies?.defaultOrderBy,
@@ -434,9 +417,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           return undefined;
         }
 
-        const enriched = hasRelations
-          ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
-          : result;
+        const enriched = await withEagerRelations(executor, tableName, result, pkNames, withParams, hasRelations);
 
         return single
           ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
@@ -492,11 +473,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         const scope = policies?.scope?.(context);
         await before();
 
-        const parsedInfo = parseResolveInfo(info, {
-          deep: true,
-        }) as ResolveTree;
-
-        const { columns, hasRelations, withParams } = prepareMutationRelationColumns({
+        const { columns, hasRelations, withParams } = mutationSelection(info, {
           relationMap,
           tables,
           tableName,
@@ -505,7 +482,6 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           resolveName,
           table,
           pkNames,
-          parsedInfo,
           limits,
           scope,
           defaultOrderBy: policies?.defaultOrderBy,
@@ -527,16 +503,14 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
 
         const relationCtx = relationFilterCtx(filterCtx, tableName);
         // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
-        const filters = withScope(
+        const filters = scopedWhere({
           scope,
           tableName,
           table,
-          single || requireWhere
-            ? extractRequiredFilters(table, tableName, where, relationCtx)
-            : where
-              ? extractFilters(table, tableName, where, relationCtx)
-              : undefined,
-        );
+          where,
+          relationCtx,
+          required: single || requireWhere,
+        });
 
         if (single) {
           await assertSingleMatch(executor, table, filters!);
@@ -579,9 +553,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           return undefined;
         }
 
-        const enriched = hasRelations
-          ? await eagerLoadMutationRelations(executor, tableName, result, pkNames, withParams)
-          : result;
+        const enriched = await withEagerRelations(executor, tableName, result, pkNames, withParams, hasRelations);
 
         return single
           ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
@@ -663,19 +635,17 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         // rows inside it — an out-of-scope row is not matched rather than being refused.
         // A soft-deleting table adds the marker predicate the same way: `delete` only sees
         // rows that are not already marked, `restore` only sees the ones that are.
-        const filters = withScope(
+        const filters = scopedWhere({
           scope,
           tableName,
           table,
-          single || requireWhere
-            ? extractRequiredFilters(table, tableName, where, relationCtx)
-            : where
-              ? extractFilters(table, tableName, where, relationCtx)
-              : undefined,
+          where,
+          relationCtx,
+          required: single || requireWhere,
           // A hard delete reads at INCLUDE: the rows it mostly exists to remove are the
           // ones already marked, which the default EXCLUDE could not reach at all.
-          restore ? 'ONLY' : hard ? 'INCLUDE' : undefined,
-        );
+          deleted: restore ? 'ONLY' : hard ? 'INCLUDE' : undefined,
+        });
 
         if (single) {
           await assertSingleMatch(executor, table, filters!);

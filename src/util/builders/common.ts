@@ -91,8 +91,11 @@ export {
   generateUpdateManyInput,
   generateWriteCount,
   hardDeleteArg,
+  mutationSelection,
   prepareMutationRelationColumns,
   rowsAffected,
+  scopedWhere,
+  withEagerRelations,
 } from './common/mutation-helpers.ts';
 export type { TypeNameMapper } from './common/naming.ts';
 export { applyObjectTypeName, resolveObjectTypeName, resolveTypeName } from './common/naming.ts';

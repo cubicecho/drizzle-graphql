@@ -17,7 +17,6 @@ import {
   defineRootField,
   drizzleError,
   extractFilters,
-  extractRequiredFilters,
   generateOnConflictInput,
   generateUpdateManyInput,
   generateWriteCount,
@@ -31,6 +30,7 @@ import {
   type ResolverPolicies,
   relationFilterCtx,
   resolveConflictPlan,
+  scopedWhere,
   stripContextValues,
   type TablesRelationalConfig,
   type WriteOperation,
@@ -235,16 +235,14 @@ const generateUpdate = (
 
       const relationCtx = relationFilterCtx(filterCtx, tableName);
       // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
-      const filters = withScope(
+      const filters = scopedWhere({
         scope,
         tableName,
         table,
-        single || requireWhere
-          ? extractRequiredFilters(table, tableName, where, relationCtx)
-          : where
-            ? extractFilters(table, tableName, where, relationCtx)
-            : undefined,
-      );
+        where,
+        relationCtx,
+        required: single || requireWhere,
+      });
 
       if (single) {
         await assertSingleMatch(executor, table, filters!);
@@ -393,19 +391,17 @@ const generateDelete = (
       // rows inside it — an out-of-scope row is not matched rather than being refused.
       // A soft-deleting table adds the marker predicate the same way: `delete` only sees
       // rows that are not already marked, `restore` only sees the ones that are.
-      const filters = withScope(
+      const filters = scopedWhere({
         scope,
         tableName,
         table,
-        single || requireWhere
-          ? extractRequiredFilters(table, tableName, where, relationCtx)
-          : where
-            ? extractFilters(table, tableName, where, relationCtx)
-            : undefined,
+        where,
+        relationCtx,
+        required: single || requireWhere,
         // A hard delete reads at INCLUDE: the rows it mostly exists to remove are the
         // ones already marked, which the default EXCLUDE could not reach at all.
-        restore ? 'ONLY' : hard ? 'INCLUDE' : undefined,
-      );
+        deleted: restore ? 'ONLY' : hard ? 'INCLUDE' : undefined,
+      });
 
       if (single) {
         await assertSingleMatch(executor, table, filters!);
