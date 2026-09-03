@@ -7,6 +7,8 @@ import { and, getColumns, gt, inArray, lte, type SQL, sql } from 'drizzle-orm';
 import { getOrCreateLoader, getOrCreateRequestValue } from '../../batch-loader/index.ts';
 import { remapToGraphQLArrayOutput } from '../../data-mappers/index.ts';
 import { relationFieldExtension } from '../../extensions.ts';
+import type { ResolveTree } from '../../parse-resolve-info.ts';
+import { parseResolveInfo } from '../../parse-resolve-info.ts';
 import type { TableNamedRelations } from '../types.ts';
 import type { CursorOrderEntry, NullOrdering } from './cursor.ts';
 import {
@@ -31,6 +33,7 @@ import type { RelationFilterBase, RelationFilterContext } from './relation-filte
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import type { RelationResolverFactory } from './relations.ts';
 import { extractRelationJoinColumns } from './relations.ts';
+import { extractSelectedColumnsFromTreeSQLFormat } from './selected-columns.ts';
 
 /**
  * Fetches a to-many relation with per-parent limit/offset for ALL parents in a
@@ -52,10 +55,11 @@ const batchedPaginatedRelationQuery = async (
   limit: number | null,
   offset: number | null,
   pkNames: readonly string[],
+  columns: Record<string, Column> | undefined,
   orderCtx?: RelationFilterContext,
   whereArgs?: Record<string, any>,
 ): Promise<any[]> => {
-  const cols = getColumns(targetTable);
+  const cols = columns ?? getColumns(targetTable);
 
   // Always tiebreak the window by the target's primary key so per-parent limit/offset
   // slices are deterministic even when the client supplies no (or a non-unique) orderBy.
@@ -148,6 +152,42 @@ export const createRelationResolverFactory =
     const targetPkNames = relEntry.targetPkNames ?? [];
     const errorCtx: DrizzleErrorContext = { table: targetTableName, operation: 'relation', relation: relationName };
 
+    /**
+     * The columns one batch reads: the ones the selection names, plus the ones the batch needs
+     * whatever the client asked for — the key it groups the rows by, and the ordering columns a
+     * row cursor is encoded from. Nested relation fields contribute their own join column
+     * through the selection context, the same way the root select path narrows.
+     *
+     * `undefined` means "every column", which is what a resolver with no readable resolve info
+     * has to fall back to.
+     */
+    const selectedColumns = (info: any, cursorEntries: CursorOrderEntry[] | undefined) => {
+      const parsed = info ? (parseResolveInfo(info) as ResolveTree | undefined) : undefined;
+      if (!parsed) {
+        return undefined;
+      }
+      // A relation field returns one object type, but merging every entry costs nothing and
+      // keeps this honest if the target is ever reached through an abstract type.
+      const tree: Record<string, ResolveTree> = Object.assign({}, ...Object.values(parsed.fieldsByTypeName));
+
+      const columns = extractSelectedColumnsFromTreeSQLFormat(tree, targetTable, {
+        tableName: targetTableName,
+        relationMap: filterCtx?.relationMap ?? {},
+        tables,
+        allRelations: filterCtx?.relationMap,
+      });
+
+      const targetColumns = getColumns(targetTable);
+      columns[foreignColPropName] = foreignCol;
+      for (const [columnName] of cursorEntries ?? []) {
+        const column = targetColumns[columnName];
+        if (column) {
+          columns[columnName] = column;
+        }
+      }
+      return columns;
+    };
+
     const resolve = async (parent: any, args: any, context: any, info: any) => {
       // Eager path: the parent resolver pre-fetched this relation via Drizzle's `with`.
       if (parent[relationName] !== undefined) {
@@ -165,7 +205,7 @@ export const createRelationResolverFactory =
       // identical for every parent row the batch fetches. Resolvers run once per parent row, so it
       // is computed once per field per request and reused, rather than re-reading the selection and
       // re-stringifying the loader key N times.
-      const { orderByArg, limit, distinct, cursorEntries, cursorValues, loaderKey } = getOrCreateRequestValue(
+      const { orderByArg, limit, distinct, cursorEntries, cursorValues, columns, loaderKey } = getOrCreateRequestValue(
         context,
         info?.fieldNodes?.[0],
         `relation:${tableName}::${relationName}`,
@@ -211,11 +251,15 @@ export const createRelationResolverFactory =
           }
           const cursorValues = after != null && cursorEntries ? decodeCursor(after, cursorEntries) : undefined;
 
+          const columns = selectedColumns(info, cursorEntries);
+
           // Batch path: collect all sibling calls in this tick and execute one query.
           // Pagination args are part of the loader key so siblings sharing identical
           // args batch together; per-parent limit/offset is applied inside the batch
           // via a window function rather than bailing to a per-parent query (N+1).
           // `cursorEntries` joins the key because it changes the ordering, not just the filter.
+          // The column list joins it too: one batch runs one SELECT, so two aliases of the same
+          // relation asking for different columns need a batch each.
           const argsKey = JSON.stringify({
             where: whereArg ?? null,
             orderBy: orderByArg ?? null,
@@ -225,6 +269,7 @@ export const createRelationResolverFactory =
             after: after ?? null,
             distinct: distinct ?? null,
             cursor: cursorEntries ? 1 : 0,
+            columns: columns ? Object.keys(columns).sort() : null,
           });
 
           return {
@@ -233,6 +278,7 @@ export const createRelationResolverFactory =
             distinct,
             cursorEntries,
             cursorValues,
+            columns,
             loaderKey: `${tableName}::${relationName}::${argsKey}`,
           };
         },
@@ -295,13 +341,16 @@ export const createRelationResolverFactory =
             limit ?? null,
             offset ?? null,
             targetPkNames,
+            columns,
             relationFilterCtx(filterCtx, targetTableName),
             whereArg,
           );
         } else {
           // Use plain db.select() so column refs are never aliased — avoids drizzle-orm v1
           // RQB aliasing requirements that would require referencing via aliasedTable proxy.
-          let q = executor.select().from(targetTable).where(whereCondition) as any;
+          let q = (columns ? executor.select(columns) : executor.select())
+            .from(targetTable)
+            .where(whereCondition) as any;
           const orderExprs = cursorEntries
             ? cursorOrderExprs(targetTable, cursorEntries)
             : orderByArg

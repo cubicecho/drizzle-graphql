@@ -124,4 +124,60 @@ describe.sequential('eagerLoadRelations opt-out', () => {
     // The forced join column must not leak into the response.
     expect(users[0]).not.toHaveProperty('id');
   });
+
+  // The lazy path narrows its SELECT the same way the root path does: the columns the
+  // selection names, plus the key the batch groups on. `posts.content` is never asked for
+  // here, so it is never read.
+  describe('the lazy batch reads only the columns the selection needs', () => {
+    const postsBatch = (sqls: string[]) => sqls.filter(isPostsBatch);
+    const paginatedPostsBatch = (sqls: string[]) =>
+      sqls.filter((q) => /row_number\(\) over/i.test(q) && q.includes('"posts"'));
+
+    it('narrows the batched IN query', async () => {
+      const gqlSchema = buildWith(false);
+      const { result, sqls } = await runCapturing(gqlSchema, `{ users { id posts { id } } }`);
+
+      expect(result.errors).toBeUndefined();
+      const [batch] = postsBatch(sqls);
+      expect(batch).toBeDefined();
+      expect(batch).toContain('"author_id"');
+      expect(batch).not.toContain('"content"');
+    });
+
+    it('narrows the paginated batch, keeping the row-number window', async () => {
+      const gqlSchema = buildWith(false);
+      const { result, sqls } = await runCapturing(gqlSchema, `{ users { id posts(limit: 1) { id } } }`);
+
+      expect(result.errors).toBeUndefined();
+      expect((result.data as any)?.users?.find((u: any) => u.id === 1)?.posts).toHaveLength(1);
+      const [batch] = paginatedPostsBatch(sqls);
+      expect(batch).toBeDefined();
+      expect(batch).toContain('__drizzle_graphql_rn');
+      expect(batch).not.toContain('"content"');
+    });
+
+    it('reads a column the selection does name', async () => {
+      const gqlSchema = buildWith(false);
+      const { result, sqls } = await runCapturing(gqlSchema, `{ users { id posts { content } } }`);
+
+      expect(result.errors).toBeUndefined();
+      expect((result.data as any)?.users?.find((u: any) => u.id === 1)?.posts?.[0]).toEqual({
+        content: '1MESSAGE',
+      });
+      expect(postsBatch(sqls)[0]).toContain('"content"');
+    });
+
+    it('keeps the join column a relation under the lazy relation resolves from', async () => {
+      const gqlSchema = buildWith(false);
+      const { result, sqls } = await runCapturing(gqlSchema, `{ users { id posts { id author { name } } } }`);
+
+      expect(result.errors).toBeUndefined();
+      const posts = (result.data as any)?.users?.find((u: any) => u.id === 1)?.posts ?? [];
+      expect(posts[0]?.author).toEqual({ name: 'FirstUser' });
+      // `author_id` is the key both the batch and the nested `author` field correlate on, and
+      // it stays out of the response either way.
+      expect(posts[0]).not.toHaveProperty('authorId');
+      expect(postsBatch(sqls)[0]).not.toContain('"content"');
+    });
+  });
 });
