@@ -21,39 +21,24 @@ import {
   generateUpdateManyInput,
   generateWriteCount,
   getUniqueColumnSets,
-  type LimitPolicyFor,
-  type MutationTxCtx,
-  type RelationFilterBase,
-  type ResolverPolicies,
   type TablesRelationalConfig,
-  type TypeNameMapper,
-  type TypeNameResolver,
 } from '../builders/common.ts';
 import { tableFieldExtensions } from '../extensions.ts';
 import { createSchemaBuilder, type SchemaBuildAdapter } from './build-context.ts';
-import type { NestedWriteRuntime } from './nested-writes.ts';
-import type { CreatedResolver, SchemaGeneratorOptions, TableNamedRelations } from './types.ts';
-import { buildWriteResolvers } from './write-resolvers.ts';
+import type { CreatedResolver, SchemaGeneratorOptions } from './types.ts';
+import { buildWriteResolvers, type WriteBuildOptions } from './write-resolvers.ts';
+
+/** The per-table half of {@link UpdateManyGenerator}'s options; the rest comes from the build. */
+export interface UpdateManyOptions {
+  tableName: string;
+  table: any;
+  updateManyInput: GraphQLInputObjectType;
+  fieldName: string;
+  typeName: string;
+}
 
 /** `update<Table>Many` — batch update, whose statement loop is dialect-specific. */
-export type UpdateManyGenerator = (
-  db: any,
-  tableName: string,
-  table: any,
-  tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  updateManyInput: GraphQLInputObjectType,
-  fieldName: string,
-  typeName: string,
-  typeNameMapper?: TypeNameMapper,
-  filterCtx?: RelationFilterBase,
-  txCtx?: MutationTxCtx,
-  nested?: NestedWriteRuntime,
-  limits?: LimitPolicyFor,
-  policies?: ResolverPolicies,
-  /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
-  resolveName?: TypeNameResolver,
-) => CreatedResolver;
+export type UpdateManyGenerator = (build: WriteBuildOptions, opts: UpdateManyOptions) => CreatedResolver;
 
 /**
  * Everything {@link createSchemaDataGenerator} cannot decide for itself: the shared build's
@@ -107,6 +92,21 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
       outputs,
     } = ctx;
 
+    // Everything a write generator takes from the build rather than from the table. The same
+    // object serves every table below, so each call names only what varies per table.
+    const writeBuild: WriteBuildOptions = {
+      db,
+      tables,
+      relationMap: eagerRelations,
+      typeNameMapper,
+      filterCtx,
+      txCtx: mutationTxCtx,
+      nested: nestedRuntime,
+      limits,
+      policies,
+      resolveName: cacheCtx.typeName,
+    };
+
     for (const [tableName, tableTypes] of Object.entries(gqlSchemaTypes)) {
       // Everything this table generates, with any per-table predicate already run.
       const tableFeatures = featureOf(tableName);
@@ -144,44 +144,26 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
       const { aggregateType, groupByType, havingInput } = addReadFields(ctx, tableName, names, tableTypes, drizzleMeta);
 
       const insertArrGenerated = tableFeatures.insert
-        ? generateInsert(
-            db,
+        ? generateInsert(writeBuild, {
             tableName,
-            schema[tableName] as Table,
-            tables,
-            eagerRelations,
-            insertInput,
-            createArrayFieldName,
+            table: schema[tableName] as Table,
+            baseType: insertInput,
+            fieldName: createArrayFieldName,
             typeName,
-            false,
-            typeNameMapper,
+            single: false,
             conflictDoNothing,
-            mutationTxCtx,
-            nestedRuntime,
-            limits,
-            policies,
-            cacheCtx.typeName,
-          )
+          })
         : undefined;
       const insertSingleGenerated = tableFeatures.insert
-        ? generateInsert(
-            db,
+        ? generateInsert(writeBuild, {
             tableName,
-            schema[tableName] as Table,
-            tables,
-            eagerRelations,
-            insertInput,
-            createSingleFieldName,
+            table: schema[tableName] as Table,
+            baseType: insertInput,
+            fieldName: createSingleFieldName,
             typeName,
-            true,
-            typeNameMapper,
+            single: true,
             conflictDoNothing,
-            mutationTxCtx,
-            nestedRuntime,
-            limits,
-            policies,
-            cacheCtx.typeName,
-          )
+          })
         : undefined;
       // An upsert needs something to conflict on, so a table with no primary key and no
       // unique constraint gets no upsert mutations rather than ones that always fail.
@@ -198,92 +180,52 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
           })
         : undefined;
       const upsertArrGenerated = onConflictInput
-        ? generateUpsert(
-            db,
+        ? generateUpsert(writeBuild, {
             tableName,
-            schema[tableName] as Table,
-            tables,
-            eagerRelations,
-            insertInput,
-            onConflictInput,
+            table: schema[tableName] as Table,
+            baseType: insertInput,
+            onConflictType: onConflictInput,
             uniqueSets,
-            upsertArrayFieldName,
+            fieldName: upsertArrayFieldName,
             typeName,
-            false,
-            typeNameMapper,
-            filterCtx,
-            mutationTxCtx,
-            nestedRuntime,
-            limits,
-            policies,
-            cacheCtx.typeName,
-          )
+            single: false,
+          })
         : undefined;
       const upsertSingleGenerated = onConflictInput
-        ? generateUpsert(
-            db,
+        ? generateUpsert(writeBuild, {
             tableName,
-            schema[tableName] as Table,
-            tables,
-            eagerRelations,
-            insertInput,
-            onConflictInput,
+            table: schema[tableName] as Table,
+            baseType: insertInput,
+            onConflictType: onConflictInput,
             uniqueSets,
-            upsertSingleFieldName,
+            fieldName: upsertSingleFieldName,
             typeName,
-            true,
-            typeNameMapper,
-            filterCtx,
-            mutationTxCtx,
-            nestedRuntime,
-            limits,
-            policies,
-            cacheCtx.typeName,
-          )
+            single: true,
+          })
         : undefined;
       const updateGenerated = tableFeatures.update
-        ? generateUpdate(
-            db,
+        ? generateUpdate(writeBuild, {
             tableName,
-            schema[tableName] as Table,
-            tables,
-            eagerRelations,
-            updateInput,
-            tableFilters,
-            updateFieldName,
+            table: schema[tableName] as Table,
+            setArgs: updateInput,
+            filterArgs: tableFilters,
+            fieldName: updateFieldName,
             typeName,
-            false,
-            tableFeatures.requireWhere,
-            typeNameMapper,
-            filterCtx,
-            mutationTxCtx,
-            nestedRuntime,
-            limits,
-            policies,
-            cacheCtx.typeName,
-          )
+            single: false,
+            requireWhere: tableFeatures.requireWhere,
+          })
         : undefined;
       const updateSingleGenerated = tableFeatures.update
-        ? generateUpdate(
-            db,
+        ? generateUpdate(writeBuild, {
             tableName,
-            schema[tableName] as Table,
-            tables,
-            eagerRelations,
-            updateInput,
-            tableFilters,
-            updateSingleFieldName,
+            table: schema[tableName] as Table,
+            setArgs: updateInput,
+            filterArgs: tableFilters,
+            fieldName: updateSingleFieldName,
             typeName,
-            true,
-            tableFeatures.requireWhere,
-            typeNameMapper,
-            filterCtx,
-            mutationTxCtx,
-            nestedRuntime,
-            limits,
-            policies,
-            cacheCtx.typeName,
-          )
+            single: true,
+            requireWhere: tableFeatures.requireWhere,
+          })
         : undefined;
       // The batch update reuses the update `set` input, so it needs `update` on too.
       const updateManyInput =
@@ -298,95 +240,65 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             })
           : undefined;
       const updateManyGenerated = updateManyInput
-        ? adapter.generateUpdateMany(
-            db,
+        ? adapter.generateUpdateMany(writeBuild, {
             tableName,
-            schema[tableName] as Table,
-            tables,
-            eagerRelations,
+            table: schema[tableName] as Table,
             updateManyInput,
-            updateManyFieldName,
+            fieldName: updateManyFieldName,
             typeName,
-            typeNameMapper,
-            filterCtx,
-            mutationTxCtx,
-            nestedRuntime,
-            limits,
-            policies,
-            cacheCtx.typeName,
-          )
+          })
         : undefined;
       const deleteGenerated = tableFeatures.delete
-        ? generateDelete(
-            db,
+        ? generateDelete(writeBuild, {
             tableName,
-            schema[tableName] as Table,
-            tableFilters,
-            deleteFieldName,
+            table: schema[tableName] as Table,
+            filterArgs: tableFilters,
+            fieldName: deleteFieldName,
             typeName,
-            false,
-            tableFeatures.requireWhere,
-            filterCtx,
-            { tableName, relationMap: namedRelations, tables },
-            mutationTxCtx,
-            policies,
-            false,
-            cacheCtx.typeName,
-          )
+            single: false,
+            requireWhere: tableFeatures.requireWhere,
+            restore: false,
+            selectionCtx: { tableName, relationMap: namedRelations, tables },
+          })
         : undefined;
       const deleteSingleGenerated = tableFeatures.delete
-        ? generateDelete(
-            db,
+        ? generateDelete(writeBuild, {
             tableName,
-            schema[tableName] as Table,
-            tableFilters,
-            deleteSingleFieldName,
+            table: schema[tableName] as Table,
+            filterArgs: tableFilters,
+            fieldName: deleteSingleFieldName,
             typeName,
-            true,
-            tableFeatures.requireWhere,
-            filterCtx,
-            { tableName, relationMap: namedRelations, tables },
-            mutationTxCtx,
-            policies,
-            false,
-            cacheCtx.typeName,
-          )
+            single: true,
+            requireWhere: tableFeatures.requireWhere,
+            restore: false,
+            selectionCtx: { tableName, relationMap: namedRelations, tables },
+          })
         : undefined;
       const restoreGenerated = softDeleteInfo
-        ? generateDelete(
-            db,
+        ? generateDelete(writeBuild, {
             tableName,
-            schema[tableName] as Table,
-            tableFilters,
-            restoreFieldName,
+            table: schema[tableName] as Table,
+            filterArgs: tableFilters,
+            fieldName: restoreFieldName,
             typeName,
-            false,
-            tableFeatures.requireWhere,
-            filterCtx,
-            { tableName, relationMap: namedRelations, tables },
-            mutationTxCtx,
-            policies,
-            true,
-            cacheCtx.typeName,
-          )
+            single: false,
+            requireWhere: tableFeatures.requireWhere,
+            restore: true,
+            selectionCtx: { tableName, relationMap: namedRelations, tables },
+          })
         : undefined;
       const restoreSingleGenerated = softDeleteInfo
-        ? generateDelete(
-            db,
+        ? generateDelete(writeBuild, {
             tableName,
-            schema[tableName] as Table,
-            tableFilters,
-            restoreSingleFieldName,
+            table: schema[tableName] as Table,
+            filterArgs: tableFilters,
+            fieldName: restoreSingleFieldName,
             typeName,
-            true,
-            tableFeatures.requireWhere,
-            filterCtx,
-            { tableName, relationMap: namedRelations, tables },
-            mutationTxCtx,
-            policies,
-            true,
-            cacheCtx.typeName,
-          )
+            single: true,
+            requireWhere: tableFeatures.requireWhere,
+            restore: true,
+            selectionCtx: { tableName, relationMap: namedRelations, tables },
+          })
         : undefined;
       // The count variants are the plural write with its payload left off, so each follows the
       // same feature switch as the write it mirrors.

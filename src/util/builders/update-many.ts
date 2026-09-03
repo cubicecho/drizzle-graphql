@@ -10,20 +10,14 @@
 // =============================================================================
 
 import type { Table } from 'drizzle-orm';
-import type { GraphQLFieldConfigArgumentMap, GraphQLInputObjectType } from 'graphql';
+import type { GraphQLFieldConfigArgumentMap } from 'graphql';
 import { GraphQLList, GraphQLNonNull } from 'graphql';
 import {
   drizzleError,
   extractFilters,
-  type LimitPolicyFor,
-  type MutationTxCtx,
   mutationSelection,
-  type RelationFilterBase,
-  type ResolverPolicies,
   relationFilterCtx,
   stripContextValues,
-  type TypeNameMapper,
-  type TypeNameResolver,
   withEagerRelations,
   withScope,
   writeResolver,
@@ -31,8 +25,9 @@ import {
 import { remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
 import { remapUpdateInput } from './field-updates.ts';
 import { mergedOps, type NestedWriteRuntime } from './nested-writes.ts';
-import type { UpdateManyGenerator } from './schema-data.ts';
-import type { CreatedResolver, Filters, TableNamedRelations } from './types.ts';
+import type { UpdateManyGenerator, UpdateManyOptions } from './schema-data.ts';
+import type { CreatedResolver, Filters } from './types.ts';
+import type { WriteBuildOptions } from './write-resolvers.ts';
 
 /** One entry of the `updates` argument, already remapped and validated. */
 export type UpdateManyEntry = {
@@ -118,24 +113,9 @@ export const createUpdateManyGenerator = (
   primaryKeyPropNames: (table: any) => string[],
   runBatch: UpdateManyBatchRunner = runUpdateManyBatch,
 ): UpdateManyGenerator => {
-  return (
-    db: any,
-    tableName: string,
-    table: any,
-    tables: Record<string, Table>,
-    relationMap: Record<string, Record<string, TableNamedRelations>>,
-    updateManyInput: GraphQLInputObjectType,
-    fieldName: string,
-    typeName: string,
-    typeNameMapper?: TypeNameMapper,
-    filterCtx?: RelationFilterBase,
-    txCtx?: MutationTxCtx,
-    nested?: NestedWriteRuntime,
-    limits?: LimitPolicyFor,
-    policies?: ResolverPolicies,
-    /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
-    resolveName?: TypeNameResolver,
-  ): CreatedResolver => {
+  return (build: WriteBuildOptions, opts: UpdateManyOptions): CreatedResolver => {
+    const { db, tables, relationMap, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } = build;
+    const { tableName, table, updateManyInput, fieldName, typeName } = opts;
     const queryArgs = {
       updates: {
         type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(updateManyInput))),

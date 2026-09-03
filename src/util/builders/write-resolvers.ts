@@ -62,6 +62,65 @@ export type WriteDatabase = PgAsyncDatabase<any, any> | SQLiteAsyncDatabase<any,
  * Typed on `any` because `PgTable` and `SQLiteTable` are unrelated subtypes of `Table`, and a
  * parameter of the base type would not accept either dialect's narrower function.
  */
+/**
+ * What a write generator gets from the build rather than from the table. Every field is the
+ * same for every table in one `buildSchema` call, so the call sites assemble it once and pass
+ * it along unchanged — leaving each call to name only what actually varies per table.
+ */
+export interface WriteBuildOptions {
+  db: WriteDatabase;
+  /** Every table in the build — the relation columns a selection can reach live here. */
+  tables: Record<string, Table>;
+  relationMap: Record<string, Record<string, TableNamedRelations>>;
+  typeNameMapper?: TypeNameMapper;
+  filterCtx?: RelationFilterBase;
+  txCtx?: MutationTxCtx;
+  nested?: NestedWriteRuntime;
+  limits?: LimitPolicyFor;
+  policies?: ResolverPolicies;
+  /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
+  resolveName?: TypeNameResolver;
+}
+
+/** The half of a write generator's options that changes from table to table. */
+interface WriteTableOptions {
+  tableName: string;
+  table: Table;
+  /** The mutation field's name, already run through the build's naming rules. */
+  fieldName: string;
+  typeName: string;
+  /** One row in, one row out — as opposed to the list-shaped variant of the same mutation. */
+  single: boolean;
+}
+
+export interface InsertOptions extends WriteTableOptions {
+  /** The table's create input, shared by both insert shapes and by the upsert. */
+  baseType: GraphQLInputObjectType;
+  /** Conflicting rows are skipped rather than failing the statement. */
+  conflictDoNothing?: boolean;
+}
+
+export interface UpsertOptions extends WriteTableOptions {
+  baseType: GraphQLInputObjectType;
+  onConflictType: GraphQLInputObjectType;
+  uniqueSets: string[][];
+}
+
+export interface UpdateOptions extends WriteTableOptions {
+  setArgs: GraphQLInputObjectType;
+  filterArgs: GraphQLInputObjectType;
+  /** The table refuses an unfiltered write, so `where` is required even on the list shape. */
+  requireWhere: boolean;
+}
+
+export interface DeleteOptions extends WriteTableOptions {
+  filterArgs: GraphQLInputObjectType;
+  requireWhere: boolean;
+  /** Builds `restore<Table>` — the same resolver reading and writing the other way. */
+  restore?: boolean;
+  selectionCtx?: SelectionCtx;
+}
+
 export type PrimaryKeyPropNames = (table: any) => string[];
 
 /**
@@ -76,25 +135,9 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
    * itself is the same multi-row statement either way, with the single variant supplying a
    * one-element list.
    */
-  const generateInsert = (
-    db: WriteDatabase,
-    tableName: string,
-    table: Table,
-    tables: Record<string, Table>,
-    relationMap: Record<string, Record<string, TableNamedRelations>>,
-    baseType: GraphQLInputObjectType,
-    fieldName: string,
-    typeName: string,
-    single: boolean,
-    typeNameMapper?: TypeNameMapper,
-    conflictDoNothing: boolean = false,
-    txCtx?: MutationTxCtx,
-    nested?: NestedWriteRuntime,
-    limits?: LimitPolicyFor,
-    policies?: ResolverPolicies,
-    /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
-    resolveName?: TypeNameResolver,
-  ): CreatedResolver => {
+  const generateInsert = (build: WriteBuildOptions, opts: InsertOptions): CreatedResolver => {
+    const { db, tables, relationMap, typeNameMapper, txCtx, nested, limits, policies, resolveName } = build;
+    const { tableName, table, baseType, fieldName, typeName, single, conflictDoNothing = false } = opts;
     const queryArgs: GraphQLFieldConfigArgumentMap = {
       values: {
         type: single ? new GraphQLNonNull(baseType) : new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(baseType))),
@@ -202,27 +245,9 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
    *
    * Shares the insert input: an upsert supplies a whole row, same as a create.
    */
-  const generateUpsert = (
-    db: WriteDatabase,
-    tableName: string,
-    table: Table,
-    tables: Record<string, Table>,
-    relationMap: Record<string, Record<string, TableNamedRelations>>,
-    baseType: GraphQLInputObjectType,
-    onConflictType: GraphQLInputObjectType,
-    uniqueSets: string[][],
-    fieldName: string,
-    typeName: string,
-    single: boolean,
-    typeNameMapper?: TypeNameMapper,
-    filterCtx?: RelationFilterBase,
-    txCtx?: MutationTxCtx,
-    nested?: NestedWriteRuntime,
-    limits?: LimitPolicyFor,
-    policies?: ResolverPolicies,
-    /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
-    resolveName?: TypeNameResolver,
-  ): CreatedResolver => {
+  const generateUpsert = (build: WriteBuildOptions, opts: UpsertOptions): CreatedResolver => {
+    const { db, tables, relationMap, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } = build;
+    const { tableName, table, baseType, onConflictType, uniqueSets, fieldName, typeName, single } = opts;
     const queryArgs: GraphQLFieldConfigArgumentMap = {
       values: {
         type: single ? new GraphQLNonNull(baseType) : new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(baseType))),
@@ -339,27 +364,9 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
     });
   };
 
-  const generateUpdate = (
-    db: WriteDatabase,
-    tableName: string,
-    table: Table,
-    tables: Record<string, Table>,
-    relationMap: Record<string, Record<string, TableNamedRelations>>,
-    setArgs: GraphQLInputObjectType,
-    filterArgs: GraphQLInputObjectType,
-    fieldName: string,
-    typeName: string,
-    single: boolean,
-    requireWhere: boolean,
-    typeNameMapper?: TypeNameMapper,
-    filterCtx?: RelationFilterBase,
-    txCtx?: MutationTxCtx,
-    nested?: NestedWriteRuntime,
-    limits?: LimitPolicyFor,
-    policies?: ResolverPolicies,
-    /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
-    resolveName?: TypeNameResolver,
-  ): CreatedResolver => {
+  const generateUpdate = (build: WriteBuildOptions, opts: UpdateOptions): CreatedResolver => {
+    const { db, tables, relationMap, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } = build;
+    const { tableName, table, setArgs, filterArgs, fieldName, typeName, single, requireWhere } = opts;
     const queryArgs = {
       set: {
         type: new GraphQLNonNull(setArgs),
@@ -487,23 +494,10 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
    * `DELETE` — emptying the trash, reclaiming a unique key. It reads at `INCLUDE`, since the
    * rows it mostly exists to remove are the ones already marked; a `scope` still confines it.
    */
-  const generateDelete = (
-    db: WriteDatabase,
-    tableName: string,
-    table: Table,
-    filterArgs: GraphQLInputObjectType,
-    fieldName: string,
-    typeName: string,
-    single: boolean,
-    requireWhere: boolean,
-    filterCtx?: RelationFilterBase,
-    selectionCtx?: SelectionCtx,
-    txCtx?: MutationTxCtx,
-    policies?: ResolverPolicies,
-    restore: boolean = false,
-    /** The build's type-naming rule — the resolve tree is keyed by the names it produced. */
-    resolveName?: TypeNameResolver,
-  ): CreatedResolver => {
+  const generateDelete = (build: WriteBuildOptions, opts: DeleteOptions): CreatedResolver => {
+    const { db, filterCtx, txCtx, policies, resolveName } = build;
+    const { tableName, table, filterArgs, fieldName, typeName, single, requireWhere, selectionCtx } = opts;
+    const restore = opts.restore ?? false;
     const softDelete = policies?.softDelete?.(tableName);
     const operation: WriteOperation = restore ? 'restore' : 'delete';
     // Only a soft-deleting table that opted in gets the argument, so the schema itself says
