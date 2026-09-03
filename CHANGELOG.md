@@ -1,3 +1,23 @@
+## [11.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v10.0.3...v11.0.0) (2026-09-03)
+
+### ⚠ BREAKING CHANGES
+
+* builds that set a non-default `suffixes.list` get renamed list
+mutations (`createUsers` → `createUsersAll` for `{ list: 'All' }`), and builds
+that set `suffixes.single: ''` alongside a different `list` suffix get
+`updateUsers`/`deleteUsers` where they had `updateUsersSingle`/`deleteUsersSingle`.
+The default naming is unchanged. A naming config that puts two generated
+operations on one field name now throws at build time instead of silently
+dropping one of them.
+
+### Bug Fixes
+
+* apply both suffixes to the mutations, and catch name collisions ([8f06feb](https://github.com/cubicecho/drizzle-graphql/commit/8f06feb9b272e949546ec42d401862a161414e98)), closes [#155](https://github.com/cubicecho/drizzle-graphql/issues/155)
+
+### Performance Improvements
+
+* compute a relation field's loader key once per request ([d44e99f](https://github.com/cubicecho/drizzle-graphql/commit/d44e99f6a7f9cc22b5fd135ad92764b8a860c4eb)), closes [#132](https://github.com/cubicecho/drizzle-graphql/issues/132)
+
 ## [10.0.3](https://github.com/cubicecho/drizzle-graphql/compare/v10.0.2...v10.0.3) (2026-09-03)
 
 ### Performance Improvements
