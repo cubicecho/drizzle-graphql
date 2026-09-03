@@ -73,8 +73,7 @@ export type DialectSchemaAdapter = SchemaBuildAdapter<true> & {
 export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
   const primaryKeyPropNames = adapter.primaryKeyPropNames;
   const uniqueColumnSets = (table: Table): string[][] => getUniqueColumnSets(table, adapter.getTableConfig);
-  const { generateInsert, generateUpsert, generateUpdate, generateDelete } =
-    buildWriteResolvers(primaryKeyPropNames);
+  const { generateInsert, generateUpsert, generateUpdate, generateDelete } = buildWriteResolvers(primaryKeyPropNames);
   // The three stretches of a build that have nothing to do with the dialect: everything up to
   // each table's types, the read fields in the middle, and the relation resolvers at the end.
   const { prepareBuild, addReadFields, finalizeBuild } = createSchemaBuilder(adapter);
