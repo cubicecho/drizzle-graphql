@@ -14,6 +14,7 @@ import type {
   ConvertedColumn,
   ConvertedRelationColumnWithArgs,
   EnumNameMapper,
+  EnumValueNameMapper,
   ScalarOverridesConfig,
   SchemaDocs,
 } from '../type-converter/types.ts';
@@ -80,6 +81,8 @@ export type SchemaGeneratorOptions = {
   mapColumnType?: ColumnTypeMapper;
   /** Names the generated enum types. See `BuildSchemaConfig.enumNameMapper`. */
   enumNameMapper?: EnumNameMapper;
+  /** Names the generated enum values. See `BuildSchemaConfig.enumValueNameMapper`. */
+  enumValueNameMapper?: 'constant' | EnumValueNameMapper;
   /**
    * Resolved documentation hooks. `buildSchema` always supplies this; it stays optional so a
    * consumer calling a dialect generator directly need not pass an empty object.

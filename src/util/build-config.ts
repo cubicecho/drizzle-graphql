@@ -449,6 +449,7 @@ export const resolveBuildConfig = (
     scalars: config?.scalars,
     mapColumnType: config?.mapColumnType,
     enumNameMapper: config?.enumNameMapper,
+    enumValueNameMapper: config?.enumValueNameMapper,
     transactions,
     limits,
     policies,
