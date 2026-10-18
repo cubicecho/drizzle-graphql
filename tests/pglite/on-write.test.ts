@@ -270,6 +270,45 @@ describe.sequential('onWrite', () => {
     expect((await articleRows()).map((row: any) => row.deletedAt)).toEqual([null, null]);
   });
 
+  it('returns the columns a hook names, whatever the client selected', async () => {
+    const gqlSchema = buildWith({
+      softDelete: { Articles: 'deletedAt' },
+      onWrite: {
+        Articles: {
+          after: record((payload) => payload.rows.map((row: any) => `${row.id}@${row.authorId}`).join(',')),
+          columns: ['id', 'authorId'],
+        },
+      },
+    });
+
+    const responses = [
+      await run(gqlSchema, `mutation { createArticles(values: [{ id: 3, title: "third", authorId: 1 }]) { title } }`),
+      // A selected relation adds the key it is loaded by; the hook's columns ride alongside.
+      await run(
+        gqlSchema,
+        `mutation { updateArticles(set: { title: "x" }, where: { id: { eq: 1 } }) { title author { name } } }`,
+      ),
+      await run(gqlSchema, `mutation { deleteArticles(where: { id: { eq: 2 } }) { title } }`),
+      await run(gqlSchema, `mutation { restoreArticles(where: { id: { eq: 2 } }) { title } }`),
+    ];
+
+    for (const res of responses) {
+      expect(res.errors).toBeUndefined();
+    }
+    expect((await auditRows()).map((row: any) => `${row.operation}:${row.detail}`)).toEqual([
+      'insert:3@1',
+      'update:1@1',
+      'delete:2@1',
+      'restore:2@1',
+    ]);
+    expect(responses.map((res) => res.data)).toEqual([
+      { createArticles: [{ title: 'third' }] },
+      { updateArticles: [{ title: 'x', author: { name: 'Ada' } }] },
+      { deleteArticles: [{ title: 'second' }] },
+      { restoreArticles: [{ title: 'second' }] },
+    ]);
+  });
+
   it('rejects a declaration that does not match the schema', () => {
     expect(() => buildWith({ onWrite: { Nope: async () => {} } })).toThrow(/not a table in the Drizzle schema/);
   });

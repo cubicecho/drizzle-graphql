@@ -2019,8 +2019,12 @@ outside the resolver, so its after-position is after the commit.
 ```Typescript
 const { schema } = buildSchema(db, {
     onWrite: {
-        posts: async ({ table, operation, rows, tx }) => {
-            await tx.insert(auditLog).values(rows.map((row) => ({ table, operation, rowId: row.id })))
+        posts: {
+            after: async ({ table, operation, rows, tx }) => {
+                await tx.insert(auditLog).values(rows.map((row) => ({ table, operation, rowId: row.id })))
+            },
+            // Every row carries `id`, even when the client's mutation did not select it.
+            columns: ['id'],
         },
     },
 })
@@ -2046,6 +2050,39 @@ Registering a bare function (or a positions object) at the top level applies it 
 anything else is read as a table map keyed by the **Drizzle schema key**, and a name that
 matches nothing throws at build time.
 
+### Which columns `rows` holds
+
+The statement's `RETURNING` list is built from the client's selection, so by default a row
+holds only the columns the mutation's document asked for (plus any key a selected relation or a
+nested write needed). A hook that reads a column the client may not select — `row.id` above, or
+the `personId` an `addresses` hook needs to bump its person's revision — names it in `columns`:
+
+```Typescript
+onWrite: {
+    addresses: {
+        after: async ({ rows, tx }) => { /* every row has `id` and `personId` */ },
+        columns: ['id', 'personId'],
+    },
+    contactInfos: {
+        after: async ({ rows, tx }) => { /* every row has every column */ },
+        columns: 'all',
+    },
+}
+```
+
+-   The names are **column keys** — the property names on the Drizzle table object, which is
+    what `rows` is keyed by. An unknown name throws at build time, and so does `columns` on a
+    registration with no `after` hook (only `after` is handed rows).
+-   On a top-level registration, a named column must exist on **every** table; `'all'` always
+    works.
+-   The columns are added to `RETURNING` for every write the hook is attached to: insert, upsert,
+    update, `updateMany`, delete and restore. A delete's rows are the rows it removed.
+-   **The client's response is unchanged.** Columns the hook asked for but the client did not
+    select are taken back off before the rows are mapped, so they reach neither the response nor
+    a custom resolver calling the generated one. The hook gets its own copy of the rows.
+-   **MySQL** has no `RETURNING`, so its mutations return no rows and `columns` has nothing to
+    add to: `rows` stays empty there. The names are still checked at build time.
+
 The payload:
 
 | Field | |
@@ -2055,7 +2092,7 @@ The payload:
 | `position` | `'before'` or `'after'` |
 | `single` | whether the field writes one row or a list |
 | `args` | the field's GraphQL arguments, as the resolver received them |
-| `rows` | the post-write rows **as the database returned them**, before the output mapper |
+| `rows` | the post-write rows **as the database returned them**, before the output mapper — the selected columns plus the hook's [`columns`](#which-columns-rows-holds) |
 | `context`, `info` | the GraphQL context value and resolve info |
 | `tx` | the executor the mutation ran on |
 

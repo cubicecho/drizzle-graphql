@@ -157,7 +157,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
       txCtx,
       policies,
       args: queryArgs,
-      run: async ({ executor, args, context, info, before, after }) => {
+      run: async ({ executor, args, context, info, before, after, returning: withHookReturning, output }) => {
         const supplied = single ? [args.values as Record<string, any>] : (args.values as Record<string, any>[]);
         if (!supplied.length) {
           throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
@@ -194,9 +194,9 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           defaultOrderBy: policies?.defaultOrderBy,
         });
 
-        const returning = nestedEntries
-          ? nested!.withJoinColumns(tableName, mergedOps(nestedEntries), { ...columns }, table)
-          : columns;
+        const returning = withHookReturning(
+          nestedEntries ? nested!.withJoinColumns(tableName, mergedOps(nestedEntries), { ...columns }, table) : columns,
+        );
 
         const runInsert = async (target: any, values: Record<string, any>[]) => {
           let query = target.insert(table).values(values).returning(returning);
@@ -206,7 +206,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           return (await query) as Record<string, any>[];
         };
 
-        const result = nestedEntries
+        const written = nestedEntries
           ? await writeWithNestedOps({
               executor,
               runtime: nested!,
@@ -219,7 +219,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             })
           : await runInsert(executor, input);
 
-        await after(result);
+        await after(written);
+        const result = output(written);
 
         if (single && !result[0]) {
           // Only reachable under `conflictDoNothing`, which is why the field is nullable
@@ -269,7 +270,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
       txCtx,
       policies,
       args: queryArgs,
-      run: async ({ executor, args, context, info, before, after }) => {
+      run: async ({ executor, args, context, info, before, after, returning: withHookReturning, output }) => {
         const supplied = single ? [args.values as Record<string, any>] : (args.values as Record<string, any>[]);
         if (!supplied.length) {
           throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
@@ -304,9 +305,9 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           defaultOrderBy: policies?.defaultOrderBy,
         });
 
-        const returning = nestedEntries
-          ? nested!.withJoinColumns(tableName, mergedOps(nestedEntries), { ...columns }, table)
-          : columns;
+        const returning = withHookReturning(
+          nestedEntries ? nested!.withJoinColumns(tableName, mergedOps(nestedEntries), { ...columns }, table) : columns,
+        );
 
         // The conflict plan reads the columns the write actually supplies, so a nested write
         // — whose rows go in one at a time, each already carrying whatever its parent-side
@@ -336,7 +337,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           return (await query) as Record<string, any>[];
         };
 
-        const result = nestedEntries
+        const written = nestedEntries
           ? await writeWithNestedOps({
               executor,
               runtime: nested!,
@@ -349,7 +350,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             })
           : await runUpsert(executor, input);
 
-        await after(result);
+        await after(written);
+        const result = output(written);
 
         if (single && !result[0]) {
           return undefined;
@@ -388,7 +390,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
       txCtx,
       policies,
       args: queryArgs,
-      run: async ({ executor, args, context, info, before, after }) => {
+      run: async ({ executor, args, context, info, before, after, returning: withHookReturning, output }) => {
         const { where, set } = args;
         const scope = policies?.scope?.(context);
         await before();
@@ -436,7 +438,9 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           await assertSingleMatch(executor, table, filters!);
         }
 
-        const returning = nestedOps ? nested!.withJoinColumns(tableName, nestedOps, { ...columns }, table) : columns;
+        const returning = withHookReturning(
+          nestedOps ? nested!.withJoinColumns(tableName, nestedOps, { ...columns }, table) : columns,
+        );
 
         const runUpdate = async (target: any, values: Record<string, any>) => {
           // Nothing to write to the row itself: the operations attach to whatever the
@@ -449,7 +453,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           return (await (writes ? (query.returning(returning) as any) : query)) as Record<string, any>[];
         };
 
-        const result = nestedOps
+        const written = nestedOps
           ? await updateWithNestedOps({
               executor,
               runtime: nested!,
@@ -462,7 +466,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             })
           : await runUpdate(executor, input);
 
-        await after(result);
+        await after(written);
+        const result = output(written);
 
         if (single && result.length > 1) {
           // A row started matching between the pre-check and the write.
@@ -519,7 +524,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
       txCtx,
       policies,
       args: queryArgs,
-      run: async ({ executor, args, context, info, before, after }) => {
+      run: async ({ executor, args, context, info, before, after, returning: withHookReturning, output }) => {
         const { where } = args;
         // `canHardDelete` decides whether the argument exists; this decides what it does,
         // so a stitched-in `hard: true` on a table that never opted in stays a soft delete.
@@ -568,11 +573,12 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           query = query.where(filters) as any;
         }
 
-        query = query.returning(columns) as any;
+        query = query.returning(withHookReturning(columns)) as any;
 
-        const result = await query;
+        const written = await query;
 
-        await after(result);
+        await after(written);
+        const result = output(written);
 
         if (single && result.length > 1) {
           // A row started matching between the pre-check and the write.

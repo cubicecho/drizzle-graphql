@@ -11,12 +11,13 @@
 // others select their rows back on the way out. That difference lives in the body below,
 // which is exactly the shape a caller passes in.
 
+import type { Column } from 'drizzle-orm';
 import type { GraphQLFieldConfigArgumentMap } from 'graphql';
 import type { CreatedResolver } from '../types.ts';
 import { type DrizzleErrorContext, toGraphQLError, withErrorContext } from './errors.ts';
 import type { ResolverPolicies } from './policies.ts';
 import { type MutationTxCtx, runMutation } from './transactions.ts';
-import { runWriteHook, type WriteOperation } from './write-hooks.ts';
+import { omitHookColumns, runWriteHook, type WriteOperation, withHookColumns } from './write-hooks.ts';
 
 /**
  * The table's `onWrite` hooks, bound to this field and this request. A body calls `before()`
@@ -27,6 +28,16 @@ export type WriteHookEmitter = {
   before: () => Promise<void> | undefined;
   /** @param rows the rows the write produced, or `[]` where the dialect returns none. */
   after: (rows?: any[]) => Promise<void> | undefined;
+  /**
+   * The RETURNING column map the statement should use: the selection's `columns` plus the
+   * ones the `after` hook named. Returns `columns` itself when the hook named none.
+   */
+  returning: <T extends Record<string, Column>>(columns: T) => T;
+  /**
+   * The rows to map for the client: the statement's rows with the hook-only columns that
+   * {@link WriteHookEmitter.returning} added taken back off. Call it after `after(rows)`.
+   */
+  output: <T extends Record<string, any>>(rows: T[]) => T[];
 };
 
 /** The statement a mutation field runs, and whatever it resolves to. */
@@ -86,6 +97,8 @@ export const writeResolver = <TArgs = any>({
           txCtx,
           (executor) => {
             const payload = { table: tableName, operation, single, args, context, info, tx: executor };
+            // Per request: which keys `returning` added is a function of this request's selection.
+            let added: string[] | undefined;
             return run({
               executor,
               args,
@@ -93,6 +106,12 @@ export const writeResolver = <TArgs = any>({
               info,
               before: () => runWriteHook(hooks, 'before', payload),
               after: (rows) => runWriteHook(hooks, 'after', { ...payload, rows: rows ?? [] }),
+              returning: (columns) => {
+                const withHook = withHookColumns(hooks, columns);
+                added = withHook.added;
+                return withHook.returning;
+              },
+              output: (rows) => omitHookColumns(rows, added),
             });
           },
           !!hooks,
