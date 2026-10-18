@@ -44,6 +44,7 @@ import type {
   ColumnDescriber,
   ColumnTypeMapper,
   EnumNameMapper,
+  EnumValueNameMapper,
   RelationDescriber,
   ScalarOverridesConfig,
   TableDescriber,
@@ -1824,4 +1825,33 @@ export type BuildSchemaConfig = {
    * Return `undefined` to keep the default name.
    */
   enumNameMapper?: EnumNameMapper;
+  /**
+   * Names the *values* of the generated GraphQL enum types.
+   *
+   * By default a value's GraphQL name is the stored value itself (`'running'` → `running`),
+   * or `Option<index>` when the stored value is not a usable GraphQL name. This hook overrides
+   * that per value — most often to follow GraphQL's SCREAMING_CASE convention while the
+   * database keeps its lowercase values:
+   *
+   * ```ts
+   * buildSchema(db, {
+   *   enumValueNameMapper: ({ value }) => value.toUpperCase(),
+   * });
+   * // enum RunsStatusEnum { RUNNING OK ERROR STOPPED }
+   * ```
+   *
+   * Only the GraphQL name changes. Each value's internal `value` stays the stored string, so
+   * filters, create/update inputs, outputs and resolvers keep sending and receiving exactly
+   * what the database stores; the generated TypeScript types keep the stored values too.
+   *
+   * Pass the string `'constant'` for the built-in preset, which CONSTANT_CASEs every value
+   * (`inProgress` / `in-progress` → `IN_PROGRESS`).
+   *
+   * The mapper receives the stored `value`, its `index`, the enum's GraphQL `typeName` (after
+   * `enumNameMapper`), and everything `enumNameMapper` receives. Return `undefined` to keep the
+   * default name for that value. The build throws when a returned name is not a valid GraphQL
+   * enum value name, when two values of one enum map to the same name, or when columns sharing
+   * one enum type would name its values differently.
+   */
+  enumValueNameMapper?: 'constant' | EnumValueNameMapper;
 };

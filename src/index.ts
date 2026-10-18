@@ -113,6 +113,8 @@ export type {
   ColumnTypeMapperInfo,
   EnumNameInfo,
   EnumNameMapper,
+  EnumValueNameInfo,
+  EnumValueNameMapper,
   RelationDescriber,
   ScalarOverride,
   ScalarOverridesConfig,

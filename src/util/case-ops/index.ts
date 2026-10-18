@@ -21,6 +21,22 @@ export const tableNameToModel = <T extends string>(input: T) => singularize(capi
 //     : input) as Capitalize<T>;
 
 /**
+ * `inProgress` / `in-progress` / `in progress` / `InProgress` → `IN_PROGRESS`; `HTTPError` →
+ * `HTTP_ERROR`. Words are split at non-alphanumeric runs and at lower→upper and
+ * acronym→word boundaries, then upper-cased and joined with `_`.
+ *
+ * The preset behind `enumValueNameMapper: 'constant'`.
+ */
+export const constantCase = (input: string): string =>
+  input
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2')
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map((part) => part.toUpperCase())
+    .join('_');
+
+/**
  * The `typeNameMapper` preset behind `typeNameMapper: 'singularize'`.
  *
  * Derives the singular and plural forms of a table key with the library's own `pluralize`,

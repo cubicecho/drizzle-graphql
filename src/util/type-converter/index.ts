@@ -17,7 +17,7 @@ import {
   GraphQLScalarType,
   GraphQLString,
 } from 'graphql';
-import { capitalize } from '../case-ops/index.ts';
+import { capitalize, constantCase } from '../case-ops/index.ts';
 import {
   GraphQLBigIntString,
   GraphQLDate,
@@ -30,12 +30,17 @@ import type {
   ColumnTypeMapper,
   ConvertedColumn,
   EnumNameMapper,
+  EnumValueNameMapper,
   NullableConvertedColumnType,
   ScalarOverride,
   ScalarOverridesConfig,
 } from './types.ts';
 
 const allowedNameChars = /^[a-zA-Z0-9_]+$/;
+
+/** A GraphQL `Name` that is also allowed as an enum value — the spec reserves the three literals. */
+const validEnumValueName = (name: string): boolean =>
+  /^[_a-zA-Z][_a-zA-Z0-9]*$/.test(name) && name !== 'true' && name !== 'false' && name !== 'null';
 
 /**
  * The enum type a column was declared with, when it is a *named* one — `pgEnum('status', …)`
@@ -64,21 +69,49 @@ const pascalize = (input: string): string =>
 const enumValuesKey = (values: readonly string[]): string => JSON.stringify(values);
 
 /**
+ * Identity of the GraphQL names those values were given. Kept apart from {@link enumValuesKey}
+ * because `enumValueNameMapper` sees the column, so two columns reaching one type can name its
+ * values differently — and only one set of names can win.
+ */
+const enumValueNamesKey = (names: readonly string[]): string => JSON.stringify(names);
+
+/**
  * Every GraphQL enum name this build has handed out. Two columns that resolve to the same
  * name share one type — that is how the columns of one `pgEnum` end up on a single type —
  * so the values are kept alongside it to tell a genuine collision from a re-use.
  */
-let enumNamesInUse = new Map<string, { type: GraphQLEnumType; valuesKey: string }>();
+let enumNamesInUse = new Map<string, { type: GraphQLEnumType; valuesKey: string; namesKey: string }>();
 let enumNameMapper: EnumNameMapper | undefined;
+let enumValueNameMapper: EnumValueNameMapper | undefined;
+
+/** The value-name presets, by the string a config passes for them. */
+const enumValueNamePresets: Record<string, EnumValueNameMapper> = {
+  constant: ({ value }) => constantCase(value),
+};
 
 /**
  * Resets the enum registry for a fresh schema build and installs that build's
- * `enumNameMapper`. Called once per `generateSchemaData`, alongside
+ * `enumNameMapper` and `enumValueNameMapper`. Called once per `generateSchemaData`, alongside
  * {@link registerScalarOverrides} — without the reset a second build would reuse the first
  * build's enum types, and so its naming decisions.
  */
-export const registerEnumConfig = (config: { enumNameMapper?: EnumNameMapper }): void => {
+export const registerEnumConfig = (config: {
+  enumNameMapper?: EnumNameMapper;
+  enumValueNameMapper?: 'constant' | EnumValueNameMapper;
+}): void => {
   enumNameMapper = config.enumNameMapper;
+  const valueMapper = config.enumValueNameMapper;
+  if (typeof valueMapper === 'string') {
+    const preset = enumValueNamePresets[valueMapper];
+    if (!preset) {
+      throw new Error(
+        `Drizzle-GraphQL Error: Unknown enumValueNameMapper preset '${valueMapper}'. The only preset is 'constant'; pass a function for anything else.`,
+      );
+    }
+    enumValueNameMapper = preset;
+  } else {
+    enumValueNameMapper = valueMapper;
+  }
   enumNamesInUse = new Map();
 };
 
@@ -110,12 +143,56 @@ const generateEnumCached = (column: Column, columnName: string, tableName: strin
       values,
     }) ?? (declared ? `${pascalize(declared.enumName)}Enum` : `${capitalize(tableName)}${capitalize(columnName)}Enum`);
 
+  const valueNames = values.map((value, index) => {
+    const mapped = enumValueNameMapper?.({
+      enumName: declared?.enumName,
+      schema: declared?.schema,
+      tableName,
+      columnName,
+      values,
+      value,
+      index,
+      typeName: name,
+    });
+    if (mapped === undefined) {
+      return allowedNameChars.test(value) ? value : `Option${index}`;
+    }
+    if (!validEnumValueName(mapped)) {
+      throw new Error(
+        `Drizzle-GraphQL Error: config.enumValueNameMapper named value '${value}' of enum '${name}' (on '${tableName}.${columnName}') '${mapped}', which is not a valid GraphQL enum value name. A name must match /^[_a-zA-Z][_a-zA-Z0-9]*$/ and not be true, false or null.`,
+      );
+    }
+    return mapped;
+  });
+
+  const seen = new Map<string, string>();
+  values.forEach((value, index) => {
+    const valueName = valueNames[index]!;
+    const earlier = seen.get(valueName);
+    if (earlier !== undefined) {
+      throw new Error(
+        `Drizzle-GraphQL Error: Values '${earlier}' and '${value}' of enum '${name}' (on '${tableName}.${columnName}') both map to the GraphQL value name '${valueName}'. Give one of them a different name via config.enumValueNameMapper.`,
+      );
+    }
+    seen.set(valueName, value);
+  });
+
   const valuesKey = enumValuesKey(values);
+  const namesKey = enumValueNamesKey(valueNames);
   const claimed = enumNamesInUse.get(name);
   if (claimed) {
     if (claimed.valuesKey !== valuesKey) {
       throw new Error(
         `Drizzle-GraphQL Error: Two different enums both map to the GraphQL type name '${name}' (most recently '${tableName}.${columnName}'). Give one of them a different name via config.enumNameMapper.`,
+      );
+    }
+    if (claimed.namesKey !== namesKey) {
+      const before = claimed.type
+        .getValues()
+        .map((v) => v.name)
+        .join(', ');
+      throw new Error(
+        `Drizzle-GraphQL Error: Columns sharing the GraphQL enum '${name}' name its values differently ('${tableName}.${columnName}' gives ${valueNames.join(', ')}; an earlier column gave ${before}). config.enumValueNameMapper must name a shared enum's values the same way for every column, or config.enumNameMapper must give the columns separate types.`,
       );
     }
     return claimed.type;
@@ -125,7 +202,7 @@ const generateEnumCached = (column: Column, columnName: string, tableName: strin
     name,
     values: Object.fromEntries(
       values.map((e, index) => [
-        allowedNameChars.test(e) ? e : `Option${index}`,
+        valueNames[index]!,
         {
           value: e,
           description: `Value: ${e}`,
@@ -134,7 +211,7 @@ const generateEnumCached = (column: Column, columnName: string, tableName: strin
     ),
   });
 
-  enumNamesInUse.set(name, { type: gqlEnum, valuesKey });
+  enumNamesInUse.set(name, { type: gqlEnum, valuesKey, namesKey });
 
   return gqlEnum;
 };

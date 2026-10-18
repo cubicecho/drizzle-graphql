@@ -72,6 +72,25 @@ export type EnumNameInfo = {
  */
 export type EnumNameMapper = (info: EnumNameInfo) => string | undefined;
 
+/**
+ * Everything an {@link EnumValueNameMapper} needs to name one value of a generated enum: the
+ * value itself, plus the same context an {@link EnumNameMapper} gets for the enum around it.
+ */
+export type EnumValueNameInfo = EnumNameInfo & {
+  /** The stored value being named. It stays the GraphQL value's internal `value` either way. */
+  value: string;
+  /** The value's position in {@link EnumNameInfo.values}. */
+  index: number;
+  /** The GraphQL type name the enum was given — after `enumNameMapper`, if there is one. */
+  typeName: string;
+};
+
+/**
+ * Names one value of a generated GraphQL enum. Return `undefined` to keep the default name.
+ * See `BuildSchemaConfig.enumValueNameMapper`.
+ */
+export type EnumValueNameMapper = (info: EnumValueNameInfo) => string | undefined;
+
 /** Context handed to the documentation and deprecation hooks alongside the column itself. */
 export type ColumnDocInfo = {
   /** The table's key in the Drizzle schema object. */

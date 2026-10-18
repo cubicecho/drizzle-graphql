@@ -711,6 +711,51 @@ lists is the build-time error above.
 >     `${tableName}${columnName[0]!.toUpperCase()}${columnName.slice(1)}Enum`
 > ```
 
+### Enum value names
+
+A value's GraphQL name is the stored value itself, or `Option<index>` when the stored value
+is not a usable GraphQL name. `enumValueNameMapper` renames the values — most often to follow
+GraphQL's SCREAMING_CASE convention while the database keeps its lowercase values:
+
+```Typescript
+export const Runs = pgTable('runs', {
+    status: text('status', { enum: ['running', 'ok', 'error', 'stopped'] }),
+})
+
+const { schema } = buildSchema(db, {
+    // The built-in preset: `inProgress` / `in-progress` → `IN_PROGRESS`
+    enumValueNameMapper: 'constant',
+})
+```
+
+```graphql
+enum RunsStatusEnum {
+    RUNNING   # stored as 'running'
+    OK
+    ERROR
+    STOPPED
+}
+```
+
+-   Only the GraphQL name changes. Each value's internal `value` is still the stored string,
+    so filters (`eq`, `inArray`, …), create/update inputs, outputs and your own resolvers keep
+    sending and receiving exactly what the database stores. The generated TypeScript types
+    keep the stored values too
+-   The function form receives the stored `value`, its `index`, the enum's GraphQL `typeName`
+    (after `enumNameMapper`) and everything `enumNameMapper` receives. Returning `undefined`
+    keeps the default name for that value:
+
+    ```Typescript
+    enumValueNameMapper: ({ value, typeName }) =>
+        typeName === 'RunsStatusEnum' ? value.toUpperCase() : undefined,
+    ```
+
+-   The build fails, rather than producing an invalid or lossy schema, when a returned name is
+    not a valid GraphQL enum value name, when two values of one enum map to the same name, or
+    when columns that share one enum type (the columns of one `pgEnum`) would name its values
+    differently — give those columns separate types with `enumNameMapper` if they really
+    should differ
+
 ## Documenting the schema
 
 Four hooks put descriptions and deprecations on the generated types. Each is called per
@@ -2285,6 +2330,7 @@ that explains it, where there is one.
 | `typeNamePrefix` / `typeNameSuffix` / `derivedTypeNameMapper` | none | [names of the derived types](#renaming-the-derived-types) — filters, inputs, aggregates, shared inputs |
 | `scalars` / `mapColumnType` | built-in detection | [override a column's GraphQL type](#overriding-a-columns-scalar), by name or by rule |
 | `enumNameMapper` | shared `<EnumName>Enum` per database enum | [names the enum a column maps to](#enum-types) |
+| `enumValueNameMapper` | the stored value | [names the enum's values](#enum-value-names); `'constant'` for CONSTANT_CASE |
 | `describeColumn` / `describeTable` / `describeRelation` | none | [GraphQL descriptions](#documenting-the-schema) |
 | `deprecateColumn` | none | `@deprecated` on a column's output and optional input fields |
 | `conflictDoNothing` | `false` | PostgreSQL only — `ON CONFLICT DO NOTHING` on inserts, which makes `create<Table>Single` nullable |
