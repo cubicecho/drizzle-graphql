@@ -1460,6 +1460,41 @@ describe.sequential('Query tests', async () => {
     });
   });
 
+  it(`Update a nullable timestamp and bigint to null`, async () => {
+    // `new Date(null)` is the epoch and `BigInt(null)` throws: an explicit null must reach
+    // the driver as NULL instead of being coerced (#173).
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+			mutation {
+				updateUsersSingle(where: { id: { eq: 1 } }, set: { createdAt: null, createdAtMs: null, blobBigInt: null }) {
+					id
+					createdAt
+					createdAtMs
+					blobBigInt
+				}
+			}
+		`);
+
+    expect(res).toStrictEqual({
+      data: {
+        updateUsersSingle: { id: 1, createdAt: null, createdAtMs: null, blobBigInt: null },
+      },
+    });
+
+    const read = await ctx.gql.queryGql(/* GraphQL */ `
+			{
+				usersSingle(where: { id: { eq: 1 } }) {
+					createdAt
+					createdAtMs
+					blobBigInt
+				}
+			}
+		`);
+
+    expect(read).toStrictEqual({
+      data: { usersSingle: { createdAt: null, createdAtMs: null, blobBigInt: null } },
+    });
+  });
+
   it(`Delete`, async () => {
     const res = await ctx.gql.queryGql(/* GraphQL */ `
 			mutation {

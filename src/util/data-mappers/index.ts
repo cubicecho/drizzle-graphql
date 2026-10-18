@@ -143,6 +143,14 @@ export const remapToGraphQLArrayOutput = (
 };
 
 export const remapFromGraphQLCore = (value: any, column: Column, columnName: string) => {
+  // `null` is SQL NULL whatever the column's type, so there is nothing to coerce — and the
+  // coercing branches below would get it wrong rather than fail: `new Date(null)` is the
+  // epoch, not an invalid date, and `BigInt(null)` throws. Whether the column may hold a
+  // null is the caller's question (see `remapFromGraphQLSingleInput`), not this function's.
+  if (value === null) {
+    return null;
+  }
+
   // Columns whose input type is a scalar override receive exactly what that scalar's
   // parseValue/parseLiteral produced — coercion is the scalar's job, so the value goes to
   // the driver untouched. Only the null-prototype normalization still applies (it undoes a
