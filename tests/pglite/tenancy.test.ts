@@ -2,7 +2,7 @@ import { rm } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
-import { type GraphQLInputObjectType, type GraphQLSchema, graphql } from 'graphql';
+import { type GraphQLInputObjectType, GraphQLObjectType, GraphQLSchema, graphql } from 'graphql';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { type BuildSchemaConfig, buildSchema } from '@/index';
 import * as schema from '../schema/pg';
@@ -230,6 +230,25 @@ describe.sequential('row scope', () => {
     expect(rows).toHaveLength(1);
   });
 
+  it('confines the count mutations to the scope, and counts only in-scope rows', async () => {
+    const gqlSchema = buildWith({ ...ownPosts, features: { countMutations: true } });
+    // Unfiltered: every post matches the client's `where`, but only user 1's are in scope.
+    const updated = await run(gqlSchema, `mutation { updatePostsCount(set: { content: "MINE" }) }`, { userId: 1 });
+    // Post 3 is user 1's, post 4 is user 5's.
+    const deleted = await run(gqlSchema, `mutation { deletePostsCount(where: { id: { inArray: [3, 4] } }) }`, {
+      userId: 1,
+    });
+
+    expect(updated.errors).toBeUndefined();
+    expect(updated.data).toEqual({ updatePostsCount: 4 });
+    expect(deleted.errors).toBeUndefined();
+    expect(deleted.data).toEqual({ deletePostsCount: 1 });
+
+    const rows = await db.select().from(schema.Posts).orderBy(schema.Posts.id);
+    expect(rows.map((row: any) => row.id)).toEqual([1, 2, 4, 5, 6]);
+    expect(rows.filter((row: any) => row.content === 'MINE').map((row: any) => row.id)).toEqual([1, 2, 6]);
+  });
+
   it("stops an upsert's conflict branch from taking over an out-of-scope row", async () => {
     const gqlSchema = buildWith({ ...ownPosts, features: { upsert: true } });
     // Post 4 belongs to user 5. Colliding on its primary key must not rewrite it.
@@ -342,6 +361,45 @@ describe.sequential('context-derived column values', () => {
     expect(res.errors).toBeUndefined();
     // The row keeps its original owner even though the request's context names another.
     expect(res.data?.['updatePosts']).toEqual([{ id: 4, authorId: 5, content: 'EDITED' }]);
+  });
+
+  it('leaves the column untouched by a count update, even when the key is stitched in', async () => {
+    const { entities } = buildSchema(db, {
+      typeNameMapper,
+      prefixes: { insert: 'create', delete: 'delete' },
+      suffixes: { single: '', list: '' },
+      ...stamped,
+      features: { countMutations: true },
+    });
+    const generated = (entities.mutations as any)['updatePostsCount'];
+    // A schema that lets the key through input validation — what a stitched or merged schema
+    // can do — so only the resolver stands between the request and the ownership column.
+    const stitched = new GraphQLSchema({
+      query: new GraphQLObjectType({ name: 'Query', fields: { posts: (entities.queries as any)['posts'] } }),
+      mutation: new GraphQLObjectType({
+        name: 'Mutation',
+        fields: {
+          updatePostsCount: {
+            ...generated,
+            resolve: (source: unknown, args: any, context: unknown, info: unknown) =>
+              generated.resolve(source, { ...args, set: { ...args.set, authorId: 1 } }, context, info),
+          },
+        },
+      }),
+    });
+
+    const res = await run(
+      stitched,
+      `mutation { updatePostsCount(where: { id: { eq: 4 } }, set: { content: "EDITED" }) }`,
+      {
+        userId: 1,
+      },
+    );
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data).toEqual({ updatePostsCount: 1 });
+    const [row] = await db.select().from(schema.Posts).where(eq(schema.Posts.id, 4));
+    expect(row).toMatchObject({ authorId: 5, content: 'EDITED' });
   });
 
   it('stamps the column on a nested create', async () => {

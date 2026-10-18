@@ -164,8 +164,9 @@ export type MutationRegistration = {
   generated: CreatedResolver | undefined;
   type: GraphQLOutputType;
   /**
-   * The identity published on `extensions.drizzle`. Omitted by the count mutations, which
-   * answer with a number rather than rows and so have no row operation to dispatch on.
+   * The identity published on `extensions.drizzle`. The count mutations carry their plural
+   * sibling's operation plus `count: true`, so a wrapper gating writes on `operation` cannot
+   * be bypassed by swapping in the count variant.
    */
   meta?: DrizzleMutationMeta;
   description?: string;

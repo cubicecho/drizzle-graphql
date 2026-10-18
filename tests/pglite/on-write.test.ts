@@ -320,3 +320,84 @@ describe.sequential('onWrite', () => {
     expect(await auditRows()).toEqual([]);
   });
 });
+
+describe.sequential('onWrite: count mutations', () => {
+  const counted: Partial<BuildSchemaConfig> = { features: { countMutations: true } };
+  const byId = (rows: any[]) => [...rows].sort((a, b) => a.id - b.id);
+
+  it('runs before and after around both, with the payload the plural write sends', async () => {
+    const seen: WriteHookPayload[] = [];
+    const hook = async (payload: WriteHookPayload) => {
+      seen.push(payload);
+      await record()(payload);
+    };
+    const gqlSchema = buildWith({ ...counted, onWrite: { Articles: { before: hook, after: hook } } });
+
+    const updated = await run(
+      gqlSchema,
+      `mutation { updateArticlesCount(set: { title: "x" }, where: { id: { eq: 1 } }) }`,
+    );
+    const deleted = await run(gqlSchema, `mutation { deleteArticlesCount(where: { id: { eq: 2 } }) }`);
+
+    expect(updated.errors).toBeUndefined();
+    expect(updated.data).toEqual({ updateArticlesCount: 1 });
+    expect(deleted.errors).toBeUndefined();
+    expect(deleted.data).toEqual({ deleteArticlesCount: 1 });
+
+    expect(seen.map((p) => `${p.table}:${p.operation}:${p.position}:${p.single}`)).toEqual([
+      'Articles:update:before:false',
+      'Articles:update:after:false',
+      'Articles:delete:before:false',
+      'Articles:delete:after:false',
+    ]);
+    expect(seen[0]!.args).toEqual({ set: { title: 'x' }, where: { id: { eq: 1 } } });
+    expect(seen[0]!.rows).toEqual([]);
+    // A hook that names no columns gets the key of each row the write touched.
+    expect(seen[1]!.rows).toEqual([{ id: 1 }]);
+    expect(seen[3]!.rows).toEqual([{ id: 2 }]);
+    // Both positions ran on the mutation's own transaction, and their writes committed.
+    expect(seen[0]!.tx).toBe(seen[1]!.tx);
+    expect((await auditRows()).map((row: any) => `${row.operation}:${row.position}:${row.detail}`)).toEqual([
+      'update:before:',
+      'update:after:1',
+      'delete:before:',
+      'delete:after:2',
+    ]);
+  });
+
+  it('hands the after hook the columns it names, and counts the rows it was handed', async () => {
+    const seen: any[][] = [];
+    const gqlSchema = buildWith({
+      ...counted,
+      onWrite: { Articles: { after: (payload) => void seen.push(payload.rows), columns: ['id', 'title'] } },
+    });
+
+    const res = await run(gqlSchema, `mutation { updateArticlesCount(set: { title: "y" }) }`);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data).toEqual({ updateArticlesCount: 2 });
+    expect(seen).toHaveLength(1);
+    expect(byId(seen[0]!)).toEqual([
+      { id: 1, title: 'y' },
+      { id: 2, title: 'y' },
+    ]);
+  });
+
+  it('throwing rolls the count mutation back', async () => {
+    const gqlSchema = buildWith({
+      ...counted,
+      onWrite: {
+        Articles: async () => {
+          throw new Error('audit failed');
+        },
+      },
+    });
+
+    const updated = await run(gqlSchema, `mutation { updateArticlesCount(set: { title: "z" }) }`);
+    const deleted = await run(gqlSchema, `mutation { deleteArticlesCount }`);
+
+    expect(updated.errors?.[0]?.message).toContain('audit failed');
+    expect(deleted.errors?.[0]?.message).toContain('audit failed');
+    expect((await articleRows()).map((row: any) => `${row.id}:${row.title}`)).toEqual(['1:first', '2:second']);
+  });
+});
