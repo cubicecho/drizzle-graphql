@@ -259,7 +259,6 @@ export const resolveBuildConfig = (
   // every resolver.
   const onWriteConfig = config?.onWrite;
   const writeHooks = new Map<string, ResolvedWriteHooks | undefined>();
-  let globalWriteHooks: ResolvedWriteHooks | undefined;
   if (onWriteConfig) {
     // A bare function, or an object naming the positions, applies to every table; anything
     // else is a table map. `before`/`after` are reserved as position names for that reason.
@@ -268,7 +267,18 @@ export const resolveBuildConfig = (
       typeof (onWriteConfig as WriteHookPositions).before === 'function' ||
       typeof (onWriteConfig as WriteHookPositions).after === 'function';
     if (isGlobal) {
-      globalWriteHooks = normalizeWriteHooks(onWriteConfig as WriteHooks);
+      // Resolved per table rather than once, because a hook's `columns` resolve to that
+      // table's own column objects — and a named column every table must actually have.
+      for (const tableName of featureTables) {
+        writeHooks.set(
+          tableName,
+          normalizeWriteHooks(
+            onWriteConfig as WriteHooks,
+            getColumns(schema[tableName] as Table),
+            `config.onWrite (on table '${tableName}')`,
+          ),
+        );
+      }
     } else {
       const tableNames = new Set(tableKeys);
       for (const [tableName, hooks] of Object.entries(onWriteConfig as Record<string, WriteHooks>)) {
@@ -282,14 +292,16 @@ export const resolveBuildConfig = (
             `Drizzle-GraphQL Error: config.onWrite.${tableName} must be a function or an object with 'before' and/or 'after'.`,
           );
         }
-        writeHooks.set(tableName, normalizeWriteHooks(hooks));
+        writeHooks.set(
+          tableName,
+          normalizeWriteHooks(hooks, getColumns(schema[tableName] as Table), `config.onWrite.${tableName}`),
+        );
       }
     }
   }
-  const onWrite: WriteHookFor | undefined =
-    globalWriteHooks || writeHooks.size
-      ? (tableName: string) => globalWriteHooks ?? writeHooks.get(tableName)
-      : undefined;
+  const onWrite: WriteHookFor | undefined = writeHooks.size
+    ? (tableName: string) => writeHooks.get(tableName)
+    : undefined;
 
   const policies: TablePolicies | undefined =
     scopeConfig || contextValuesConfig || softDeleteInfos.size || onWrite || defaultOrderBy

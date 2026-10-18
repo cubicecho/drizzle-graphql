@@ -134,7 +134,16 @@ export const createUpdateManyGenerator = (
       txCtx,
       policies,
       args: queryArgs,
-      run: async ({ executor, args, context, info, before, after }) => {
+      run: async ({
+        executor,
+        args,
+        context,
+        info,
+        before,
+        after,
+        returning: withHookReturning,
+        output: withoutHookColumns,
+      }) => {
         const { updates } = args;
         if (!updates.length) {
           throw drizzleError('No updates were provided!', { code: 'DRIZZLE_NO_VALUES' });
@@ -183,14 +192,16 @@ export const createUpdateManyGenerator = (
         });
 
         const anyNested = entries.some((entry) => entry.ops);
-        const returning = anyNested
-          ? nested!.withJoinColumns(
-              tableName,
-              mergedOps(entries.map((entry) => ({ ops: entry.ops ?? {} }))),
-              { ...columns },
-              table,
-            )
-          : columns;
+        const returning = withHookReturning(
+          anyNested
+            ? nested!.withJoinColumns(
+                tableName,
+                mergedOps(entries.map((entry) => ({ ops: entry.ops ?? {} }))),
+                { ...columns },
+                table,
+              )
+            : columns,
+        );
 
         const perEntry = await runBatch({
           executor,
@@ -203,8 +214,9 @@ export const createUpdateManyGenerator = (
           context,
         });
 
-        const flatRows = perEntry.flat();
-        await after(flatRows);
+        const written = perEntry.flat();
+        await after(written);
+        const flatRows = withoutHookColumns(written);
 
         const enriched = await withEagerRelations(executor, tableName, flatRows, pkNames, withParams, hasRelations);
 

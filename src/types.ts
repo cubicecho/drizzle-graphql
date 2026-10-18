@@ -1483,8 +1483,12 @@ export type BuildSchemaConfig = {
    * ```ts
    * buildSchema(db, {
    *   onWrite: {
-   *     posts: async ({ table, operation, rows, tx }) => {
-   *       await tx.insert(auditLog).values(rows.map((row) => ({ table, operation, rowId: row.id })));
+   *     posts: {
+   *       after: async ({ table, operation, rows, tx }) => {
+   *         await tx.insert(auditLog).values(rows.map((row) => ({ table, operation, rowId: row.id })));
+   *       },
+   *       // `rows` always carries `id`, whether or not the client selected it.
+   *       columns: ['id'],
    *     },
    *   },
    * });
@@ -1502,6 +1506,13 @@ export type BuildSchemaConfig = {
    * - **Throwing rolls the mutation back.** That is the point of the position.
    * - **`rows` are the post-write rows as the database returned them**, before the output
    *   mapper. Empty at the `before` position, and on MySQL, whose mutations return no rows.
+   * - **A row holds the columns the client selected**, because `RETURNING` is built from the
+   *   selection — plus every column the registration names in `columns` (column keys, or
+   *   `'all'`). Those are added to `RETURNING` for insert, upsert, update, `updateMany`, delete
+   *   and restore, and taken back off before the result is mapped, so the client's response
+   *   is unchanged. An unknown column, or `columns` with no `after` hook, fails the build; on
+   *   a top-level registration a named column must exist on every table. MySQL returns no
+   *   rows, so `columns` has no effect there.
    * - The hook fires for the **mutation field's own table**. Rows a nested write creates in
    *   another table do not fire that table's hook.
    *
