@@ -1,3 +1,14 @@
+## [13.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v13.0.0...v13.1.0) (2026-10-18)
+
+### Features
+
+* add enumValueNameMapper for generated enum value names ([39b05fd](https://github.com/cubicecho/drizzle-graphql/commit/39b05fd0e73b7242ad76bf1f909a5fbedbe3999a)), closes [#178](https://github.com/cubicecho/drizzle-graphql/issues/178)
+* **onWrite:** let an after hook name the columns its rows need ([18a4cec](https://github.com/cubicecho/drizzle-graphql/commit/18a4cecd8a2d18179865c58babd2ac1369c0f344)), closes [#177](https://github.com/cubicecho/drizzle-graphql/issues/177)
+
+### Bug Fixes
+
+* write NULL for an explicit null on a nullable column ([3d5e535](https://github.com/cubicecho/drizzle-graphql/commit/3d5e53531abf1313b9458f1621b4c33d2bde3e9d)), closes [#173](https://github.com/cubicecho/drizzle-graphql/issues/173)
+
 ## [13.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v12.0.1...v13.0.0) (2026-09-03)
 
 ### ⚠ BREAKING CHANGES
