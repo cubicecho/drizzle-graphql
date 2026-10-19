@@ -24,7 +24,7 @@ import {
 } from '../builders/common.ts';
 import { remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
 import { remapUpdateInput } from './field-updates.ts';
-import { mergedOps, type NestedWriteRuntime } from './nested-writes.ts';
+import { mergedOps, type NestedWriteRequest, type NestedWriteRuntime } from './nested-writes.ts';
 import type { UpdateManyGenerator, UpdateManyOptions } from './schema-data.ts';
 import type { CreatedResolver, Filters } from './types.ts';
 import type { WriteBuildOptions } from './write-resolvers.ts';
@@ -51,7 +51,8 @@ export type UpdateManyBatchCtx = {
   anyNested: boolean;
   nested: NestedWriteRuntime | undefined;
   tableName: string;
-  context: any;
+  /** The request the nested writes run for — its context, and what their hooks are handed. */
+  request: NestedWriteRequest;
 };
 
 /** Runs the entries and returns each one's rows, in entry order. */
@@ -70,13 +71,13 @@ export const runUpdateManyBatch: UpdateManyBatchRunner = ({
   returning,
   nested,
   tableName,
-  context,
+  request,
 }) =>
   executor.transaction(async (tx: any) => {
     const results: Record<string, any>[][] = [];
     for (const entry of entries) {
       const values = entry.ops
-        ? { ...entry.set, ...(await nested!.applyParentSide(tx, tableName, entry.ops, context)) }
+        ? { ...entry.set, ...(await nested!.applyParentSide(tx, tableName, entry.ops, request)) }
         : entry.set;
 
       // Same as the single update: an entry with no column values reads the rows its
@@ -89,7 +90,7 @@ export const runUpdateManyBatch: UpdateManyBatchRunner = ({
       const rows = (await (writes ? (query.returning(returning) as any) : query)) as Record<string, any>[];
 
       if (entry.ops) {
-        await nested!.applyChildSide(tx, tableName, entry.ops, rows, context);
+        await nested!.applyChildSide(tx, tableName, entry.ops, rows, request);
       }
       results.push(rows);
     }
@@ -211,7 +212,7 @@ export const createUpdateManyGenerator = (
           anyNested,
           nested,
           tableName,
-          context,
+          request: { context, args, info },
         });
 
         const written = perEntry.flat();

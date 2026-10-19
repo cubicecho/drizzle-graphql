@@ -5,7 +5,7 @@ import { integer, pgTable, primaryKey, text } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
 import { type GraphQLInputObjectType, type GraphQLSchema, graphql } from 'graphql';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { buildSchema } from '@/index';
+import { buildSchema, type WriteHookPayload } from '@/index';
 
 // ── A many-to-many schema, plus a junction that cannot be written through ─────
 // posts.tags / tags.posts   through posts_to_tags, whose only columns are the two keys
@@ -331,5 +331,94 @@ describe.sequential('nested writes through a junction table: failures', () => {
     expect(result.errors).toBeDefined();
     expect(await db.select().from(Posts)).toHaveLength(2);
     expect(await links()).toEqual([]);
+  });
+});
+
+describe.sequential("nested writes through a junction table: the junction's own write rules", () => {
+  const fieldNames = (target: GraphQLSchema, name: string) =>
+    Object.keys((target.getType(name) as GraphQLInputObjectType).getFields()).sort();
+
+  it('reports a set as a delete then an insert on the junction', async () => {
+    await db.insert(PostsToTags).values([
+      { postId: 1, tagId: 10 },
+      { postId: 2, tagId: 10 },
+    ]);
+    const calls: WriteHookPayload[] = [];
+    const record = (payload: WriteHookPayload) => void calls.push(payload);
+    const hooked = buildSchema(db, {
+      features: { nestedWrites: true },
+      onWrite: { PostsToTags: { before: record, after: record }, Tags: record },
+    }).schema;
+
+    const result = await graphql({
+      schema: hooked,
+      source: `mutation { updatePostsSingle(where: { id: { eq: 1 } }, set: { tags: { set: [{ id: { gt: 10 } }] } }) { id } }`,
+      contextValue: {},
+    });
+
+    expect(result.errors).toBeUndefined();
+    expect(calls.map((c) => `${c.table} ${c.operation} ${c.position} ${c.nested?.op}`)).toEqual([
+      'PostsToTags delete before set',
+      'PostsToTags insert before set',
+      'PostsToTags delete after set',
+      'PostsToTags insert after set',
+    ]);
+    expect(calls[2]!.rows).toEqual([{ postId: 1, tagId: 10 }]);
+    expect(calls[3]!.rows).toEqual([
+      { postId: 1, tagId: 20 },
+      { postId: 1, tagId: 30 },
+    ]);
+    expect(calls[3]!.nested).toEqual({ parentTable: 'Posts', relation: 'tags', op: 'set' });
+    expect(await links()).toEqual(['1:20', '1:30', '2:10']);
+  });
+
+  it('rolls the parent row back when a junction hook throws', async () => {
+    const hooked = buildSchema(db, {
+      features: { nestedWrites: true },
+      onWrite: {
+        PostsToTags: () => {
+          throw new Error('no links');
+        },
+      },
+    }).schema;
+
+    const result = await graphql({
+      schema: hooked,
+      source: `mutation { createPostsSingle(values: { id: 3, title: "Third", tags: { connect: [{ id: { eq: 10 } }] } }) { id } }`,
+      contextValue: {},
+    });
+
+    expect(result.errors).toBeDefined();
+    expect(await db.select().from(Posts)).toHaveLength(2);
+    expect(await links()).toEqual([]);
+  });
+
+  it("offers only what the junction's insert and delete allow", () => {
+    const noDelete = buildSchema(db, { features: { nestedWrites: true, delete: (t) => t !== 'PostsToTags' } }).schema;
+    expect(fieldNames(noDelete, 'PostsTagsNestedUpdateInput')).toEqual(['connect']);
+    expect(fieldNames(noDelete, 'PostsTagsNestedCreateInput')).toEqual(['connect']);
+
+    const noInsert = buildSchema(db, { features: { nestedWrites: true, insert: (t) => t !== 'PostsToTags' } }).schema;
+    expect(fieldNames(noInsert, 'PostsTagsNestedUpdateInput')).toEqual(['disconnect']);
+    // Only `connect` is offered on the create input, so the relation is gone from it.
+    expect((noInsert.getType('CreatePostsInput') as GraphQLInputObjectType).getFields()['tags']).toBeUndefined();
+    expect(noInsert.getType('PostsTagsNestedCreateInput')).toBeUndefined();
+  });
+
+  it("ignores the target's own features, which a link does not write", () => {
+    const gated = buildSchema(db, {
+      features: { nestedWrites: true, insert: (t) => t !== 'Tags', update: (t) => t !== 'Tags' },
+    }).schema;
+
+    expect(fieldNames(gated, 'PostsTagsNestedUpdateInput')).toEqual(['connect', 'disconnect', 'set']);
+  });
+
+  it('leaves the relation out when the junction is excluded', () => {
+    const excluded = buildSchema(db, {
+      features: { nestedWrites: true },
+      exclude: { tables: ['PostsToTags'] },
+    }).schema;
+
+    expect((excluded.getType('UpdatePostsInput') as GraphQLInputObjectType).getFields()['tags']).toBeUndefined();
   });
 });

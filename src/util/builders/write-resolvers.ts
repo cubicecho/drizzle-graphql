@@ -215,7 +215,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
               remapValues: (values) =>
                 applyContextValues(remapFromGraphQLSingleInput(values, table), contextColumns, context),
               write: (tx, values) => runInsert(tx, [values]),
-              context,
+              request: { context, args, info },
             })
           : await runInsert(executor, input);
 
@@ -346,7 +346,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
               remapValues: (values) =>
                 applyContextValues(remapFromGraphQLSingleInput(values, table), contextColumns, context),
               write: (tx, values) => runUpsert(tx, [values]),
-              context,
+              request: { context, args, info },
             })
           : await runUpsert(executor, input);
 
@@ -462,7 +462,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
               ops: nestedOps,
               remapValues: (values) => values,
               write: runUpdate,
-              context,
+              request: { context, args, info },
             })
           : await runUpdate(executor, input);
 

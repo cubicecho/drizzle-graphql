@@ -7,17 +7,52 @@ import type { TablePolicies } from './policies.ts';
 /** The write a hook is attached to. `restore` only exists for a soft-deleting table. */
 export type WriteOperation = 'insert' | 'update' | 'updateMany' | 'upsert' | 'delete' | 'restore';
 
+/** Which input of a relation field a nested write came from. */
+export type NestedWriteOp = 'create' | 'connect' | 'disconnect' | 'set';
+
+/**
+ * Where a nested write came from: set on the payload of a hook that fires for a row a nested
+ * `create` / `connect` / `disconnect` / `set` wrote, and absent at the mutation field's own
+ * table. See {@link WriteHookPayload.nested}.
+ */
+export type NestedWriteOrigin = {
+  /** Drizzle schema key of the table whose input carried the relation field. */
+  parentTable: string;
+  /** The relation field the write went through, as named on the parent table. */
+  relation: string;
+  /** The relation field's input that produced this statement. */
+  op: NestedWriteOp;
+};
+
 /** What a write hook is handed. See {@link BuildSchemaConfig.onWrite}. */
 export type WriteHookPayload = {
   /** Drizzle schema key of the table being written. */
   table: string;
+  /**
+   * What happened to `table`. A nested write reports what its statement did to *that* table:
+   * `insert` for a nested `create`, `update` for a `connect` / `disconnect` / `set` that
+   * changes the foreign key on the target, and `insert` / `delete` on the junction table for
+   * a many-to-many link / unlink.
+   */
   operation: WriteOperation;
   /** `'before'` runs ahead of the statement, `'after'` once it has returned. */
   position: 'before' | 'after';
-  /** Whether the field writes a single row (`createUsersSingle`) or a list. */
+  /**
+   * Whether the field writes a single row (`createUsersSingle`) or a list. For a nested
+   * write, whether the relation it went through is a to-one.
+   */
   single: boolean;
-  /** The field's GraphQL arguments, exactly as the resolver received them. */
+  /**
+   * The field's GraphQL arguments, exactly as the resolver received them — for a nested
+   * write, the arguments of the root mutation field it is part of.
+   */
   args: any;
+  /**
+   * Set when the rows were written by a nested write under another table's mutation, and
+   * `undefined` for the mutation field's own table. A hook that only cares about root writes
+   * skips the rest with `if (payload.nested) return;`.
+   */
+  nested?: NestedWriteOrigin;
   /**
    * The rows the write produced, as the database returned them — before the output mapper,
    * so values are database-shaped. Empty at the `before` position, and on MySQL, whose
@@ -27,6 +62,9 @@ export type WriteHookPayload = {
    * nested write needed), **and** every column the hook names in `columns`. A column the
    * client did not select and the hook did not name is absent. The count mutations select
    * nothing, so there a row holds the named columns, or the primary key when none are named.
+   *
+   * A nested write has no selection of its own, so its rows hold the table's primary key and
+   * the join column(s) the write changed, plus the hook's `columns`.
    */
   rows: any[];
   context: any;

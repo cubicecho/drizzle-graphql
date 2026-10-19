@@ -32,7 +32,7 @@ const runSqliteUpdateManyBatch: UpdateManyBatchRunner = ({
   anyNested,
   nested,
   tableName,
-  context,
+  request,
 }) => {
   const runEntry = (tx: any, entry: UpdateManyEntry) => {
     let query = tx.update(table).set(entry.set);
@@ -49,7 +49,7 @@ const runSqliteUpdateManyBatch: UpdateManyBatchRunner = ({
   // time, so this path is always on one.
   const runNestedEntry = async (tx: any, entry: UpdateManyEntry) => {
     const values = entry.ops
-      ? { ...entry.set, ...(await nested!.applyParentSide(tx, tableName, entry.ops, context)) }
+      ? { ...entry.set, ...(await nested!.applyParentSide(tx, tableName, entry.ops, request)) }
       : entry.set;
 
     // Same as the single update: an entry with no column values reads the rows its `where`
@@ -62,7 +62,7 @@ const runSqliteUpdateManyBatch: UpdateManyBatchRunner = ({
     const rows = (await (writes ? query.returning(returning) : query)) as Record<string, any>[];
 
     if (entry.ops) {
-      await nested!.applyChildSide(tx, tableName, entry.ops, rows, context);
+      await nested!.applyChildSide(tx, tableName, entry.ops, rows, request);
     }
     return rows;
   };
