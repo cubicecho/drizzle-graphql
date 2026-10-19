@@ -323,7 +323,7 @@ describe.sequential('Query tests', async () => {
           name: 'FirstUser',
           email: 'userOne@notmail.com',
           birthdayString: '2024-04-02',
-          birthdayDate: '2024-04-02T00:00:00.000Z',
+          birthdayDate: '2024-04-02',
           createdAt: '2024-04-02T06:44:41.785Z',
           role: 'admin',
           roleText: null,
@@ -377,7 +377,7 @@ describe.sequential('Query tests', async () => {
             name: 'FirstUser',
             email: 'userOne@notmail.com',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:41.785Z',
             role: 'admin',
             roleText: null,
@@ -508,7 +508,7 @@ describe.sequential('Query tests', async () => {
           name: 'FirstUser',
           email: 'userOne@notmail.com',
           birthdayString: '2024-04-02',
-          birthdayDate: '2024-04-02T00:00:00.000Z',
+          birthdayDate: '2024-04-02',
           createdAt: '2024-04-02T06:44:41.785Z',
           role: 'admin',
           roleText: null,
@@ -550,7 +550,7 @@ describe.sequential('Query tests', async () => {
             name: 'FirstUser',
             email: 'userOne@notmail.com',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:41.785Z',
             role: 'admin',
             roleText: null,
@@ -620,7 +620,7 @@ describe.sequential('Query tests', async () => {
             name: 'FirstUser',
             email: 'userOne@notmail.com',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:41.785Z',
             role: 'admin',
             roleText: null,
@@ -706,7 +706,7 @@ describe.sequential('Query tests', async () => {
               name: 'FirstUser',
               email: 'userOne@notmail.com',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:41.785Z',
               role: 'admin',
               roleText: null,
@@ -726,7 +726,7 @@ describe.sequential('Query tests', async () => {
               name: 'FirstUser',
               email: 'userOne@notmail.com',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:41.785Z',
               role: 'admin',
               roleText: null,
@@ -746,7 +746,7 @@ describe.sequential('Query tests', async () => {
               name: 'FirstUser',
               email: 'userOne@notmail.com',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:41.785Z',
               role: 'admin',
               roleText: null,
@@ -806,7 +806,7 @@ describe.sequential('Query tests', async () => {
               name: 'FirstUser',
               email: 'userOne@notmail.com',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:41.785Z',
               role: 'admin',
               roleText: null,
@@ -864,7 +864,7 @@ describe.sequential('Query tests', async () => {
           name: 'FirstUser',
           email: 'userOne@notmail.com',
           birthdayString: '2024-04-02',
-          birthdayDate: '2024-04-02T00:00:00.000Z',
+          birthdayDate: '2024-04-02',
           createdAt: '2024-04-02T06:44:41.785Z',
           role: 'admin',
           roleText: null,
@@ -926,7 +926,7 @@ describe.sequential('Query tests', async () => {
             name: 'FirstUser',
             email: 'userOne@notmail.com',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:41.785Z',
             role: 'admin',
             roleText: null,
@@ -1065,7 +1065,7 @@ describe.sequential('Query tests', async () => {
           name: 'FirstUser',
           email: 'userOne@notmail.com',
           birthdayString: '2024-04-02',
-          birthdayDate: '2024-04-02T00:00:00.000Z',
+          birthdayDate: '2024-04-02',
           createdAt: '2024-04-02T06:44:41.785Z',
           role: 'admin',
           roleText: null,
@@ -1107,7 +1107,7 @@ describe.sequential('Query tests', async () => {
             name: 'FirstUser',
             email: 'userOne@notmail.com',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:41.785Z',
             role: 'admin',
             roleText: null,
@@ -1185,7 +1185,7 @@ describe.sequential('Query tests', async () => {
             name: 'FirstUser',
             email: 'userOne@notmail.com',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:41.785Z',
             role: 'admin',
             roleText: null,
@@ -1271,7 +1271,7 @@ describe.sequential('Query tests', async () => {
               name: 'FirstUser',
               email: 'userOne@notmail.com',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:41.785Z',
               role: 'admin',
               roleText: null,
@@ -1291,7 +1291,7 @@ describe.sequential('Query tests', async () => {
               name: 'FirstUser',
               email: 'userOne@notmail.com',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:41.785Z',
               role: 'admin',
               roleText: null,
@@ -1311,7 +1311,7 @@ describe.sequential('Query tests', async () => {
               name: 'FirstUser',
               email: 'userOne@notmail.com',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:41.785Z',
               role: 'admin',
               roleText: null,
@@ -1371,7 +1371,7 @@ describe.sequential('Query tests', async () => {
               name: 'FirstUser',
               email: 'userOne@notmail.com',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:41.785Z',
               role: 'admin',
               roleText: null,
@@ -1395,8 +1395,8 @@ describe.sequential('Query tests', async () => {
 						id: 3
 						name: "ThirdUser"
 						email: "userThree@notmail.com"
-						birthdayString: "2024-04-02T06:44:41.785Z"
-						birthdayDate: "2024-04-02T06:44:41.785Z"
+						birthdayString: "2024-04-02"
+						birthdayDate: "2024-04-02"
 						createdAt: "2024-04-02T06:44:41.785Z"
 						role: admin
 						roleText: null
@@ -1430,7 +1430,7 @@ describe.sequential('Query tests', async () => {
           name: 'ThirdUser',
           email: 'userThree@notmail.com',
           birthdayString: '2024-04-02',
-          birthdayDate: '2024-04-02T00:00:00.000Z',
+          birthdayDate: '2024-04-02',
           createdAt: '2024-04-02T06:44:41.785Z',
           role: 'admin',
           roleText: null,
@@ -1453,8 +1453,8 @@ describe.sequential('Query tests', async () => {
 							id: 3
 							name: "ThirdUser"
 							email: "userThree@notmail.com"
-							birthdayString: "2024-04-02T06:44:41.785Z"
-							birthdayDate: "2024-04-02T06:44:41.785Z"
+							birthdayString: "2024-04-02"
+							birthdayDate: "2024-04-02"
 							createdAt: "2024-04-02T06:44:41.785Z"
 							role: admin
 							roleText: null
@@ -1468,7 +1468,7 @@ describe.sequential('Query tests', async () => {
 							name: "FourthUser"
 							email: "userFour@notmail.com"
 							birthdayString: "2024-04-04"
-							birthdayDate: "2024-04-04T00:00:00.000Z"
+							birthdayDate: "2024-04-04"
 							createdAt: "2024-04-04T06:44:41.785Z"
 							role: user
 							roleText: null
@@ -1505,7 +1505,7 @@ describe.sequential('Query tests', async () => {
             name: 'ThirdUser',
             email: 'userThree@notmail.com',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:41.785Z',
             role: 'admin',
             roleText: null,
@@ -1520,7 +1520,7 @@ describe.sequential('Query tests', async () => {
             name: 'FourthUser',
             email: 'userFour@notmail.com',
             birthdayString: '2024-04-04',
-            birthdayDate: '2024-04-04T00:00:00.000Z',
+            birthdayDate: '2024-04-04',
             createdAt: '2024-04-04T06:44:41.785Z',
             role: 'user',
             roleText: null,

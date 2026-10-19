@@ -91,7 +91,8 @@ interface GenericFilterDescriptor {
  * - "Decimal"     → numeric/decimal columns (Decimal-scalar-typed operators, no string pattern operators)
  * - the enum GraphQL type name → enum columns (still unique per enum; equality and
  *                       membership only, like Boolean)
- * - "DateTime"    → timestamp and date columns (ordering kept, no string pattern operators)
+ * - "Date"        → date columns, either mode (ordering kept, no string pattern operators)
+ * - "DateTime"    → timestamp columns (ordering kept, no string pattern operators)
  * - "Int"         → integer/serial columns (no string pattern operators)
  * - "Float"       → real/double columns (no string pattern operators)
  * - "String"      → all other text/varchar columns
@@ -133,9 +134,15 @@ const resolveGenericFilterDescriptor = (
   if (columnGraphQLType.type === GraphQLDecimalString) {
     return { name: 'Decimal', kind: 'scalar' };
   }
-  // Date / timestamp columns (check Drizzle internal columnType string)
+  // Calendar-date columns, in either drizzle mode — the type converter gives them the `Date`
+  // scalar, so the operands are `Date` too and a datetime string is rejected in a filter
+  // exactly as it is in a write.
+  if (columnGraphQLType.type === GraphQLDate) {
+    return { name: 'Date', kind: 'scalar' };
+  }
+  // Timestamp columns (check Drizzle internal columnType string)
   const ct: string = (column as any).columnType ?? '';
-  if (ct === 'PgTimestamp' || ct === 'PgTimestampString' || ct === 'PgDate') {
+  if (ct === 'PgTimestamp' || ct === 'PgTimestampString') {
     return { name: 'DateTime', kind: 'scalar' };
   }
   // Numeric scalars — distinct names so an int/float column never shares (and never

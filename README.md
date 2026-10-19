@@ -607,7 +607,7 @@ generated SDL says what a field actually holds instead of falling back to `Strin
 | `bigint` (and `mode: 'bigint'`)             | `BigInt`     | a decimal string                     |
 | `uuid`                                      | `UUID`       | a validated UUID string              |
 | `timestamp` / `datetime`                    | `DateTime`   | an ISO-8601 string                   |
-| `date`                                      | `Date`       | a `YYYY-MM-DD` string                |
+| `date` (either `mode`)                      | `Date`       | a `YYYY-MM-DD` string                |
 
 ```graphql
 mutation {
@@ -625,6 +625,14 @@ mutation {
     `Number.MAX_SAFE_INTEGER` survive the round-trip. Integer literals are accepted on input;
     floats and non-numeric strings are rejected
 -   **`UUID`** validates the format on the way in, including inside `where` filters
+-   **`Date`** is a calendar day — no time, no offset — and is the same type in every position
+    a `date` column appears in: the object field, the create and update inputs, the
+    `DateFilter` operands, aggregate `min` / `max` and group keys. It takes and returns an
+    RFC 3339 `full-date` (`2026-09-15`) whichever `mode` the column is declared with; a
+    `mode: 'date'` column is read back from its JS `Date` as the UTC day, so no server timezone
+    shifts it. Input must name a real day: `2026-02-30`, `2026-13-45` and datetime strings like
+    `2026-09-15T10:00:00Z` are rejected. With `graphql-codegen`, map it as
+    `scalars: { Date: 'string' }`
 
 The scalars are exported if you need them in a hand-written schema:
 
@@ -633,7 +641,37 @@ import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQL
 ```
 
 `GraphQLBigIntString` is the `BigInt` scalar — named for what it does rather than what it is
-called in SDL, to avoid clashing with the language's own `BigInt`.
+called in SDL, to avoid clashing with the language's own `BigInt`. `GraphQLDate` is this
+library's own `Date` scalar, not `graphql-scalars`' (whose `parseValue` returns a JS `Date`).
+
+> **Upgrading — `date` columns.** A `date` column used to be typed differently depending on
+> where it appeared and which `mode` it was declared with. Both modes are now `Date` everywhere:
+>
+> | Drizzle column | position | before | now |
+> | --- | --- | --- | --- |
+> | `date(…, { mode: 'string' })` | output | `Date` | `Date` |
+> | | create / update input | `String` | `Date` |
+> | | filter | `StringFilter` | `DateFilter` |
+> | `date(…)` / `{ mode: 'date' }` (Postgres) | output, input, min/max, group keys | `DateTime` | `Date` |
+> | | filter | `DateTimeFilter` | `DateFilter` |
+> | `date(…, { mode: 'date' })` (MySQL) | output, input, min/max, group keys | `JSON` | `Date` |
+> | | filter | `JSONFilter` | `DateFilter` |
+> | `date(…, { mode: 'string' })` (MySQL) | output, input, min/max, group keys | `String` | `Date` |
+> | | filter | `StringFilter` | `DateFilter` |
+>
+> What to change:
+>
+> -   Variables typed `String` or `DateTime` for a date field become `Date`; filters on it are
+>     `DateFilter`, which has the `DateTimeFilter` operators (`eq` / `ne` / `lt` / `lte` / `gt` /
+>     `gte` / `inArray` / `notInArray` / `isNull` / `isNotNull`) and none of the string ones
+> -   Send `YYYY-MM-DD`. A datetime string such as `2026-09-15T00:00:00.000Z` used to be
+>     truncated to its date and is now rejected
+> -   A `mode: 'date'` column read `2026-09-15T00:00:00.000Z` and now reads `2026-09-15`
+> -   In `graphql-codegen`, map `scalars: { Date: 'string' }` — the value is a string in both
+>     directions
+> -   If you passed `graphql-scalars`' `GraphQLDate` as a column override, pass this library's
+>     exported `GraphQLDate` instead. They share the name `Date`, so a schema holding both
+>     fails to build with graphql's "multiple types named Date" error
 
 ### Overriding a column's scalar
 
@@ -911,7 +949,7 @@ no others. The set follows the column's data type, never its name:
 | column type | `eq` `ne` `inArray` `notInArray` `isNull` `isNotNull` | `lt` `lte` `gt` `gte` | pattern operators + `insensitive` |
 | --- | --- | --- | --- |
 | text / varchar | yes | yes | yes |
-| timestamp, date | yes | yes | — |
+| timestamp (`DateTimeFilter`), date (`DateFilter`) | yes | yes | — |
 | int, float, bigint, decimal | yes | yes | — |
 | uuid | yes | yes | — |
 | boolean | yes | — | — |

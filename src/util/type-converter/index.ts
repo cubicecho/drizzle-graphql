@@ -1,6 +1,6 @@
 import type { Column, Table } from 'drizzle-orm';
 import { extractExtendedColumnType, getColumns, is } from 'drizzle-orm';
-import { MySqlInt, MySqlSerial } from 'drizzle-orm/mysql-core';
+import { MySqlDate, MySqlDateString, MySqlInt, MySqlSerial } from 'drizzle-orm/mysql-core';
 import { PgDate, PgDateString, PgInteger, PgSerial, PgTimestamp, PgTimestampString, PgUUID } from 'drizzle-orm/pg-core';
 import { SQLiteInteger } from 'drizzle-orm/sqlite-core';
 import {
@@ -232,6 +232,17 @@ const geoXyInputType = new GraphQLInputObjectType({
   },
 });
 
+/**
+ * Whether the column holds a calendar day with no time component — a SQL `date`, in either of
+ * the modes drizzle reads one in (`'date'` → a JS `Date`, `'string'` → `YYYY-MM-DD`). Every
+ * position a column's type appears in — output, create/update input, filter operands,
+ * aggregates and group keys — gives such a column the `Date` scalar, whichever mode it uses:
+ * the mode is how the server holds the value, not what the value is. SQLite has no date-only
+ * column type (its timestamps are integers or text), so only Postgres and MySQL appear here.
+ */
+export const isDateOnlyColumn = (column: Column): boolean =>
+  is(column, PgDate) || is(column, PgDateString) || is(column, MySqlDate) || is(column, MySqlDateString);
+
 const columnToGraphQLCore = (
   column: Column,
   columnName: string,
@@ -271,7 +282,10 @@ const columnBaseToGraphQLCore = (
     case 'boolean':
       return { type: GraphQLBoolean, typeLabel: 'Boolean' };
     case 'object':
-      if (column instanceof PgTimestamp || column instanceof PgDate) {
+      if (isDateOnlyColumn(column)) {
+        return { type: GraphQLDate, typeLabel: 'Date' };
+      }
+      if (column instanceof PgTimestamp) {
         return { type: GraphQLDateTime, typeLabel: 'DateTime' };
       }
       return column.columnType === 'PgGeometryObject'
@@ -304,10 +318,8 @@ const columnBaseToGraphQLCore = (
       if (column instanceof PgUUID) {
         return { type: GraphQLUUID, typeLabel: 'UUID' };
       }
-      if (column instanceof PgDateString) {
-        // For input, accept any string (drivers truncate ISO timestamps to date on write).
-        // For output, keep the strict GraphQLDate scalar so the returned value is validated.
-        return isInput ? { type: GraphQLString, typeLabel: 'Date' } : { type: GraphQLDate, typeLabel: 'Date' };
+      if (isDateOnlyColumn(column)) {
+        return { type: GraphQLDate, typeLabel: 'Date' };
       }
 
       return { type: GraphQLString, typeLabel: 'String' };

@@ -2,7 +2,8 @@ import { type Column, getColumns, is, One, type Table } from 'drizzle-orm';
 import { isJsonColumn } from '../builders/common/column-filters.ts';
 import { drizzleError } from '../builders/common/errors.ts';
 import type { TableNamedRelations } from '../builders/index.ts';
-import { getColumnScalarOverride } from '../type-converter/index.ts';
+import { dateToCalendarDate, isCalendarDate } from '../scalars/index.ts';
+import { getColumnScalarOverride, isDateOnlyColumn } from '../type-converter/index.ts';
 
 export const remapToGraphQLCore = (
   key: string,
@@ -58,6 +59,13 @@ export const remapToGraphQLCore = (
   // the value and remap its contents as if they were column values.
   if (isJsonColumn(column)) {
     return value;
+  }
+
+  // A `date` column read in drizzle's `'date'` mode arrives as a JS `Date` at UTC midnight;
+  // the `Date` scalar transports the day it names, not the instant. An unrepresentable value
+  // is left for the scalar to reject rather than silently reformatted.
+  if (value instanceof Date && isDateOnlyColumn(column)) {
+    return dateToCalendarDate(value) ?? value;
   }
 
   if (value instanceof Date) {
@@ -142,7 +150,7 @@ export const remapToGraphQLArrayOutput = (
   return queryOutput;
 };
 
-export const remapFromGraphQLCore = (value: any, column: Column, columnName: string) => {
+export const remapFromGraphQLCore = (value: any, column: Column, columnName: string): any => {
   // `null` is SQL NULL whatever the column's type, so there is nothing to coerce — and the
   // coercing branches below would get it wrong rather than fail: `new Date(null)` is the
   // epoch, not an invalid date, and `BigInt(null)` throws. Whether the column may hold a
@@ -167,9 +175,8 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
   const dataType: string = (column as any).dataType ?? '';
 
   // Timestamp/datetime columns (SQLite: "object date", MySQL timestamp/datetime: "object date").
-  // Only convert string→Date for timestamp/datetime columns, NOT pure DATE columns.
-  // MySqlDateString has dataType "string date" (excluded by startsWith check).
-  // MySqlDate has columnType "MySqlDate" — excluded below since it can accept raw strings.
+  // Only convert string→Date for timestamp/datetime columns, NOT pure DATE columns, which
+  // are handled below.
   const columnType: string = (column as any).columnType ?? '';
   const isTimestampColumn =
     columnType === 'SQLiteTimestamp' ||
@@ -187,19 +194,27 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
     return formatted;
   }
 
-  // Date-only columns (no time component) — extract YYYY-MM-DD portion to avoid
-  // timezone shifts when mysql2 formats Date objects using local time.
-  const isDateOnlyColumn = columnType === 'MySqlDate' || columnType === 'PgDate';
-  if (isDateOnlyColumn && typeof value === 'string') {
-    // Accept ISO strings like "2024-04-04T00:00:00.000Z" or plain "2024-04-04"
-    const dateOnly = value.includes('T') ? value.split('T')[0] : value;
-    // Validate it's a real date by parsing
-    const check = new Date(dateOnly!);
-    if (Number.isNaN(check.getTime())) {
-      throw drizzleError(`Field '${columnName}' is not a valid date!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
+  // Date-only columns, either drizzle mode. The `Date` scalar has already checked the value is
+  // a `YYYY-MM-DD` calendar day, and that string is what goes to the driver for both modes:
+  // drizzle passes a string through to a `'date'`-mode column untouched, and a string is the
+  // one form that cannot be shifted by a timezone (mysql2 formats a JS `Date` in local time).
+  // The check is repeated here because not every caller is the scalar — `entities` resolvers
+  // can be called with hand-built args — and a JS `Date` from such a caller is read as the UTC
+  // day it encodes, the same way the output side reads one.
+  if (isDateOnlyColumn(column)) {
+    // `date().array()` keeps the date column type with a `dimensions` count, so an array here
+    // is a list of days, checked element by element.
+    if (Array.isArray(value)) {
+      return value.map((element) => remapFromGraphQLCore(element, column, columnName));
+    }
+    const day = value instanceof Date ? dateToCalendarDate(value) : value;
+    if (typeof day !== 'string' || !isCalendarDate(day)) {
+      throw drizzleError(`Field '${columnName}' is not a valid date! Expected a calendar date as YYYY-MM-DD.`, {
+        code: 'DRIZZLE_INVALID_INPUT_VALUE',
+      });
     }
 
-    return dateOnly;
+    return day;
   }
 
   // BigInt columns (SQLite: "bigint int64", others: "bigint").
