@@ -57,6 +57,13 @@ export type DrizzleFieldExtension = {
    * Absent everywhere else, so a wrapper can gate purging without parsing arguments.
    */
   hardDelete?: boolean;
+  /**
+   * `true` on the count mutations (`update<Table>Count` / `delete<Table>Count`,
+   * `features.countMutations`): the field writes like its plural `update` / `delete` sibling
+   * — same `operation`, same rows — but resolves to how many rows it wrote (`Int!`) rather
+   * than to the rows. Absent everywhere else.
+   */
+  count?: boolean;
   /** For `kind: 'relation'` and `operation: 'relationAggregate'`: the relation's name. */
   relation?: string;
   /** For `kind: 'relation'` and `operation: 'relationAggregate'`: the table it hangs off. */
@@ -113,7 +120,10 @@ export type TableFieldExtensionFactory = ReturnType<typeof tableFieldExtensions>
  * The parts of a mutation's identity that differ between mutations. Dialect builders that
  * assign every mutation in one loop pair each generated mutation with one of these.
  */
-export type DrizzleMutationMeta = Pick<DrizzleFieldExtension, 'operation' | 'single' | 'targetArg' | 'hardDelete'>;
+export type DrizzleMutationMeta = Pick<
+  DrizzleFieldExtension,
+  'operation' | 'single' | 'targetArg' | 'hardDelete' | 'count'
+>;
 
 /** Builds the extension a generated object type carries. */
 export const tableTypeExtension = (table: string, primaryKey: readonly string[]): DrizzleTypeExtension => ({

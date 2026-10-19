@@ -643,3 +643,61 @@ describe.sequential('soft delete', () => {
     );
   });
 });
+
+describe.sequential('soft delete: count mutations', () => {
+  const counted: Partial<BuildSchemaConfig> = { ...softDelete, features: { countMutations: true } };
+
+  it('deleteCount marks rows rather than removing them, and skips rows already marked', async () => {
+    const gqlSchema = buildWith(counted);
+    // Unfiltered: article 3 is already marked, so only 1 and 2 are matched.
+    const res = await run(gqlSchema, `mutation { deleteArticlesCount }`);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data).toEqual({ deleteArticlesCount: 2 });
+    const rows = await rowsOf(Articles);
+    expect(rows).toHaveLength(3);
+    expect(rows.every((row: any) => row.deletedAt !== null)).toBe(true);
+    // The row that was already marked keeps its original stamp.
+    expect(rows.find((row: any) => row.id === 3).deletedAt).toEqual(new Date('2020-01-01T00:00:00Z'));
+  });
+
+  it('works the same way for a NOT NULL boolean marker', async () => {
+    const gqlSchema = buildWith(counted);
+    const res = await run(gqlSchema, `mutation { deleteFlagsCount }`);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data).toEqual({ deleteFlagsCount: 1 });
+    expect((await rowsOf(Flags)).map((row: any) => row.isArchived)).toEqual([true, true]);
+  });
+
+  it('updateCount skips marked rows', async () => {
+    const gqlSchema = buildWith(counted);
+    const res = await run(gqlSchema, `mutation { updateArticlesCount(set: { title: "edited" }) }`);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data).toEqual({ updateArticlesCount: 2 });
+    const rows = await rowsOf(Articles);
+    expect(rows.find((row: any) => row.id === 3).title).toBe('third');
+  });
+
+  it('takes hard: true exactly where the plural delete does, and purges marked rows with it', async () => {
+    const gqlSchema = buildWith({ ...hardDeletable, features: { countMutations: true } });
+    const fields = gqlSchema.getMutationType()!.getFields();
+    expect(fields['deleteArticlesCount']!.args.map((arg) => arg.name)).toEqual(['where', 'hard']);
+    expect(fields['deleteFlagsCount']!.args.map((arg) => arg.name)).toEqual(['where']);
+    expect(drizzleExtension(fields['deleteArticlesCount'])).toMatchObject({
+      operation: 'delete',
+      count: true,
+      hardDelete: true,
+    });
+
+    const soft = await run(gqlSchema, `mutation { deleteArticlesCount(where: { id: { eq: 1 } }) }`);
+    expect(soft.data).toEqual({ deleteArticlesCount: 1 });
+    expect(await rowsOf(Articles)).toHaveLength(3);
+
+    const purge = await run(gqlSchema, `mutation { deleteArticlesCount(hard: true) }`);
+    expect(purge.errors).toBeUndefined();
+    expect(purge.data).toEqual({ deleteArticlesCount: 3 });
+    expect(await rowsOf(Articles)).toHaveLength(0);
+  });
+});

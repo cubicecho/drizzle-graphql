@@ -25,7 +25,8 @@ export type WriteHookPayload = {
    *
    * Each row holds the columns the client's selection asked for (plus any key a relation or
    * nested write needed), **and** every column the hook names in `columns`. A column the
-   * client did not select and the hook did not name is absent.
+   * client did not select and the hook did not name is absent. The count mutations select
+   * nothing, so there a row holds the named columns, or the primary key when none are named.
    */
   rows: any[];
   context: any;
