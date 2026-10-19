@@ -8,6 +8,7 @@ import {
   isDateOnlyColumn,
   isDateTimeColumn,
   isMySqlDateTimeStringColumn,
+  isPgTimestampStringColumn,
 } from '../type-converter/index.ts';
 
 /**
@@ -28,8 +29,53 @@ const mySqlDateTimeTextToIso = (value: string): string => {
   return match ? `${match[1]}T${match[2]}Z` : value;
 };
 
-/** A JS `Date` as MySQL datetime text in UTC, with milliseconds — the form drizzle itself writes. */
-const dateToMySqlDateTimeText = (value: Date): string => value.toISOString().slice(0, -1).replace('T', ' ');
+/**
+ * A JS `Date` as offset-less `YYYY-MM-DD HH:MM:SS.mmm` text in UTC: what a MySQL `'string'`-mode
+ * column and a Postgres `timestamp` (without time zone) `'string'`-mode column are written with.
+ */
+const dateToUtcWallText = (value: Date): string => value.toISOString().slice(0, -1).replace('T', ' ');
+
+/**
+ * Postgres's text form for a `timestamp` / `timestamptz` (the `ISO` `DateStyle`, the default):
+ * `YYYY-MM-DD HH:MM:SS`, an optional fraction, and — for `timestamptz` only — the session zone's
+ * offset as `±HH`, `±HH:MM` or, for historical local mean time, `±HH:MM:SS`.
+ */
+const PG_TIMESTAMP_TEXT =
+  /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?(?:([+-])(\d{2})(?::?(\d{2}))?(?::?(\d{2}))?)?$/;
+
+/**
+ * Postgres timestamp text as the RFC 3339 UTC instant (`…Z`) the `DateTime` scalar accepts.
+ *
+ * - With an offset (`timestamptz`), the instant is shifted to UTC. The offset can carry seconds,
+ *   which RFC 3339 cannot express, so it is applied here rather than rewritten.
+ * - Without one (`timestamp`), the wall time is read as UTC: that is what drizzle's `'date'`-mode
+ *   codec does (`new Date(text + '+0000')`) and what the input side writes, so a column's two
+ *   modes agree on the instant.
+ * - The fraction is kept digit for digit. The scalar itself carries milliseconds, so microseconds
+ *   are truncated on the wire, never rounded into the next second.
+ *
+ * Anything else (`infinity`, a `BC` date, a five-digit year) is returned unchanged for the scalar
+ * to reject.
+ */
+export const pgTimestampTextToIso = (value: string): string => {
+  const match = PG_TIMESTAMP_TEXT.exec(value);
+  if (!match) {
+    return value;
+  }
+  const [, date, time, fraction = '', sign, hours, minutes = '0', seconds = '0'] = match;
+  if (!sign) {
+    return `${date}T${time}${fraction}Z`;
+  }
+
+  const wallMs = Date.parse(`${date}T${time}Z`);
+  if (Number.isNaN(wallMs)) {
+    return value;
+  }
+  const offsetSeconds = (sign === '-' ? -1 : 1) * (Number(hours) * 3600 + Number(minutes) * 60 + Number(seconds));
+  const utc = new Date(wallMs - offsetSeconds * 1000).toISOString();
+  // `toISOString` only stays `YYYY-MM-DDTHH:MM:SS.mmmZ` inside years 0000–9999.
+  return utc.length === 24 ? `${utc.slice(0, 19)}${fraction}Z` : value;
+};
 
 export const remapToGraphQLCore = (
   key: string,
@@ -103,6 +149,12 @@ export const remapToGraphQLCore = (
   // `mySqlDateTimeTextToIso`).
   if (typeof value === 'string' && isMySqlDateTimeStringColumn(column)) {
     return mySqlDateTimeTextToIso(value);
+  }
+
+  // A Postgres `timestamp` read in `'string'` mode arrives as Postgres's own text, which the
+  // `DateTime` scalar does not accept either (see `pgTimestampTextToIso`).
+  if (typeof value === 'string' && isPgTimestampStringColumn(column)) {
+    return pgTimestampTextToIso(value);
   }
 
   if (value instanceof Buffer) {
@@ -212,9 +264,12 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
   const columnType: string = (column as any).columnType ?? '';
   if (isDateTimeColumn(column) || columnType === 'SQLiteTimestamp' || columnType === 'SQLiteTimestampMs') {
     const isMySql = columnType.startsWith('MySql');
-    // MySQL text with no offset is read as UTC, as on output — `new Date()` would read it in the
-    // server's local zone. The `DateTime` scalar never produces it; an `entities` caller might.
-    const formatted = new Date(isMySql && typeof value === 'string' ? mySqlDateTimeTextToIso(value) : value);
+    const isPgString = isPgTimestampStringColumn(column);
+    // MySQL / Postgres text with no offset is read as UTC, as on output — `new Date()` would read
+    // it in the server's local zone. The `DateTime` scalar never produces it; an `entities` caller
+    // might.
+    const toIso = isMySql ? mySqlDateTimeTextToIso : isPgString ? pgTimestampTextToIso : undefined;
+    const formatted = new Date(toIso && typeof value === 'string' ? toIso(value) : value);
     if (Number.isNaN(formatted.getTime())) {
       throw drizzleError(`Field '${columnName}' is not a valid date!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
     }
@@ -222,7 +277,14 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
     // A `'string'`-mode MySQL column takes MySQL's own text, written in UTC. A `'date'`-mode
     // column takes the `Date`; drizzle's `mapToDriverValue` formats it with `toISOString`, so it
     // is written in UTC too rather than in mysql2's local-time formatting.
-    return isMySqlDateTimeStringColumn(column) ? dateToMySqlDateTimeText(formatted) : formatted;
+    //
+    // A `'string'`-mode Postgres column takes a string, in the form its type reads without
+    // ambiguity: `timestamptz` the ISO instant (`…Z`); `timestamp` the UTC wall time with no
+    // offset, because Postgres silently drops an offset written to a `timestamp` column.
+    if (isPgString) {
+      return (column as any).withTimezone ? formatted.toISOString() : dateToUtcWallText(formatted);
+    }
+    return isMySqlDateTimeStringColumn(column) ? dateToUtcWallText(formatted) : formatted;
   }
 
   // Date-only columns, either drizzle mode. The `Date` scalar has already checked the value is

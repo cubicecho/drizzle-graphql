@@ -263,6 +263,15 @@ export const isMySqlDateTimeStringColumn = (column: Column): boolean =>
   is(column, MySqlTimestampString) || is(column, MySqlDateTimeString);
 
 /**
+ * Whether the column is a Postgres `timestamp` read in drizzle's `'string'` mode. The driver hands
+ * such a column back as Postgres's own text — `YYYY-MM-DD HH:MM:SS[.fraction]`, followed by an
+ * offset (`+00`, `-06`, `+05:30`) for `timestamptz` — so the data mappers translate between it
+ * and the ISO 8601 instant the `DateTime` scalar carries. Text without an offset (`timestamp`
+ * without time zone) is read as UTC, the way drizzle's own `'date'`-mode codec reads it.
+ */
+export const isPgTimestampStringColumn = (column: Column): boolean => is(column, PgTimestampString);
+
+/**
  * Whether the column holds an instant — a Postgres `timestamp` or a MySQL `timestamp` /
  * `datetime`, in either drizzle mode. Every position such a column appears in gives it the
  * `DateTime` scalar and the `DateTimeFilter`, whichever mode it uses, for the same reason as
@@ -271,7 +280,7 @@ export const isMySqlDateTimeStringColumn = (column: Column): boolean =>
  */
 export const isDateTimeColumn = (column: Column): boolean =>
   is(column, PgTimestamp) ||
-  is(column, PgTimestampString) ||
+  isPgTimestampStringColumn(column) ||
   is(column, MySqlTimestamp) ||
   is(column, MySqlDateTime) ||
   isMySqlDateTimeStringColumn(column);
