@@ -123,6 +123,74 @@ describe.sequential('SQLite onWrite', () => {
   });
 });
 
+describe.sequential('SQLite onWrite under nested writes', () => {
+  it("fires the child table's hook on the mutation's transaction, and leaves `nested` unset at the root", async () => {
+    const seen: WriteHookPayload['nested'][] = [];
+    const gqlSchema = buildWith({
+      features: { nestedWrites: true } as any,
+      onWrite: async (payload: WriteHookPayload) => {
+        seen.push(payload.nested);
+        await record(payload);
+      },
+    });
+
+    const res = await run(
+      gqlSchema,
+      `mutation { createOrgsSingle(values: { id: 2, name: "Globex", items: { create: [{ id: 3 }] } }) { id } }`,
+    );
+
+    expect(res.errors).toBeUndefined();
+    expect(seen).toEqual([{ parentTable: 'Orgs', relation: 'items', op: 'create' }, undefined]);
+    // Both audit rows were written through each hook's `tx`, and committed with the mutation.
+    expect((await auditRows()).map((row: any) => `${row.tableName}:${row.operation}:${row.detail}`)).toEqual([
+      'Items:insert:3',
+      'Orgs:insert:2',
+    ]);
+  });
+
+  it('lets a hook skip nested writes', async () => {
+    const gqlSchema = buildWith({
+      features: { nestedWrites: true } as any,
+      onWrite: {
+        Items: async (payload: WriteHookPayload) => {
+          if (payload.nested) {
+            return;
+          }
+          await record(payload);
+        },
+      },
+    });
+
+    await run(
+      gqlSchema,
+      `mutation { createOrgsSingle(values: { id: 2, name: "Globex", items: { create: [{ id: 3 }] } }) { id } }`,
+    );
+    await run(gqlSchema, `mutation { createItems(values: [{ id: 4, orgId: 1 }]) { id } }`);
+
+    expect((await auditRows()).map((row: any) => row.detail)).toEqual(['4']);
+  });
+
+  it('rolls the parent row back when the child hook throws', async () => {
+    const gqlSchema = buildWith({
+      features: { nestedWrites: true } as any,
+      onWrite: {
+        Items: async () => {
+          throw new Error('child rejected');
+        },
+      },
+    });
+
+    const res = await run(
+      gqlSchema,
+      `mutation { createOrgsSingle(values: { id: 2, name: "Globex", items: { create: [{ id: 3 }] } }) { id } }`,
+    );
+
+    expect(res.errors?.[0]?.message).toContain('child rejected');
+    expect((await db.select().from(Orgs)).map((row: any) => row.id)).toEqual([1]);
+    expect((await db.select().from(Items)).map((row: any) => row.id)).toEqual([1, 2]);
+  });
+});
+
 describe.sequential('SQLite onWrite columns', () => {
   /** A hook that keeps a copy of each `rows` it is handed, keyed by operation. */
   const capture = () => {
@@ -257,5 +325,73 @@ describe.sequential('SQLite onWrite columns', () => {
     expect(() => buildWith({ onWrite: { Items: { before: () => {}, columns: ['id'] } } })).toThrow(
       "config.onWrite.Items.columns only applies to an 'after' hook",
     );
+  });
+});
+
+describe.sequential('SQLite onWrite: count mutations', () => {
+  const counted: Partial<BuildSchemaConfig> = { features: { countMutations: true } };
+
+  it('runs both positions around both count mutations', async () => {
+    const seen: WriteHookPayload[] = [];
+    const hook = async (payload: WriteHookPayload) => {
+      seen.push(payload);
+      await record(payload);
+    };
+    const gqlSchema = buildWith({ ...counted, onWrite: { Items: { before: hook, after: hook } } });
+
+    const updated = await run(gqlSchema, `mutation { updateItemsCount(set: { name: "x" }, where: { id: { eq: 1 } }) }`);
+    const deleted = await run(gqlSchema, `mutation { deleteItemsCount(where: { id: { eq: 2 } }) }`);
+
+    expect(updated.data).toEqual({ updateItemsCount: 1 });
+    expect(deleted.data).toEqual({ deleteItemsCount: 1 });
+    expect(seen.map((p) => `${p.operation}:${p.position}:${p.single}`)).toEqual([
+      'update:before:false',
+      'update:after:false',
+      'delete:before:false',
+      'delete:after:false',
+    ]);
+    // No columns named: the after hook gets each written row's key.
+    expect(seen[1]!.rows).toEqual([{ id: 1 }]);
+    expect(seen[3]!.rows).toEqual([{ id: 2 }]);
+    expect((await auditRows()).map((row: any) => `${row.operation}:${row.position}:${row.detail}`)).toEqual([
+      'update:before:',
+      'update:after:1',
+      'delete:before:',
+      'delete:after:2',
+    ]);
+  });
+
+  it('hands the after hook the columns it names', async () => {
+    const seen: any[][] = [];
+    const gqlSchema = buildWith({
+      ...counted,
+      onWrite: { Items: { after: (payload) => void seen.push(payload.rows), columns: ['id', 'orgId'] } },
+    });
+
+    const res = await run(gqlSchema, `mutation { deleteItemsCount }`);
+
+    expect(res.data).toEqual({ deleteItemsCount: 2 });
+    expect([...seen[0]!].sort((a, b) => a.id - b.id)).toEqual([
+      { id: 1, orgId: 1 },
+      { id: 2, orgId: 1 },
+    ]);
+  });
+
+  it('throwing rolls the count mutation back', async () => {
+    const gqlSchema = buildWith({
+      ...counted,
+      onWrite: {
+        Items: async () => {
+          throw new Error('audit failed');
+        },
+      },
+    });
+
+    const updated = await run(gqlSchema, `mutation { updateItemsCount(set: { name: "z" }) }`);
+    const deleted = await run(gqlSchema, `mutation { deleteItemsCount }`);
+
+    expect(updated.errors?.[0]?.message).toContain('audit failed');
+    expect(deleted.errors?.[0]?.message).toContain('audit failed');
+    expect((await db.select().from(Items).orderBy(Items.id)).map((row: any) => row.name)).toEqual(['A1', 'A2']);
   });
 });

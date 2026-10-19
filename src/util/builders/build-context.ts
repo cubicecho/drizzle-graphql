@@ -71,6 +71,7 @@ import {
   buildNestedWritePlans,
   createNestedWriteRuntime,
   createNestedWriteTypes,
+  gateNestedWritePlans,
   type NestedWriteRuntime,
   type NestedWriteTypes,
 } from './nested-writes.ts';
@@ -164,8 +165,9 @@ export type MutationRegistration = {
   generated: CreatedResolver | undefined;
   type: GraphQLOutputType;
   /**
-   * The identity published on `extensions.drizzle`. Omitted by the count mutations, which
-   * answer with a number rather than rows and so have no row operation to dispatch on.
+   * The identity published on `extensions.drizzle`. The count mutations carry their plural
+   * sibling's operation plus `count: true`, so a wrapper gating writes on `operation` cannot
+   * be bypassed by swapping in the count variant.
    */
   meta?: DrizzleMutationMeta;
   description?: string;
@@ -345,8 +347,23 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
           (target) => uniqueColumnSets(target as Table),
           (target) => primaryKeyPropNames(target as Table),
           extractRelationJoinColumns,
+          // A junction is written without being a relation target, so it is named from the
+          // whole schema — excluded tables included, which the gate below then refuses.
+          (junction) => schemaEntries.find(([, value]) => value === junction)?.[0],
         )
       : undefined;
+    // A nested write is a write to the target (or junction) table, so it obeys that table's
+    // features: an input whose write is turned off there is left out of the schema.
+    if (nestedPlans) {
+      const omitted = gateNestedWritePlans(nestedPlans, featureOf, (tableName) => excludedTables.has(tableName));
+      if (omitted.length) {
+        const listed =
+          omitted.length > 5 ? `${omitted.slice(0, 5).join(', ')} and ${omitted.length - 5} more` : omitted.join(', ');
+        console.warn(
+          `Drizzle-GraphQL Warning: config.features — nestedWrites leaves out the nested inputs whose table has that write turned off: ${listed}.`,
+        );
+      }
+    }
     const nestedTypes = nestedPlans
       ? createNestedWriteTypes({ plans: nestedPlans, cacheCtx, typeNameMapper })
       : undefined;

@@ -189,14 +189,16 @@ const { schema } = buildSchema(db, {
 -   The table is still fully readable — this decides which operations it offers, not whether
     it is in the schema at all. For that, use `exclude` below
 -   `nestedWrites` is the one flag that stays build-wide: its plans are computed once over
-    the whole relation graph, and a nested write reaches a second table by definition
+    the whole relation graph, and a nested write reaches a second table by definition. What
+    it offers on each relation still follows the *target* table's flags — see
+    [Nested writes](#nested-writes)
 -   `Mutation` is omitted when *no* table generates a mutation, and kept when one still does
 -   Some operations are built out of others, and the generator knows which. A table that
     asks for `upsert` while its `insert` or `update` is off — an upsert is a second write
     path past the operation you turned off — warns on the console at build time, naming the
     tables, rather than leaving that to be discovered later. So does asking for `updateMany`
-    without `update`, `groupBy` without `aggregates`, `countMutations` with neither plural
-    write, or `nestedWrites` alongside a table whose own writes are off
+    without `update`, `groupBy` without `aggregates`, or `countMutations` with neither plural
+    write. `nestedWrites` notes the nested inputs it left out because their table's write is off
 
 ## Excluding tables and columns
 
@@ -1531,6 +1533,32 @@ mutation {
 -   A `set` that carries only relation fields is a valid update: it changes what the row is
     attached to without rewriting the row
 
+### The target table's own rules
+
+A nested write is a write to another table, so it follows that table's rules, not just the
+root field's:
+
+-   **`scope`** narrows the rows `connect` / `disconnect` / `set` can reach, and
+    **`contextValues`** stamp the rows a nested `create` inserts
+-   **`features`**: each nested input is generated only when the table it writes has that
+    write turned on. Whatever is left out is noted on the console at build time, and a
+    relation with nothing left loses its field altogether
+
+    | Input | Needs, on the table it writes |
+    | --- | --- |
+    | `create` | the target's `insert` (and its `update` too on a to-one whose nullable key lives on the target, since attaching detaches the previous row) |
+    | `connect` / `disconnect` / `set`, key on the target | the target's `update` |
+    | `connect` / `disconnect`, key on the parent | nothing — only the parent's own row changes |
+    | many-to-many `connect` | the junction's `insert` |
+    | many-to-many `disconnect` | the junction's `delete` |
+    | many-to-many `set` | the junction's `insert` and `delete` |
+
+    An excluded junction table takes its relation's inputs with it. A table whose writes are
+    reserved for a hand-written mutation (`insert: false`) can therefore no longer be written
+    by another table's nested `create` either
+-   **`onWrite`**: the hooks of the table a nested statement writes run too — see
+    [Nested writes and hooks](#nested-writes-and-hooks)
+
 ### Many-to-many relations
 
 A relation declared with `.through()` is written by inserting and deleting rows of its
@@ -1623,9 +1651,27 @@ mutation {
 -   Both return `Int!` — the number of rows the write affected — and add no new output type
     to the schema
 -   Arguments are exactly the plural mutation's, so a client swaps one field name for the
-    other; `features.requireWhere` applies to them the same way
+    other; `features.requireWhere` applies to them the same way, and on a soft-deleting
+    table that opted into `hardDelete` the delete takes `hard` too
 -   They follow the feature switch of the write they mirror: `updateCount` needs
     `features.update`, `deleteCount` needs `features.delete`
+-   They obey the same row policies as the plural write — only the answer differs:
+    -   [`scope`](#row-scoping-and-multi-tenancy) is ANDed into the `where`, so they reach,
+        and count, only in-scope rows
+    -   on a [soft-deleting](#soft-delete) table `delete<Table>Count` marks the rows rather
+        than removing them, and neither mutation reaches a row that is already marked
+    -   a [`contextValues`](#row-scoping-and-multi-tenancy) column is never reassigned by the
+        update
+    -   [`onWrite`](#write-hooks) hooks run `before` and `after`, in a transaction, with the
+        plural write's payload (`operation: 'update'` / `'delete'`, `single: false`). An
+        `after` hook is handed rows, so a table with one gives up the returnless write: the
+        statement `RETURNING`s the hook's `columns`, or just the primary key when it names
+        none (every column, on a table without a key), and the count is the number of rows
+        returned. Without an `after` hook there is no `RETURNING` at all. On MySQL the hook
+        gets `rows: []`, as it does on every MySQL mutation
+-   Their [`extensions.drizzle`](#identifying-generated-fields) is the plural write's
+    (`operation: 'update'` / `'delete'`, `targetArg: 'where'`) plus `count: true`, so a
+    wrapper that gates writes on `operation` covers them too
 -   **MySQL** gets them too, and they are arguably most useful there: MySQL's other mutations
     return only `MutationReturn { isSuccess }`, so a row count is strictly more information
 -   `update<Table>Count` **rejects** nested writes with a `GraphQLError` — a nested write
@@ -2122,6 +2168,9 @@ onWrite: {
     works.
 -   The columns are added to `RETURNING` for every write the hook is attached to: insert, upsert,
     update, `updateMany`, delete and restore. A delete's rows are the rows it removed.
+-   The [count mutations](#row-counts-instead-of-rows) fire the hooks as `update` / `delete`.
+    The client selects nothing there, so an `after` hook's rows hold exactly its `columns`, or
+    just the primary key when it names none — the one `RETURNING` those mutations pay for.
 -   **The client's response is unchanged.** Columns the hook asked for but the client did not
     select are taken back off before the rows are mapped, so they reach neither the response nor
     a custom resolver calling the generated one. The hook gets its own copy of the rows.
@@ -2140,6 +2189,7 @@ The payload:
 | `rows` | the post-write rows **as the database returned them**, before the output mapper — the selected columns plus the hook's [`columns`](#which-columns-rows-holds) |
 | `context`, `info` | the GraphQL context value and resolve info |
 | `tx` | the executor the mutation ran on |
+| `nested` | `{ parentTable, relation, op }` when a [nested write](#nested-writes-and-hooks) wrote the rows; `undefined` at the mutation field's own table |
 
 -   **`tx` is the executor the mutation itself used** — one you supplied under
     `drizzleExecutorKey`, the request's auto-transaction, or, for a field that would otherwise
@@ -2149,10 +2199,57 @@ The payload:
     already does.
 -   **`rows` is empty** at the `before` position, and on MySQL, whose mutations return no rows.
     The `before` position and `args` still work there.
--   The hook fires for the **mutation field's own table**. Rows a nested `create` writes into
-    another table do not fire that table's hook.
+-   With `nestedWrites`, the hooks of **every table a nested write reaches** fire too —
+    below.
 
 A build with no `onWrite` opens exactly the transactions it did before.
+
+### Nested writes and hooks
+
+A nested `create` / `connect` / `disconnect` / `set` runs the `before` and `after` hooks of the
+table its statement writes, on the same `tx`, with `payload.nested` saying where it came from:
+
+```Typescript
+onWrite: {
+    todos: {
+        before: async ({ nested, args, tx }) => { /* runs ahead of the nested statement too */ },
+        after: async ({ operation, rows, nested, tx }) => {
+            // createProjectsSingle(values: { …, todos: { create: [ … ] } }) arrives here as
+            // operation: 'insert', nested: { parentTable: 'projects', relation: 'todos', op: 'create' }
+            for (const row of rows) await assertOwnsProject(tx, row.projectId)
+        },
+        columns: ['projectId'],
+    },
+}
+```
+
+| Nested input | `table` | `operation` |
+| --- | --- | --- |
+| `create` | the target | `insert` |
+| `connect` / `disconnect` / `set`, key on the target | the target | `update` (the foreign key moved; nothing is deleted) |
+| `connect` / `disconnect`, key on the parent | — | no target hook: only the parent's row changes, and its own hook sees that |
+| many-to-many `connect` | the junction | `insert` |
+| many-to-many `disconnect` | the junction | `delete` |
+| many-to-many `set` | the junction | `delete` (the old links), then `insert` (the new ones) |
+
+-   **`nested`** is `{ parentTable, relation, op }` — the Drizzle schema key of the table whose
+    input carried the relation field, the relation's name, and which of its inputs this is.
+    It is `undefined` at the mutation field's own table, so a hook that only cares about root
+    writes starts with `if (payload.nested) return`
+-   **One call per input and operation**, not per row: a nested `create` of three rows is one
+    `insert` call with three rows, and an update whose `where` matched several parents hands
+    the hook every child it wrote across all of them. A to-one `connect` that also detaches
+    the row attached before is one `update` call holding both rows; a detached row's key is
+    `null`
+-   **`rows`** hold the table's primary key and the join column(s) the statement changed — a
+    nested write has no client selection of its own — plus whatever the hook names in
+    `columns`
+-   **`args`, `context` and `info`** are the root mutation field's; **`single`** says whether the
+    relation is a to-one
+-   **`before`** runs ahead of that input's first statement, **`after`** once its last has
+    returned, and both inside the transaction every nested write opens — so a hook on a child
+    table can roll the whole tree back, the parent row included, even when the root field has
+    no hook of its own
 
 
 ## Relations & N+1 handling
@@ -2329,7 +2426,9 @@ the check to make before treating a field as one of ours. Relation fields (and
 naming the relation's **target** — so `Users.posts` reads as
 `{ table: 'Posts', parentTable: 'Users', relation: 'posts' }`. Object types carry
 `{ table, kind: 'type', primaryKey }`, which is what a stitching layer needs to map a type
-back to its source.
+back to its source. The [count mutations](#row-counts-instead-of-rows) carry their plural
+write's `operation` plus `count: true` — they write the same rows but resolve to an `Int!`, so
+a wrapper that reads the result as rows should check `count` first.
 
 Because the row identity of a mutation lives in a different argument for every operation,
 `identifyRows` reads whichever one applies and hands back primary-key values:

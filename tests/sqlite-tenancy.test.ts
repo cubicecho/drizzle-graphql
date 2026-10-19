@@ -2,7 +2,7 @@ import { type Client, createClient } from '@libsql/client';
 import { buildRelations, createRelationsHelper, eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/libsql';
 import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
-import { type GraphQLInputObjectType, type GraphQLSchema, graphql } from 'graphql';
+import { type GraphQLInputObjectType, GraphQLObjectType, GraphQLSchema, graphql } from 'graphql';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { type BuildSchemaConfig, buildSchema } from '@/index';
 
@@ -124,6 +124,23 @@ describe.sequential('SQLite row scope', () => {
     expect(row).toMatchObject({ id: 3, name: 'G1' });
   });
 
+  it('confines the count mutations, and counts only in-scope rows', async () => {
+    const gqlSchema = buildWith({ ...ownItems, features: { countMutations: true } });
+    const updated = await run(gqlSchema, `mutation { updateItemsCount(set: { name: "MINE" }) }`, { orgId: 1 });
+    const deleted = await run(gqlSchema, `mutation { deleteItemsCount(where: { id: { inArray: [2, 3] } }) }`, {
+      orgId: 1,
+    });
+
+    expect(updated.errors).toBeUndefined();
+    expect(updated.data).toEqual({ updateItemsCount: 2 });
+    expect(deleted.errors).toBeUndefined();
+    expect(deleted.data).toEqual({ deleteItemsCount: 1 });
+    expect(await db.select().from(Items).orderBy(Items.id)).toEqual([
+      { id: 1, orgId: 1, name: 'MINE' },
+      { id: 3, orgId: 2, name: 'G1' },
+    ]);
+  });
+
   it("stops an upsert's conflict branch from taking over an out-of-scope row", async () => {
     const gqlSchema = buildWith({ ...ownItems, features: { upsert: true } });
     const res = await run(
@@ -176,5 +193,38 @@ describe.sequential('SQLite context-derived column values', () => {
 
     expect(res.errors).toBeUndefined();
     expect(res.data?.['updateItems']).toEqual([{ id: 3, orgId: 2, name: 'EDITED' }]);
+  });
+
+  it('leaves the column untouched by a count update, even when the key is stitched in', async () => {
+    const { entities } = buildSchema(db, { ...stamped, features: { countMutations: true } } as any);
+    const generated = (entities.mutations as any)['updateItemsCount'];
+    // Lets the key past input validation, as a stitched schema can, so only the resolver
+    // stands between the request and the ownership column.
+    const stitched = new GraphQLSchema({
+      query: new GraphQLObjectType({ name: 'Query', fields: { items: (entities.queries as any)['items'] } }),
+      mutation: new GraphQLObjectType({
+        name: 'Mutation',
+        fields: {
+          updateItemsCount: {
+            ...generated,
+            resolve: (source: unknown, args: any, context: unknown, info: unknown) =>
+              generated.resolve(source, { ...args, set: { ...args.set, orgId: 1 } }, context, info),
+          },
+        },
+      }),
+    });
+
+    const res = await run(
+      stitched,
+      `mutation { updateItemsCount(where: { id: { eq: 3 } }, set: { name: "EDITED" }) }`,
+      {
+        orgId: 1,
+      },
+    );
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data).toEqual({ updateItemsCount: 1 });
+    const [row] = await db.select().from(Items).where(eq(Items.id, 3));
+    expect(row).toEqual({ id: 3, orgId: 2, name: 'EDITED' });
   });
 });

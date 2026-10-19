@@ -156,6 +156,8 @@ export type {
 export { resolveGeneratedTypeNames, sharedType } from './common/type-names.ts';
 export { buildUniqueKeyMap, type UniqueKeyMap, uniqueKeyFieldName } from './common/unique-keys.ts';
 export type {
+  NestedWriteOp,
+  NestedWriteOrigin,
   ResolvedWriteHooks,
   WriteHook,
   WriteHookFor,
