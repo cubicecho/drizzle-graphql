@@ -47,6 +47,18 @@ import type {
 
 const allowedNameChars = /^[a-zA-Z0-9_]+$/;
 
+/** drizzle's `number` constraints whose values always fit a GraphQL `Int` (32-bit signed). */
+const smallIntegerConstraints = new Set<string>([
+  'int8',
+  'uint8',
+  'int16',
+  'uint16',
+  'int24',
+  'uint24',
+  'int32',
+  'year',
+]);
+
 /** A GraphQL `Name` that is also allowed as an enum value — the spec reserves the three literals. */
 const validEnumValueName = (name: string): boolean =>
   /^[_a-zA-Z][_a-zA-Z0-9]*$/.test(name) && name !== 'true' && name !== 'false' && name !== 'null';
@@ -385,7 +397,12 @@ const columnBaseToGraphQLCore = (
     case 'bigint':
       return { type: GraphQLBigIntString, typeLabel: 'BigInt' };
     case 'number': {
-      return is(column, PgInteger) ||
+      // Every integer kind that fits GraphQL's 32-bit signed Int: smallint / tinyint /
+      // mediumint / smallserial and MySQL `year` report these constraints in drizzle v1, and
+      // used to fall through to Float. Wider kinds (int53, uint32, uint53) are matched only
+      // through the column classes below, as before.
+      return (constraint !== undefined && smallIntegerConstraints.has(constraint)) ||
+        is(column, PgInteger) ||
         is(column, PgSerial) ||
         is(column, MySqlInt) ||
         is(column, MySqlSerial) ||
