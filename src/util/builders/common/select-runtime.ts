@@ -27,6 +27,7 @@ import { withScope } from './policies.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractRelationsParams } from './relation-params.ts';
+import { omitUndefinedKeys } from './rqb-config.ts';
 import { extractSelectedColumnsFromTree } from './selected-columns.ts';
 import type { TypeNameResolver } from './type-names.ts';
 
@@ -213,7 +214,7 @@ export const runRelationalSelect = async (opts: {
   };
 
   if (single) {
-    const result = await queryBase.findFirst(params);
+    const result = await queryBase.findFirst(omitUndefinedKeys(params));
     return result ? remapToGraphQLSingleOutput(result, tableName, table, relationMap) : undefined;
   }
 
@@ -227,7 +228,7 @@ export const runRelationalSelect = async (opts: {
   }
 
   params.limit = distinctKeys ? undefined : opts.limit;
-  const result = await queryBase.findMany(params);
+  const result = await queryBase.findMany(omitUndefinedKeys(params));
   if (cursorEntries && cursorSelected) {
     // On the raw rows, before remapping rewrites dates/bigints into transport forms.
     attachRowCursors(result, cursorEntries);

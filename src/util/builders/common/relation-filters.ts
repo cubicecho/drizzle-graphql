@@ -20,7 +20,7 @@ import {
 import type { FilterColumnOperatorsCore, Filters, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
 import { extractFiltersColumn } from './filters.ts';
-import { relationColumns, unwrapRelationColumn } from './relations.ts';
+import { isRelationFilterReversed, relationColumns, relationOwnWhere, unwrapRelationColumn } from './relations.ts';
 import type { UniqueKeyMap } from './unique-keys.ts';
 import { extractUniqueKeyFilter } from './unique-keys.ts';
 
@@ -288,8 +288,9 @@ const buildRelationExists = (
 
   // A relation declared with its own `where` only ever exposes the rows it selects, so the
   // subquery has to honour it too — otherwise a filter could match a row the relation hides.
-  const relationWhere = (relation as any).where
-    ? relationsFilterToSQL((relation as any).isReversed ? parentTable : aliasedTarget, (relation as any).where)
+  const ownWhere = relationOwnWhere(relation);
+  const relationWhere = ownWhere
+    ? relationsFilterToSQL(isRelationFilterReversed(relation) ? parentTable : aliasedTarget, ownWhere as any)
     : undefined;
 
   const inner = innerFilters
@@ -416,8 +417,10 @@ export const extractFilters = <TTable extends Table>(
 
   if (NOT) {
     const extracted = extractFilters(table, tableName, NOT, relationCtx);
-    if (extracted) {
-      variants.push(not(extracted));
+    // `not()` is typed `SQL | undefined` from drizzle-orm rc.5 on, `SQL` before it.
+    const negated = extracted ? not(extracted) : undefined;
+    if (negated) {
+      variants.push(negated);
     }
   }
 

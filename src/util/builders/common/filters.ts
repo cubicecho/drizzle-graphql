@@ -420,8 +420,10 @@ export const extractFiltersColumn = <TColumn extends Column>(
 
   if (NOT) {
     const extracted = extractFiltersColumn(column, columnName, NOT);
-    if (extracted) {
-      variants.push(not(extracted));
+    // `not()` is typed `SQL | undefined` from drizzle-orm rc.5 on, `SQL` before it.
+    const negated = extracted ? not(extracted) : undefined;
+    if (negated) {
+      variants.push(negated);
     }
   }
 

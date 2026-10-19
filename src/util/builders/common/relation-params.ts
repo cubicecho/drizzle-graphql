@@ -16,6 +16,7 @@ import type { DeletedMode, ScopeResolver } from './policies.ts';
 import { withScope } from './policies.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
+import { omitUndefinedKeys } from './rqb-config.ts';
 import { extractSelectedColumnsFromTree } from './selected-columns.ts';
 import type { TypeNameResolver } from './type-names.ts';
 
@@ -198,7 +199,7 @@ export const extractRelationsParams = (
     const relWith = extractRelationsParams(relationMap, tables, targetTableName, field, relTypeName, options);
     thisRecord.with = relWith;
 
-    args[relName] = thisRecord;
+    args[relName] = omitUndefinedKeys(thisRecord);
   }
 
   return args;
