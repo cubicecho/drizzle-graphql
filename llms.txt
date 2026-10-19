@@ -18,7 +18,7 @@ Serve the generated schema as-is:
 ```typescript
 import { createServer } from 'node:http'
 import { createYoga } from 'graphql-yoga'
-import { buildSchema } from 'drizzle-graphql'
+import { buildSchema } from '@vantreeseba/drizzle-graphql'
 import { db } from './database' // your drizzle instance, built with relations
 
 const { schema } = buildSchema(db)
@@ -54,7 +54,7 @@ Use `entities` to cherry-pick generated fields, reuse generated types/inputs, an
 
 ```typescript
 import { GraphQLList, GraphQLNonNull, GraphQLObjectType, GraphQLSchema } from 'graphql'
-import { buildSchema } from 'drizzle-graphql'
+import { buildSchema } from '@vantreeseba/drizzle-graphql'
 import { db } from './database'
 
 const { entities } = buildSchema(db)
@@ -119,7 +119,7 @@ Opting a relation out does not remove the field — it keeps resolving lazily vi
 A resolver that replaces a generated one has to return a row shaped like the type it replaced — relation field resolvers only fill in relations the parent did not already provide. Two exports do the selection translation:
 
 ```typescript
-import { resolveSelection, selectionToWith } from 'drizzle-graphql'
+import { resolveSelection, selectionToWith } from '@vantreeseba/drizzle-graphql'
 
 // The whole read, against any executor.
 const rows = await resolveSelection(info, { db, table: 'Users', where: { id: { eq } }, executor: tx })
@@ -137,7 +137,7 @@ const withTree = selectionToWith(info, { db, table: 'Users' })
 Every generated field and object type publishes its identity under `extensions.drizzle`, so wrappers (`graphql-middleware`, envelop, `graphql-shield`, audit logs, cache invalidators) never parse field names — which is ambiguous anyway once `prefixes` / `suffixes` / `typeNameMapper` are configured. The shape is stable API: fields are added, never removed or repurposed.
 
 ```typescript
-import { drizzleExtension, identifyRows } from 'drizzle-graphql'
+import { drizzleExtension, identifyRows } from '@vantreeseba/drizzle-graphql'
 
 const field = info.parentType.getFields()[info.fieldName]
 const meta = drizzleExtension(field)

@@ -5,14 +5,14 @@ Automatically create GraphQL schema or customizable schema config fields from Dr
 ## Usage
 
 -   Pass your drizzle database instance and schema into builder to generate `{ schema, entities }` object
--   Use `schema` if pre-built schema already satisfies all your neeeds. It's compatible witn any server that consumes `GraphQLSchema` class instance
+-   Use `schema` if pre-built schema already satisfies all your needs. It's compatible with any server that consumes `GraphQLSchema` class instance
 
     Example: hosting schema using [GraphQL Yoga](https://the-guild.dev/graphql/yoga-server)
 
     ```Typescript
     import { createServer } from 'node:http'
     import { createYoga } from 'graphql-yoga'
-    import { buildSchema } from 'drizzle-graphql'
+    import { buildSchema } from '@vantreeseba/drizzle-graphql'
 
     // db - your drizzle instance
     import { db } from './database'
@@ -20,6 +20,7 @@ Automatically create GraphQL schema or customizable schema config fields from Dr
     const { schema } = buildSchema(db)
 
     const yoga = createYoga({ schema })
+    const server = createServer(yoga)
 
     server.listen(4000, () => {
         console.info('Server is running on http://localhost:4000/graphql')
@@ -32,7 +33,7 @@ Automatically create GraphQL schema or customizable schema config fields from Dr
     import { createServer } from 'node:http'
     import { GraphQLList, GraphQLNonNull, GraphQLObjectType, GraphQLSchema } from 'graphql'
     import { createYoga } from 'graphql-yoga'
-    import { buildSchema } from 'drizzle-graphql'
+    import { buildSchema } from '@vantreeseba/drizzle-graphql'
 
     // Schema contains 'Users' and 'Customers' tables
     import { db } from './database'
@@ -118,7 +119,7 @@ to leave that table with the default naming. The preset is exported as `singular
 so it can be wrapped:
 
 ```Typescript
-import { buildSchema, singularizeMapper } from 'drizzle-graphql'
+import { buildSchema, singularizeMapper } from '@vantreeseba/drizzle-graphql'
 
 const { schema } = buildSchema(db, {
     typeNameMapper: (table) => (table === 'auditLog' ? undefined : singularizeMapper(table)),
@@ -627,7 +628,7 @@ mutation {
 The scalars are exported if you need them in a hand-written schema:
 
 ```Typescript
-import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQLUUID } from 'drizzle-graphql'
+import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQLUUID } from '@vantreeseba/drizzle-graphql'
 ```
 
 `GraphQLBigIntString` is the `BigInt` scalar — named for what it does rather than what it is
@@ -2016,7 +2017,7 @@ To control the boundary yourself, open a transaction and put it on the GraphQL c
 the exported `drizzleExecutorKey`:
 
 ```Typescript
-import { buildSchema, drizzleExecutorKey } from 'drizzle-graphql'
+import { buildSchema, drizzleExecutorKey } from '@vantreeseba/drizzle-graphql'
 
 const { schema } = buildSchema(db)
 
