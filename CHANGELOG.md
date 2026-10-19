@@ -1,3 +1,43 @@
+## [15.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v14.0.0...v15.0.0) (2026-10-19)
+
+### ⚠ BREAKING CHANGES
+
+* smallint, smallserial, tinyint, mediumint and year
+columns (and MySQL smallint) change from Float to Int in output, input
+and filter positions (FloatFilter -> IntFilter). Documents declaring a
+Float variable for these fields must declare Int, and a fractional input
+is now rejected.
+* for SQLite integer timestamp columns, fields, inputs and
+min/max/group-key fields change from JSON to DateTime, and filters from
+JSONFilter to DateTimeFilter (path is gone; lt/lte/gt/gte/inArray/notInArray
+are new). Input must be an ISO-8601 date-time. Reads and stored values are
+unchanged.
+* MySQL `timestamp` / `datetime` fields change GraphQL type.
+`mode: 'date'` columns go from `JSON` / `JSONFilter` to `DateTime` /
+`DateTimeFilter`; `mode: 'string'` columns go from `String` /
+`StringFilter` to `DateTime` / `DateTimeFilter`. Input must be an ISO 8601
+date-time. A `mode: 'string'` column used to read `2026-09-15 10:00:00`
+and now reads `2026-09-15T10:00:00.000Z`.
+* date columns change GraphQL type. Inputs typed `String` or
+`DateTime` and filters typed `StringFilter`, `DateTimeFilter` or `JSONFilter`
+on a date column become `Date` and `DateFilter`. Datetime strings such as
+`2026-09-15T00:00:00.000Z` sent to a date column used to be truncated to the
+day and are now rejected. A `mode: 'date'` column reads `2026-09-15` instead
+of `2026-09-15T00:00:00.000Z`. The exported `GraphQLDate` is now this
+library's scalar; a column override using graphql-scalars' `GraphQLDate`
+next to a natural date column fails to build (two types named `Date`).
+Map `scalars: { Date: 'string' }` in graphql-codegen.
+
+### Bug Fixes
+
+* serialize Postgres string-mode timestamps as DateTime ([9b29fe5](https://github.com/cubicecho/drizzle-graphql/commit/9b29fe540c4044b5dd888843ac57707345fb140f)), closes [#193](https://github.com/cubicecho/drizzle-graphql/issues/193)
+* support drizzle-orm rc.5 snapshots (omit undefined where, isFilterReversed, not() typing) ([cebc1e1](https://github.com/cubicecho/drizzle-graphql/commit/cebc1e184ac5f3548e01e75c1d625f8efb9ab24f)), closes [#186](https://github.com/cubicecho/drizzle-graphql/issues/186)
+* type every date column as the Date scalar, in every position ([6e3b93d](https://github.com/cubicecho/drizzle-graphql/commit/6e3b93d0ee128e7e311d7acc747d67796be57d1c)), closes [#174](https://github.com/cubicecho/drizzle-graphql/issues/174)
+* type MySQL timestamp and datetime columns as DateTime ([ecd4361](https://github.com/cubicecho/drizzle-graphql/commit/ecd436190145e863d3005356330a82132da1d38a)), closes [#188](https://github.com/cubicecho/drizzle-graphql/issues/188)
+* type small integer columns and MySQL year as Int, not Float ([edf157f](https://github.com/cubicecho/drizzle-graphql/commit/edf157f355e5fbefd08112ddb7e71c3c6dd6e211)), closes [#195](https://github.com/cubicecho/drizzle-graphql/issues/195)
+* type SQLite integer timestamp columns as DateTime ([61fc79b](https://github.com/cubicecho/drizzle-graphql/commit/61fc79ba927e3449126806e2b2a1996425124ec0)), closes [#194](https://github.com/cubicecho/drizzle-graphql/issues/194)
+* unwrap drizzle rc.5 relation columns so relation aggregates and nested inputs are built ([ea20303](https://github.com/cubicecho/drizzle-graphql/commit/ea2030337fbe833d44a9ca4efa45eef4ecedf2ad)), closes [#179](https://github.com/cubicecho/drizzle-graphql/issues/179)
+
 ## [14.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v13.1.1...v14.0.0) (2026-10-19)
 
 ### ⚠ BREAKING CHANGES
