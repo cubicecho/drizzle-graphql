@@ -1,6 +1,15 @@
 import type { Column, Table } from 'drizzle-orm';
 import { extractExtendedColumnType, getColumns, is } from 'drizzle-orm';
-import { MySqlDate, MySqlDateString, MySqlInt, MySqlSerial } from 'drizzle-orm/mysql-core';
+import {
+  MySqlDate,
+  MySqlDateString,
+  MySqlDateTime,
+  MySqlDateTimeString,
+  MySqlInt,
+  MySqlSerial,
+  MySqlTimestamp,
+  MySqlTimestampString,
+} from 'drizzle-orm/mysql-core';
 import { PgDate, PgDateString, PgInteger, PgSerial, PgTimestamp, PgTimestampString, PgUUID } from 'drizzle-orm/pg-core';
 import { SQLiteInteger } from 'drizzle-orm/sqlite-core';
 import {
@@ -243,6 +252,30 @@ const geoXyInputType = new GraphQLInputObjectType({
 export const isDateOnlyColumn = (column: Column): boolean =>
   is(column, PgDate) || is(column, PgDateString) || is(column, MySqlDate) || is(column, MySqlDateString);
 
+/**
+ * Whether the column is a MySQL `timestamp` / `datetime` read in drizzle's `'string'` mode. The
+ * driver hands such a column back as MySQL's own `YYYY-MM-DD HH:MM:SS[.fraction]` text, with no
+ * offset, and expects that form on write, so the data mappers translate between it and the ISO
+ * 8601 instant the `DateTime` scalar carries. The text is read as UTC, the way drizzle's own
+ * `'date'`-mode codecs for these columns read it.
+ */
+export const isMySqlDateTimeStringColumn = (column: Column): boolean =>
+  is(column, MySqlTimestampString) || is(column, MySqlDateTimeString);
+
+/**
+ * Whether the column holds an instant — a Postgres `timestamp` or a MySQL `timestamp` /
+ * `datetime`, in either drizzle mode. Every position such a column appears in gives it the
+ * `DateTime` scalar and the `DateTimeFilter`, whichever mode it uses, for the same reason as
+ * {@link isDateOnlyColumn}. SQLite's integer timestamps are not listed: they are a separate
+ * case.
+ */
+export const isDateTimeColumn = (column: Column): boolean =>
+  is(column, PgTimestamp) ||
+  is(column, PgTimestampString) ||
+  is(column, MySqlTimestamp) ||
+  is(column, MySqlDateTime) ||
+  isMySqlDateTimeStringColumn(column);
+
 const columnToGraphQLCore = (
   column: Column,
   columnName: string,
@@ -285,7 +318,7 @@ const columnBaseToGraphQLCore = (
       if (isDateOnlyColumn(column)) {
         return { type: GraphQLDate, typeLabel: 'Date' };
       }
-      if (column instanceof PgTimestamp) {
+      if (isDateTimeColumn(column)) {
         return { type: GraphQLDateTime, typeLabel: 'DateTime' };
       }
       return column.columnType === 'PgGeometryObject'
@@ -312,7 +345,7 @@ const columnBaseToGraphQLCore = (
         return { type: GraphQLDecimalString, typeLabel: 'Decimal' };
       }
 
-      if (column instanceof PgTimestamp || column instanceof PgTimestampString) {
+      if (isDateTimeColumn(column)) {
         return { type: GraphQLDateTime, typeLabel: 'DateTime' };
       }
       if (column instanceof PgUUID) {

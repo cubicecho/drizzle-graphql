@@ -606,7 +606,7 @@ generated SDL says what a field actually holds instead of falling back to `Strin
 | `json` / `jsonb` (and `mode: 'json'`)       | `JSON`       | the parsed value                     |
 | `bigint` (and `mode: 'bigint'`)             | `BigInt`     | a decimal string                     |
 | `uuid`                                      | `UUID`       | a validated UUID string              |
-| `timestamp` / `datetime`                    | `DateTime`   | an ISO-8601 string                   |
+| `timestamp` / `datetime` (either `mode`)    | `DateTime`   | an ISO-8601 string                   |
 | `date` (either `mode`)                      | `Date`       | a `YYYY-MM-DD` string                |
 
 ```graphql
@@ -633,6 +633,12 @@ mutation {
     shifts it. Input must name a real day: `2026-02-30`, `2026-13-45` and datetime strings like
     `2026-09-15T10:00:00Z` are rejected. With `graphql-codegen`, map it as
     `scalars: { Date: 'string' }`
+-   **`DateTime`** is an instant, and is likewise the same type in every position a Postgres
+    `timestamp` or MySQL `timestamp` / `datetime` column appears in, with `DateTimeFilter` in
+    filters, whichever `mode` the column is declared with. It returns an ISO-8601 string in UTC.
+    MySQL stores these columns without an offset; the value is written and read as UTC
+    (`2026-09-15T10:00:00Z` is stored as `2026-09-15 10:00:00`) whatever the Node process's
+    timezone, the way drizzle itself treats them
 
 The scalars are exported if you need them in a hand-written schema:
 
@@ -672,6 +678,23 @@ library's own `Date` scalar, not `graphql-scalars`' (whose `parseValue` returns 
 > -   If you passed `graphql-scalars`' `GraphQLDate` as a column override, pass this library's
 >     exported `GraphQLDate` instead. They share the name `Date`, so a schema holding both
 >     fails to build with graphql's "multiple types named Date" error
+
+> **Upgrading — MySQL `timestamp` / `datetime` columns.** These used to fall through to
+> `JSON` in `mode: 'date'` and to `String` in `mode: 'string'`. All four are now `DateTime`, as
+> Postgres `timestamp` already was:
+>
+> | Drizzle column (MySQL) | position | before | now |
+> | --- | --- | --- | --- |
+> | `timestamp(…)` / `datetime(…)` (`mode: 'date'`) | output, input, min/max, group keys | `JSON` | `DateTime` |
+> | | filter | `JSONFilter` | `DateTimeFilter` |
+> | `timestamp(…)` / `datetime(…)` with `{ mode: 'string' }` | output, input, min/max, group keys | `String` | `DateTime` |
+> | | filter | `StringFilter` | `DateTimeFilter` |
+>
+> Variables for these fields become `DateTime` and their filters `DateTimeFilter`, which has no
+> `JSONFilter` / `StringFilter` operators such as `contains` or `like`. Input must be an ISO-8601
+> date-time (`2026-09-15T10:00:00Z`, or with an offset). A `mode: 'string'` column used to read
+> MySQL's own `2026-09-15 10:00:00` and now reads `2026-09-15T10:00:00.000Z`. In
+> `graphql-codegen`, map `DateTime` the way you already do for Postgres timestamps.
 
 ### Overriding a column's scalar
 
