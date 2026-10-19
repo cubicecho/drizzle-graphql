@@ -58,6 +58,7 @@ import {
   type TypeNameResolver,
   toGraphQLError,
   visibleColumns,
+  warnUnresolvedJoin,
   withErrorContext,
   withScope,
 } from './common.ts';
@@ -497,6 +498,8 @@ export const createRelationAggregateFactory = (
   filterCtx?: RelationFilterBase,
   policies?: TablePolicies,
 ): RelationAggregateFactory => {
+  // The factory can be asked for the same relation more than once in a build; warn once.
+  const warned = new Set<string>();
   return ({ tableName, relationName, relEntry }) => {
     const parentTable = tables[tableName];
     const targetTableName = relEntry.targetTableName;
@@ -508,6 +511,11 @@ export const createRelationAggregateFactory = (
 
     const joinCols = extractRelationJoinColumns(relEntry, parentTable, targetTable);
     if (!joinCols) {
+      const key = `${tableName}.${relationName}`;
+      if (!warned.has(key)) {
+        warned.add(key);
+        warnUnresolvedJoin(relEntry, tableName, relationName, `its '${relationName}Aggregate' field`);
+      }
       return undefined;
     }
     const { localColPropName, foreignCol } = joinCols;
