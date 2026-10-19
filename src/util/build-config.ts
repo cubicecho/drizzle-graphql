@@ -390,14 +390,8 @@ export const resolveBuildConfig = (
         );
       }
     }
-    // Nested writes are build-wide, so a relation pointing at this table can still write it
-    // from another table's mutation even with its own write operations turned off.
-    if (config?.features?.nestedWrites && (!tableFeatures.insert || !tableFeatures.update)) {
-      noteConflict(
-        "nestedWrites is on while this table's own insert or update is off, so a nested `create` or `connect` under another table's mutation can still write it",
-        tableName,
-      );
-    }
+    // Nested writes are not a conflict: a nested input whose write the target table turns off
+    // is left out of the schema, and the build notes which (see `gateNestedWritePlans`).
     // Only flagged when the caller actually asked for the dependent feature: both default to
     // on, so turning off the operation they build on is the normal way to remove them.
     if (config?.features?.updateMany !== undefined && tableFeatures.updateMany && !tableFeatures.update) {

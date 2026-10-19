@@ -42,6 +42,8 @@ export type {
   MutationReturnlessResult,
   MutationsCore,
   NamingOf,
+  NestedWriteOp,
+  NestedWriteOrigin,
   OnWriteConfig,
   QueriesCore,
   RowScope,

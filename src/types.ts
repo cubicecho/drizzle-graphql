@@ -819,8 +819,8 @@ export type SchemaFeatures = {
    * columns only.
    *
    * A many-to-many (`.through()`) relation is written as junction rows: `connect` on the
-   * create input, and `connect` / `disconnect` / `set` on the update input, all
-   * unconditional, since unlinking deletes a junction row rather than nulling a column.
+   * create input, and `connect` / `disconnect` / `set` on the update input, whatever the
+   * columns' nullability, since unlinking deletes a junction row rather than nulling a column.
    * It offers no `create` — inserting a row and linking it are two writes to two tables —
    * and `set: []` clears the relation.
    *
@@ -828,6 +828,21 @@ export type SchemaFeatures = {
    * one), and a column a relation fills in (`authorId`, when `author: { create: … }` is
    * offered) becomes nullable on the create input, since the relation is the other way to
    * supply it.
+   *
+   * A nested write follows the rules of the table it writes:
+   *
+   * - **`features`** — each input is generated only when that table has the write it needs:
+   *   `create` needs the target's `insert` (plus its `update` on a to-one whose nullable key
+   *   lives on the target, since attaching detaches the previous row); a `connect` /
+   *   `disconnect` / `set` that moves the target's foreign key needs its `update`; a
+   *   parent-side `connect` / `disconnect` needs nothing of the target. Many-to-many inputs
+   *   need the junction's `insert` (`connect`), `delete` (`disconnect`) or both (`set`), and
+   *   an excluded junction removes them. What is left out is noted on the console, and a
+   *   relation left with no input loses its field.
+   * - **`onWrite`** — the hooks of the table a nested statement writes fire on the same `tx`,
+   *   with `payload.nested` set. See {@link BuildSchemaConfig.onWrite}.
+   * - **`scope`** and **`contextValues`** — `connect` / `disconnect` / `set` reach only
+   *   in-scope rows, and a nested `create` is stamped like any insert.
    *
    * PostgreSQL and SQLite only. MySQL cannot return the rows it just wrote, which is how a
    * nested write learns the parent's key, so `buildSchema` rejects the flag there. On SQLite
@@ -1075,6 +1090,8 @@ export type {
   DerivedTypeNameMapper,
   GeneratedTypeInfo,
   GeneratedTypeKind,
+  NestedWriteOp,
+  NestedWriteOrigin,
   TypeNameMapper,
   WriteHook,
   WriteHookPayload,
@@ -1513,8 +1530,16 @@ export type BuildSchemaConfig = {
    *   is unchanged. An unknown column, or `columns` with no `after` hook, fails the build; on
    *   a top-level registration a named column must exist on every table. MySQL returns no
    *   rows, so `columns` has no effect there.
-   * - The hook fires for the **mutation field's own table**. Rows a nested write creates in
-   *   another table do not fire that table's hook.
+   * - **With `nestedWrites`, a nested statement fires the hooks of the table it writes**, on
+   *   the same `tx`, once per relation input and operation (not per row): `insert` for a
+   *   nested `create`; `update` for a `connect` / `disconnect` / `set` that moves the
+   *   target's foreign key; `insert` / `delete` on the junction table for a many-to-many
+   *   link / unlink (`set` is both). A parent-side `connect` / `disconnect` writes only the
+   *   parent's own row, so only the parent's hook sees it. `payload.nested` is
+   *   `{ parentTable, relation, op }` there and `undefined` at the mutation field's own
+   *   table — `if (payload.nested) return;` keeps a hook to root writes. A nested
+   *   statement's `rows` hold the table's primary key and the join column(s) it changed, plus
+   *   the hook's `columns`. A throw rolls the whole tree back, parent row included.
    *
    * Off by default, and a build without it opens exactly the transactions it did before.
    */

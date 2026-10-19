@@ -123,6 +123,74 @@ describe.sequential('SQLite onWrite', () => {
   });
 });
 
+describe.sequential('SQLite onWrite under nested writes', () => {
+  it("fires the child table's hook on the mutation's transaction, and leaves `nested` unset at the root", async () => {
+    const seen: WriteHookPayload['nested'][] = [];
+    const gqlSchema = buildWith({
+      features: { nestedWrites: true } as any,
+      onWrite: async (payload: WriteHookPayload) => {
+        seen.push(payload.nested);
+        await record(payload);
+      },
+    });
+
+    const res = await run(
+      gqlSchema,
+      `mutation { createOrgsSingle(values: { id: 2, name: "Globex", items: { create: [{ id: 3 }] } }) { id } }`,
+    );
+
+    expect(res.errors).toBeUndefined();
+    expect(seen).toEqual([{ parentTable: 'Orgs', relation: 'items', op: 'create' }, undefined]);
+    // Both audit rows were written through each hook's `tx`, and committed with the mutation.
+    expect((await auditRows()).map((row: any) => `${row.tableName}:${row.operation}:${row.detail}`)).toEqual([
+      'Items:insert:3',
+      'Orgs:insert:2',
+    ]);
+  });
+
+  it('lets a hook skip nested writes', async () => {
+    const gqlSchema = buildWith({
+      features: { nestedWrites: true } as any,
+      onWrite: {
+        Items: async (payload: WriteHookPayload) => {
+          if (payload.nested) {
+            return;
+          }
+          await record(payload);
+        },
+      },
+    });
+
+    await run(
+      gqlSchema,
+      `mutation { createOrgsSingle(values: { id: 2, name: "Globex", items: { create: [{ id: 3 }] } }) { id } }`,
+    );
+    await run(gqlSchema, `mutation { createItems(values: [{ id: 4, orgId: 1 }]) { id } }`);
+
+    expect((await auditRows()).map((row: any) => row.detail)).toEqual(['4']);
+  });
+
+  it('rolls the parent row back when the child hook throws', async () => {
+    const gqlSchema = buildWith({
+      features: { nestedWrites: true } as any,
+      onWrite: {
+        Items: async () => {
+          throw new Error('child rejected');
+        },
+      },
+    });
+
+    const res = await run(
+      gqlSchema,
+      `mutation { createOrgsSingle(values: { id: 2, name: "Globex", items: { create: [{ id: 3 }] } }) { id } }`,
+    );
+
+    expect(res.errors?.[0]?.message).toContain('child rejected');
+    expect((await db.select().from(Orgs)).map((row: any) => row.id)).toEqual([1]);
+    expect((await db.select().from(Items)).map((row: any) => row.id)).toEqual([1, 2]);
+  });
+});
+
 describe.sequential('SQLite onWrite columns', () => {
   /** A hook that keeps a copy of each `rows` it is handed, keyed by operation. */
   const capture = () => {

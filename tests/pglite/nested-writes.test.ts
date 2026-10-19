@@ -4,7 +4,7 @@ import { integer, pgTable, serial, text } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
 import { type GraphQLInputObjectType, type GraphQLSchema, graphql } from 'graphql';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { buildSchema } from '@/index';
+import { buildSchema, type WriteHookPayload } from '@/index';
 
 // ── A schema with a relation of every writable shape ──────────────────────────
 // authors.posts     to-many, FK on the child, nullable  → create/connect/disconnect/set
@@ -468,5 +468,181 @@ describe.sequential('nested writes: relation output', () => {
 
     expect(result.errors).toBeUndefined();
     expect(result.data).toEqual({ createAuthorsSingle: { name: 'Ada', posts: [{ title: 'First' }] } });
+  });
+});
+
+// ── the target table's own write rules ───────────────────────────────────────
+
+/** Records every hook call as a compact line plus its payload, in the order they fired. */
+const recorder = () => {
+  const calls: { line: string; payload: WriteHookPayload }[] = [];
+  const hook = (payload: WriteHookPayload) => {
+    const origin = payload.nested
+      ? `${payload.nested.parentTable}.${payload.nested.relation}.${payload.nested.op}`
+      : 'root';
+    calls.push({ line: `${payload.table} ${payload.operation} ${payload.position} ${origin}`, payload });
+  };
+  return { calls, onWrite: { before: hook, after: hook } };
+};
+
+const runOn = (target: GraphQLSchema, source: string) => graphql({ schema: target, source, contextValue: {} });
+const fieldNames = (target: GraphQLSchema, name: string) =>
+  Object.keys((target.getType(name) as GraphQLInputObjectType).getFields()).sort();
+
+describe.sequential("nested writes: the target table's onWrite hooks", () => {
+  beforeEach(async () => {
+    await db.insert(Authors).values([{ name: 'Ada' }, { name: 'Grace' }]);
+    await db.insert(Posts).values([
+      { title: 'A1', authorId: 1 },
+      { title: 'A2', authorId: 1 },
+      { title: 'Free', authorId: null },
+    ]);
+  });
+
+  it('fires once per input for an update that matched several parent rows', async () => {
+    const { calls, onWrite } = recorder();
+    const hooked = buildSchema(db, { features: { nestedWrites: true }, onWrite }).schema;
+
+    const result = await runOn(
+      hooked,
+      `mutation { updatePosts(where: { authorId: { eq: 1 } }, set: { comments: { create: [{ body: "hi" }] } }) { id } }`,
+    );
+
+    expect(result.errors).toBeUndefined();
+    expect(calls.map((c) => c.line)).toEqual([
+      'Posts update before root',
+      'Comments insert before Posts.comments.create',
+      'Comments insert after Posts.comments.create',
+      'Posts update after root',
+    ]);
+    expect(calls[2]!.payload.rows).toEqual([
+      { id: 1, postId: 1 },
+      { id: 2, postId: 2 },
+    ]);
+    expect(calls[2]!.payload.single).toBe(false);
+    // The nested hook runs on the transaction the nested write opened, not on bare `db`.
+    expect(calls[2]!.payload.tx).not.toBe(db);
+  });
+
+  it('fires per entry of a batch update', async () => {
+    const { calls, onWrite } = recorder();
+    const hooked = buildSchema(db, { features: { nestedWrites: true }, onWrite: { Posts: onWrite } }).schema;
+
+    const result = await runOn(
+      hooked,
+      `mutation { updateAuthorsMany(updates: [
+        { where: { id: { eq: 1 } }, set: { posts: { disconnect: [{ title: { eq: "A1" } }] } } },
+        { where: { id: { eq: 2 } }, set: { posts: { connect: [{ title: { eq: "Free" } }] } } }
+      ]) { id } }`,
+    );
+
+    expect(result.errors).toBeUndefined();
+    expect(calls.filter((c) => c.payload.position === 'after').map((c) => [c.line, c.payload.rows])).toEqual([
+      ['Posts update after Authors.posts.disconnect', [{ id: 1, authorId: null }]],
+      ['Posts update after Authors.posts.connect', [{ id: 3, authorId: 2 }]],
+    ]);
+  });
+
+  it("hands a parent-side create's hook every column it asks for", async () => {
+    const seen: WriteHookPayload[] = [];
+    const hooked = buildSchema(db, {
+      features: { nestedWrites: true },
+      onWrite: { Authors: { after: (payload) => void seen.push(payload), columns: 'all' } },
+    }).schema;
+
+    const result = await runOn(
+      hooked,
+      `mutation { createPostsSingle(values: { title: "New", author: { create: { name: "Hedy" } } }) { id } }`,
+    );
+
+    expect(result.errors).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.operation).toBe('insert');
+    expect(seen[0]!.single).toBe(true);
+    expect(seen[0]!.nested).toEqual({ parentTable: 'Posts', relation: 'author', op: 'create' });
+    expect(seen[0]!.rows).toEqual([{ id: 3, name: 'Hedy' }]);
+    expect((await posts()).at(-1).authorId).toBe(3);
+  });
+
+  it('does not fire the target hooks for a parent-side connect, which writes only the parent', async () => {
+    const { calls, onWrite } = recorder();
+    const hooked = buildSchema(db, { features: { nestedWrites: true }, onWrite }).schema;
+
+    const result = await runOn(
+      hooked,
+      `mutation { updatePostsSingle(where: { id: { eq: 3 } }, set: { author: { connect: { id: { eq: 2 } } } }) { id } }`,
+    );
+
+    expect(result.errors).toBeUndefined();
+    expect(calls.map((c) => c.line)).toEqual(['Posts update before root', 'Posts update after root']);
+  });
+
+  it('rolls the whole tree back when a child before hook throws', async () => {
+    const hooked = buildSchema(db, {
+      features: { nestedWrites: true },
+      onError: (error: unknown) => error as Error,
+      onWrite: {
+        Comments: {
+          before: () => {
+            throw new Error('comments are closed');
+          },
+        },
+      },
+    }).schema;
+
+    const result = await runOn(
+      hooked,
+      `mutation { createPostsSingle(values: {
+        title: "New", author: { create: { name: "Hedy" } }, comments: { create: [{ body: "hi" }] }
+      }) { id } }`,
+    );
+
+    expect(result.errors?.[0]?.message).toMatch(/comments are closed/);
+    // The parent-side author and the post itself were both written before the hook threw.
+    expect(await authors()).toHaveLength(2);
+    expect(await posts()).toHaveLength(3);
+  });
+});
+
+describe.sequential("nested writes: inputs follow the target table's features", () => {
+  it("keeps connect without the target's insert, and create without its update", () => {
+    const noInsert = buildSchema(db, { features: { nestedWrites: true, insert: (t) => t !== 'Comments' } }).schema;
+    expect(fieldNames(noInsert, 'PostsCommentsNestedCreateInput')).toEqual(['connect']);
+
+    // authors.profile's key is NOT NULL, so a nested create detaches nothing and needs only insert.
+    const noUpdate = buildSchema(db, { features: { nestedWrites: true, update: (t) => t !== 'Profiles' } }).schema;
+    expect(fieldNames(noUpdate, 'AuthorsProfileNestedCreateInput')).toEqual(['create']);
+    expect(fieldNames(noUpdate, 'AuthorsProfileNestedUpdateInput')).toEqual(['create']);
+  });
+
+  it('keeps a parent-side relation whose create is gone, and its column relaxed', () => {
+    const gated = buildSchema(db, { features: { nestedWrites: true, insert: (t) => t !== 'Posts' } }).schema;
+
+    expect(fieldNames(gated, 'CommentsPostNestedCreateInput')).toEqual(['connect']);
+    // `connect` still supplies comments.post_id, so the column stays optional on the input.
+    const postId = (gated.getType('CreateCommentsInput') as GraphQLInputObjectType).getFields()['postId']!;
+    expect(String(postId.type)).toBe('Int');
+  });
+
+  it('removes a relation field the target has no write for at all', () => {
+    const gated = buildSchema(db, {
+      features: { nestedWrites: true, insert: (t) => t !== 'Comments', update: (t) => t !== 'Comments' },
+    }).schema;
+    const create = (gated.getType('CreatePostsInput') as GraphQLInputObjectType).getFields();
+
+    expect(create['comments']).toBeUndefined();
+    expect(create['author']).toBeDefined();
+  });
+
+  it('rejects a removed input at validation', async () => {
+    const gated = buildSchema(db, { features: { nestedWrites: true, insert: (t) => t !== 'Comments' } }).schema;
+
+    const result = await runOn(
+      gated,
+      `mutation { createPostsSingle(values: { title: "New", comments: { create: [{ body: "hi" }] } }) { id } }`,
+    );
+
+    expect(result.errors).toHaveLength(1);
+    expect(await db.select().from(Comments)).toEqual([]);
   });
 });

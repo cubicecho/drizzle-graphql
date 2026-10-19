@@ -320,3 +320,72 @@ describe.sequential('onWrite', () => {
     expect(await auditRows()).toEqual([]);
   });
 });
+
+describe.sequential('onWrite under nested writes', () => {
+  it("fires the child's hook through its own tx, and commits it with the parent", async () => {
+    const origins: WriteHookPayload['nested'][] = [];
+    const gqlSchema = buildWith({
+      features: { nestedWrites: true },
+      onWrite: {
+        Authors: record(),
+        Articles: async (payload) => {
+          origins.push(payload.nested);
+          await record()(payload);
+        },
+      },
+    });
+
+    const res = await run(
+      gqlSchema,
+      `mutation { createAuthorsSingle(values: { id: 2, name: "Grace", articles: {
+        create: [{ id: 3, title: "third" }], connect: [{ id: { eq: 2 } }]
+      } }) { id } }`,
+    );
+
+    expect(res.errors).toBeUndefined();
+    expect(origins).toEqual([
+      { parentTable: 'Authors', relation: 'articles', op: 'connect' },
+      { parentTable: 'Authors', relation: 'articles', op: 'create' },
+    ]);
+    expect((await auditRows()).map((row: any) => `${row.tableName}:${row.operation}:${row.detail}`)).toEqual([
+      'Articles:update:2',
+      'Articles:insert:3',
+      'Authors:insert:2',
+    ]);
+  });
+
+  it('leaves `nested` undefined on a root write', async () => {
+    const origins: WriteHookPayload['nested'][] = [];
+    const gqlSchema = buildWith({
+      features: { nestedWrites: true },
+      onWrite: { Articles: (payload) => void origins.push(payload.nested) },
+    });
+
+    await run(gqlSchema, `mutation { createArticles(values: [{ id: 3, title: "third" }]) { id } }`);
+
+    expect(origins).toEqual([undefined]);
+  });
+
+  it('rolls the parent and the audit rows back when a child hook throws', async () => {
+    const gqlSchema = buildWith({
+      features: { nestedWrites: true },
+      onWrite: {
+        Authors: { before: record() },
+        Articles: async () => {
+          throw new Error('articles rejected');
+        },
+      },
+    });
+
+    const res = await run(
+      gqlSchema,
+      `mutation { createAuthorsSingle(values: { id: 2, name: "Grace", articles: { create: [{ id: 3, title: "t" }] } }) { id } }`,
+    );
+
+    expect(res.errors?.[0]?.message).toContain('articles rejected');
+    expect((await db.select().from(Authors)).map((row: any) => row.id)).toEqual([1]);
+    expect((await articleRows()).map((row: any) => row.id)).toEqual([1, 2]);
+    // The root's `before` hook wrote through the same transaction, so it is gone too.
+    expect(await auditRows()).toEqual([]);
+  });
+});
