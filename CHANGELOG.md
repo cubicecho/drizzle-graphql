@@ -1,3 +1,21 @@
+## [14.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v13.1.1...v14.0.0) (2026-10-19)
+
+### ⚠ BREAKING CHANGES
+
+* **nestedWrites:** with features.nestedWrites on, onWrite hooks registered on a
+nested write's target (or junction) table now fire for the rows nested
+writes create, attach, detach, link and unlink; previously only the root
+field's table's hooks ran. A hook that should ignore them can return early
+when `payload.nested` is set. Nested inputs whose target table has the
+required insert / update / delete feature turned off (or whose junction table
+is excluded) are now removed from the generated input types instead of
+remaining writable, and a relation field with no input left is removed
+entirely.
+
+### Features
+
+* **nestedWrites:** run the target table's onWrite hooks and follow its features ([bbbc033](https://github.com/cubicecho/drizzle-graphql/commit/bbbc033d8c65d373fa1ace3d4389f6fbf7b97d5e)), closes [#176](https://github.com/cubicecho/drizzle-graphql/issues/176)
+
 ## [13.1.1](https://github.com/cubicecho/drizzle-graphql/compare/v13.1.0...v13.1.1) (2026-10-19)
 
 ### Bug Fixes
