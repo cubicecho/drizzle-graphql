@@ -20,7 +20,7 @@ import type { OrderByArgs, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
 import type { RelationFilterContext } from './relation-filters.ts';
 import { buildRelationJoinCondition } from './relation-filters.ts';
-import { isFilterableRelation } from './relations.ts';
+import { isFilterableRelation, isRelationFilterReversed, relationOwnWhere } from './relations.ts';
 
 /** How NULLs are placed relative to non-NULL values in an ordered column. */
 export type OrderNullsOption = 'first' | 'last';
@@ -141,8 +141,9 @@ const extendRelationOrderChain = (
   const joinCondition = buildRelationJoinCondition(parentTable, relation, aliasedTarget, relationName);
   // A relation declared with its own `where` only ever exposes the rows it selects, so the
   // ordering subquery has to honour it too — mirroring the relation-filter subqueries.
-  const relationWhere = (relation as any).where
-    ? relationsFilterToSQL((relation as any).isReversed ? parentTable : aliasedTarget, (relation as any).where)
+  const ownWhere = relationOwnWhere(relation);
+  const relationWhere = ownWhere
+    ? relationsFilterToSQL(isRelationFilterReversed(relation) ? parentTable : aliasedTarget, ownWhere as any)
     : undefined;
 
   return {

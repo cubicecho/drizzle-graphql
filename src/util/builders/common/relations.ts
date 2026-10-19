@@ -142,6 +142,32 @@ export const relationColumns = (relation: unknown, side: 'source' | 'target'): C
 };
 
 /**
+ * drizzle-orm's "no filter" sentinel. rc.5 snapshots export it as `EmptyFilter` and use it as
+ * the default `relation.where`; rc.4 has no such export and leaves `where` undefined. It is a
+ * registered symbol, so it can be compared against without importing anything.
+ */
+const EMPTY_FILTER = Symbol.for('drizzle:EmptyFilter');
+
+/**
+ * The relation's own declared `where` filter, or `undefined` when it has none. rc.4 leaves
+ * `where` undefined in that case; rc.5 snapshots set it to the `EmptyFilter` sentinel, which is
+ * truthy and must not be read as a filter.
+ */
+export const relationOwnWhere = (relation: unknown): Record<string, unknown> | undefined => {
+  const where = (relation as any)?.where;
+  return where == null || where === EMPTY_FILTER ? undefined : where;
+};
+
+/**
+ * Whether the relation's `where` was inherited from its reverse relation, and so is written
+ * against the parent table rather than the target. rc.4 calls this flag `isReversed`; rc.5
+ * snapshots renamed it to `isFilterReversed`. Both are set in the same place with the same
+ * meaning (true only for a relation declared without `from`/`to` and without its own `where`).
+ */
+export const isRelationFilterReversed = (relation: unknown): boolean =>
+  !!((relation as any)?.isFilterReversed ?? (relation as any)?.isReversed);
+
+/**
  * Warns, at build time, that a field was left out because the relation's join columns could
  * not be matched to its tables. Omitting it silently is how a drizzle-orm change in the shape
  * of relation columns (issue #179) went unnoticed. A relation that declares no join columns
