@@ -2,7 +2,7 @@
 // update's input type, the filters a write requires, and the write-count return type.
 
 import type { Column, Table } from 'drizzle-orm';
-import { type SQL, sql } from 'drizzle-orm';
+import { getColumns, type SQL, sql } from 'drizzle-orm';
 import type { GraphQLFieldConfigArgumentMap } from 'graphql';
 import { GraphQLBoolean, GraphQLInputObjectType, GraphQLNonNull } from 'graphql';
 import { capitalize } from '../../case-ops/index.ts';
@@ -13,22 +13,22 @@ import { remapUpdateInput } from '../field-updates.ts';
 // stay one-directional. The implementation is injected by the dialect builder.
 import type { NestedWriteRuntime } from '../nested-writes.ts';
 import type { CreatedResolver, Filters, ProcessedTableSelectArgs, TableNamedRelations } from '../types.ts';
-import { type DrizzleErrorContext, drizzleError, toGraphQLError, withErrorContext } from './errors.ts';
+import { drizzleError } from './errors.ts';
 import { withPrimaryKeyColumns } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import type { TypeNameMapper } from './naming.ts';
 import { resolveObjectTypeName } from './naming.ts';
-import type { DeletedMode, ScopeResolver } from './policies.ts';
-import { withScope } from './policies.ts';
+import type { DeletedMode, ResolverPolicies, ScopeResolver } from './policies.ts';
+import { stripContextValues, withScope } from './policies.ts';
 import type { RelationFilterBase, RelationFilterContext } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractRelationsParams } from './relation-params.ts';
 import { eagerLoadMutationRelations } from './select-runtime.ts';
 import { extractSelectedColumnsFromTreeSQLFormat } from './selected-columns.ts';
 import type { MutationTxCtx } from './transactions.ts';
-import { runMutation } from './transactions.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
 import type { TypeNameResolver } from './type-names.ts';
+import { writeResolver } from './write-scaffold.ts';
 
 /**
  * The `hard` argument on the delete mutations of a soft-deleting table that opted into
@@ -265,11 +265,23 @@ export const assertSingleMatch = async (executor: any, table: Table, filters: SQ
  * The plural `update` and `delete` always `RETURNING *`, which is the wrong shape for
  * "archive everything older than a year": the caller pays to ship rows it does not want, and
  * on a large match that cost is the whole mutation. These return `Int!` instead — how many
- * rows the write touched, as the driver reported it, with no RETURNING clause at all.
+ * rows the write touched.
  *
- * Dialect-independent: drizzle's update/delete builders take the same calls everywhere, and
- * the drivers' disagreement about how to spell the row count is handled by
- * {@link rowsAffected}.
+ * Leaving the payload off changes nothing else: the write obeys every rule of the plural
+ * mutation it mirrors, through the same {@link writeResolver} scaffolding.
+ *
+ * - `scope` (and the soft-delete marker) is ANDed into the `where`, so only rows the plural
+ *   write could reach are counted and written.
+ * - On a soft-deleting table the delete is the marking `UPDATE`, not a `DELETE`, and rows that
+ *   are already marked are not matched; the update skips marked rows too. `hard: true` exists
+ *   exactly where the plural delete takes it.
+ * - Context-derived columns are stripped from the update's `set`, as the plural update does.
+ * - `onWrite` hooks run `before` and `after`, inside a transaction. The `after` hook is handed
+ *   rows, so a table with one pays for a `RETURNING` — of the columns the hook names in
+ *   `columns`, or of the primary key when it names none (the whole row on a table without a
+ *   key) — and the count is the number of rows returned. Every other write, and every write on
+ *   MySQL (no `RETURNING`; its hooks see `rows: []` as on every MySQL mutation), skips the
+ *   `RETURNING` and reads the count off the driver's result via {@link rowsAffected}.
  */
 export const generateWriteCount = ({
   db,
@@ -283,6 +295,9 @@ export const generateWriteCount = ({
   filterCtx,
   txCtx,
   nested,
+  policies,
+  pkNames = [],
+  returnsRows,
 }: {
   db: any;
   tableName: string;
@@ -296,65 +311,105 @@ export const generateWriteCount = ({
   filterCtx?: RelationFilterBase;
   txCtx?: MutationTxCtx;
   nested?: NestedWriteRuntime;
+  policies?: ResolverPolicies;
+  /** The table's primary-key property names: what an `after` hook that named no columns gets. */
+  pkNames?: readonly string[];
+  /** Whether the dialect has `RETURNING` (false on MySQL), which an `after` hook's rows need. */
+  returnsRows: boolean;
 }): CreatedResolver => {
+  const softDelete = kind === 'delete' ? policies?.softDelete?.(tableName) : undefined;
+  // The plural delete's rule: only a soft-deleting table that opted in can purge.
+  const canHardDelete = softDelete?.hardDelete === true;
   const queryArgs = {
     ...(setArgs ? { set: { type: new GraphQLNonNull(setArgs) } } : {}),
     where: {
       type: requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
     },
+    ...(canHardDelete ? { hard: hardDeleteArg } : {}),
   } as GraphQLFieldConfigArgumentMap;
 
-  const errorCtx: DrizzleErrorContext = { table: tableName, operation: kind, field: fieldName };
+  // Only an `after` hook is handed rows, so only a table with one gives up the returnless write.
+  const readsRows = returnsRows && !!policies?.onWrite?.(tableName, kind)?.after;
+  // What the `after` hook's rows carry when it named no `columns`: the key, which identifies
+  // each written row without shipping the rest of it — or the whole row when there is no key.
+  const allColumns = getColumns(table) as Record<string, Column>;
+  const keyColumns: Record<string, Column> = pkNames.length
+    ? Object.fromEntries(pkNames.map((name) => [name, allColumns[name]!]))
+    : allColumns;
 
-  return {
-    name: fieldName,
-    resolver: async (_source, args: { where?: any; set?: Record<string, any> }, context, info) => {
-      try {
-        return await runMutation(db, context, info, txCtx, async (executor) => {
-          const { where, set } = args;
-
-          // No scope here: this mutation is only generated for tables without one.
-          const filters = scopedWhere({
-            scope: undefined,
-            tableName,
-            table,
-            where,
-            relationCtx: relationFilterCtx(filterCtx, tableName),
-            required: requireWhere,
-          });
-
-          let query: any;
-          if (kind === 'delete') {
-            query = executor.delete(table);
-          } else {
-            // Nested writes need the parent rows they attach to, which is exactly what this
-            // mutation exists not to fetch — so they are refused rather than silently dropped.
-            const entry = nested?.enabled(tableName) ? nested.split(tableName, set!) : undefined;
-            if (entry && nested!.hasOps(entry.ops)) {
-              throw drizzleError(
-                'This mutation does not support nested writes — use the one that returns the rows instead.',
-                { code: 'DRIZZLE_NESTED_WRITES_UNSUPPORTED' },
-              );
-            }
-            const values = remapUpdateInput(entry ? entry.columns : set!, table, tableName);
-            if (!Object.keys(values).length) {
-              throw drizzleError('Unable to update with no values specified!', {
-                code: 'DRIZZLE_NO_VALUES',
-              });
-            }
-            query = executor.update(table).set(values);
-          }
-
-          if (filters) {
-            query = query.where(filters);
-          }
-
-          return rowsAffected(await query);
-        });
-      } catch (e) {
-        throw withErrorContext(toGraphQLError(e), errorCtx);
-      }
-    },
+  return writeResolver<{ where?: Filters<Table>; set?: Record<string, any>; hard?: boolean }>({
+    db,
+    tableName,
+    operation: kind,
+    single: false,
+    fieldName,
+    txCtx,
+    policies,
     args: queryArgs,
-  };
+    run: async ({ executor, args, context, before, after, returning }) => {
+      const { where, set } = args;
+      // `canHardDelete` decides whether the argument exists; this decides what it does, so a
+      // stitched-in `hard: true` on a table that never opted in stays a soft delete.
+      const hard = canHardDelete && args.hard === true;
+      const scope = policies?.scope?.(context);
+      await before();
+
+      let query: any;
+      if (kind === 'delete') {
+        query =
+          softDelete && !hard
+            ? executor.update(table).set({ [softDelete.columnName]: softDelete.writeDeleted() })
+            : executor.delete(table);
+      } else {
+        // Nested writes need the parent rows they attach to, which is exactly what this
+        // mutation exists not to fetch — so they are refused rather than silently dropped.
+        const entry = nested?.enabled(tableName) ? nested.split(tableName, set!) : undefined;
+        if (entry && nested!.hasOps(entry.ops)) {
+          throw drizzleError(
+            'This mutation does not support nested writes — use the one that returns the rows instead.',
+            { code: 'DRIZZLE_NESTED_WRITES_UNSUPPORTED' },
+          );
+        }
+        // A context-derived column is the server's to set, so an update never reassigns one.
+        const values = stripContextValues(
+          remapUpdateInput(entry ? entry.columns : set!, table, tableName),
+          policies?.contextValues?.(tableName),
+        );
+        if (!Object.keys(values).length) {
+          throw drizzleError('Unable to update with no values specified!', {
+            code: 'DRIZZLE_NO_VALUES',
+          });
+        }
+        query = executor.update(table).set(values);
+      }
+
+      // The scope — and on a soft-deleting table the not-yet-marked predicate — is ANDed on
+      // last, so a caller's `where` can only narrow what the write reaches.
+      const filters = scopedWhere({
+        scope,
+        tableName,
+        table,
+        where,
+        relationCtx: relationFilterCtx(filterCtx, tableName),
+        required: requireWhere,
+        // A hard delete reads at INCLUDE, so it reaches the rows that are already marked.
+        deleted: hard ? 'INCLUDE' : undefined,
+      });
+      if (filters) {
+        query = query.where(filters);
+      }
+
+      if (!readsRows) {
+        const result = await query;
+        await after();
+        return rowsAffected(result);
+      }
+
+      // The client selected nothing, so the rows hold only what the hook asked for.
+      const named = returning({});
+      const rows = (await query.returning(Object.keys(named).length ? named : keyColumns)) as any[];
+      await after(rows);
+      return rows.length;
+    },
+  });
 };

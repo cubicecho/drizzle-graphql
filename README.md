@@ -1651,9 +1651,27 @@ mutation {
 -   Both return `Int!` — the number of rows the write affected — and add no new output type
     to the schema
 -   Arguments are exactly the plural mutation's, so a client swaps one field name for the
-    other; `features.requireWhere` applies to them the same way
+    other; `features.requireWhere` applies to them the same way, and on a soft-deleting
+    table that opted into `hardDelete` the delete takes `hard` too
 -   They follow the feature switch of the write they mirror: `updateCount` needs
     `features.update`, `deleteCount` needs `features.delete`
+-   They obey the same row policies as the plural write — only the answer differs:
+    -   [`scope`](#row-scoping-and-multi-tenancy) is ANDed into the `where`, so they reach,
+        and count, only in-scope rows
+    -   on a [soft-deleting](#soft-delete) table `delete<Table>Count` marks the rows rather
+        than removing them, and neither mutation reaches a row that is already marked
+    -   a [`contextValues`](#row-scoping-and-multi-tenancy) column is never reassigned by the
+        update
+    -   [`onWrite`](#write-hooks) hooks run `before` and `after`, in a transaction, with the
+        plural write's payload (`operation: 'update'` / `'delete'`, `single: false`). An
+        `after` hook is handed rows, so a table with one gives up the returnless write: the
+        statement `RETURNING`s the hook's `columns`, or just the primary key when it names
+        none (every column, on a table without a key), and the count is the number of rows
+        returned. Without an `after` hook there is no `RETURNING` at all. On MySQL the hook
+        gets `rows: []`, as it does on every MySQL mutation
+-   Their [`extensions.drizzle`](#identifying-generated-fields) is the plural write's
+    (`operation: 'update'` / `'delete'`, `targetArg: 'where'`) plus `count: true`, so a
+    wrapper that gates writes on `operation` covers them too
 -   **MySQL** gets them too, and they are arguably most useful there: MySQL's other mutations
     return only `MutationReturn { isSuccess }`, so a row count is strictly more information
 -   `update<Table>Count` **rejects** nested writes with a `GraphQLError` — a nested write
@@ -2150,6 +2168,9 @@ onWrite: {
     works.
 -   The columns are added to `RETURNING` for every write the hook is attached to: insert, upsert,
     update, `updateMany`, delete and restore. A delete's rows are the rows it removed.
+-   The [count mutations](#row-counts-instead-of-rows) fire the hooks as `update` / `delete`.
+    The client selects nothing there, so an `after` hook's rows hold exactly its `columns`, or
+    just the primary key when it names none — the one `RETURNING` those mutations pay for.
 -   **The client's response is unchanged.** Columns the hook asked for but the client did not
     select are taken back off before the rows are mapped, so they reach neither the response nor
     a custom resolver calling the generated one. The hook gets its own copy of the rows.
@@ -2405,7 +2426,9 @@ the check to make before treating a field as one of ours. Relation fields (and
 naming the relation's **target** — so `Users.posts` reads as
 `{ table: 'Posts', parentTable: 'Users', relation: 'posts' }`. Object types carry
 `{ table, kind: 'type', primaryKey }`, which is what a stitching layer needs to map a type
-back to its source.
+back to its source. The [count mutations](#row-counts-instead-of-rows) carry their plural
+write's `operation` plus `count: true` — they write the same rows but resolve to an `Int!`, so
+a wrapper that reads the result as rows should check `count` first.
 
 Because the row identity of a mutation lives in a different argument for every operation,
 `identifyRows` reads whichever one applies and hands back primary-key values:

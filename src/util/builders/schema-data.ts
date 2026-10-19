@@ -268,7 +268,8 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
           })
         : undefined;
       // The count variants are the plural write with its payload left off, so each follows the
-      // same feature switch as the write it mirrors.
+      // same feature switch — and the same scope, soft-delete, context-value and hook rules —
+      // as the write it mirrors.
       const updateCountGenerated =
         tableFeatures.update && tableFeatures.countMutations
           ? generateWriteCount({
@@ -283,6 +284,9 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
               filterCtx,
               txCtx: mutationTxCtx,
               nested: nestedRuntime,
+              policies,
+              pkNames: primaryKeyPropNames(schema[tableName] as Table),
+              returnsRows: true,
             })
           : undefined;
       const deleteCountGenerated =
@@ -297,13 +301,16 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
               requireWhere: tableFeatures.requireWhere,
               filterCtx,
               txCtx: mutationTxCtx,
+              policies,
+              pkNames: primaryKeyPropNames(schema[tableName] as Table),
+              returnsRows: true,
             })
           : undefined;
       // Each mutation is paired with the type it returns and the identity it publishes on
       // `extensions.drizzle`, so a consumer can tell an insert from an upsert without unpicking
       // the configured prefixes — and, for a delete, whether the field can purge rather than
-      // mark. The count pair is the one entry with a description and no meta: it answers with a
-      // number rather than rows, so there is no row operation for a consumer to dispatch on.
+      // mark. The count pair publishes its plural sibling's identity plus `count: true`, so a
+      // wrapper gating on `operation` sees it as the write it is.
       const hardDeleteMeta = softDeleteInfo?.hardDelete ? ({ hardDelete: true } as const) : {};
       const generatedMutations: MutationRegistration[] = [
         {
@@ -371,14 +378,16 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
         {
           generated: updateCountGenerated,
           type: new GraphQLNonNull(GraphQLInt),
+          meta: { operation: 'update', single: false, targetArg: 'where', count: true },
           description:
             'How many rows the update touched. The rows themselves are not read back, which is the point of this mutation.',
         },
         {
           generated: deleteCountGenerated,
           type: new GraphQLNonNull(GraphQLInt),
+          meta: { operation: 'delete', single: false, targetArg: 'where', count: true, ...hardDeleteMeta },
           description:
-            'How many rows the delete removed. The rows themselves are not read back, which is the point of this mutation.',
+            'How many rows the delete removed — or, on a soft-deleting table, marked deleted. The rows themselves are not read back, which is the point of this mutation.',
         },
       ];
 

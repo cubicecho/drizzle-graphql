@@ -674,7 +674,9 @@ export const generateSchemaData = <
         )
       : undefined;
     // The count variants are the plural write with its payload left off, so each follows the
-    // same feature switch as the write it mirrors.
+    // same feature switch — and the same scope, soft-delete, context-value and hook rules —
+    // as the write it mirrors. No RETURNING here, so an `after` hook sees `rows: []`, exactly
+    // as it does on the plural MySQL write.
     const updateCountGenerated =
       tableFeatures.update && tableFeatures.countMutations
         ? generateWriteCount({
@@ -688,6 +690,8 @@ export const generateSchemaData = <
             requireWhere: tableFeatures.requireWhere,
             filterCtx,
             txCtx: mutationTxCtx,
+            policies,
+            returnsRows: false,
           })
         : undefined;
     const deleteCountGenerated =
@@ -702,13 +706,15 @@ export const generateSchemaData = <
             requireWhere: tableFeatures.requireWhere,
             filterCtx,
             txCtx: mutationTxCtx,
+            policies,
+            returnsRows: false,
           })
         : undefined;
     // Each mutation is paired with the identity it publishes on `extensions.drizzle`, so a
     // consumer can tell an insert from an upsert without unpicking the configured prefixes —
     // and, for a delete, whether the field can purge rather than mark. Every row-touching
     // mutation shares one return type here, since MySQL answers with `isSuccess` rather than
-    // with rows; the count pair is the exception, and carries a description instead of a meta.
+    // with rows; the count pair is the exception, returning `Int!` and marked `count: true`.
     const hardDeleteMeta = softDeleteInfo?.hardDelete ? ({ hardDelete: true } as const) : {};
     const withMeta = (generated: CreatedResolver | undefined, meta: DrizzleMutationMeta): MutationRegistration => ({
       generated,
@@ -730,14 +736,16 @@ export const generateSchemaData = <
       {
         generated: updateCountGenerated,
         type: new GraphQLNonNull(GraphQLInt),
+        meta: { operation: 'update', single: false, targetArg: 'where', count: true },
         description:
           'How many rows the update touched. The rows themselves are not read back, which is the point of this mutation.',
       },
       {
         generated: deleteCountGenerated,
         type: new GraphQLNonNull(GraphQLInt),
+        meta: { operation: 'delete', single: false, targetArg: 'where', count: true, ...hardDeleteMeta },
         description:
-          'How many rows the delete removed. The rows themselves are not read back, which is the point of this mutation.',
+          'How many rows the delete removed — or, on a soft-deleting table, marked deleted. The rows themselves are not read back, which is the point of this mutation.',
       },
     ];
 

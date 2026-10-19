@@ -210,3 +210,44 @@ describe.sequential('SQLite soft delete', () => {
     expect(theirsDefault.data?.['items']).toEqual([]);
   });
 });
+
+describe.sequential('SQLite soft delete: count mutations', () => {
+  const counted: Partial<BuildSchemaConfig> = { ...softDelete, features: { countMutations: true } };
+  const itemRows = async () => await db.select().from(Items).orderBy(Items.id);
+
+  it('deleteCount marks rows rather than removing them, and skips rows already marked', async () => {
+    const gqlSchema = buildWith(counted);
+    const res = await run(gqlSchema, `mutation { deleteItemsCount }`);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data).toEqual({ deleteItemsCount: 2 });
+    const rows = await itemRows();
+    expect(rows).toHaveLength(3);
+    expect(rows.every((row: any) => row.deletedAt !== null)).toBe(true);
+    // The row that was already marked keeps its original stamp.
+    expect(rows[2].deletedAt).toEqual(new Date('2020-01-01T00:00:00Z'));
+  });
+
+  it('updateCount skips marked rows', async () => {
+    const gqlSchema = buildWith(counted);
+    const res = await run(gqlSchema, `mutation { updateItemsCount(set: { name: "x" }) }`);
+
+    expect(res.errors).toBeUndefined();
+    expect(res.data).toEqual({ updateItemsCount: 2 });
+    expect((await itemRows()).map((row: any) => row.name)).toEqual(['x', 'x', 'G1']);
+  });
+
+  it('composes with a scope', async () => {
+    const gqlSchema = buildWith({
+      ...counted,
+      scope: { Items: (ctx: any, table: any) => eq(table.orgId, ctx.orgId) },
+    });
+
+    // Org 2 owns only the marked row, so there is nothing left for it to delete.
+    const theirs = await run(gqlSchema, `mutation { deleteItemsCount }`, { orgId: 2 });
+    expect(theirs.data).toEqual({ deleteItemsCount: 0 });
+    const mine = await run(gqlSchema, `mutation { deleteItemsCount(where: { id: { eq: 1 } }) }`, { orgId: 1 });
+    expect(mine.data).toEqual({ deleteItemsCount: 1 });
+    expect((await itemRows()).map((row: any) => row.deletedAt !== null)).toEqual([true, false, true]);
+  });
+});

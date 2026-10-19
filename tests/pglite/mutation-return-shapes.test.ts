@@ -4,7 +4,7 @@ import { integer, pgTable, text } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
 import { type GraphQLObjectType, type GraphQLSchema, graphql } from 'graphql';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { buildSchema, type SchemaFeatures } from '@/index';
+import { buildSchema, drizzleExtension, type SchemaFeatures } from '@/index';
 
 const Items = pgTable('items', {
   id: integer('id').primaryKey(),
@@ -133,6 +133,27 @@ describe('countMutations: schema shape', () => {
   it('does not add an output type — Int is already in the schema', () => {
     expect((gqlSchema.getType('Items') as GraphQLObjectType).name).toBe('Items');
     expect(gqlSchema.getType('ItemsCount')).toBeUndefined();
+  });
+
+  it("publishes the plural write's identity, marked as a count", () => {
+    const fields = mutationFields(gqlSchema);
+
+    expect(drizzleExtension(fields['updateItemsCount'])).toEqual({
+      table: 'Items',
+      kind: 'mutation',
+      operation: 'update',
+      single: false,
+      targetArg: 'where',
+      primaryKey: ['id'],
+      count: true,
+    });
+    expect(drizzleExtension(fields['deleteItemsCount'])).toMatchObject({
+      operation: 'delete',
+      single: false,
+      count: true,
+    });
+    // The rows-returning sibling is unchanged.
+    expect(drizzleExtension(fields['deleteItems'])).not.toHaveProperty('count');
   });
 });
 

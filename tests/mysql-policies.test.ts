@@ -468,6 +468,61 @@ describe.sequential('MySQL onWrite', () => {
   });
 });
 
+// The count mutations are the plural write with a number for an answer, so every policy above
+// has to hold for them too — and here, unlike `{ isSuccess }`, the answer can be checked.
+describe.sequential('MySQL count mutations', () => {
+  const counted = (config: Partial<BuildSchemaConfig>): GraphQLSchema =>
+    buildWith({ ...config, features: { countMutations: true } });
+
+  it('confines both to the scope, and counts only in-scope rows', async () => {
+    const gqlSchema = counted({ scope: { Items: (ctx: any, table: any) => eq(table.orgId, ctx.orgId) } });
+    const updated = await run(gqlSchema, `mutation { updateItemsCount(set: { name: "MINE" }) }`, { orgId: 1 });
+    const deleted = await run(gqlSchema, `mutation { deleteItemsCount(where: { id: { inArray: [2, 3] } }) }`, {
+      orgId: 1,
+    });
+
+    expect(updated.data).toEqual({ updateItemsCount: 2 });
+    expect(deleted.data).toEqual({ deleteItemsCount: 1 });
+    expect((await itemsInDb()).map((row) => `${row.id}:${row.name}`)).toEqual(['1:MINE', '3:G1']);
+  });
+
+  it('marks rather than removes on a soft-deleting table, skipping rows already marked', async () => {
+    const gqlSchema = counted(softDelete);
+    const updated = await run(gqlSchema, `mutation { updateItemsCount(set: { name: "x" }) }`);
+    const deleted = await run(gqlSchema, `mutation { deleteItemsCount }`);
+
+    expect(updated.data).toEqual({ updateItemsCount: 2 });
+    expect(deleted.data).toEqual({ deleteItemsCount: 2 });
+    const rows = await itemsInDb();
+    expect(rows.map((row) => `${row.id}:${row.name}:${row.deletedAt !== null}`)).toEqual([
+      '1:x:true',
+      '2:x:true',
+      '3:G1:true',
+    ]);
+  });
+
+  it('runs the hooks, handing after an empty row list, and rolls back when one throws', async () => {
+    const hooked = counted({ onWrite: { Items: { before: record, after: record } } });
+    const res = await run(hooked, `mutation { deleteItemsCount(where: { id: { eq: 1 } }) }`);
+    expect(res.data).toEqual({ deleteItemsCount: 1 });
+    expect((await auditRows()).map((row) => `${row.operation}:${row.position}:${row.rowCount}`)).toEqual([
+      'delete:before:0',
+      'delete:after:0',
+    ]);
+
+    const failing = counted({
+      onWrite: {
+        Items: async () => {
+          throw new Error('audit failed');
+        },
+      },
+    });
+    const failed = await run(failing, `mutation { updateItemsCount(set: { name: "z" }) }`);
+    expect(failed.errors?.[0]?.message).toContain('audit failed');
+    expect((await itemsInDb()).map((row) => row.name)).toEqual(['A2', 'G1']);
+  });
+});
+
 describe.sequential('MySQL limits', () => {
   it('rejects a limit above the maximum, with a code to match on', async () => {
     const gqlSchema = buildWith({ limits: { tables: { Items: { defaultLimit: 1, maxLimit: 2 } } } });

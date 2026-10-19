@@ -327,3 +327,71 @@ describe.sequential('SQLite onWrite columns', () => {
     );
   });
 });
+
+describe.sequential('SQLite onWrite: count mutations', () => {
+  const counted: Partial<BuildSchemaConfig> = { features: { countMutations: true } };
+
+  it('runs both positions around both count mutations', async () => {
+    const seen: WriteHookPayload[] = [];
+    const hook = async (payload: WriteHookPayload) => {
+      seen.push(payload);
+      await record(payload);
+    };
+    const gqlSchema = buildWith({ ...counted, onWrite: { Items: { before: hook, after: hook } } });
+
+    const updated = await run(gqlSchema, `mutation { updateItemsCount(set: { name: "x" }, where: { id: { eq: 1 } }) }`);
+    const deleted = await run(gqlSchema, `mutation { deleteItemsCount(where: { id: { eq: 2 } }) }`);
+
+    expect(updated.data).toEqual({ updateItemsCount: 1 });
+    expect(deleted.data).toEqual({ deleteItemsCount: 1 });
+    expect(seen.map((p) => `${p.operation}:${p.position}:${p.single}`)).toEqual([
+      'update:before:false',
+      'update:after:false',
+      'delete:before:false',
+      'delete:after:false',
+    ]);
+    // No columns named: the after hook gets each written row's key.
+    expect(seen[1]!.rows).toEqual([{ id: 1 }]);
+    expect(seen[3]!.rows).toEqual([{ id: 2 }]);
+    expect((await auditRows()).map((row: any) => `${row.operation}:${row.position}:${row.detail}`)).toEqual([
+      'update:before:',
+      'update:after:1',
+      'delete:before:',
+      'delete:after:2',
+    ]);
+  });
+
+  it('hands the after hook the columns it names', async () => {
+    const seen: any[][] = [];
+    const gqlSchema = buildWith({
+      ...counted,
+      onWrite: { Items: { after: (payload) => void seen.push(payload.rows), columns: ['id', 'orgId'] } },
+    });
+
+    const res = await run(gqlSchema, `mutation { deleteItemsCount }`);
+
+    expect(res.data).toEqual({ deleteItemsCount: 2 });
+    expect([...seen[0]!].sort((a, b) => a.id - b.id)).toEqual([
+      { id: 1, orgId: 1 },
+      { id: 2, orgId: 1 },
+    ]);
+  });
+
+  it('throwing rolls the count mutation back', async () => {
+    const gqlSchema = buildWith({
+      ...counted,
+      onWrite: {
+        Items: async () => {
+          throw new Error('audit failed');
+        },
+      },
+    });
+
+    const updated = await run(gqlSchema, `mutation { updateItemsCount(set: { name: "z" }) }`);
+    const deleted = await run(gqlSchema, `mutation { deleteItemsCount }`);
+
+    expect(updated.errors?.[0]?.message).toContain('audit failed');
+    expect(deleted.errors?.[0]?.message).toContain('audit failed');
+    expect((await db.select().from(Items).orderBy(Items.id)).map((row: any) => row.name)).toEqual(['A1', 'A2']);
+  });
+});

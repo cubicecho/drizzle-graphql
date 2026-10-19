@@ -892,6 +892,17 @@ export type SchemaFeatures = {
    * for nothing. Each mutation is generated only when its plural counterpart is
    * (`features.update` / `features.delete`), and honours `features.requireWhere`.
    *
+   * Apart from the answer, they obey every rule the plural write does: the table's `scope`
+   * is ANDed into the `where`; on a `softDelete` table the delete marks rows instead of
+   * removing them (taking `hard` where the plural delete does) and neither mutation reaches
+   * an already-marked row; `contextValues` columns are never reassigned by the update; and
+   * `onWrite` hooks run `before` and `after`, in a transaction, with the plural payload
+   * (`single: false`). An `after` hook needs rows, so on a table with one the write adds a
+   * `RETURNING` of the hook's `columns` — or of the primary key if it names none (every column
+   * on a table without one) — and the count is the number of rows returned. On MySQL, which has
+   * no `RETURNING`, the hook gets `rows: []` as on every MySQL mutation. Their
+   * `extensions.drizzle` carries the plural write's `operation` plus `count: true`.
+   *
    * Off unless asked for, so an existing schema does not grow new mutations on upgrade.
    *
    * @default false

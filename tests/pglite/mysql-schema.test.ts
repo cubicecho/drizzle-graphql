@@ -7,7 +7,7 @@ import { sql } from 'drizzle-orm';
 import { MySqlDialect } from 'drizzle-orm/mysql-core';
 import { GraphQLNonNull, GraphQLObjectType } from 'graphql';
 import { describe, expect, it } from 'vitest';
-import { extractOrderBy } from '@/index';
+import { drizzleExtension, extractOrderBy } from '@/index';
 import { generateMySQL } from '@/util/builders';
 import * as schema from '../schema/mysql';
 
@@ -403,6 +403,23 @@ describe('MySQL count mutations', () => {
   it('take the same arguments as the writes they mirror', () => {
     expect(Object.keys(optInEntities.mutations['updateUsersCount'].args)).toEqual(['set', 'where']);
     expect(Object.keys(optInEntities.mutations['deleteUsersCount'].args)).toEqual(['where']);
+  });
+
+  it("publish their plural write's identity, marked as a count", () => {
+    expect(drizzleExtension(optInEntities.mutations['updateUsersCount'])).toEqual({
+      table: 'Users',
+      kind: 'mutation',
+      operation: 'update',
+      single: false,
+      targetArg: 'where',
+      primaryKey: ['id'],
+      count: true,
+    });
+    expect(drizzleExtension(optInEntities.mutations['deleteUsersCount'])).toMatchObject({
+      operation: 'delete',
+      single: false,
+      count: true,
+    });
   });
 });
 
