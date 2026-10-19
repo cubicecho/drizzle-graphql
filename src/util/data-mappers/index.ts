@@ -3,7 +3,33 @@ import { isJsonColumn } from '../builders/common/column-filters.ts';
 import { drizzleError } from '../builders/common/errors.ts';
 import type { TableNamedRelations } from '../builders/index.ts';
 import { dateToCalendarDate, isCalendarDate } from '../scalars/index.ts';
-import { getColumnScalarOverride, isDateOnlyColumn } from '../type-converter/index.ts';
+import {
+  getColumnScalarOverride,
+  isDateOnlyColumn,
+  isDateTimeColumn,
+  isMySqlDateTimeStringColumn,
+} from '../type-converter/index.ts';
+
+/**
+ * MySQL's own text form for a `timestamp` / `datetime`: `YYYY-MM-DD HH:MM:SS`, an optional
+ * fraction, and no offset. mysql2 returns it for a `'string'`-mode column, and it is what such a
+ * column expects on write.
+ */
+const MYSQL_DATETIME_TEXT = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2}(?:\.\d+)?)$/;
+
+/**
+ * MySQL datetime text, read as UTC, as the ISO 8601 instant the `DateTime` scalar carries.
+ * UTC because that is how drizzle's own `'date'`-mode codecs read the same text, so a column's
+ * two modes agree on the instant. Anything else (a zero date, a value already carrying an
+ * offset) is returned unchanged for the scalar to accept or reject.
+ */
+const mySqlDateTimeTextToIso = (value: string): string => {
+  const match = MYSQL_DATETIME_TEXT.exec(value);
+  return match ? `${match[1]}T${match[2]}Z` : value;
+};
+
+/** A JS `Date` as MySQL datetime text in UTC, with milliseconds — the form drizzle itself writes. */
+const dateToMySqlDateTimeText = (value: Date): string => value.toISOString().slice(0, -1).replace('T', ' ');
 
 export const remapToGraphQLCore = (
   key: string,
@@ -70,6 +96,13 @@ export const remapToGraphQLCore = (
 
   if (value instanceof Date) {
     return value.toISOString();
+  }
+
+  // A MySQL `timestamp` / `datetime` read in `'string'` mode arrives as MySQL's offset-less text,
+  // which the `DateTime` scalar does not accept; it names a UTC instant (see
+  // `mySqlDateTimeTextToIso`).
+  if (typeof value === 'string' && isMySqlDateTimeStringColumn(column)) {
+    return mySqlDateTimeTextToIso(value);
   }
 
   if (value instanceof Buffer) {
@@ -174,24 +207,22 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
   // We must check inclusion rather than equality to handle these cases.
   const dataType: string = (column as any).dataType ?? '';
 
-  // Timestamp/datetime columns (SQLite: "object date", MySQL timestamp/datetime: "object date").
-  // Only convert string→Date for timestamp/datetime columns, NOT pure DATE columns, which
-  // are handled below.
+  // Timestamp/datetime columns: Postgres and MySQL `timestamp`, MySQL `datetime` (either mode),
+  // and SQLite's integer timestamps. Pure DATE columns are handled below.
   const columnType: string = (column as any).columnType ?? '';
-  const isTimestampColumn =
-    columnType === 'SQLiteTimestamp' ||
-    columnType === 'SQLiteTimestampMs' ||
-    columnType === 'MySqlTimestamp' ||
-    columnType === 'MySqlDateTime' ||
-    columnType === 'PgTimestamp' ||
-    columnType === 'PgTimestampString';
-  if (isTimestampColumn) {
-    const formatted = new Date(value);
+  if (isDateTimeColumn(column) || columnType === 'SQLiteTimestamp' || columnType === 'SQLiteTimestampMs') {
+    const isMySql = columnType.startsWith('MySql');
+    // MySQL text with no offset is read as UTC, as on output — `new Date()` would read it in the
+    // server's local zone. The `DateTime` scalar never produces it; an `entities` caller might.
+    const formatted = new Date(isMySql && typeof value === 'string' ? mySqlDateTimeTextToIso(value) : value);
     if (Number.isNaN(formatted.getTime())) {
       throw drizzleError(`Field '${columnName}' is not a valid date!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
     }
 
-    return formatted;
+    // A `'string'`-mode MySQL column takes MySQL's own text, written in UTC. A `'date'`-mode
+    // column takes the `Date`; drizzle's `mapToDriverValue` formats it with `toISOString`, so it
+    // is written in UTC too rather than in mysql2's local-time formatting.
+    return isMySqlDateTimeStringColumn(column) ? dateToMySqlDateTimeText(formatted) : formatted;
   }
 
   // Date-only columns, either drizzle mode. The `Date` scalar has already checked the value is

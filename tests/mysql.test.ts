@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import Docker from 'dockerode';
-import { eq, inArray, sql } from 'drizzle-orm';
+import { buildRelations, eq, inArray, sql } from 'drizzle-orm';
+import { datetime, int, mysqlTable, timestamp } from 'drizzle-orm/mysql-core';
 import { drizzle, type MySql2Database } from 'drizzle-orm/mysql2';
 import getPort from 'get-port';
 import {
@@ -5510,5 +5511,103 @@ describe.sequential('date columns', () => {
       }
     }
     expect(await ctx.db.select().from(schema.Users).where(eq(schema.Users.id, 51))).toEqual([]);
+  });
+});
+
+describe.sequential('timestamp and datetime columns', () => {
+  // `timestamp` and `datetime`, in both drizzle modes, are the `DateTime` scalar. Worth running
+  // under a non-UTC TZ too: every column must store and read back the instant it was sent,
+  // whatever zone the Node process is in.
+  const Stamps = mysqlTable('stamps', {
+    id: int('id').primaryKey(),
+    ts: timestamp('ts', { fsp: 3 }),
+    tsString: timestamp('ts_string', { mode: 'string', fsp: 3 }),
+    dt: datetime('dt', { fsp: 3 }),
+    dtString: datetime('dt_string', { mode: 'string', fsp: 3 }),
+  });
+  const COLUMNS = ['ts', 'tsString', 'dt', 'dtString'];
+  const ALL = COLUMNS.join(' ');
+  let stampsSchema: GraphQLSchema;
+  // Through JSON, as a client sees it: graphql-scalars' `DateTime` serializes to a JS `Date`.
+  const run = async (source: string) =>
+    JSON.parse(JSON.stringify(await graphql({ schema: stampsSchema, source, contextValue: {} })));
+  const allSet = (instant: string) => COLUMNS.map((column) => `${column}: "${instant}"`).join(', ');
+  const every = (value: string) => Object.fromEntries(COLUMNS.map((column) => [column, value]));
+
+  beforeAll(async () => {
+    await ctx.client.query('DROP TABLE IF EXISTS stamps');
+    await ctx.client.query(
+      'CREATE TABLE stamps (id int PRIMARY KEY, ts timestamp(3) NULL, ts_string timestamp(3) NULL, dt datetime(3), dt_string datetime(3))',
+    );
+    const db = drizzle({ client: ctx.client, relations: buildRelations({ Stamps }, {}) });
+    stampsSchema = buildSchema(db).schema;
+  });
+
+  afterAll(async () => {
+    await ctx.client.query('DROP TABLE IF EXISTS stamps');
+  });
+
+  it('round-trips an instant through create, update, filters and aggregates in both modes', async () => {
+    const created = await run(`mutation {
+      a: createStampsSingle(values: { id: 1, ${allSet('2026-09-15T10:00:00.000Z')} }) { isSuccess }
+      b: createStampsSingle(values: { id: 2, ${allSet('2026-09-15T05:00:00.250-05:00')} }) { isSuccess }
+    }`);
+    expect(created.errors).toBeUndefined();
+
+    const read = await run(`{ stamps(orderBy: { id: { direction: asc, priority: 1 } }) { id ${ALL} } }`);
+    expect(read.errors).toBeUndefined();
+    expect(read.data?.['stamps']).toEqual([
+      { id: 1, ...every('2026-09-15T10:00:00.000Z') },
+      { id: 2, ...every('2026-09-15T10:00:00.250Z') },
+    ]);
+
+    // What MySQL itself holds: the UTC wall clock, not the Node process's local one.
+    const [stored] = (await ctx.client.query(
+      'SELECT CAST(ts AS CHAR) ts, CAST(ts_string AS CHAR) tsString, CAST(dt AS CHAR) dt, CAST(dt_string AS CHAR) dtString FROM stamps WHERE id = 1',
+    )) as any[];
+    expect(stored[0]).toEqual(every('2026-09-15 10:00:00.000'));
+
+    const updated = await run(`mutation {
+      updateStamps(where: { id: { eq: 2 } }, set: { ${allSet('2026-10-01T23:30:00.000Z')} }) { isSuccess }
+    }`);
+    expect(updated.errors).toBeUndefined();
+
+    for (const column of COLUMNS) {
+      const eqRes = await run(`{ stamps(where: { ${column}: { eq: "2026-09-15T10:00:00.000Z" } }) { id } }`);
+      expect(eqRes.errors).toBeUndefined();
+      expect(eqRes.data?.['stamps']).toEqual([{ id: 1 }]);
+
+      const range = await run(`{ stamps(where: { ${column}: { gt: "2026-09-30T00:00:00Z" } }) { id } }`);
+      expect(range.errors).toBeUndefined();
+      expect(range.data?.['stamps']).toEqual([{ id: 2 }]);
+    }
+
+    const agg = await run(`{ stampsAggregate { min { ${ALL} } max { ${ALL} } } }`);
+    expect(agg.errors).toBeUndefined();
+    expect(agg.data?.['stampsAggregate']).toEqual({
+      min: every('2026-09-15T10:00:00.000Z'),
+      max: every('2026-10-01T23:30:00.000Z'),
+    });
+
+    const grouped = await run(`{ stampsGroupBy(groupBy: [${COLUMNS.join(', ')}]) { group { ${ALL} } count } }`);
+    expect(grouped.errors).toBeUndefined();
+    const groups = (grouped.data!['stampsGroupBy'] as any[]).map((g) => g.group);
+    expect(groups.map((group) => group.tsString).sort()).toEqual([
+      '2026-09-15T10:00:00.000Z',
+      '2026-10-01T23:30:00.000Z',
+    ]);
+    for (const group of groups) {
+      expect(new Set(Object.values(group)).size).toBe(1);
+    }
+  });
+
+  it('rejects a value that is not a date-time', async () => {
+    for (const column of COLUMNS) {
+      const res = await run(
+        `mutation { createStampsSingle(values: { id: 3, ${column}: "2026-09-15" }) { isSuccess } }`,
+      );
+      expect(res.errors).toBeDefined();
+    }
+    expect((await run('{ stamps(where: { id: { eq: 3 } }) { id } }')).data?.['stamps']).toEqual([]);
   });
 });

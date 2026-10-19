@@ -23,7 +23,7 @@ import {
   GraphQLJSON,
   GraphQLUUID,
 } from '../../scalars/index.ts';
-import { drizzleColumnToGraphQLType, getColumnScalarOverride } from '../../type-converter/index.ts';
+import { drizzleColumnToGraphQLType, getColumnScalarOverride, isDateTimeColumn } from '../../type-converter/index.ts';
 import type { ConvertedColumn, NullableConvertedColumnType } from '../../type-converter/types.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
 import { sharedType, type TypeNameResolver } from './type-names.ts';
@@ -140,9 +140,8 @@ const resolveGenericFilterDescriptor = (
   if (columnGraphQLType.type === GraphQLDate) {
     return { name: 'Date', kind: 'scalar' };
   }
-  // Timestamp columns (check Drizzle internal columnType string)
-  const ct: string = (column as any).columnType ?? '';
-  if (ct === 'PgTimestamp' || ct === 'PgTimestampString') {
+  // Timestamp / datetime columns, in either drizzle mode.
+  if (isDateTimeColumn(column)) {
     return { name: 'DateTime', kind: 'scalar' };
   }
   // Numeric scalars — distinct names so an int/float column never shares (and never
