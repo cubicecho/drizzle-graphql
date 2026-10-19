@@ -1,3 +1,9 @@
+## [13.1.1](https://github.com/cubicecho/drizzle-graphql/compare/v13.1.0...v13.1.1) (2026-10-19)
+
+### Bug Fixes
+
+* apply scope, softDelete, contextValues and onWrite to count mutations ([cfbb225](https://github.com/cubicecho/drizzle-graphql/commit/cfbb2251da2ceeb5b2e922a9ca6284036cf178af)), closes [#182](https://github.com/cubicecho/drizzle-graphql/issues/182)
+
 ## [13.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v13.0.0...v13.1.0) (2026-10-18)
 
 ### Features
