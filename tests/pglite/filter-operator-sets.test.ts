@@ -109,9 +109,10 @@ describe.sequential('operator sets follow the column type', () => {
     expect(fields).toEqual(expect.arrayContaining(['eq', 'ne', ...ORDERING_OPS, 'inArray', 'isNull', 'isNotNull']));
   });
 
-  it('treats a date column the same as a timestamp', () => {
+  it('gives a date column its own DateFilter with the timestamp operator set', () => {
     const { name, fields } = filterFieldsFor('onDay');
-    expect(name).toBe('DateTimeFilter');
+    expect(name).toBe('DateFilter');
+    expect(fields.sort()).toEqual(filterFieldsFor('firedAt').fields.sort());
     for (const op of PATTERN_OPS) {
       expect(fields).not.toContain(op);
     }

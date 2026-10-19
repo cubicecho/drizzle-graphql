@@ -1,5 +1,5 @@
 import { GraphQLScalarType, Kind } from 'graphql';
-import { GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQLUUID } from 'graphql-scalars';
+import { GraphQLDateTime, GraphQLJSON, GraphQLUUID } from 'graphql-scalars';
 import { type DrizzleErrorCode, drizzleError } from '../builders/common/errors.ts';
 
 // Both scalars below coerce the same way in both directions, so each helper is built once per
@@ -115,4 +115,96 @@ export const GraphQLDecimalString = new GraphQLScalarType<string, string>({
   },
 });
 
-export { GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQLUUID };
+// RFC 3339 `full-date`: four-digit year, two-digit month and day, nothing else — no time, no
+// offset. The shape alone admits `2026-13-45`, so `isCalendarDate` checks the ranges too.
+const fullDatePattern = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+const daysInMonth = (year: number, month: number): number => {
+  if (month === 2) {
+    const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+    return leap ? 29 : 28;
+  }
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+};
+
+/** Whether `value` is a `YYYY-MM-DD` string naming a day that exists on the calendar. */
+export const isCalendarDate = (value: string): boolean => {
+  const match = fullDatePattern.exec(value);
+  if (!match) {
+    return false;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth(year, month);
+};
+
+/**
+ * A JS `Date` as the calendar day it stands for. Read in UTC, because that is how drivers
+ * build one from a `date` column: `new Date('2026-09-15')` is UTC midnight, so the local
+ * getters would name the previous day anywhere west of Greenwich.
+ */
+export const dateToCalendarDate = (value: Date): string | undefined => {
+  if (Number.isNaN(value.getTime())) {
+    return undefined;
+  }
+  const year = value.getUTCFullYear();
+  if (year < 0 || year > 9999) {
+    return undefined;
+  }
+  const month = String(value.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(value.getUTCDate()).padStart(2, '0');
+  return `${String(year).padStart(4, '0')}-${month}-${day}`;
+};
+
+const calendarDate =
+  (code: DrizzleErrorCode, acceptDate: boolean) =>
+  (value: unknown): string => {
+    if (typeof value === 'string') {
+      if (!isCalendarDate(value)) {
+        throw drizzleError(`Date cannot represent "${value}": expected a calendar date as YYYY-MM-DD`, { code });
+      }
+      return value;
+    }
+
+    if (acceptDate && value instanceof Date) {
+      const formatted = dateToCalendarDate(value);
+      if (formatted === undefined) {
+        throw drizzleError('Date cannot represent an invalid or out-of-range Date', { code });
+      }
+      return formatted;
+    }
+
+    throw drizzleError(`Date cannot represent value: ${JSON.stringify(value)}: expected a YYYY-MM-DD string`, {
+      code,
+    });
+  };
+
+const parseCalendarDate = calendarDate(INVALID_INPUT, false);
+
+/**
+ * A calendar day — `date` columns, whichever `mode` drizzle reads them in. Always transported
+ * as an RFC 3339 `full-date` string (`YYYY-MM-DD`), in both directions: it has no time and no
+ * offset, so there is nothing for a client's timezone to shift. `graphql-scalars`' own
+ * `GraphQLDate` is deliberately not used: its `parseValue` returns a JS `Date`, so the same
+ * scalar would be a string on the way out and an instant on the way in.
+ *
+ * Input accepts only a `YYYY-MM-DD` string naming a real day (`2026-02-30` and datetime
+ * strings are rejected) and hands it on unchanged. Output also accepts a JS `Date`, read as
+ * the UTC day it encodes.
+ */
+export const GraphQLDate = new GraphQLScalarType<string, string>({
+  name: 'Date',
+  description: 'A calendar date with no time or offset, transported as an RFC 3339 full-date string (YYYY-MM-DD).',
+  specifiedByURL: 'https://datatracker.ietf.org/doc/html/rfc3339#section-5.6',
+  serialize: calendarDate(UNREPRESENTABLE, true),
+  parseValue: parseCalendarDate,
+  parseLiteral: (ast) => {
+    if (ast.kind !== Kind.STRING) {
+      throw drizzleError(`Date cannot represent a ${ast.kind}`, { code: INVALID_INPUT, nodes: ast });
+    }
+    return parseCalendarDate(ast.value);
+  },
+});
+
+export { GraphQLDateTime, GraphQLJSON, GraphQLUUID };

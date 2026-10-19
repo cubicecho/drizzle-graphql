@@ -301,7 +301,7 @@ describe.sequential('Query tests', async () => {
           email: 'userOne@notmail.com',
           bigint: '10',
           birthdayString: '2024-04-02',
-          birthdayDate: '2024-04-02T00:00:00.000Z',
+          birthdayDate: '2024-04-02',
           createdAt: '2024-04-02T06:44:42.000Z',
           role: 'admin',
           roleText: null,
@@ -355,7 +355,7 @@ describe.sequential('Query tests', async () => {
             email: 'userOne@notmail.com',
             bigint: '10',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:42.000Z',
             role: 'admin',
             roleText: null,
@@ -486,7 +486,7 @@ describe.sequential('Query tests', async () => {
           email: 'userOne@notmail.com',
           bigint: '10',
           birthdayString: '2024-04-02',
-          birthdayDate: '2024-04-02T00:00:00.000Z',
+          birthdayDate: '2024-04-02',
           createdAt: '2024-04-02T06:44:42.000Z',
           role: 'admin',
           roleText: null,
@@ -528,7 +528,7 @@ describe.sequential('Query tests', async () => {
             email: 'userOne@notmail.com',
             bigint: '10',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:42.000Z',
             role: 'admin',
             roleText: null,
@@ -598,7 +598,7 @@ describe.sequential('Query tests', async () => {
             email: 'userOne@notmail.com',
             bigint: '10',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:42.000Z',
             role: 'admin',
             roleText: null,
@@ -684,7 +684,7 @@ describe.sequential('Query tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -704,7 +704,7 @@ describe.sequential('Query tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -724,7 +724,7 @@ describe.sequential('Query tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -784,7 +784,7 @@ describe.sequential('Query tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -842,7 +842,7 @@ describe.sequential('Query tests', async () => {
           email: 'userOne@notmail.com',
           bigint: '10',
           birthdayString: '2024-04-02',
-          birthdayDate: '2024-04-02T00:00:00.000Z',
+          birthdayDate: '2024-04-02',
           createdAt: '2024-04-02T06:44:42.000Z',
           role: 'admin',
           roleText: null,
@@ -904,7 +904,7 @@ describe.sequential('Query tests', async () => {
             email: 'userOne@notmail.com',
             bigint: '10',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:42.000Z',
             role: 'admin',
             roleText: null,
@@ -1043,7 +1043,7 @@ describe.sequential('Query tests', async () => {
           email: 'userOne@notmail.com',
           bigint: '10',
           birthdayString: '2024-04-02',
-          birthdayDate: '2024-04-02T00:00:00.000Z',
+          birthdayDate: '2024-04-02',
           createdAt: '2024-04-02T06:44:42.000Z',
           role: 'admin',
           roleText: null,
@@ -1085,7 +1085,7 @@ describe.sequential('Query tests', async () => {
             email: 'userOne@notmail.com',
             bigint: '10',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:42.000Z',
             role: 'admin',
             roleText: null,
@@ -1163,7 +1163,7 @@ describe.sequential('Query tests', async () => {
             email: 'userOne@notmail.com',
             bigint: '10',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:42.000Z',
             role: 'admin',
             roleText: null,
@@ -1249,7 +1249,7 @@ describe.sequential('Query tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -1269,7 +1269,7 @@ describe.sequential('Query tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -1289,7 +1289,7 @@ describe.sequential('Query tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -1349,7 +1349,7 @@ describe.sequential('Query tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -1374,7 +1374,7 @@ describe.sequential('Query tests', async () => {
 						email: "userThree@notmail.com"
 						bigint: "15"
 						birthdayString: "2024-04-02"
-						birthdayDate: "2024-04-02T06:44:41.785Z"
+						birthdayDate: "2024-04-02"
 						createdAt: "2024-04-02T06:44:41.785Z"
 						role: admin
 						roleText: null
@@ -1428,7 +1428,7 @@ describe.sequential('Query tests', async () => {
 							email: "userThree@notmail.com"
 							bigint: "15"
 							birthdayString: "2024-04-02"
-							birthdayDate: "2024-04-02T06:44:41.785Z"
+							birthdayDate: "2024-04-02"
 							createdAt: "2024-04-02T06:44:41.785Z"
 							role: admin
 							roleText: null
@@ -1442,7 +1442,7 @@ describe.sequential('Query tests', async () => {
 							email: "userFour@notmail.com"
 							bigint: "42"
 							birthdayString: "2024-04-04"
-							birthdayDate: "2024-04-04T00:00:00.000Z"
+							birthdayDate: "2024-04-04"
 							createdAt: "2024-04-04T06:44:41.785Z"
 							role: user
 							roleText: null
@@ -1601,7 +1601,7 @@ describe.sequential('Aliased query tests', async () => {
           email: 'userOne@notmail.com',
           bigint: '10',
           birthdayString: '2024-04-02',
-          birthdayDate: '2024-04-02T00:00:00.000Z',
+          birthdayDate: '2024-04-02',
           createdAt: '2024-04-02T06:44:42.000Z',
           role: 'admin',
           roleText: null,
@@ -1655,7 +1655,7 @@ describe.sequential('Aliased query tests', async () => {
             email: 'userOne@notmail.com',
             bigint: '10',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:42.000Z',
             role: 'admin',
             roleText: null,
@@ -1786,7 +1786,7 @@ describe.sequential('Aliased query tests', async () => {
           email: 'userOne@notmail.com',
           bigint: '10',
           birthdayString: '2024-04-02',
-          birthdayDate: '2024-04-02T00:00:00.000Z',
+          birthdayDate: '2024-04-02',
           createdAt: '2024-04-02T06:44:42.000Z',
           role: 'admin',
           roleText: null,
@@ -1828,7 +1828,7 @@ describe.sequential('Aliased query tests', async () => {
             email: 'userOne@notmail.com',
             bigint: '10',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:42.000Z',
             role: 'admin',
             roleText: null,
@@ -1898,7 +1898,7 @@ describe.sequential('Aliased query tests', async () => {
             email: 'userOne@notmail.com',
             bigint: '10',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:42.000Z',
             role: 'admin',
             roleText: null,
@@ -1984,7 +1984,7 @@ describe.sequential('Aliased query tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -2004,7 +2004,7 @@ describe.sequential('Aliased query tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -2024,7 +2024,7 @@ describe.sequential('Aliased query tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -2084,7 +2084,7 @@ describe.sequential('Aliased query tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -2109,7 +2109,7 @@ describe.sequential('Aliased query tests', async () => {
 						email: "userThree@notmail.com"
 						bigint: "15"
 						birthdayString: "2024-04-02"
-						birthdayDate: "2024-04-02T06:44:41.785Z"
+						birthdayDate: "2024-04-02"
 						createdAt: "2024-04-02T06:44:41.785Z"
 						role: admin
 						roleText: null
@@ -2163,7 +2163,7 @@ describe.sequential('Aliased query tests', async () => {
 							email: "userThree@notmail.com"
 							bigint: "15"
 							birthdayString: "2024-04-02"
-							birthdayDate: "2024-04-02T06:44:41.785Z"
+							birthdayDate: "2024-04-02"
 							createdAt: "2024-04-02T06:44:41.785Z"
 							role: admin
 							roleText: null
@@ -2177,7 +2177,7 @@ describe.sequential('Aliased query tests', async () => {
 							email: "userFour@notmail.com"
 							bigint: "42"
 							birthdayString: "2024-04-04"
-							birthdayDate: "2024-04-04T00:00:00.000Z"
+							birthdayDate: "2024-04-04"
 							createdAt: "2024-04-04T06:44:41.785Z"
 							role: user
 							roleText: null
@@ -4244,7 +4244,7 @@ describe.sequential('__typename only tests', async () => {
 						email: "userThree@notmail.com"
 						bigint: "15"
 						birthdayString: "2024-04-02"
-						birthdayDate: "2024-04-02T06:44:41.785Z"
+						birthdayDate: "2024-04-02"
 						createdAt: "2024-04-02T06:44:41.785Z"
 						role: admin
 						roleText: null
@@ -4298,7 +4298,7 @@ describe.sequential('__typename only tests', async () => {
 							email: "userThree@notmail.com"
 							bigint: "15"
 							birthdayString: "2024-04-02"
-							birthdayDate: "2024-04-02T06:44:41.785Z"
+							birthdayDate: "2024-04-02"
 							createdAt: "2024-04-02T06:44:41.785Z"
 							role: admin
 							roleText: null
@@ -4312,7 +4312,7 @@ describe.sequential('__typename only tests', async () => {
 							email: "userFour@notmail.com"
 							bigint: "42"
 							birthdayString: "2024-04-04"
-							birthdayDate: "2024-04-04T00:00:00.000Z"
+							birthdayDate: "2024-04-04"
 							createdAt: "2024-04-04T06:44:41.785Z"
 							role: user
 							roleText: null
@@ -4473,7 +4473,7 @@ describe.sequential('__typename with data tests', async () => {
           email: 'userOne@notmail.com',
           bigint: '10',
           birthdayString: '2024-04-02',
-          birthdayDate: '2024-04-02T00:00:00.000Z',
+          birthdayDate: '2024-04-02',
           createdAt: '2024-04-02T06:44:42.000Z',
           role: 'admin',
           roleText: null,
@@ -4531,7 +4531,7 @@ describe.sequential('__typename with data tests', async () => {
             email: 'userOne@notmail.com',
             bigint: '10',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:42.000Z',
             role: 'admin',
             roleText: null,
@@ -4675,7 +4675,7 @@ describe.sequential('__typename with data tests', async () => {
           email: 'userOne@notmail.com',
           bigint: '10',
           birthdayString: '2024-04-02',
-          birthdayDate: '2024-04-02T00:00:00.000Z',
+          birthdayDate: '2024-04-02',
           createdAt: '2024-04-02T06:44:42.000Z',
           role: 'admin',
           roleText: null,
@@ -4722,7 +4722,7 @@ describe.sequential('__typename with data tests', async () => {
             email: 'userOne@notmail.com',
             bigint: '10',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:42.000Z',
             role: 'admin',
             roleText: null,
@@ -4797,7 +4797,7 @@ describe.sequential('__typename with data tests', async () => {
             email: 'userOne@notmail.com',
             bigint: '10',
             birthdayString: '2024-04-02',
-            birthdayDate: '2024-04-02T00:00:00.000Z',
+            birthdayDate: '2024-04-02',
             createdAt: '2024-04-02T06:44:42.000Z',
             role: 'admin',
             roleText: null,
@@ -4893,7 +4893,7 @@ describe.sequential('__typename with data tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -4915,7 +4915,7 @@ describe.sequential('__typename with data tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -4937,7 +4937,7 @@ describe.sequential('__typename with data tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -5003,7 +5003,7 @@ describe.sequential('__typename with data tests', async () => {
               email: 'userOne@notmail.com',
               bigint: '10',
               birthdayString: '2024-04-02',
-              birthdayDate: '2024-04-02T00:00:00.000Z',
+              birthdayDate: '2024-04-02',
               createdAt: '2024-04-02T06:44:42.000Z',
               role: 'admin',
               roleText: null,
@@ -5029,7 +5029,7 @@ describe.sequential('__typename with data tests', async () => {
 						email: "userThree@notmail.com"
 						bigint: "15"
 						birthdayString: "2024-04-02"
-						birthdayDate: "2024-04-02T06:44:41.785Z"
+						birthdayDate: "2024-04-02"
 						createdAt: "2024-04-02T06:44:41.785Z"
 						role: admin
 						roleText: null
@@ -5085,7 +5085,7 @@ describe.sequential('__typename with data tests', async () => {
 							email: "userThree@notmail.com"
 							bigint: "15"
 							birthdayString: "2024-04-02"
-							birthdayDate: "2024-04-02T06:44:41.785Z"
+							birthdayDate: "2024-04-02"
 							createdAt: "2024-04-02T06:44:41.785Z"
 							role: admin
 							roleText: null
@@ -5099,7 +5099,7 @@ describe.sequential('__typename with data tests', async () => {
 							email: "userFour@notmail.com"
 							bigint: "42"
 							birthdayString: "2024-04-04"
-							birthdayDate: "2024-04-04T00:00:00.000Z"
+							birthdayDate: "2024-04-04"
 							createdAt: "2024-04-04T06:44:41.785Z"
 							role: user
 							roleText: null
@@ -5452,5 +5452,63 @@ describe.sequential('Atomic column updates and count mutations', () => {
     const res = await optIn(`mutation { updateUsersCount(set: {}) }`);
 
     expect(res.errors?.[0]?.message).toBe('Unable to update with no values specified!');
+  });
+});
+
+describe.sequential('date columns', () => {
+  // Both drizzle modes of a MySQL `date` are the `Date` scalar: a `YYYY-MM-DD` string in and
+  // out. Worth running under a non-UTC TZ too — mysql2 formats a JS `Date` in local time, which
+  // is exactly what sending the validated string to the driver avoids.
+  it('round-trips YYYY-MM-DD through create, update and filters in both modes', async () => {
+    const read = async () => {
+      const res = await ctx.gql.queryGql(`{ users(where: { id: { eq: 50 } }) { birthdayString birthdayDate } }`);
+      expect(res.errors).toBeUndefined();
+      return res.data?.['users'];
+    };
+
+    const created = await ctx.gql.queryGql(`mutation {
+      createUsersSingle(values: { id: 50, name: "Dated", birthdayString: "2026-09-15", birthdayDate: "2026-09-15" }) {
+        isSuccess
+      }
+    }`);
+    expect(created.errors).toBeUndefined();
+    expect(await read()).toEqual([{ birthdayString: '2026-09-15', birthdayDate: '2026-09-15' }]);
+
+    const updated = await ctx.gql.queryGql(`mutation {
+      updateUsers(set: { birthdayString: "2026-12-31", birthdayDate: "2026-01-01" }, where: { id: { eq: 50 } }) {
+        isSuccess
+      }
+    }`);
+    expect(updated.errors).toBeUndefined();
+    expect(await read()).toEqual([{ birthdayString: '2026-12-31', birthdayDate: '2026-01-01' }]);
+
+    const [row] = await ctx.db.select().from(schema.Users).where(eq(schema.Users.id, 50));
+    expect(row?.birthdayString).toBe('2026-12-31');
+    expect(row?.birthdayDate?.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+
+    for (const [column, day] of [
+      ['birthdayString', '2026-12-31'],
+      ['birthdayDate', '2026-01-01'],
+    ]) {
+      const eqRes = await ctx.gql.queryGql(`{ users(where: { ${column}: { eq: "${day}" } }) { id } }`);
+      expect(eqRes.errors).toBeUndefined();
+      expect(eqRes.data?.['users']).toEqual([{ id: 50 }]);
+
+      const range = await ctx.gql.queryGql(`{ users(where: { ${column}: { gt: "2025-01-01" } }) { id } }`);
+      expect(range.errors).toBeUndefined();
+      expect(range.data?.['users']).toEqual([{ id: 50 }]);
+    }
+  });
+
+  it('rejects datetime strings and impossible days', async () => {
+    for (const value of ['2026-09-15T10:00:00Z', '2026-02-30', '2026-13-45']) {
+      for (const column of ['birthdayString', 'birthdayDate']) {
+        const res = await ctx.gql.queryGql(
+          `mutation { createUsersSingle(values: { id: 51, name: "Bad", ${column}: "${value}" }) { isSuccess } }`,
+        );
+        expect(res.errors?.[0]?.extensions?.['code']).toBe('DRIZZLE_INVALID_INPUT_VALUE');
+      }
+    }
+    expect(await ctx.db.select().from(schema.Users).where(eq(schema.Users.id, 51))).toEqual([]);
   });
 });
