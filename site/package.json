@@ -1,0 +1,15 @@
+{
+  "name": "drizzle-graphql-site",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Landing site for drizzle-graphql (Eleventy, deployed to GitHub Pages)",
+  "scripts": {
+    "dev": "eleventy --serve",
+    "build": "eleventy",
+    "clean": "rm -rf _site"
+  },
+  "devDependencies": {
+    "@11ty/eleventy": "^3.0.0"
+  }
+}

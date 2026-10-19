@@ -1,0 +1,60 @@
+---
+layout: base.njk
+---
+<section class="hero project-hero">
+  <h1>{{ site.name }}</h1>
+  <p>{{ site.tagline }}</p>
+  <p class="cta">
+    <a class="button" href="#start">Get started</a>
+    <a class="button secondary" href="{{ site.repo }}" rel="noopener">GitHub ↗</a>
+  </p>
+</section>
+
+<section class="section">
+  <h2>What it does</h2>
+  <p class="section-intro">
+    Hand <code>buildSchema</code> a Drizzle database instance and it returns a
+    <code>GraphQLSchema</code> with list and single-row queries and create, update
+    and delete mutations for every table. It works with PostgreSQL, MySQL and
+    SQLite. Serve the schema as is with any GraphQL server, or take the generated
+    types, inputs and resolvers from <code>entities</code> and build your own.
+  </p>
+
+  <ul class="card-grid">
+    <li>
+      <article class="card">
+        <h3>Filters and pagination</h3>
+        <p>Every list query takes typed <code>where</code>, <code>orderBy</code>, <code>limit</code> and <code>offset</code> arguments, with cursor pagination, aggregates and group-by alongside.</p>
+      </article>
+    </li>
+    <li>
+      <article class="card">
+        <h3>Relations without N+1</h3>
+        <p>Nested relations load in one round-trip through Drizzle's relational queries, and the standalone relation resolvers batch sibling loads into a single query.</p>
+      </article>
+    </li>
+    <li>
+      <article class="card">
+        <h3>Configurable writes</h3>
+        <p>Mutations cover upserts, nested writes and atomic column updates, and options turn operations off, exclude tables or columns, scope rows per request and run write hooks.</p>
+      </article>
+    </li>
+  </ul>
+</section>
+
+<section class="section" id="start">
+  <h2>Get started</h2>
+  <div class="prose">
+    <pre class="code"><code>npm i @vantreeseba/drizzle-graphql</code></pre>
+    <p><code>drizzle-orm</code>, <code>graphql</code> and <code>graphql-scalars</code> are peer dependencies. Then pass in your Drizzle instance:</p>
+    <pre class="code"><code>import { buildSchema } from '@vantreeseba/drizzle-graphql';
+import { db } from './database'; // your drizzle instance
+
+const { schema, entities } = buildSchema(db);</code></pre>
+  </div>
+
+  <p class="readme-link">
+    Full documentation lives in the project README:
+    <a href="{{ site.repo }}#readme" rel="noopener">{{ site.repo }}</a>
+  </p>
+</section>

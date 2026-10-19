@@ -2,6 +2,8 @@
 
 Automatically create GraphQL schema or customizable schema config fields from Drizzle ORM schema
 
+Site: [cubicecho.github.io/drizzle-graphql](https://cubicecho.github.io/drizzle-graphql/)
+
 ## Usage
 
 -   Pass your drizzle database instance and schema into builder to generate `{ schema, entities }` object
