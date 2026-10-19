@@ -11,7 +11,7 @@ import {
   MySqlTimestampString,
 } from 'drizzle-orm/mysql-core';
 import { PgDate, PgDateString, PgInteger, PgSerial, PgTimestamp, PgTimestampString, PgUUID } from 'drizzle-orm/pg-core';
-import { SQLiteInteger } from 'drizzle-orm/sqlite-core';
+import { SQLiteInteger, SQLiteTimestamp } from 'drizzle-orm/sqlite-core';
 import {
   GraphQLBoolean,
   GraphQLEnumType,
@@ -247,7 +247,8 @@ const geoXyInputType = new GraphQLInputObjectType({
  * position a column's type appears in — output, create/update input, filter operands,
  * aggregates and group keys — gives such a column the `Date` scalar, whichever mode it uses:
  * the mode is how the server holds the value, not what the value is. SQLite has no date-only
- * column type (its timestamps are integers or text), so only Postgres and MySQL appear here.
+ * column type (its integer timestamps are instants — see {@link isDateTimeColumn}), so only
+ * Postgres and MySQL appear here.
  */
 export const isDateOnlyColumn = (column: Column): boolean =>
   is(column, PgDate) || is(column, PgDateString) || is(column, MySqlDate) || is(column, MySqlDateString);
@@ -272,18 +273,34 @@ export const isMySqlDateTimeStringColumn = (column: Column): boolean =>
 export const isPgTimestampStringColumn = (column: Column): boolean => is(column, PgTimestampString);
 
 /**
- * Whether the column holds an instant — a Postgres `timestamp` or a MySQL `timestamp` /
- * `datetime`, in either drizzle mode. Every position such a column appears in gives it the
- * `DateTime` scalar and the `DateTimeFilter`, whichever mode it uses, for the same reason as
- * {@link isDateOnlyColumn}. SQLite's integer timestamps are not listed: they are a separate
- * case.
+ * Whether the column is a SQLite `integer({ mode: 'timestamp' | 'timestamp_ms' })`. Both modes
+ * are one drizzle class, told apart by `mode`: the stored integer counts seconds or milliseconds
+ * since the Unix epoch. drizzle converts a JS `Date` to that integer on write (`'timestamp'`
+ * floors to the whole second) and back on read, but a value read through a path that skips the
+ * column's decoder arrives as the bare integer, which {@link sqliteTimestampToDate} reads.
+ */
+export const isSQLiteTimestampColumn = (column: Column): boolean => is(column, SQLiteTimestamp);
+
+/**
+ * A SQLite timestamp column's stored integer as the instant it names, using the column's own
+ * unit (seconds for `'timestamp'`, milliseconds for `'timestamp_ms'`).
+ */
+export const sqliteTimestampToDate = (column: Column, value: number): Date =>
+  new Date((column as any).mode === 'timestamp' ? value * 1000 : value);
+
+/**
+ * Whether the column holds an instant — a Postgres `timestamp`, a MySQL `timestamp` /
+ * `datetime`, in either drizzle mode, or a SQLite integer timestamp in either unit. Every position
+ * such a column appears in gives it the `DateTime` scalar and the `DateTimeFilter`, whichever
+ * mode it uses, for the same reason as {@link isDateOnlyColumn}.
  */
 export const isDateTimeColumn = (column: Column): boolean =>
   is(column, PgTimestamp) ||
   isPgTimestampStringColumn(column) ||
   is(column, MySqlTimestamp) ||
   is(column, MySqlDateTime) ||
-  isMySqlDateTimeStringColumn(column);
+  isMySqlDateTimeStringColumn(column) ||
+  isSQLiteTimestampColumn(column);
 
 const columnToGraphQLCore = (
   column: Column,

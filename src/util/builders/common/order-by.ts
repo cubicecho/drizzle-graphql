@@ -163,9 +163,11 @@ const extendRelationOrderChain = (
  *
  * A ladder rather than a dialect array function (`array_position` on Postgres, `FIELD()` on
  * MySQL, neither on SQLite) because it is the one form all three share, and because every
- * list value stays a bound parameter. The branch indices are library-generated integers, so
- * they are written into the SQL text — a bound parameter there would leave Postgres unable
- * to infer the CASE result type. Values outside the list sort after every listed one.
+ * list value stays a bound parameter — encoded by the column, as `eq` would, so a value whose
+ * driver form differs from its JS one (a SQLite integer timestamp's `Date`) is bound as stored.
+ * The branch indices are library-generated integers, so they are written into the SQL text — a
+ * bound parameter there would leave Postgres unable to infer the CASE result type. Values
+ * outside the list sort after every listed one.
  */
 const filterOrderExpression = (column: Column, columnName: string, whereArgs: Record<string, any> | undefined): SQL => {
   const values = whereArgs?.[columnName]?.inArray as unknown;
@@ -183,7 +185,7 @@ const filterOrderExpression = (column: Column, columnName: string, whereArgs: Re
 
   const branches = values.map(
     (value, index) =>
-      sql`when ${column} = ${remapFromGraphQLCore(value, column, columnName)} then ${sql.raw(String(index))}`,
+      sql`when ${column} = ${sql.param(remapFromGraphQLCore(value, column, columnName), column)} then ${sql.raw(String(index))}`,
   );
   return sql`case ${sql.join(branches, sql` `)} else ${sql.raw(String(values.length))} end`;
 };

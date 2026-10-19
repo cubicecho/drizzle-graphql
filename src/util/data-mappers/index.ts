@@ -9,6 +9,8 @@ import {
   isDateTimeColumn,
   isMySqlDateTimeStringColumn,
   isPgTimestampStringColumn,
+  isSQLiteTimestampColumn,
+  sqliteTimestampToDate,
 } from '../type-converter/index.ts';
 
 /**
@@ -140,6 +142,16 @@ export const remapToGraphQLCore = (
     return dateToCalendarDate(value) ?? value;
   }
 
+  // A SQLite integer timestamp arrives as a `Date`: drizzle decodes it on every path the library
+  // reads through, aggregates included (`min`/`max` are `mapWith(column)`). A row that skipped the
+  // column's decoder (a hand-built one, say) holds the stored integer instead, in the column's own
+  // unit — read it as that unit here, because the `DateTime` scalar reads any number as
+  // milliseconds.
+  if (typeof value === 'number' && isSQLiteTimestampColumn(column)) {
+    const instant = sqliteTimestampToDate(column, value);
+    return Number.isNaN(instant.getTime()) ? value : instant.toISOString();
+  }
+
   if (value instanceof Date) {
     return value.toISOString();
   }
@@ -261,8 +273,14 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
 
   // Timestamp/datetime columns: Postgres and MySQL `timestamp`, MySQL `datetime` (either mode),
   // and SQLite's integer timestamps. Pure DATE columns are handled below.
+  //
+  // A SQLite integer timestamp takes the `Date`, which drizzle's `mapToDriverValue` turns into
+  // the stored integer: milliseconds for `'timestamp_ms'`, and for `'timestamp'` whole seconds,
+  // floored — `…T10:00:00.999Z` is stored, and read back, as `…T10:00:00Z`. Filter operands go
+  // through here and the same encoder, so they are floored exactly as a write would be: `eq`
+  // matches the row that input would have written.
   const columnType: string = (column as any).columnType ?? '';
-  if (isDateTimeColumn(column) || columnType === 'SQLiteTimestamp' || columnType === 'SQLiteTimestampMs') {
+  if (isDateTimeColumn(column)) {
     const isMySql = columnType.startsWith('MySql');
     const isPgString = isPgTimestampStringColumn(column);
     // MySQL / Postgres text with no offset is read as UTC, as on output — `new Date()` would read

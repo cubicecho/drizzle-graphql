@@ -607,6 +607,7 @@ generated SDL says what a field actually holds instead of falling back to `Strin
 | `bigint` (and `mode: 'bigint'`)             | `BigInt`     | a decimal string                     |
 | `uuid`                                      | `UUID`       | a validated UUID string              |
 | `timestamp` / `datetime` (either `mode`)    | `DateTime`   | an ISO-8601 string                   |
+| SQLite `integer({ mode: 'timestamp' })` / `'timestamp_ms'` | `DateTime` | an ISO-8601 string       |
 | `date` (either `mode`)                      | `Date`       | a `YYYY-MM-DD` string                |
 
 ```graphql
@@ -634,7 +635,7 @@ mutation {
     `2026-09-15T10:00:00Z` are rejected. With `graphql-codegen`, map it as
     `scalars: { Date: 'string' }`
 -   **`DateTime`** is an instant, and is likewise the same type in every position a Postgres
-    `timestamp` or MySQL `timestamp` / `datetime` column appears in, with `DateTimeFilter` in
+    `timestamp`, MySQL `timestamp` / `datetime` or SQLite integer timestamp column appears in, with `DateTimeFilter` in
     filters, whichever `mode` the column is declared with. It returns an ISO-8601 string in UTC.
     MySQL stores these columns without an offset; the value is written and read as UTC
     (`2026-09-15T10:00:00Z` is stored as `2026-09-15 10:00:00`) whatever the Node process's
@@ -642,7 +643,12 @@ mutation {
     treated the same way, in both modes; `timestamptz` stores the instant, and its text in
     `mode: 'string'` (`2026-09-15 04:00:00-06`) is returned as the same instant in UTC. The
     scalar carries milliseconds, so a `timestamp(6)` value's microseconds are truncated on read
-    and on write
+    and on write. A SQLite `integer({ mode: 'timestamp' })` or `integer({ mode: 'timestamp_ms' })`
+    column is `DateTime` too; it stores the instant as epoch seconds or milliseconds. Seconds
+    mode cannot hold a fraction, so it is floored (never rounded) on write —
+    `2026-09-15T10:00:00.999Z` is stored as `1789466400` and reads back as
+    `2026-09-15T10:00:00.000Z` — and filter operands on such a column are floored the same way,
+    so `eq` with the value you wrote finds the row you wrote it to
 
 The scalars are exported if you need them in a hand-written schema:
 
@@ -699,6 +705,19 @@ library's own `Date` scalar, not `graphql-scalars`' (whose `parseValue` returns 
 > date-time (`2026-09-15T10:00:00Z`, or with an offset). A `mode: 'string'` column used to read
 > MySQL's own `2026-09-15 10:00:00` and now reads `2026-09-15T10:00:00.000Z`. In
 > `graphql-codegen`, map `DateTime` the way you already do for Postgres timestamps.
+
+> **Upgrading — SQLite integer timestamps.** `integer({ mode: 'timestamp' })` and
+> `integer({ mode: 'timestamp_ms' })` used to fall through to `JSON`. Both are now `DateTime`:
+>
+> | Drizzle column (SQLite) | position | before | now |
+> | --- | --- | --- | --- |
+> | `integer(…, { mode: 'timestamp' })` / `{ mode: 'timestamp_ms' }` | output, input, min/max, group keys | `JSON` | `DateTime` |
+> | | filter | `JSONFilter` | `DateTimeFilter` |
+>
+> Variables for these fields become `DateTime`, and their filters `DateTimeFilter`, which swaps
+> the JSON `path` operator for `lt` / `lte` / `gt` / `gte` / `inArray` / `notInArray`. Input must
+> be an ISO-8601 date-time; a JSON value such as a bare number is rejected. Reads are unchanged:
+> they were already ISO-8601 strings in UTC. The stored integers are unchanged too.
 
 ### Overriding a column's scalar
 
