@@ -1,0 +1,6 @@
+/*
+ * drizzle-graphql-only rules. Loaded after cubesite.css, so anything here wins.
+ *
+ * If a rule in this file would be right for every project site, it belongs in
+ * cubesite's theme/cubesite.css instead — send it there and re-sync.
+ */

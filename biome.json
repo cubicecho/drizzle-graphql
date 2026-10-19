@@ -75,7 +75,8 @@
         "server/dist/**",
         "db/dist/**",
         "app/dist/**",
-        "app/src/__generated__/**"
+        "app/src/__generated__/**",
+        "site/**"
       ],
       "linter": {
         "enabled": false
