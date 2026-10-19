@@ -636,7 +636,11 @@ mutation {
     filters, whichever `mode` the column is declared with. It returns an ISO-8601 string in UTC.
     MySQL stores these columns without an offset; the value is written and read as UTC
     (`2026-09-15T10:00:00Z` is stored as `2026-09-15 10:00:00`) whatever the Node process's
-    timezone, the way drizzle itself treats them
+    timezone, the way drizzle itself treats them. Postgres `timestamp` without time zone is
+    treated the same way, in both modes; `timestamptz` stores the instant, and its text in
+    `mode: 'string'` (`2026-09-15 04:00:00-06`) is returned as the same instant in UTC. The
+    scalar carries milliseconds, so a `timestamp(6)` value's microseconds are truncated on read
+    and on write
 
 The scalars are exported if you need them in a hand-written schema:
 
