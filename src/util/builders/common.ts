@@ -129,7 +129,14 @@ export { extractFilters, relationFilterCtx } from './common/relation-filters.ts'
 export { extractRelationsParams, pruneNonEagerRelations } from './common/relation-params.ts';
 export { createRelationResolverFactory } from './common/relation-resolvers.ts';
 export type { RelationAggregateFactory, RelationResolverFactory, TablesRelationalConfig } from './common/relations.ts';
-export { attachTargetPrimaryKeys, buildNamedRelations, extractRelationJoinColumns } from './common/relations.ts';
+export {
+  attachTargetPrimaryKeys,
+  buildNamedRelations,
+  extractRelationJoinColumns,
+  relationColumns,
+  unwrapRelationColumn,
+  warnUnresolvedJoin,
+} from './common/relations.ts';
 export { computeResolverFieldNames, type ResolverFieldNames } from './common/resolver-names.ts';
 export { defineRootField } from './common/root-fields.ts';
 export { eagerLoadMutationRelations, runRelationalSelect } from './common/select-runtime.ts';

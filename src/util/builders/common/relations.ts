@@ -1,8 +1,8 @@
 // The named-relation map the builders work from, derived from drizzle-orm v1's relational
 // config, plus the factory signatures the dialect builders implement.
 
-import type { Column, Relation, Table } from 'drizzle-orm';
-import { getColumns } from 'drizzle-orm';
+import type { Relation, Table } from 'drizzle-orm';
+import { Column, getColumns, is } from 'drizzle-orm';
 import type { GraphQLFieldResolver, GraphQLObjectType } from 'graphql';
 import type { TableNamedRelations } from '../types.ts';
 
@@ -103,6 +103,66 @@ export const attachTargetPrimaryKeys = (
 };
 
 /**
+ * The table column behind one entry of a relation's `sourceColumns`, `targetColumns` or
+ * `through` lists.
+ *
+ * drizzle-orm rc.4 stores the table's own Column objects in `sourceColumns` / `targetColumns`
+ * and a `RelationsBuilderColumn` descriptor (`{ _: { column, key, tableName } }`) in `through`.
+ * The rc.5 snapshots store the descriptor in all of them. Both shapes are accepted here, told
+ * apart structurally rather than by importing a class one of those versions does not export.
+ * Anything else yields `undefined`, which callers treat as "join columns not readable".
+ */
+export const unwrapRelationColumn = (entry: unknown): Column | undefined => {
+  if (is(entry, Column)) {
+    return entry;
+  }
+  const inner = (entry as any)?._?.column;
+  return is(inner, Column) ? inner : undefined;
+};
+
+/**
+ * A relation's `sourceColumns` or `targetColumns` as table columns, via
+ * {@link unwrapRelationColumn}. `undefined` when the list is missing, empty, or has an entry
+ * that is not a column in either known shape.
+ */
+export const relationColumns = (relation: unknown, side: 'source' | 'target'): Column[] | undefined => {
+  const entries: unknown[] | undefined = (relation as any)?.[side === 'source' ? 'sourceColumns' : 'targetColumns'];
+  if (!entries?.length) {
+    return undefined;
+  }
+  const columns: Column[] = [];
+  for (const entry of entries) {
+    const column = unwrapRelationColumn(entry);
+    if (!column) {
+      return undefined;
+    }
+    columns.push(column);
+  }
+  return columns;
+};
+
+/**
+ * Warns, at build time, that a field was left out because the relation's join columns could
+ * not be matched to its tables. Omitting it silently is how a drizzle-orm change in the shape
+ * of relation columns (issue #179) went unnoticed. A relation that declares no join columns
+ * is not reported: there is nothing that failed to match.
+ */
+export const warnUnresolvedJoin = (
+  relEntry: TableNamedRelations,
+  tableName: string,
+  relationName: string,
+  omitted: string,
+): void => {
+  const rel = (relEntry as any).relation ?? relEntry;
+  if (!rel?.sourceColumns?.length || !rel?.targetColumns?.length) {
+    return;
+  }
+  console.warn(
+    `Drizzle-GraphQL Warning: relation '${tableName}.${relationName}' declares join columns that could not be matched to columns of '${tableName}' and '${relEntry.targetTableName}', so ${omitted} is not generated. The installed drizzle-orm probably stores relation columns in a shape this version of drizzle-graphql does not recognize.`,
+  );
+};
+
+/**
  * Extracts the join column info from a drizzle-orm v1 Relation object.
  * Returns the JS property name of the local column on the parent table and the
  * Column object for the foreign column on the target table, or undefined if the
@@ -114,15 +174,12 @@ export const extractRelationJoinColumns = (
   targetTable: Table,
 ): { localColPropName: string; foreignCol: Column; foreignColPropName: string } | undefined => {
   const rel = (relEntry as any).relation ?? relEntry;
-  const sourceColumns: any[] | undefined = rel.sourceColumns;
-  const targetColumns: any[] | undefined = rel.targetColumns;
+  const sourceCol = relationColumns(rel, 'source')?.[0];
+  const targetCol = relationColumns(rel, 'target')?.[0];
 
-  if (!sourceColumns?.length || !targetColumns?.length) {
+  if (!sourceCol || !targetCol) {
     return undefined;
   }
-
-  const sourceCol = sourceColumns[0];
-  const targetCol = targetColumns[0];
 
   const parentCols = getColumns(parentTable);
   const localColPropName = Object.entries(parentCols).find(([, c]) => c === sourceCol)?.[0];

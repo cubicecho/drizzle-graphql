@@ -20,6 +20,7 @@ import {
 import type { FilterColumnOperatorsCore, Filters, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
 import { extractFiltersColumn } from './filters.ts';
+import { relationColumns, unwrapRelationColumn } from './relations.ts';
 import type { UniqueKeyMap } from './unique-keys.ts';
 import { extractUniqueKeyFilter } from './unique-keys.ts';
 
@@ -113,8 +114,8 @@ export const buildRelationJoinCondition = (
   aliasedTarget: Table,
   relationName: string,
 ): SQL | undefined => {
-  const sourceColumns = (relation as any).sourceColumns as Column[] | undefined;
-  const targetColumns = (relation as any).targetColumns as Column[] | undefined;
+  const sourceColumns = relationColumns(relation, 'source');
+  const targetColumns = relationColumns(relation, 'target');
 
   if (!sourceColumns?.length || sourceColumns.length !== targetColumns?.length) {
     throw drizzleError(`WHERE ${relationName}: Relation cannot be used as a filter`, {
@@ -157,7 +158,7 @@ const resolveJunctionColumn = (aliasedThrough: Table, junctionRef: any, relation
     return byKey;
   }
 
-  const columnName: string | undefined = junctionRef?._?.column?.name;
+  const columnName: string | undefined = unwrapRelationColumn(junctionRef)?.name;
   const byName = columnName ? Object.values(throughColumns).find((c) => c.name === columnName) : undefined;
   if (!byName) {
     throw drizzleError(`WHERE ${relationName}: Relation cannot be used as a filter`, {
@@ -183,8 +184,8 @@ const buildThroughJoinConditions = (
   aliasedTarget: Table,
   relationName: string,
 ): { correlation: SQL | undefined; junctionJoin: SQL | undefined } => {
-  const sourceColumns = (relation as any).sourceColumns as Column[] | undefined;
-  const targetColumns = (relation as any).targetColumns as Column[] | undefined;
+  const sourceColumns = relationColumns(relation, 'source');
+  const targetColumns = relationColumns(relation, 'target');
   const through = (relation as any).through as { source: any[]; target: any[] } | undefined;
 
   if (

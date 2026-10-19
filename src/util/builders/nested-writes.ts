@@ -9,7 +9,7 @@
 // foreign key and whether that column is nullable, so the schema never advertises
 // an operation whose every call would be a database error.
 // =============================================================================
-import { and, Column, eq, getColumns, inArray, is, One, type Table } from 'drizzle-orm';
+import { and, type Column, eq, getColumns, inArray, is, One, type Table } from 'drizzle-orm';
 import { GraphQLBoolean, GraphQLInputObjectType, type GraphQLInputType, GraphQLList, GraphQLNonNull } from 'graphql';
 import { capitalize } from '../case-ops/index.ts';
 import { remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
@@ -27,7 +27,9 @@ import {
   type TablePolicies,
   type TypeCacheCtx,
   type TypeNameMapper,
+  unwrapRelationColumn,
   visibleColumns,
+  warnUnresolvedJoin,
   withScope,
 } from './common.ts';
 import type { TableNamedRelations } from './types.ts';
@@ -103,14 +105,6 @@ const propNameOf = (table: Table, column: Column | undefined): string | undefine
 };
 
 /**
- * The junction column one entry of a relation's `through` config points at. Drizzle wraps it
- * in a descriptor while the relation is being defined; the raw column is accepted too, so a
- * change of shape there degrades to skipping the relation rather than mis-planning it.
- */
-const throughColumn = (entry: any): Column | undefined =>
-  entry && is(entry, Column) ? (entry as Column) : (entry?._?.column as Column | undefined);
-
-/**
  * A `.through()` relation's plan: the junction table plus the two columns it joins on.
  *
  * Nothing about the parent or the target row changes when a many-to-many link is made or
@@ -121,6 +115,9 @@ const throughColumn = (entry: any): Column | undefined =>
  * row" guarantee lives in the junction's constraints rather than in the relation; a relation
  * joining on more than one column per side; and a junction carrying a further NOT NULL column
  * with no default, which no `connect` operand could supply a value for.
+ *
+ * `onUnresolved` is called when the relation's columns are of a supported shape but cannot be
+ * matched to the three tables — a drizzle-orm mismatch rather than an unsupported relation.
  */
 const buildThroughPlan = (
   relationName: string,
@@ -128,6 +125,7 @@ const buildThroughPlan = (
   table: Table,
   targetTableName: string,
   targetTable: Table,
+  onUnresolved: () => void,
 ): NestedRelationPlan | undefined => {
   if (is(relation, One)) {
     return undefined;
@@ -146,13 +144,21 @@ const buildThroughPlan = (
   // Drizzle normalizes the two ends before it stores them, so `source` is the parent's side
   // even on the relation declared from the other table. Each column is looked up on the table
   // it is supposed to belong to, which is also the check that the normalization held.
-  const localCol = relation.sourceColumns[0] as Column;
-  const foreignCol = relation.targetColumns[0] as Column;
+  const localCol = unwrapRelationColumn(relation.sourceColumns[0]);
+  const foreignCol = unwrapRelationColumn(relation.targetColumns[0]);
   const localColPropName = propNameOf(table, localCol);
   const foreignColPropName = propNameOf(targetTable, foreignCol);
-  const sourceColPropName = propNameOf(junction, throughColumn(sourceEntries[0]));
-  const targetColPropName = propNameOf(junction, throughColumn(targetEntries[0]));
-  if (!localColPropName || !foreignColPropName || !sourceColPropName || !targetColPropName) {
+  const sourceColPropName = propNameOf(junction, unwrapRelationColumn(sourceEntries[0]));
+  const targetColPropName = propNameOf(junction, unwrapRelationColumn(targetEntries[0]));
+  if (
+    !localCol ||
+    !foreignCol ||
+    !localColPropName ||
+    !foreignColPropName ||
+    !sourceColPropName ||
+    !targetColPropName
+  ) {
+    onUnresolved();
     return undefined;
   }
 
@@ -249,8 +255,11 @@ export const buildNestedWritePlans = (
         continue;
       }
 
+      const omitted = `the '${relationName}' field of its nested-write create and update inputs`;
       if ((relation as any).through) {
-        const throughPlan = buildThroughPlan(relationName, relation, table, targetTableName, targetTable);
+        const throughPlan = buildThroughPlan(relationName, relation, table, targetTableName, targetTable, () =>
+          warnUnresolvedJoin(relEntry, tableName, relationName, omitted),
+        );
         if (throughPlan) {
           tablePlans[relationName] = throughPlan;
         }
@@ -259,6 +268,7 @@ export const buildNestedWritePlans = (
 
       const joinColumns = extractJoinColumns(relEntry, table, targetTable);
       if (!joinColumns) {
+        warnUnresolvedJoin(relEntry, tableName, relationName, omitted);
         continue;
       }
       const { localColPropName, foreignCol, foreignColPropName } = joinColumns;
