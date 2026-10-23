@@ -1,3 +1,11 @@
+## [15.1.6](https://github.com/cubicecho/drizzle-graphql/compare/v15.1.5...v15.1.6) (2026-10-23)
+
+### Bug Fixes
+
+* correlate relation reads on the parent's stored join values ([dc52407](https://github.com/cubicecho/drizzle-graphql/commit/dc52407b1062ab64737177a6bdcd97a87e0442cf))
+* keep a split upsert atomic on a synchronous SQLite driver ([879e3bb](https://github.com/cubicecho/drizzle-graphql/commit/879e3bb4bdd29806de1a1ac629da7c6746701fd9))
+* split large relation batches and balance multi-column key conditions ([d01c70e](https://github.com/cubicecho/drizzle-graphql/commit/d01c70e375d46896098466ac4fdb7815d987e0fb))
+
 ## [15.1.5](https://github.com/cubicecho/drizzle-graphql/compare/v15.1.4...v15.1.5) (2026-10-23)
 
 ### Bug Fixes
