@@ -1182,6 +1182,19 @@ ordinary value: `active: { eq: false }` matches the rows that are false, `ne: fa
 that are true, and `has: false` the arrays holding a `false`. Only the flag operators —
 `isNull`, `isNotNull` and `isEmpty` — read `false` as "add no condition".
 
+A filter that adds no condition — `{}`, `{ name: { isNull: false } }`, a relation's
+`every: {}` — restricts nothing, so it matches every row, and the boolean branches `AND` /
+`OR` / `NOT` read it that way, at table and column level alike:
+
+-   in `AND`, it drops out: `AND: [X, {}]` is `X`
+-   in `OR`, it makes the whole group match every row: `OR: [X, {}]` matches all rows, not
+    just those `X` does
+-   under `NOT`, it matches no row: `NOT: {}` is `NOT (every row)`
+
+So an `OR` group with an empty branch adds nothing to its `where`, and a write that requires
+a `where` (the `Single` mutations, `features.requireWhere`) rejects it the way it rejects
+`where: {}`. An empty `AND: []` or `OR: []` list is treated as absent.
+
 The omissions are the cases where the operator cannot ask anything a caller means:
 
 -   **Pattern matching a timestamp, a boolean or an enum member** compares whatever the value
