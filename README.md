@@ -1949,7 +1949,8 @@ mutation {
     link is what the relation field is for. Create the row with its own mutation, then
     `connect` it
 -   A relation is left out when its junction carries a further `NOT NULL` column with no
-    default — a filter alone could not supply a value for it — and when it is declared as a
+    default — a filter alone could not supply a value for it — unless every insert stamps that
+    column anyway (a `contextValues` column, or a soft-delete marker); and when it is declared as a
     to-one, whose "exactly one" guarantee lives in the junction's constraints rather than in
     the relation
 

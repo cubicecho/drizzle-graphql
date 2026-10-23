@@ -264,7 +264,8 @@ const propNameOf = (table: Table, column: Column | undefined): string | undefine
  * Left unplanned, and so absent from the inputs: a to-one `.through()`, whose "exactly one
  * row" guarantee lives in the junction's constraints rather than in the relation; a relation
  * joining on more than one column per side; and a junction carrying a further NOT NULL column
- * with no default, which no `connect` operand could supply a value for.
+ * with no default, which no `connect` operand could supply a value for — unless every insert
+ * stamps it anyway (`stampedOf`: a `contextValues` column, or a soft-delete marker).
  *
  * `onUnresolved` is called when the relation's columns are of a supported shape but cannot be
  * matched to the three tables — a drizzle-orm mismatch rather than an unsupported relation.
@@ -277,6 +278,7 @@ const buildThroughPlan = (
   targetTableName: string,
   targetTable: Table,
   tableNameOf: (table: Table) => string | undefined,
+  stampedOf: (tableName: string) => Record<string, unknown> | undefined,
   onUnresolved: () => void,
 ): NestedRelationPlan | undefined => {
   if (is(relation, One)) {
@@ -317,9 +319,14 @@ const buildThroughPlan = (
   const junctionColumns = getColumns(junction);
   const sourceCol = junctionColumns[sourceColPropName] as Column;
   const targetCol = junctionColumns[targetColPropName] as Column;
+  const junctionName = tableNameOf(junction);
+  const stamped = junctionName ? stampedOf(junctionName) : undefined;
   const unsuppliable = Object.entries(junctionColumns).some(
     ([propName, column]) =>
-      propName !== sourceColPropName && propName !== targetColPropName && !isOptionalOnInsert(column as Column),
+      propName !== sourceColPropName &&
+      propName !== targetColPropName &&
+      !stamped?.[propName] &&
+      !isOptionalOnInsert(column as Column),
   );
   if (unsuppliable) {
     return undefined;
@@ -339,7 +346,7 @@ const buildThroughPlan = (
     canDetach: true,
     through: {
       table: junction,
-      tableName: tableNameOf(junction),
+      tableName: junctionName,
       sourceColPropName,
       targetColPropName,
       sourceCol,
@@ -377,6 +384,12 @@ export const buildNestedWritePlans = (
    * table is written without being a relation target, so it is looked up here.
    */
   tableNameOf: (table: Table) => string | undefined = () => undefined,
+  /**
+   * The columns every insert into a table stamps whatever the input says — its `contextValues`
+   * and a NOT NULL soft-delete marker (see {@link insertStamps}). A junction column among them
+   * needs no value from a `connect`.
+   */
+  stampedOf: (tableName: string) => Record<string, unknown> | undefined = () => undefined,
 ): NestedWritePlans => {
   const uniqueCache = new Map<string, Set<string>>();
   // Only single-column unique keys matter here: a relation joins on one column, so a
@@ -433,6 +446,7 @@ export const buildNestedWritePlans = (
           targetTableName,
           targetTable,
           tableNameOf,
+          stampedOf,
           () => warnUnresolvedJoin(relEntry, tableName, relationName, omitted),
         );
         if (throughPlan) {
