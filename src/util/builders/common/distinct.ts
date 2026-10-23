@@ -9,6 +9,12 @@ import { primaryKeyOrderExprs } from './keys.ts';
 import { orderByEntries, orderExpressions } from './order-by.ts';
 
 /**
+ * Alias the parent key comes back under when the pass runs through a junction table. See
+ * `selectDistinctKeys`' `junction` parameter.
+ */
+export const DISTINCT_PARENT = '__dgql_distinct_parent';
+
+/**
  * Keeps the first row of each distinct combination of the requested columns, following the
  * query's own ordering, then applies `limit`/`offset` to what survives — and returns the
  * surviving rows' primary key values in that order.
@@ -21,6 +27,11 @@ import { orderByEntries, orderExpressions } from './order-by.ts';
  * `partitionBy` prepends extra columns to the window's partition. A to-many relation field
  * uses it to pass the foreign key, which makes the pass distinct *within each parent* rather
  * than across the whole batch — the same meaning `distinct` has on a root list.
+ *
+ * `junction` is for a many-to-many relation: the target is joined to the junction `on` the
+ * given condition, and each returned key also carries the parent it was kept for, under
+ * {@link DISTINCT_PARENT}. A target row linked to several parents can be kept for one and
+ * dropped for another, so a key alone cannot narrow such a batch.
  */
 export const selectDistinctKeys = async (params: {
   db: any;
@@ -33,8 +44,9 @@ export const selectDistinctKeys = async (params: {
   limit?: number;
   offset?: number;
   partitionBy?: Column[];
+  junction?: { table: Table; on: SQL; parentKey: Column };
 }): Promise<Record<string, any>[]> => {
-  const { db, table, tableName, distinct, pkNames, where, orderBy, limit, offset, partitionBy } = params;
+  const { db, table, tableName, distinct, pkNames, where, orderBy, limit, offset, partitionBy, junction } = params;
   const cols = getColumns(table);
 
   if (!pkNames.length) {
@@ -66,9 +78,10 @@ export const selectDistinctKeys = async (params: {
     sql`, `,
   )})`.as(DISTINCT_RN);
 
-  const sub = db
-    .select({ ...cols, [DISTINCT_RN]: rowNumber })
-    .from(table)
+  const selected = db
+    .select({ ...cols, ...(junction ? { [DISTINCT_PARENT]: junction.parentKey } : {}), [DISTINCT_RN]: rowNumber })
+    .from(table);
+  const sub = (junction ? selected.innerJoin(junction.table, junction.on) : selected)
     .where(where)
     .as('__dgql_distinct');
 
@@ -80,7 +93,10 @@ export const selectDistinctKeys = async (params: {
   ];
 
   let query = db
-    .select(Object.fromEntries(pkNames.map((name) => [name, sub[name]])))
+    .select({
+      ...Object.fromEntries(pkNames.map((name) => [name, sub[name]])),
+      ...(junction ? { [DISTINCT_PARENT]: sub[DISTINCT_PARENT] } : {}),
+    })
     .from(sub)
     .where(eq(sub[DISTINCT_RN], 1))
     .orderBy(...outerOrder);

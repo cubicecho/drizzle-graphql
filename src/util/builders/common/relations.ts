@@ -1,8 +1,8 @@
 // The named-relation map the builders work from, derived from drizzle-orm v1's relational
 // config, plus the factory signatures the dialect builders implement.
 
-import type { Relation, Table } from 'drizzle-orm';
-import { Column, getColumns, is } from 'drizzle-orm';
+import type { Relation, SQL, Table } from 'drizzle-orm';
+import { Column, getColumns, is, relationsFilterToSQL, sql } from 'drizzle-orm';
 import type { GraphQLFieldResolver, GraphQLObjectType } from 'graphql';
 import type { TableNamedRelations } from '../types.ts';
 
@@ -246,6 +246,36 @@ export const extractJunctionColumns = (
     return null;
   }
   return { table: junction, sourceCol, targetCol };
+};
+
+/**
+ * The relation's own declared `where` as a condition on a query that reads the target table,
+ * or `undefined` when it has none. The eager path gets this from drizzle's `with:`; the batched
+ * field resolver and `<relation>Aggregate` read the target table directly, so they have to add
+ * it themselves or they return rows the relation hides.
+ *
+ * A reversed filter (inherited from the relation on the other side) is written against the
+ * parent table, so it is applied as "the row's parent key belongs to a parent that passes it".
+ * `parentKeyCol` is the parent's join column and `groupCol` the column in the query that holds
+ * the parent key for each row — the target's foreign key, or the junction's source column.
+ */
+export const relationOwnCondition = (
+  relEntry: TableNamedRelations,
+  parentTable: Table,
+  targetTable: Table,
+  parentKeyCol: Column,
+  groupCol: Column,
+): SQL | undefined => {
+  const rel = (relEntry as any).relation ?? relEntry;
+  const ownWhere = relationOwnWhere(rel);
+  if (!ownWhere) {
+    return undefined;
+  }
+  if (!isRelationFilterReversed(rel)) {
+    return relationsFilterToSQL(targetTable, ownWhere as any);
+  }
+  const parentFilter = relationsFilterToSQL(parentTable, ownWhere as any);
+  return sql`${groupCol} in (select ${parentKeyCol} from ${parentTable} where ${parentFilter})`;
 };
 
 export type RelationResolverFactory = (params: {

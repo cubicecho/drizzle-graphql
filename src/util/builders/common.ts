@@ -135,6 +135,7 @@ export {
   extractJunctionColumns,
   extractRelationJoinColumns,
   relationColumns,
+  relationOwnCondition,
   unwrapRelationColumn,
   warnUnresolvedJoin,
 } from './common/relations.ts';

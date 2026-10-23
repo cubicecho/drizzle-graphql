@@ -3,7 +3,7 @@
 // IN-clause query.
 
 import type { Column, Table } from 'drizzle-orm';
-import { and, getColumns, gt, inArray, lte, type SQL, sql } from 'drizzle-orm';
+import { and, eq, getColumns, gt, inArray, lte, or, type SQL, sql } from 'drizzle-orm';
 import { getOrCreateLoader, getOrCreateRequestValue } from '../../batch-loader/index.ts';
 import { remapToGraphQLArrayOutput } from '../../data-mappers/index.ts';
 import { relationFieldExtension } from '../../extensions.ts';
@@ -20,7 +20,7 @@ import {
   orderByHasRelationEntry,
   selectsCursorField,
 } from './cursor.ts';
-import { primaryKeyRestriction, selectDistinctKeys } from './distinct.ts';
+import { DISTINCT_PARENT, primaryKeyRestriction, selectDistinctKeys } from './distinct.ts';
 import { type DrizzleErrorContext, drizzleError, toGraphQLError, withErrorContext } from './errors.ts';
 import { resolveExecutor } from './executor.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
@@ -32,7 +32,7 @@ import { relationDeletedDefault, resolveScope, withScope } from './policies.ts';
 import type { RelationFilterBase, RelationFilterContext } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import type { RelationResolverFactory } from './relations.ts';
-import { extractRelationJoinColumns } from './relations.ts';
+import { extractJunctionColumns, extractRelationJoinColumns, relationOwnCondition } from './relations.ts';
 import { extractSelectedColumnsFromTreeSQLFormat } from './selected-columns.ts';
 
 /**
@@ -58,6 +58,7 @@ const batchedPaginatedRelationQuery = async (
   columns: Record<string, Column> | undefined,
   orderCtx?: RelationFilterContext,
   whereArgs?: Record<string, any>,
+  junction?: RelationJunction,
 ): Promise<any[]> => {
   const cols = columns ?? getColumns(targetTable);
 
@@ -71,12 +72,12 @@ const batchedPaginatedRelationQuery = async (
   const orderClause = orderExprs.length ? sql` order by ${sql.join(orderExprs, sql`, `)}` : sql``;
   // Namespaced alias so it can't collide with a real column on the target table.
   const RN = '__drizzle_graphql_rn';
-  const rowNumber = sql`row_number() over (partition by ${foreignCol}${orderClause})`.as(RN);
+  // A junction relation partitions by the parent key the junction holds, not the target's own.
+  const partitionCol = junction ? junction.sourceCol : foreignCol;
+  const rowNumber = sql`row_number() over (partition by ${partitionCol}${orderClause})`.as(RN);
 
   // Subquery: every target column plus a per-partition row number.
-  const sub = db
-    .select({ ...cols, [RN]: rowNumber })
-    .from(targetTable)
+  const sub = withJunction(db.select({ ...cols, [RN]: rowNumber }).from(targetTable), junction, foreignCol)
     .where(whereCondition)
     .as('__paginated');
 
@@ -99,6 +100,19 @@ const batchedPaginatedRelationQuery = async (
   }
   return rows;
 };
+
+type RelationJunction = { table: Table; sourceCol: Column; targetCol: Column };
+
+/**
+ * Alias the parent key is selected under when a relation goes through a junction table. The
+ * key lives on the junction, not the target, so it has to be selected explicitly to group the
+ * rows by parent — and a target row linked to several parents comes back once per parent.
+ */
+const PARENT_KEY = '__drizzle_graphql_parent';
+
+/** `from(target)`, joined to the junction table when the relation has one. */
+const withJunction = (query: any, junction: RelationJunction | undefined, foreignCol: Column) =>
+  junction ? query.innerJoin(junction.table, eq(junction.targetCol, foreignCol)) : query;
 
 /**
  * Creates a RelationResolverFactory that generates field-level resolvers for each relation.
@@ -138,6 +152,20 @@ export const createRelationResolverFactory =
     }
 
     const { localColPropName, foreignCol, foreignColPropName } = joinCols;
+    // A `.through()` relation keeps the parent key on its junction table: rows are read with
+    // the junction joined in and grouped by its source column. `null` is a junction this
+    // resolver cannot express (composite keys); the eager path still serves that relation.
+    const junction = extractJunctionColumns(relEntry);
+    const groupCol = junction ? junction.sourceCol : foreignCol;
+    const groupKey = junction ? PARENT_KEY : foreignColPropName;
+    // The relation's own `where`, which drizzle applies on the eager path.
+    const ownCondition = relationOwnCondition(
+      relEntry,
+      parentTable,
+      targetTable,
+      getColumns(parentTable)[localColPropName] as Column,
+      groupCol,
+    );
     // The mode this field reads its target with when the request passes no `deleted` — see
     // `relationDeletedDefault`. Required to-one relations and `scope: 'root'` tables read
     // marked rows; everything else keeps hiding them.
@@ -284,6 +312,13 @@ export const createRelationResolverFactory =
         },
       );
 
+      if (junction === null) {
+        throw drizzleError(
+          `Relation '${tableName}.${relationName}' goes through a junction with a composite key, which can only be loaded together with its parent. Leave it to eager loading (eagerLoadRelations).`,
+          { code: 'DRIZZLE_UNSUPPORTED_RELATION' },
+        );
+      }
+
       const loader = getOrCreateLoader(context, loaderKey, async (parentIds: readonly any[]) => {
         // Loaders are cached per context, so every call batched here shares this request's
         // executor — the transaction on the context, when there is one.
@@ -296,7 +331,8 @@ export const createRelationResolverFactory =
           targetTableName,
           targetTable,
           and(
-            inArray(foreignCol, uniqueIds),
+            inArray(groupCol, uniqueIds),
+            ownCondition,
             whereArg
               ? extractFilters(targetTable, targetTableName, whereArg, relationFilterCtx(filterCtx, targetTableName))
               : undefined,
@@ -319,13 +355,30 @@ export const createRelationResolverFactory =
             pkNames: targetPkNames,
             where: whereCondition,
             orderBy: orderByArg,
-            partitionBy: [foreignCol],
+            partitionBy: [groupCol],
+            junction: junction
+              ? { table: junction.table, on: eq(junction.targetCol, foreignCol), parentKey: groupCol }
+              : undefined,
           });
           if (!keys.length) {
             return parentIds.map(() => (isOne ? null : []));
           }
-          whereCondition = and(whereCondition, primaryKeyRestriction(targetTable, targetPkNames, keys));
+          // Through a junction, a key is kept for one parent and not necessarily another, so the
+          // batch is narrowed to (parent, row) pairs rather than to rows.
+          whereCondition = and(
+            whereCondition,
+            junction
+              ? or(
+                  ...keys.map((key) =>
+                    and(eq(groupCol, key[DISTINCT_PARENT]), primaryKeyRestriction(targetTable, targetPkNames, [key])),
+                  ),
+                )
+              : primaryKeyRestriction(targetTable, targetPkNames, keys),
+          );
         }
+
+        // A junction relation selects the parent key from the junction under its own alias.
+        const selection = junction ? { ...(columns ?? getColumns(targetTable)), [PARENT_KEY]: groupCol } : columns;
 
         let rows: any[];
         if (limit != null || offset != null) {
@@ -341,16 +394,19 @@ export const createRelationResolverFactory =
             limit ?? null,
             offset ?? null,
             targetPkNames,
-            columns,
+            selection,
             relationFilterCtx(filterCtx, targetTableName),
             whereArg,
+            junction,
           );
         } else {
           // Use plain db.select() so column refs are never aliased — avoids drizzle-orm v1
           // RQB aliasing requirements that would require referencing via aliasedTable proxy.
-          let q = (columns ? executor.select(columns) : executor.select())
-            .from(targetTable)
-            .where(whereCondition) as any;
+          let q = withJunction(
+            (selection ? executor.select(selection) : executor.select()).from(targetTable),
+            junction,
+            foreignCol,
+          ).where(whereCondition) as any;
           const orderExprs = cursorEntries
             ? cursorOrderExprs(targetTable, cursorEntries)
             : orderByArg
@@ -367,16 +423,25 @@ export const createRelationResolverFactory =
           attachRowCursors(rows, cursorEntries);
         }
 
-        // Group by FK value before remapping (remapping may delete null fields).
+        // Group by parent key before remapping (remapping may delete null fields). A junction
+        // relation's key is a helper column, dropped once it has been read.
+        const keyOf = (row: any) => {
+          const key = String(row[groupKey]);
+          if (junction) {
+            delete row[PARENT_KEY];
+          }
+          return key;
+        };
+
         if (isOne) {
-          const byKey = new Map(rows.map((row: any) => [String(row[foreignColPropName]), row]));
+          const byKey = new Map(rows.map((row: any) => [keyOf(row), row]));
           remapToGraphQLArrayOutput(rows, targetTableName, targetTable);
           return parentIds.map((id) => byKey.get(String(id)) ?? null);
         }
 
         const grouped = new Map<string, any[]>(uniqueIds.map((id) => [String(id), []]));
         for (const row of rows) {
-          grouped.get(String(row[foreignColPropName]))?.push(row);
+          grouped.get(keyOf(row))?.push(row);
         }
         remapToGraphQLArrayOutput(rows, targetTableName, targetTable);
         return parentIds.map((id) => grouped.get(String(id)) ?? []);

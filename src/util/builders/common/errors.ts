@@ -51,7 +51,9 @@ export type DrizzleErrorCode =
   /** A stored value could not be represented by the scalar that transports it. */
   | 'DRIZZLE_UNREPRESENTABLE_VALUE'
   /** The request's shared mutation transaction was rolled back, so this field never ran. */
-  | 'DRIZZLE_TRANSACTION_ABORTED';
+  | 'DRIZZLE_TRANSACTION_ABORTED'
+  /** A relation was read on a path it cannot be loaded through (see the message). */
+  | 'DRIZZLE_UNSUPPORTED_RELATION';
 
 /**
  * What an error was about, published as `extensions.drizzle` beside the code — the runtime

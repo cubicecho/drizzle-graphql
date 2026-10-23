@@ -49,6 +49,7 @@ import {
   type RelationFilterBase,
   relationDeletedDefault,
   relationFilterCtx,
+  relationOwnCondition,
   resolveExecutor,
   resolveScope,
   resolveTypeName,
@@ -529,6 +530,13 @@ export const createRelationAggregateFactory = (
       return undefined;
     }
     const groupCol = junction ? junction.sourceCol : foreignCol;
+    const ownCondition = relationOwnCondition(
+      relEntry,
+      parentTable,
+      targetTable,
+      getColumns(parentTable)[localColPropName] as Column,
+      groupCol,
+    );
     // An aggregate over a relation counts the rows the relation itself returns, so it takes
     // the same soft-delete default — a `scope: 'root'` target is not hidden here either.
     const defaultDeleted = relationDeletedDefault(policies?.softDelete, targetTableName, false);
@@ -592,6 +600,7 @@ export const createRelationAggregateFactory = (
             targetTable,
             and(
               inArray(groupCol, uniqueIds),
+              ownCondition,
               whereArg
                 ? extractFilters(targetTable, targetTableName, whereArg, relationFilterCtx(filterCtx, targetTableName))
                 : undefined,

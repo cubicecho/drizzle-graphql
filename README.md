@@ -2463,7 +2463,9 @@ const finalSchema = addResolversToSchema({
     excludes that relation from `with:` (and from the mutation eager re-fetch).
 
 Opting a relation out does **not** remove its field — it keeps resolving lazily via the
-request-scoped batch loader, so the field still works even before you override it. Table
+request-scoped batch loader, so the field still works even before you override it. A
+many-to-many (`.through()`) relation whose junction has a composite key cannot be loaded
+lazily (`DRIZZLE_UNSUPPORTED_RELATION`); leave it eager-loaded. Table
 and relation names are the Drizzle schema keys (e.g. `Users`, `posts`), matching the keys
 of `entities.fieldResolvers`.
 
