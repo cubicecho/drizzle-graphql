@@ -1,4 +1,4 @@
-import { type Column, getColumns, sql, type Table } from 'drizzle-orm';
+import { type Column, getColumns, is, SQL, Subquery, sql, Table } from 'drizzle-orm';
 import { type MySqlAsyncDatabase, MySqlTable, getTableConfig as mysqlTableConfig } from 'drizzle-orm/mysql-core';
 import {
   GraphQLBoolean,
@@ -271,7 +271,7 @@ const generateUpdate = (
 
       let query = executor.update(table).set(input);
       if (filters) {
-        query = query.where(filters) as any;
+        query = query.where(mysqlWriteFilter(table, filters)) as any;
       }
 
       await query;
@@ -352,7 +352,7 @@ const generateUpdateMany = (
         for (const entry of entries) {
           let query = tx.update(table).set(entry.set);
           if (entry.filters) {
-            query = query.where(entry.filters) as any;
+            query = query.where(mysqlWriteFilter(table, entry.filters)) as any;
           }
           await query;
         }
@@ -440,7 +440,7 @@ const generateDelete = (
               .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
           : executor.delete(table);
       if (filters) {
-        query = query.where(filters) as any;
+        query = query.where(mysqlWriteFilter(table, filters)) as any;
       }
 
       await query;
@@ -457,6 +457,58 @@ const getTableConfig = memoizeTableConfig(mysqlTableConfig);
 /** Primary-key property names for a MySQL table, including table-level composite keys. */
 const mysqlPrimaryKeyPropNames = (table: MySqlTable): string[] =>
   getPrimaryKeyPropNamesFromConfig(table, getTableConfig);
+
+const TABLE_ORIGINAL_NAME = Symbol.for('drizzle:OriginalName');
+const TABLE_SCHEMA = Symbol.for('drizzle:Schema');
+
+/** Whether `chunk` reads `table` anywhere — under an alias, in a subquery, however deep. */
+const readsTable = (chunk: unknown, table: Table): boolean => {
+  if (Array.isArray(chunk)) {
+    return chunk.some((part) => readsTable(part, table));
+  }
+  if (is(chunk, Table)) {
+    return (
+      (chunk as any)[TABLE_ORIGINAL_NAME] === (table as any)[TABLE_ORIGINAL_NAME] &&
+      (chunk as any)[TABLE_SCHEMA] === (table as any)[TABLE_SCHEMA]
+    );
+  }
+  if (is(chunk, SQL)) {
+    return readsTable(chunk.queryChunks, table);
+  }
+  if (is(chunk, SQL.Aliased)) {
+    return readsTable(chunk.sql, table);
+  }
+  if (is(chunk, Subquery)) {
+    return readsTable((chunk as any)._.sql, table);
+  }
+  return false;
+};
+
+/**
+ * The `where` of an UPDATE or DELETE, in a form MySQL accepts. MySQL refuses a statement whose
+ * `where` reads the table it writes (error 1093, "You can't specify target table … for update
+ * in FROM clause") — which a relation filter through a self-referencing relation, or a scope
+ * written as one, does. Such a filter is resolved to the primary keys it matches first, through
+ * a derived table MySQL materializes (`DISTINCT` keeps the optimizer from merging it back in),
+ * and the write matches those keys. Any other filter is returned as it is.
+ */
+const mysqlWriteFilter = (table: MySqlTable, filters: SQL | undefined): SQL | undefined => {
+  if (!filters || !readsTable(filters, table)) {
+    return filters;
+  }
+  const columns = getColumns(table) as Record<string, Column>;
+  const keys = mysqlPrimaryKeyPropNames(table).map((name) => columns[name]!);
+  if (!keys.length) {
+    // Nothing identifies a row to match by; the statement is left for MySQL to refuse.
+    return filters;
+  }
+  const keyList = sql.join(
+    keys.map((column) => sql.identifier(column.name)),
+    sql`, `,
+  );
+  const target = keys.length === 1 ? sql`${keys[0]}` : sql`(${sql.join(keys, sql`, `)})`;
+  return sql`${target} in (select ${keyList} from (select distinct ${sql.join(keys, sql`, `)} from ${table} where ${filters}) as ${sql.identifier('dgql_write_target')})`;
+};
 
 // MySQL sorts NULLs as the smallest values (first in ASC), and its writes return no rows.
 const { prepareBuild, forEachTable, finalizeBuild } = createSchemaBuilder({
@@ -721,6 +773,7 @@ export const generateSchemaData = <
             txCtx: mutationTxCtx,
             policies,
             returnsRows: false,
+            writeFilter: (filters) => mysqlWriteFilter(schema[tableName] as MySqlTable, filters)!,
           })
         : undefined;
     const deleteCountGenerated =
@@ -737,6 +790,7 @@ export const generateSchemaData = <
             txCtx: mutationTxCtx,
             policies,
             returnsRows: false,
+            writeFilter: (filters) => mysqlWriteFilter(schema[tableName] as MySqlTable, filters)!,
           })
         : undefined;
     // Each mutation is paired with the identity it publishes on `extensions.drizzle`, so a

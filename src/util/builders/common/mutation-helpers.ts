@@ -308,6 +308,7 @@ export const generateWriteCount = ({
   policies,
   pkNames = [],
   returnsRows,
+  writeFilter,
 }: {
   db: any;
   tableName: string;
@@ -326,6 +327,8 @@ export const generateWriteCount = ({
   pkNames?: readonly string[];
   /** Whether the dialect has `RETURNING` (false on MySQL), which an `after` hook's rows need. */
   returnsRows: boolean;
+  /** Rewrites the `where` into a form the dialect accepts on a write (MySQL; see `mysqlWriteFilter`). */
+  writeFilter?: (filters: SQL) => SQL;
 }): CreatedResolver => {
   const softDelete = kind === 'delete' ? policies?.softDelete?.(tableName) : undefined;
   // The plural delete's rule: only a soft-deleting table that opted in can purge.
@@ -406,7 +409,7 @@ export const generateWriteCount = ({
         deleted: hard ? 'INCLUDE' : undefined,
       });
       if (filters) {
-        query = query.where(filters);
+        query = query.where(writeFilter ? writeFilter(filters) : filters);
       }
 
       if (!readsRows) {
