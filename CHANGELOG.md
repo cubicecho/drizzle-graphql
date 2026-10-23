@@ -1,3 +1,10 @@
+## [15.1.2](https://github.com/cubicecho/drizzle-graphql/compare/v15.1.1...v15.1.2) (2026-10-23)
+
+### Bug Fixes
+
+* an upsert's conflict branch writes only what an update would ([59468b2](https://github.com/cubicecho/drizzle-graphql/commit/59468b280b83b8c29151150d8da5d351fe437f10))
+* identifyRows does not claim an upsert's keys are complete when it conflicts elsewhere ([e20d67b](https://github.com/cubicecho/drizzle-graphql/commit/e20d67bc3323368284d77cf6a307463b8ffc96db))
+
 ## [15.1.1](https://github.com/cubicecho/drizzle-graphql/compare/v15.1.0...v15.1.1) (2026-10-23)
 
 ### Bug Fixes
