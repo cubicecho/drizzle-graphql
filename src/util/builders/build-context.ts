@@ -54,6 +54,7 @@ import {
   type UniqueKeyMap,
   visibleColumns,
 } from '../builders/common.ts';
+import { installSqliteBlobJsonDecoders } from '../data-mappers/index.ts';
 import { type DrizzleMutationMeta, type TableFieldExtensionFactory, tableFieldExtensions } from '../extensions.ts';
 import { resolveTableFeatures } from '../features.ts';
 import { registerEnumConfig, registerScalarOverrides } from '../type-converter/index.ts';
@@ -250,6 +251,9 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     // Resolve scalar overrides into the type-converter's registry before any type generation —
     // every subsequent column→GraphQL type decision and runtime value remap consults it.
     registerScalarOverrides(tables, options);
+    // SQLite blob columns read NULL wrongly inside nested relations unless given a JSON-path
+    // decoder (see `installSqliteBlobJsonDecoders`).
+    installSqliteBlobJsonDecoders(tables);
     // Same lifecycle: the enum registry is per-build, so a second build never reuses the first
     // build's enum types (and with them its naming decisions).
     registerEnumConfig(options);

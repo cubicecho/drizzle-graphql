@@ -82,6 +82,45 @@ export const pgTimestampTextToIso = (value: string): string => {
   return utc.length === 24 ? `${utc.slice(0, 19)}${fraction}Z` : value;
 };
 
+/** Marks a decoder installed by {@link installSqliteBlobJsonDecoders}, so a rebuild never wraps it twice. */
+const BLOB_JSON_DECODER = Symbol.for('drizzle-graphql.sqliteBlobJsonDecoder');
+
+/**
+ * Gives SQLite's blob columns a decoder for the relational query builder's JSON path, so a NULL
+ * there reads back as null.
+ *
+ * Inside a nested relation drizzle selects a blob as `hex(column)` (JSON cannot hold a blob), and
+ * `hex(NULL)` is `''`. drizzle then decodes that `''` with the column's ordinary decoder: a
+ * `blob({ mode: 'bigint' })` reads it as `0n` — indistinguishable from a stored 0 — and a
+ * `blob({ mode: 'json' })` throws on it. drizzle consults a column's `mapFromJsonValue`, when it
+ * has one, instead of `mapFromDriverValue` for exactly this path, so one is installed here that
+ * reads `''` as NULL and hands everything else to the column's own decoder.
+ *
+ * `''` is never a stored bigint or JSON blob, so for those it can only be NULL. For a buffer
+ * blob it is also how an empty blob arrives, so it is read as NULL only when the column is
+ * nullable — a `notNull` column cannot hold the NULL, so there it is the empty blob.
+ */
+export const installSqliteBlobJsonDecoders = (tables: Record<string, Table>): void => {
+  for (const table of Object.values(tables)) {
+    for (const column of Object.values(getColumns(table))) {
+      const columnType: string = (column as any).columnType ?? '';
+      const isBuffer = columnType === 'SQLiteBlobBuffer';
+      if (columnType !== 'SQLiteBigInt' && columnType !== 'SQLiteBlobJson' && !isBuffer) {
+        continue;
+      }
+      const existing = (column as any).mapFromJsonValue;
+      if (existing && !existing[BLOB_JSON_DECODER]) {
+        continue;
+      }
+      const emptyIsNull = !isBuffer || !column.notNull;
+      const decoder = (value: unknown) =>
+        value === '' && emptyIsNull ? null : (column as any).mapFromDriverValue(value);
+      (decoder as any)[BLOB_JSON_DECODER] = true;
+      (column as any).mapFromJsonValue = decoder;
+    }
+  }
+};
+
 export const remapToGraphQLCore = (
   key: string,
   value: any,
@@ -263,12 +302,6 @@ export const remapToGraphQLSingleOutput = (
     }
 
     const column = columns[key];
-
-    // SQLite blob(bigint) returns 0n for null DB values — treat as absent when nullable.
-    if (value === 0n && column && (column as any).columnType === 'SQLiteBigInt' && !(column as any).notNull) {
-      delete queryOutput[key];
-      continue;
-    }
 
     const remapped = remapToGraphQLCore(key, value, tableName, column, relationMap);
     if (column && remapped !== value) {
