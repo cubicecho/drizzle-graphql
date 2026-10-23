@@ -4,6 +4,8 @@
 import type { Column, Table } from 'drizzle-orm';
 import { and, eq, extractExtendedColumnType, getColumns, is, isNotNull, isNull, ne, or, SQL } from 'drizzle-orm';
 import { GraphQLEnumType } from 'graphql';
+import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
+import { isDateOnlyColumn, isDateTimeColumn } from '../../type-converter/index.ts';
 import { drizzleError } from './errors.ts';
 import type { DefaultOrderByFor } from './limits.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
@@ -138,7 +140,12 @@ export const resolveSoftDeleteInfo = (
     : constraint === 'date' && baseType === 'object'
       ? () => new Date()
       : baseType === 'string'
-        ? () => new Date().toISOString()
+        ? // A `'string'`-mode date column takes its own text form — MySQL refuses an ISO
+          // instant (`…T…Z`) for a DATETIME, and a DATE wants the calendar day — which is what
+          // an ordinary write of the same column is mapped to.
+          isDateTimeColumn(column) || isDateOnlyColumn(column)
+          ? () => remapFromGraphQLCore(new Date(), column, columnName)
+          : () => new Date().toISOString()
         : baseType === 'number'
           ? () => Date.now()
           : baseType === 'bigint'
