@@ -1,8 +1,10 @@
 // Keyset pagination. The `cursor` field, the ordering entries a cursor encodes, the encode and
 // decode pair, and the predicate that resumes a query from one.
 
-import type { Table } from 'drizzle-orm';
-import { and, eq, getColumns, gt, isNotNull, isNull, lt, or, type SQL, sql } from 'drizzle-orm';
+import type { Column, Table } from 'drizzle-orm';
+import { and, eq, getColumns, gt, is, isNotNull, isNull, lt, or, type SQL, sql } from 'drizzle-orm';
+import { MySqlDateTime, MySqlTimestamp } from 'drizzle-orm/mysql-core';
+import { PgTimestamp } from 'drizzle-orm/pg-core';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { drizzleError } from './errors.ts';
 import type { OrderNullsOption } from './order-by.ts';
@@ -95,6 +97,58 @@ export const cursorOrderExprs = (table: Table, entries: CursorOrderEntry[]): SQL
 };
 
 /**
+ * Property a row carries an ordering column's full-precision text under, when the column holds
+ * more than a JS Date can. Namespaced like {@link ROW_CURSOR_PROP}, and removed from the row
+ * once its cursor is encoded.
+ */
+const preciseTextProp = (column: string): string => `__drizzle_graphql_cursor_text_${column}`;
+
+/**
+ * Whether a column reads into a JS Date (milliseconds) while the database keeps finer
+ * fractional seconds: a PostgreSQL `timestamp` / `timestamptz` in `mode: 'date'` (precision 6
+ * unless it says otherwise) or a MySQL `datetime` / `timestamp` in `mode: 'date'` with
+ * `fsp` above 3. String-mode columns already arrive as the database's own text, and `time` is
+ * always a string, so neither loses anything.
+ */
+const outgrowsJsDate = (column: Column): boolean => {
+  if (is(column, PgTimestamp)) {
+    return column.precision === undefined || column.precision > 3;
+  }
+  if (is(column, MySqlDateTime) || is(column, MySqlTimestamp)) {
+    return (column.fsp ?? 0) > 3;
+  }
+  return false;
+};
+
+/**
+ * Extra SQL expressions a cursor-computing query selects alongside the row: for each ordering
+ * column whose values a JS Date would truncate, the value as the database's own text. The
+ * cursor then encodes that text rather than the Date, and `after` compares the column against
+ * it — so two rows a microsecond apart stay distinct positions. `table` may be the aliased RQB
+ * proxy. Empty when no ordering column needs it.
+ */
+export const cursorPreciseExtras = (table: Table, entries: CursorOrderEntry[]): Record<string, SQL> => {
+  const cols = getColumns(table);
+  const extras: Record<string, SQL> = {};
+  for (const [name] of entries) {
+    const column = cols[name];
+    if (column && outgrowsJsDate(column)) {
+      extras[preciseTextProp(name)] = is(column, PgTimestamp) ? sql`${column}::text` : sql`cast(${column} as char)`;
+    }
+  }
+  return extras;
+};
+
+/**
+ * {@link cursorPreciseExtras} aliased under their property names, for a `select({...})` that
+ * may be wrapped in a subquery (where a bare SQL expression would have no name).
+ */
+export const cursorPreciseSelection = (table: Table, entries: CursorOrderEntry[]): Record<string, SQL.Aliased> =>
+  Object.fromEntries(
+    Object.entries(cursorPreciseExtras(table, entries)).map(([prop, expression]) => [prop, expression.as(prop)]),
+  );
+
+/**
  * Serializes one ordering-tuple value into a JSON-safe shape. Dates and bigints don't survive
  * JSON.stringify losslessly (bigint throws, Date turns into an untagged string), so they are
  * tagged; decimals already arrive from the driver as strings, which are lossless as-is.
@@ -142,7 +196,16 @@ const cursorEncoder = (entries: CursorOrderEntry[]): ((row: Record<string, any>)
   const columns = entries.map(([column]) => column);
 
   return (row) => {
-    const values = JSON.stringify(columns.map((column) => encodeCursorValue(row[column] ?? null)));
+    const values = JSON.stringify(
+      columns.map((column) => {
+        const value = row[column] ?? null;
+        // The database's own text of a value a Date would truncate (see cursorPreciseExtras).
+        // It goes out as a plain string: both dialects' date-mode columns bind a string as-is,
+        // and the database parses it back at the column's own precision.
+        const precise = row[preciseTextProp(column)];
+        return value !== null && typeof precise === 'string' ? precise : encodeCursorValue(value);
+      }),
+    );
     return Buffer.from(`{"o":${spec},"v":${values}}`, 'utf8').toString('base64url');
   };
 };
@@ -308,8 +371,12 @@ export const selectsCursorField = (info: any, table: Table): boolean => {
  */
 export const attachRowCursors = (rows: Record<string, any>[], entries: CursorOrderEntry[]): void => {
   const encode = cursorEncoder(entries);
+  const preciseProps = entries.map(([column]) => preciseTextProp(column));
   for (const row of rows) {
     row[ROW_CURSOR_PROP] = encode(row);
+    for (const prop of preciseProps) {
+      delete row[prop];
+    }
   }
 };
 

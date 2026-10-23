@@ -16,6 +16,7 @@ import {
   buildCursorCondition,
   cursorOrderExprs,
   cursorOrderingEntries,
+  cursorPreciseSelection,
   decodeCursor,
   orderByHasRelationEntry,
   selectsCursorField,
@@ -55,7 +56,7 @@ const batchedPaginatedRelationQuery = async (
   limit: number | null,
   offset: number | null,
   pkNames: readonly string[],
-  columns: Record<string, Column> | undefined,
+  columns: Record<string, Column | SQL.Aliased> | undefined,
   orderCtx?: RelationFilterContext,
   whereArgs?: Record<string, any>,
   junction?: RelationJunction,
@@ -213,7 +214,7 @@ export const createRelationResolverFactory =
           columns[columnName] = column;
         }
       }
-      return columns;
+      return cursorEntries ? { ...columns, ...cursorPreciseSelection(targetTable, cursorEntries) } : columns;
     };
 
     const resolve = async (parent: any, args: any, context: any, info: any) => {

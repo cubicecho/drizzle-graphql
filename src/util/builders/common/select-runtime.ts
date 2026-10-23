@@ -12,6 +12,7 @@ import {
   buildCursorCondition,
   cursorOrderExprs,
   cursorOrderingEntries,
+  cursorPreciseExtras,
   decodeCursor,
   isCursorFieldSelected,
   orderByCursorObstacle,
@@ -224,6 +225,17 @@ export const runRelationalSelect = async (opts: {
   if (cursorEntries && cursorSelected) {
     for (const [column] of cursorEntries) {
       params.columns[column] = true;
+    }
+    // Ordering columns that hold more than a JS Date keeps also come back as the database's
+    // text, so the cursor carries their full precision.
+    const preciseProps = Object.keys(cursorPreciseExtras(table, cursorEntries));
+    if (preciseProps.length) {
+      params.extras = Object.fromEntries(
+        preciseProps.map((prop) => [
+          prop,
+          (aliasedTable: Table) => cursorPreciseExtras(aliasedTable, cursorEntries!)[prop]!,
+        ]),
+      );
     }
   }
 

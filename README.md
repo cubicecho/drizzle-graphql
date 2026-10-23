@@ -1484,7 +1484,12 @@ field, and passing it back as `after` resumes strictly after that row.
     in `asc`), MySQL and SQLite smallest (first in `asc`). The predicate matches either way,
     so rows with `NULL` in an ordered column are paged through, not skipped, and `nulls` is
     part of the ordering a cursor is tied to
--   Dates and bigints round-trip losslessly through the cursor
+-   Dates and bigints round-trip losslessly through the cursor, at the column's own precision:
+    a PostgreSQL `timestamp` / `timestamptz` (microseconds unless declared `precision: 3` or
+    less) or a MySQL `datetime` / `timestamp` with `fsp` above 3 holds more than the
+    millisecond JS `Date` that `mode: 'date'` reads it into, so the cursor carries the
+    database's own text of the value instead, and rows a microsecond apart are still distinct
+    pages
 -   A cursor is only valid under the ordering it was issued for — reusing it with a
     different `orderBy` (or a malformed/corrupted cursor) returns a `GraphQLError`
 -   `after` cannot be combined with `distinct`, with `matchFilterOrder`, or with an `orderBy`
