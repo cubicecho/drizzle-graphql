@@ -26,7 +26,7 @@ import { type DrizzleErrorContext, drizzleError, toGraphQLError, withErrorContex
 import { resolveExecutor } from './executor.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { LimitPolicyFor } from './limits.ts';
-import { applyLimitPolicy, withDefaultOrderBy } from './limits.ts';
+import { applyLimitPolicy, assertPagingNotNegative, withDefaultOrderBy } from './limits.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { TablePolicies } from './policies.ts';
 import { relationDeletedDefault, resolveScope, withScope } from './policies.ts';
@@ -245,6 +245,7 @@ export const createRelationResolverFactory =
             ? (args as any)?.orderBy
             : withDefaultOrderBy(args ?? {}, targetTableName, policies?.defaultOrderBy).orderBy;
           const limit = applyLimitPolicy(requestedLimit, limitPolicy, errorCtx);
+          assertPagingNotNegative({ offset }, errorCtx);
           const distinct = ((args ?? {}) as any).distinct?.length ? ((args ?? {}) as any).distinct : undefined;
 
           // ── keyset (cursor) pagination ──

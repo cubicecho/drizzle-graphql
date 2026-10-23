@@ -1,14 +1,12 @@
-import { rm } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
-import { type GraphQLSchema, graphql } from 'graphql';
+import { GraphQLInt, GraphQLList, GraphQLNonNull, GraphQLObjectType, GraphQLSchema, graphql } from 'graphql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildSchema, type LimitsConfig } from '@/index';
+import { buildSchema, type LimitsConfig, resolveSelection } from '@/index';
 import * as schema from '../schema/pg';
 import { setupTables } from './common';
 
-const DATA_DIR = `./tests/.temp/pgdata-limit-policy-${Date.now()}`;
 let pglite: PGlite;
 let db: any;
 
@@ -37,7 +35,7 @@ const run = (gqlSchema: GraphQLSchema, source: string, variableValues?: Record<s
   graphql({ schema: gqlSchema, source, variableValues, contextValue: {} });
 
 beforeAll(async () => {
-  pglite = new PGlite(DATA_DIR);
+  pglite = new PGlite();
   await pglite.waitReady;
   db = (drizzle as any)({ client: pglite, schema, relations: schema.relations, logger: !!process.env['LOG_SQL'] });
   await db.execute(
@@ -49,7 +47,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await pglite?.close().catch(() => {});
-  await rm(DATA_DIR, { recursive: true, force: true }).catch(() => {});
 });
 
 // Seed recap: users 1, 2 and 5; posts 1,2,3,6 belong to user 1 and posts 4,5 to user 5.
@@ -282,6 +279,86 @@ describe.sequential('limit policy', () => {
       expect(estimator({ args: { limit: 2 }, childComplexity: 1 })).toBe(2);
       // Never priced above what the policy would actually let through.
       expect(estimator({ args: { limit: 100 }, childComplexity: 1 })).toBe(5);
+    });
+  });
+
+  describe('negative limit and offset', () => {
+    // SQLite reads `LIMIT -1` as "no limit", so a negative limit would walk straight past
+    // `maxLimit`; PostgreSQL and MySQL fail on it with a raw database error instead. Neither is
+    // a page size, so it is rejected up front, with or without a policy.
+    const expectInvalid = (res: any, message: string) => {
+      expect(res.errors?.[0]?.message).toBe(message);
+      expect(res.errors?.[0]?.extensions?.['code']).toBe('DRIZZLE_INVALID_INPUT_VALUE');
+    };
+
+    for (const [label, limits] of [
+      ['with a policy', { maxLimit: 2 }],
+      ['without a policy', undefined],
+    ] as const) {
+      it(`rejects a negative root limit ${label}`, async () => {
+        expectInvalid(
+          await run(buildWith(limits), `{ posts(limit: -1) { id } }`),
+          "'limit' must not be negative, got -1.",
+        );
+      });
+
+      it(`rejects a negative root offset ${label}`, async () => {
+        expectInvalid(
+          await run(buildWith(limits), `{ posts(offset: -1) { id } }`),
+          "'offset' must not be negative, got -1.",
+        );
+      });
+    }
+
+    it('rejects a negative offset on a single query', async () => {
+      expectInvalid(await run(buildWith(), `{ post(offset: -2) { id } }`), "'offset' must not be negative, got -2.");
+    });
+
+    for (const [label, eager] of [
+      ['eagerly loaded', true],
+      ['lazily resolved', false],
+    ] as const) {
+      it(`rejects a negative relation limit when ${label}`, async () => {
+        const res = await run(buildWith({ maxLimit: 2 }, eager), `{ users { id posts(limit: -1) { id } } }`);
+        expectInvalid(res, "'limit' must not be negative, got -1.");
+        expect(res.errors?.[0]?.extensions?.['drizzle']).toMatchObject({ table: 'Posts', relation: 'posts' });
+      });
+
+      it(`rejects a negative relation offset when ${label}`, async () => {
+        const res = await run(buildWith(undefined, eager), `{ users { id posts(offset: -1) { id } } }`);
+        expectInvalid(res, "'offset' must not be negative, got -1.");
+      });
+    }
+
+    it('still accepts zero for both', async () => {
+      const res = await run(buildWith({ maxLimit: 2 }), `{ posts(limit: 0, offset: 0) { id } }`);
+      expect(res.errors).toBeUndefined();
+      expect((res.data as any).posts).toEqual([]);
+    });
+
+    it('rejects a negative limit or offset passed to resolveSelection', async () => {
+      const PostsType = (buildSchema(db).entities.types as Record<string, GraphQLObjectType>)['Posts']!;
+      const overrideSchema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: 'Query',
+          fields: {
+            postsResolved: {
+              type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(PostsType))),
+              args: { limit: { type: GraphQLInt }, offset: { type: GraphQLInt } },
+              resolve: (_source: any, args: any, _context: any, info: any) =>
+                resolveSelection(info, { db, table: 'Posts', limit: args.limit, offset: args.offset }),
+            },
+          },
+        }),
+      });
+      expectInvalid(
+        await run(overrideSchema, `{ postsResolved(limit: -1) { id } }`),
+        "'limit' must not be negative, got -1.",
+      );
+      expectInvalid(
+        await run(overrideSchema, `{ postsResolved(offset: -1) { id } }`),
+        "'offset' must not be negative, got -1.",
+      );
     });
   });
 

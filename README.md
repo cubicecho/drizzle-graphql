@@ -1901,6 +1901,10 @@ Two details worth stating plainly:
 -   **A rejection is the default because truncation lies.** Silently cutting a page down to
     `maxLimit` tells a paginating client it has reached the end when it has not. `clampToMax:
     true` opts into that when you would rather never fail a query.
+-   **A negative `limit` or `offset` is always rejected** with `DRIZZLE_INVALID_INPUT_VALUE`,
+    whether or not `limits` is configured — on root lists, single queries, relation fields and
+    `resolveSelection`. SQLite reads `LIMIT -1` as "no limit", so a negative value would
+    otherwise walk straight past `maxLimit`; `0` stays valid and returns no rows.
 
 The policy applies to root list queries and to to-many relation fields, on both the eager and
 the lazy relation paths. A relation takes the policy of the table it *reads*, not its parent's:
@@ -2124,7 +2128,8 @@ to match on prose:
     `DrizzleErrorContext`.
 
 A value the request could not supply is `DRIZZLE_INVALID_INPUT_VALUE` — a date that does not
-parse, a `BigInt` argument that is not an integer, a malformed JSON column value — and a write
+parse, a `BigInt` argument that is not an integer, a malformed JSON column value, a negative
+`limit` or `offset` — and a write
 naming something that is not a column of its table is `DRIZZLE_UNKNOWN_COLUMN`. The mirror
 image, a stored value the scalar transporting it cannot represent, is
 `DRIZZLE_UNREPRESENTABLE_VALUE`; it says the data is out of range, not that the request was

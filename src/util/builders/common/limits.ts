@@ -59,6 +59,27 @@ export const withDefaultOrderBy = <T extends { orderBy?: any }>(
 };
 
 /**
+ * Rejects a negative `limit` or `offset`. Neither is a page size or a position, and the
+ * dialects disagree on what one means: SQLite reads `LIMIT -1` as "no limit" — which would walk
+ * straight past `maxLimit` — while PostgreSQL and MySQL fail with a raw database error. Applied
+ * whether or not the table has a limit policy.
+ */
+export const assertPagingNotNegative = (
+  paging: { limit?: number | null; offset?: number | null },
+  errorCtx?: DrizzleErrorContext,
+): void => {
+  for (const name of ['limit', 'offset'] as const) {
+    const value = paging[name];
+    if (value != null && value < 0) {
+      throw drizzleError(`'${name}' must not be negative, got ${value}.`, {
+        code: 'DRIZZLE_INVALID_INPUT_VALUE',
+        ...errorCtx,
+      });
+    }
+  }
+};
+
+/**
  * The `limit` a query actually runs with, given the policy for the table it reads.
  *
  * A request that passes no `limit` falls back to `defaultLimit`, or to `maxLimit` when only
@@ -78,6 +99,7 @@ export const applyLimitPolicy = (
    */
   errorCtx?: DrizzleErrorContext,
 ): number | undefined => {
+  assertPagingNotNegative({ limit }, errorCtx);
   if (!policy) {
     return limit ?? undefined;
   }
