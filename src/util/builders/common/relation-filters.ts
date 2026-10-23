@@ -20,6 +20,7 @@ import {
 import type { FilterColumnOperatorsCore, Filters, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
 import { extractFiltersColumn } from './filters.ts';
+import type { ScopeResolver } from './policies.ts';
 import { isRelationFilterReversed, relationColumns, relationOwnWhere, unwrapRelationColumn } from './relations.ts';
 import type { UniqueKeyMap } from './unique-keys.ts';
 import { extractUniqueKeyFilter } from './unique-keys.ts';
@@ -47,6 +48,14 @@ export interface RelationFilterContext {
    * generate is an unknown filter key like any other.
    */
   uniqueKeys?: Record<string, UniqueKeyMap>;
+  /**
+   * The row policies of the request being compiled. A relation filter (and an ordering through
+   * a relation) reads the target table in a subquery, so it applies the target's `scope` and
+   * `softDelete` here — with the mode the relation field itself would default to — or a filter
+   * could match, and a sort could rank by, a row the relation hides. Absent for a scope's own
+   * filter object, which is the server's predicate and is compiled unscoped.
+   */
+  scope?: ScopeResolver;
 }
 
 /**
@@ -62,6 +71,14 @@ export type RelationFilterBase = Pick<RelationFilterContext, 'tables' | 'relatio
  * for exactly as long as that build is reachable.
  */
 const narrowedCtxCache = new WeakMap<RelationFilterBase, Map<string, RelationFilterContext>>();
+
+/**
+ * One alias counter per build, shared by every table's narrowed context. A statement can
+ * combine subqueries compiled from different contexts — a relation filter on one table whose
+ * target's scope is a filter object reaching through another relation, say — and nested
+ * subqueries that drew the same alias from two separate counters would shadow each other.
+ */
+const aliasCounters = new WeakMap<RelationFilterBase, { n: number }>();
 
 /**
  * Narrows the build-scoped relation filter context to the table a resolver is filtering.
@@ -80,6 +97,7 @@ const narrowedCtxCache = new WeakMap<RelationFilterBase, Map<string, RelationFil
 export const relationFilterCtx = (
   base: RelationFilterBase | undefined,
   tableKey: string,
+  scope?: ScopeResolver,
 ): RelationFilterContext | undefined => {
   if (!base) {
     return undefined;
@@ -93,11 +111,37 @@ export const relationFilterCtx = (
 
   let ctx = byTable.get(tableKey);
   if (!ctx) {
-    ctx = { ...base, tableKey };
+    let aliases = aliasCounters.get(base);
+    if (!aliases) {
+      aliases = { n: 0 };
+      aliasCounters.set(base, aliases);
+    }
+    ctx = { ...base, tableKey, aliases };
     byTable.set(tableKey, ctx);
   }
 
-  return ctx;
+  // The request's policies are per request, so they ride on a copy rather than the cached
+  // context. The copy shares the cached alias counter.
+  return scope ? { ...ctx, scope } : ctx;
+};
+
+/**
+ * The row-policy predicate a subquery over a relation's target applies: the target's scope
+ * and soft-delete condition, in the `deleted` mode the relation field defaults to — so a
+ * relation filter or a relation ordering sees exactly the rows the relation field returns.
+ */
+export const relationTargetPolicy = (
+  ctx: RelationFilterContext,
+  relation: Relation<string>,
+  targetTableName: string,
+  aliasedTarget: Table,
+): SQL | undefined => {
+  const scope = ctx.scope;
+  if (!scope) {
+    return undefined;
+  }
+  const mode = scope.relationDefault(targetTableName, is(relation, One) && (relation as any).optional === false);
+  return scope.has(targetTableName, mode) ? scope.on(targetTableName, aliasedTarget, mode) : undefined;
 };
 
 /** The three ways a to-many relation can be required to match, plus the to-one shorthand. */
@@ -270,8 +314,17 @@ const buildRelationExists = (
   const throughTable = (relation as any).throughTable as Table | undefined;
   let fromClause: SQL;
   let joinCondition: SQL | undefined;
+  let junctionPolicy: SQL | undefined;
   if (throughTable) {
     const aliasedThrough = aliasedTable(throughTable, `dgql_rel_${aliases.n++}`);
+    // A junction with its own policies (a soft-deleted membership, a scoped link row) only
+    // links the rows it keeps.
+    const throughTableName = ctx.scope
+      ? Object.keys(ctx.tables).find((name) => ctx.tables[name] === throughTable)
+      : undefined;
+    if (throughTableName && ctx.scope!.has(throughTableName)) {
+      junctionPolicy = ctx.scope!.on(throughTableName, aliasedThrough);
+    }
     const { correlation, junctionJoin } = buildThroughJoinConditions(
       parentTable,
       relation,
@@ -293,6 +346,11 @@ const buildRelationExists = (
     ? relationsFilterToSQL(isRelationFilterReversed(relation) ? parentTable : aliasedTarget, ownWhere as any)
     : undefined;
 
+  // The rows the relation field would return: the target's scope and soft-delete condition,
+  // and through a junction the junction's too, so a filter can neither match nor be blocked
+  // by a row the caller cannot read.
+  const policy = and(relationTargetPolicy(ctx, relation, targetTableName, aliasedTarget), junctionPolicy);
+
   const inner = innerFilters
     ? extractFilters(aliasedTarget, targetTableName, innerFilters, { ...ctx, tableKey: targetTableName, aliases })
     : undefined;
@@ -303,10 +361,10 @@ const buildRelationExists = (
       return undefined;
     }
 
-    return sql`not exists (select 1 from ${fromClause} where ${and(joinCondition, relationWhere, not(inner))})`;
+    return sql`not exists (select 1 from ${fromClause} where ${and(joinCondition, relationWhere, policy, not(inner))})`;
   }
 
-  const condition = and(joinCondition, relationWhere, inner);
+  const condition = and(joinCondition, relationWhere, policy, inner);
 
   return mode === 'none'
     ? sql`not exists (select 1 from ${fromClause} where ${condition})`

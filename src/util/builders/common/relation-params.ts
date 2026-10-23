@@ -176,7 +176,12 @@ export const extractRelationsParams = (
                 targetTableName,
                 aliasedTable,
                 relWhere
-                  ? extractFilters(aliasedTable, relName, relWhere, relationFilterCtx(filterCtx, targetTableName))
+                  ? extractFilters(
+                      aliasedTable,
+                      relName,
+                      relWhere,
+                      relationFilterCtx(filterCtx, targetTableName, scope),
+                    )
                   : undefined,
                 relDeleted,
               ),
@@ -190,7 +195,12 @@ export const extractRelationsParams = (
     const pkNames = targetPkNames ?? [];
     thisRecord.orderBy = relationArgs?.orderBy
       ? (aliasedTable: Table) =>
-          extractOrderBy(aliasedTable, relationArgs.orderBy!, relationFilterCtx(filterCtx, targetTableName), relWhere)
+          extractOrderBy(
+            aliasedTable,
+            relationArgs.orderBy!,
+            relationFilterCtx(filterCtx, targetTableName, scope),
+            relWhere,
+          )
       : hasPagination && pkNames.length
         ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
         : undefined;

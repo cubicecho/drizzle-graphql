@@ -19,7 +19,7 @@ import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
 import type { OrderByArgs, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
 import type { RelationFilterContext } from './relation-filters.ts';
-import { buildRelationJoinCondition } from './relation-filters.ts';
+import { buildRelationJoinCondition, relationTargetPolicy } from './relation-filters.ts';
 import { isFilterableRelation, isRelationFilterReversed, relationOwnWhere } from './relations.ts';
 
 /** How NULLs are placed relative to non-NULL values in an ordered column. */
@@ -145,6 +145,9 @@ const extendRelationOrderChain = (
   const relationWhere = ownWhere
     ? relationsFilterToSQL(isRelationFilterReversed(relation) ? parentTable : aliasedTarget, ownWhere as any)
     : undefined;
+  // The target's scope and soft-delete condition, so a row the `author` field would hide sorts
+  // as NULL instead of ranking its parent by a value the caller cannot read.
+  const policy = relationTargetPolicy(ctx, relation, relEntry.targetTableName, aliasedTarget);
 
   return {
     fromParts: [...(chain?.fromParts ?? []), getTableAsAliasSQL(aliasedTarget)],
@@ -152,6 +155,7 @@ const extendRelationOrderChain = (
       ...(chain?.conditions ?? []),
       ...(joinCondition ? [joinCondition] : []),
       ...(relationWhere ? [relationWhere] : []),
+      ...(policy ? [policy] : []),
     ],
     table: aliasedTarget,
   };

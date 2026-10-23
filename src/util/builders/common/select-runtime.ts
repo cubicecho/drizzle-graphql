@@ -141,7 +141,7 @@ export const runRelationalSelect = async (opts: {
         scope,
         tableName,
         table,
-        where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
+        where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, scope)) : undefined,
         deleted,
       ),
       orderBy,
@@ -166,7 +166,9 @@ export const runRelationalSelect = async (opts: {
     // directly so column refs match the CTE alias.
     orderBy: distinctKeys
       ? (aliasedTable: Table) => [
-          ...(orderBy ? extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName), where) : []),
+          ...(orderBy
+            ? extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName, scope), where)
+            : []),
           ...primaryKeyOrderExprs(aliasedTable, pkNames!),
         ]
       : cursorEntries
@@ -175,7 +177,7 @@ export const runRelationalSelect = async (opts: {
           (aliasedTable: Table) => cursorOrderExprs(aliasedTable, cursorEntries!)
         : orderBy
           ? (aliasedTable: Table) =>
-              extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName), where)
+              extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName, scope), where)
           : needsDefaultOrder && pkNames?.length
             ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
             : undefined,
@@ -191,7 +193,7 @@ export const runRelationalSelect = async (opts: {
                 aliasedTable,
                 and(
                   where
-                    ? extractFilters(aliasedTable, tableName, where, relationFilterCtx(filterCtx, tableName))
+                    ? extractFilters(aliasedTable, tableName, where, relationFilterCtx(filterCtx, tableName, scope))
                     : undefined,
                   cursorValues
                     ? buildCursorCondition(

@@ -1426,6 +1426,10 @@ export type BuildSchemaConfig = {
    *   only ever narrow the scope, never widen it.
    * - It applies to every path that reads the table: list and single queries, aggregates and
    *   `groupBy`, relation fields (batched and eager), relation aggregates, and cursor pages.
+   *   It also applies wherever another table's request reads this one in a subquery: a
+   *   relation filter (`some` / `none` / `every`, to-one, `.through()` — the junction's scope
+   *   included) can only match in-scope rows, and an `orderBy` through a to-one relation sorts
+   *   an out-of-scope target as `NULL`.
    * - It applies to every path that writes it: `update`, `updateMany`, `delete`, the
    *   conflict-update half of an upsert (PostgreSQL and SQLite), and the rows a nested
    *   `connect` / `disconnect` / `set` is allowed to reach. An out-of-scope row is simply not
@@ -1490,7 +1494,8 @@ export type BuildSchemaConfig = {
    * - Every generated read hides marked rows: list and single queries, aggregates, `groupBy`,
    *   relation fields on both the eager and the batched path, and relation aggregates. Each
    *   of those fields takes a `deleted: EXCLUDE | INCLUDE | ONLY` argument (default
-   *   `EXCLUDE`); `ONLY` is a trash view.
+   *   `EXCLUDE`); `ONLY` is a trash view. Relation filters and an `orderBy` through a to-one
+   *   relation see the rows the relation field would show, with the same default mode.
    * - Every generated write skips them too: an `update`, a `delete`, or a nested `connect`
    *   cannot reach a row that is already marked.
    * - The marker column is removed from the create and update inputs, so the only ways to set

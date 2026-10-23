@@ -291,6 +291,8 @@ narrow the scope, never widen it. It reaches every path that touches the table:
 | `postsAggregate`, `postsGroupBy` | counted over in-scope rows only |
 | `user.posts`, `user.postsAggregate` | scoped on both the batched and the eager (`with:`) path |
 | cursor pages | the keyset page is taken within the scope |
+| relation filters — `users(where: { posts: { some: … } })`, `none`, `every`, to-one, `.through()` | only in-scope posts can match, block `none` or fail `every` — on reads, aggregates, `groupBy`, and the `where` of updates and deletes |
+| `orderBy` through a to-one — `comments(orderBy: { post: { title: … } })` | an out-of-scope post sorts as `NULL` |
 | `updatePosts`, `updatePostsMany`, `deletePosts` | an out-of-scope row is simply not matched |
 | `upsertPosts` (conflict branch) | a conflicting row outside the scope is left alone, not taken over |
 | nested `connect` / `disconnect` / `set` | only in-scope rows can be attached or detached |
@@ -302,6 +304,11 @@ Two things it deliberately does not do:
     "that row exists but is not yours" is the leak the scope is there to close.
 -   **It does not apply to a plain insert.** There is no existing row to filter. `contextValues`
     is the write-side half.
+
+A relation filter or an ordering through a relation sees exactly the rows the relation field
+would return. Through a `.through()` relation, the junction table's own `scope` and soft delete
+apply as well. A scope that returns a filter object is the server's own predicate, so the
+relations it reaches through are read without their targets' scopes.
 
 Returning `undefined` means *no restriction for this context*, so one hook can let an
 administrator through:
@@ -477,6 +484,8 @@ What a declared table gets:
 | `posts`, `postsSingle`, cursor pages | marked rows are not returned |
 | `postsAggregate`, `postsGroupBy` | counted over unmarked rows only |
 | `user.posts`, `user.postsAggregate` | hidden on both the batched and the eager (`with:`) path |
+| relation filters — `users(where: { posts: { some: {} } })`, `none`, `every`, `.through()` junctions | a marked post neither matches nor blocks `none`, with the same default as the relation field (see below) |
+| `orderBy` through a to-one | a marked target the relation field hides sorts as `NULL` |
 | `updatePosts`, `updatePostsMany`, a second `deletePosts` | a marked row is simply not matched |
 | nested `connect` / `disconnect` / `set` | a marked row cannot be attached or detached |
 | `CreatePostsInput`, `UpdatePostsInput` | the marker column is **removed** — only the mutations write it |
@@ -539,6 +548,10 @@ softDelete: {
 The `deleted` argument is generated on relation fields either way, so a request can override
 whichever default applies — `altKind(deleted: EXCLUDE)` under `'root'`, `altKind(deleted:
 INCLUDE)` under `'all'`.
+
+A relation filter (`items(where: { kind: { name: … } })`) and an `orderBy` through a to-one
+use the same default as the relation field, so they match and sort over exactly the rows the
+field shows. They take no `deleted` argument of their own.
 
 `scope` changes reads only. A nested `connect` / `disconnect` / `set` still refuses to attach a
 marked row under either setting, and the table's own writes are unaffected.

@@ -161,6 +161,30 @@ describe.sequential('SQLite row scope', () => {
     expect(res.errors).toBeUndefined();
     expect(res.data?.['items']).toEqual([{ id: 3 }]);
   });
+
+  it('applies the target scope inside a relation filter and its aggregate', async () => {
+    const gqlSchema = buildWith(ownItems);
+    const where = `where: { items: { some: { name: { eq: "G1" } } } }`;
+    const res = await run(gqlSchema, `{ orgs(${where}) { id } orgsAggregate(${where}) { count } }`, { orgId: 1 });
+
+    expect(res.errors).toBeUndefined();
+    // Org 2 is readable, but its only item is out of scope, so nothing can match through it.
+    expect(res.data?.['orgs']).toEqual([]);
+    expect(res.data?.['orgsAggregate']).toEqual({ count: 0 });
+  });
+
+  it('sorts an out-of-scope to-one target as NULL when ordering through it', async () => {
+    const gqlSchema = buildWith({ scope: { Orgs: (ctx: any, table: any) => eq(table.id, ctx.orgId) } });
+    const res = await run(
+      gqlSchema,
+      `{ items(orderBy: { org: { name: { direction: asc, priority: 1 } }, id: { direction: asc, priority: 0 } }) { id } }`,
+      { orgId: 1 },
+    );
+
+    expect(res.errors).toBeUndefined();
+    // Globex is hidden, so item 3 sorts as NULL — first on SQLite — rather than after Acme.
+    expect(res.data?.['items']).toEqual([{ id: 3 }, { id: 1 }, { id: 2 }]);
+  });
 });
 
 describe.sequential('SQLite context-derived column values', () => {

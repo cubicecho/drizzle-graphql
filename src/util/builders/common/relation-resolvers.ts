@@ -336,7 +336,12 @@ export const createRelationResolverFactory =
             inArray(groupCol, uniqueIds),
             ownCondition,
             whereArg
-              ? extractFilters(targetTable, targetTableName, whereArg, relationFilterCtx(filterCtx, targetTableName))
+              ? extractFilters(
+                  targetTable,
+                  targetTableName,
+                  whereArg,
+                  relationFilterCtx(filterCtx, targetTableName, scope),
+                )
               : undefined,
             cursorValues ? buildCursorCondition(targetTable, cursorEntries!, cursorValues, nullOrdering) : undefined,
           ),
@@ -397,7 +402,7 @@ export const createRelationResolverFactory =
             offset ?? null,
             targetPkNames,
             selection,
-            relationFilterCtx(filterCtx, targetTableName),
+            relationFilterCtx(filterCtx, targetTableName, scope),
             whereArg,
             junction,
           );
@@ -412,7 +417,7 @@ export const createRelationResolverFactory =
           const orderExprs = cursorEntries
             ? cursorOrderExprs(targetTable, cursorEntries)
             : orderByArg
-              ? extractOrderBy(targetTable, orderByArg, relationFilterCtx(filterCtx, targetTableName), whereArg)
+              ? extractOrderBy(targetTable, orderByArg, relationFilterCtx(filterCtx, targetTableName, scope), whereArg)
               : [];
           if (orderExprs.length) {
             q = q.orderBy(...orderExprs);

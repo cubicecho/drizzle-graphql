@@ -323,7 +323,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             excludedRef: excludedColumnRef,
             withTarget: true,
             serverOwned: Object.keys(contextColumns ?? {}),
-            buildWhere: (where) => extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)),
+            buildWhere: (where) =>
+              extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, scope)),
           });
 
           const runBatch = async (executor: any, { values: rows, plan }: (typeof batches)[number]) => {
@@ -446,7 +447,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
         }
 
-        const relationCtx = relationFilterCtx(filterCtx, tableName);
+        const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
         // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
         const filters = scopedWhere({
           scope,
@@ -565,7 +566,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           selectionCtx,
         );
 
-        const relationCtx = relationFilterCtx(filterCtx, tableName);
+        const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
         // Same rule as update: the scope is ANDed on last, so a delete can only ever reach
         // rows inside it — an out-of-scope row is not matched rather than being refused.
         // A soft-deleting table adds the marker predicate the same way: `delete` only sees

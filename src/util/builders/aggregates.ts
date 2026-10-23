@@ -456,12 +456,13 @@ export const generateAggregate = (
         }
 
         let query = resolveExecutor(db, context).select(request.selection).from(table);
+        const scope = resolveScope(policies, context, filterCtx);
         const where = withScope(
-          resolveScope(policies, context, filterCtx),
+          scope,
           tableName,
           table,
           args.where
-            ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName))
+            ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName, scope))
             : undefined,
           args.deleted,
         );
@@ -594,15 +595,21 @@ export const createRelationAggregateFactory = (
           const uniqueIds = [...new Set(parentIds)];
           // An aggregate over a relation counts the same rows the relation itself returns,
           // so it is narrowed by the target table's scope too.
+          const scope = resolveScope(policies, context, filterCtx);
           const whereCondition = withScope(
-            resolveScope(policies, context, filterCtx),
+            scope,
             targetTableName,
             targetTable,
             and(
               inArray(groupCol, uniqueIds),
               ownCondition,
               whereArg
-                ? extractFilters(targetTable, targetTableName, whereArg, relationFilterCtx(filterCtx, targetTableName))
+                ? extractFilters(
+                    targetTable,
+                    targetTableName,
+                    whereArg,
+                    relationFilterCtx(filterCtx, targetTableName, scope),
+                  )
                 : undefined,
             ),
             deleted ?? defaultDeleted,
@@ -908,12 +915,13 @@ export const generateGroupBy = (
         };
 
         let query = resolveExecutor(db, context).select(selection).from(table);
+        const scope = resolveScope(policies, context, filterCtx);
         const where = withScope(
-          resolveScope(policies, context, filterCtx),
+          scope,
           tableName,
           table,
           args.where
-            ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName))
+            ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName, scope))
             : undefined,
           args.deleted,
         );
