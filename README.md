@@ -1854,6 +1854,11 @@ mutation {
 -   When the parent write produces no row — an update whose `where` matched nothing, an
     insert or upsert a conflict turned into a no-op — whatever a parent-side `create` inserted
     for it is rolled back too, so no orphan is left. In a batch only that entry is undone
+-   An upsert whose conflict branch does not write the parent's join column (an
+    `onConflict.update` that leaves it out) would update the existing row without attaching
+    what a parent-side `create` or `connect` produced. That fails with
+    `DRIZZLE_NESTED_WRITE_INVALID` and rolls the write back; list the column in
+    `onConflict.update`, or leave `update` unset so every supplied column is written
 -   The returned rows reflect the nested write: on a self-referencing relation
     (`reports: { connect: … }` on the row itself), where a child-side statement rewrites the
     parent row, the parent rows are read back after it
@@ -1866,7 +1871,9 @@ A relation declared with a `where` (`publishedPosts: r.many.posts({ …, where: 
 is written through the same way it is read: only the rows it shows.
 
 -   `disconnect`, `set`, and the detaching a to-one attach does, reach only rows that satisfy
-    the `where` — `publishedPosts: { set: [] }` leaves the drafts attached
+    the `where` — `publishedPosts: { set: [] }` leaves the drafts attached. On a to-one whose
+    key is on the parent, `disconnect` leaves a key that points at a row the `where` hides,
+    and a `connect` that would replace such a key fails with `DRIZZLE_NESTED_WRITE_INVALID`
 -   `connect` and `set` attach only rows that satisfy it, so the relation shows what was
     attached. A to-one `connect` must match exactly one such row
 -   There is no `create`: the inserted row is attached whether or not it satisfies the
@@ -1875,7 +1882,9 @@ is written through the same way it is read: only the rows it shows.
 -   A many-to-many `set` unlinks only the links to rows the `where` shows
 -   A relation that inherits its `where` from the other side (declared without `from` / `to`)
     filters the parent rather than the target. Writing through it on a parent row it is
-    hidden for fails with `DRIZZLE_NESTED_WRITE_INVALID`
+    hidden for fails with `DRIZZLE_NESTED_WRITE_INVALID`. When the key is on the parent
+    (`connect`, `create` or `disconnect` on a to-one), the row is judged as the write leaves
+    it, so a write that also makes the row visible goes through
 
 ### The target table's own rules
 

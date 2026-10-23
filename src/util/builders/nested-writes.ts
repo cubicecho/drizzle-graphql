@@ -9,12 +9,26 @@
 // foreign key and whether that column is nullable, so the schema never advertises
 // an operation whose every call would be a database error.
 // =============================================================================
-import { and, type Column, eq, getColumns, inArray, is, One, or, type SQL, type Table } from 'drizzle-orm';
+import {
+  and,
+  type Column,
+  eq,
+  getColumns,
+  inArray,
+  is,
+  One,
+  or,
+  relationsFilterToSQL,
+  type SQL,
+  sql,
+  type Table,
+} from 'drizzle-orm';
 import { GraphQLBoolean, GraphQLInputObjectType, type GraphQLInputType, GraphQLList, GraphQLNonNull } from 'graphql';
 import { capitalize } from '../case-ops/index.ts';
 import { remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import { drizzleError } from './common/errors.ts';
+import { relationOwnWhere } from './common/relations.ts';
 import {
   type NestedWriteOp,
   type ResolvedWriteHooks,
@@ -96,6 +110,15 @@ export type NestedRelationPlan = {
    */
   parentShows?: (executor: any, key: any) => Promise<boolean>;
   /**
+   * The same check for a parent-side relation, whose join column on the parent is not a key:
+   * whether any of the written parent rows (identified by {@link parentKeyColumns}) fails the
+   * inherited `where`. Run after the parent write, so a write that also makes the row visible
+   * passes.
+   */
+  parentHidden?: (executor: any, rows: Record<string, any>[]) => Promise<boolean>;
+  /** The parent's primary-key columns, which the parent write returns for {@link parentHidden}. */
+  parentKeyColumns?: Record<string, Column>;
+  /**
    * The relation field's inputs the relation's shape allows (no `create` through a junction,
    * no `disconnect` / `set` on a NOT NULL key), narrowed by {@link gateNestedWritePlans} to
    * the ones whose write the table it lands on has turned on.
@@ -146,14 +169,21 @@ const ownWherePlan = (
   parentTable: Table,
   targetTable: Table,
   localCol: Column,
-): Pick<NestedRelationPlan, 'ownCondition' | 'parentShows'> => {
+  parentPrimaryKey: string[],
+): Pick<NestedRelationPlan, 'ownCondition' | 'parentShows' | 'parentHidden' | 'parentKeyColumns'> => {
   const condition = () => relationOwnCondition(relEntry, parentTable, targetTable, [localCol], [localCol]);
   if (!condition()) {
     return {};
   }
-  if (!isRelationFilterReversed((relEntry as any).relation ?? relEntry)) {
+  const relation = (relEntry as any).relation ?? relEntry;
+  if (!isRelationFilterReversed(relation)) {
     return { ownCondition: () => condition()! };
   }
+  const parentColumns = getColumns(parentTable) as Record<string, Column>;
+  const parentKeyColumns = Object.fromEntries(
+    parentPrimaryKey.filter((name) => parentColumns[name]).map((name) => [name, parentColumns[name]!]),
+  );
+  const keyNames = Object.keys(parentKeyColumns);
   // The reversed condition reads `localCol in (select localCol from parent where …)`, so
   // matching it against the one parent row answers whether that row passes the filter.
   return {
@@ -165,8 +195,43 @@ const ownWherePlan = (
           .where(and(eq(localCol, key), condition()))
           .limit(1)
       ).length > 0,
+    // A parent-side relation's join column is the parent's foreign key, which many rows can
+    // share, so the written rows are matched by primary key against the filter itself.
+    parentHidden: async (executor, rows) => {
+      if (!rows.length) {
+        return false;
+      }
+      if (!keyNames.length || !rows.every((row) => keyNames.every((name) => name in row))) {
+        throw drizzleError(
+          `Drizzle-GraphQL Error: cannot check the \`where\` of this relation: the written row cannot be identified by a primary key.`,
+          { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
+        );
+      }
+      const keyOf = (row: Record<string, any>) => keyNames.map((name) => keyString(row[name])).join('\u0000');
+      const match = or(...rows.map((row) => and(...keyNames.map((name) => eq(parentColumns[name]!, row[name])))));
+      const shown = new Set(
+        (
+          (await executor
+            .select(parentKeyColumns)
+            .from(parentTable)
+            .where(and(match, relationsFilterToSQL(parentTable, relationOwnWhere(relation) as any)))) as Record<
+            string,
+            any
+          >[]
+        ).map(keyOf),
+      );
+      return rows.some((row) => !shown.has(keyOf(row)));
+    },
+    parentKeyColumns,
   };
 };
+
+/**
+ * A key value in a form that compares equal across the two reads of it — the driver may hand
+ * back a `Date` or a `bigint` that is a different object each time.
+ */
+const keyString = (value: unknown): string =>
+  value instanceof Date ? `d${value.getTime()}` : value === null || value === undefined ? '' : `v${String(value)}`;
 
 /** The property name a column is stored under on its table, matched by identity. */
 const propNameOf = (table: Table, column: Column | undefined): string | undefined => {
@@ -273,7 +338,7 @@ const buildThroughPlan = (
       targetCol,
     },
     targetKeyColumns: { [foreignColPropName]: foreignCol },
-    ...ownWherePlan(relEntry, table, targetTable, localCol),
+    ...ownWherePlan(relEntry, table, targetTable, localCol, []),
     allowed: new Set(['connect', 'disconnect', 'set']),
   };
 };
@@ -425,7 +490,7 @@ export const buildNestedWritePlans = (
       );
       targetKeyColumns[foreignColPropName] = foreignCol;
 
-      const ownWhere = ownWherePlan(relEntry, table, targetTable, localCol);
+      const ownWhere = ownWherePlan(relEntry, table, targetTable, localCol, resolvePrimaryKeys(table));
       const ops: readonly NestedWriteOp[] = !fkColumn.notNull
         ? isOne
           ? ['create', 'connect', 'disconnect']
@@ -874,7 +939,21 @@ export type NestedWriteRuntime = {
     tableName: string,
     ops: NestedOps,
     request?: NestedWriteRequest,
-  ) => Promise<Record<string, any>>;
+    /** The parent write updates existing rows rather than inserting (or upserting) them. */
+    existing?: boolean,
+  ) => Promise<ParentSidePatch>;
+  /**
+   * Checks the parent rows a write returned against what its parent-side operations asked
+   * for: each one has to hold the key they set, and show any relation whose `where` filters
+   * the parent. Throws, so the enclosing transaction rolls the write back.
+   */
+  checkParentSide: (
+    executor: any,
+    tableName: string,
+    ops: NestedOps,
+    rows: Record<string, any>[],
+    patch: ParentSidePatch,
+  ) => Promise<void>;
   /** Runs the operations that attach to a parent row, once that row exists. */
   applyChildSide: (
     executor: any,
@@ -898,6 +977,14 @@ export type NestedWriteRuntime = {
     rows: Record<string, any>[],
   ) => Promise<Record<string, any>[]>;
 };
+
+/**
+ * What the parent-side operations produced: `values` for the parent write, and the key each
+ * written row must end up holding (`expected`, by relation name). The two differ on an update,
+ * where a `disconnect` or `connect` is written as an expression that leaves a key the
+ * relation's own `where` hides in place.
+ */
+export type ParentSidePatch = { values: Record<string, any>; expected: Record<string, any>; existing: boolean };
 
 /**
  * The union of the relation names a batch of entries writes through — enough to decide which
@@ -1223,6 +1310,19 @@ export const createNestedWriteRuntime = (params: {
     }
   };
 
+  /**
+   * The value a parent-side `connect` / `disconnect` writes to an existing row's key: `next`,
+   * unless the key points at a row the relation's own `where` hides, which it then keeps.
+   */
+  const keepingHidden = (plan: NestedRelationPlan, next: any): any => {
+    if (!plan.ownCondition) {
+      return next;
+    }
+    const shown = sql`select ${plan.foreignCol} from ${plan.targetTable} where ${plan.ownCondition()}`;
+    const replacement = next === null ? sql`null` : sql`${sql.param(next, plan.localCol)}`;
+    return sql`case when ${plan.localCol} is null or ${plan.localCol} in (${shown}) then ${replacement} else ${plan.localCol} end`;
+  };
+
   const detachAll = (
     executor: any,
     plan: NestedRelationPlan,
@@ -1277,8 +1377,17 @@ export const createNestedWriteRuntime = (params: {
       const allColumns = getColumns(table);
       for (const relationName of Object.keys(ops)) {
         const plan = tablePlans[relationName];
-        if (plan?.fkSide === 'child' && !(plan.localColPropName in columns) && allColumns[plan.localColPropName]) {
+        // Child-side operations attach by this key; parent-side ones are checked against it
+        // (see `checkParentSide`), along with the primary key an inherited `where` needs.
+        if (plan && !(plan.localColPropName in columns) && allColumns[plan.localColPropName]) {
           (columns as any)[plan.localColPropName] = allColumns[plan.localColPropName];
+        }
+        if (plan?.fkSide === 'parent' && plan.parentHidden) {
+          for (const [name, column] of Object.entries(plan.parentKeyColumns ?? {})) {
+            if (!(name in columns)) {
+              (columns as any)[name] = column;
+            }
+          }
         }
       }
       // A self-referencing write reads the parent rows back by primary key — see `refreshed`.
@@ -1324,11 +1433,12 @@ export const createNestedWriteRuntime = (params: {
       return rows.map((row) => ({ ...row, ...fresh.get(keyOf(row)) }));
     },
 
-    applyParentSide: async (executor, tableName, ops, request) => {
+    applyParentSide: async (executor, tableName, ops, request, existing = false) => {
       const tablePlans = plans[tableName];
-      const patch: Record<string, any> = {};
+      const result: ParentSidePatch = { values: {}, expected: {}, existing };
+      const patch = result.values;
       if (!tablePlans) {
-        return patch;
+        return result;
       }
       const context = request?.context;
       const scope = resolveScope(policies, context, filterCtx);
@@ -1367,6 +1477,7 @@ export const createNestedWriteRuntime = (params: {
           }
           await steps.after();
           patch[plan.localColPropName] = created[plan.foreignColPropName];
+          result.expected[relationName] = created[plan.foreignColPropName];
         } else if (op['connect'] !== undefined) {
           // `rows.length` drives the match check and is unaffected by the projection, so the
           // read asks only for the key that ends up on the parent's patch.
@@ -1377,9 +1488,15 @@ export const createNestedWriteRuntime = (params: {
           if (rows.length !== 1) {
             throw connectMatchError(relationName, rows.length);
           }
-          patch[plan.localColPropName] = rows[0][plan.foreignColPropName];
+          const key = rows[0][plan.foreignColPropName];
+          // Replacing the key detaches the row it pointed at, which the relation's own `where`
+          // may hide. Such a row keeps its key, and `checkParentSide` refuses the connect.
+          patch[plan.localColPropName] = existing ? keepingHidden(plan, key) : key;
+          result.expected[relationName] = key;
         } else if (op['disconnect'] === true) {
-          patch[plan.localColPropName] = null;
+          // A row the relation's own `where` hides is out of a disconnect's reach, as it is
+          // child-side: the key is cleared only where it points at a row the relation shows.
+          patch[plan.localColPropName] = existing ? keepingHidden(plan, null) : null;
         }
       }
 
@@ -1389,7 +1506,37 @@ export const createNestedWriteRuntime = (params: {
       for (const columnName of Object.keys(contextValues?.(tableName) ?? {})) {
         delete patch[columnName];
       }
-      return patch;
+      return result;
+    },
+
+    checkParentSide: async (executor, tableName, ops, rows, patch) => {
+      const tablePlans = plans[tableName];
+      if (!tablePlans || !rows.length) {
+        return;
+      }
+      for (const relationName of Object.keys(ops)) {
+        const plan = tablePlans[relationName];
+        if (plan?.fkSide !== 'parent') {
+          continue;
+        }
+        if (relationName in patch.expected) {
+          const expected = keyString(patch.expected[relationName]);
+          if (rows.some((row) => keyString(row[plan.localColPropName]) !== expected)) {
+            throw drizzleError(
+              patch.existing
+                ? `Drizzle-GraphQL Error: cannot connect through '${relationName}': the row it holds now is one its \`where\` hides, which a write through it cannot detach.`
+                : `Drizzle-GraphQL Error: cannot write through '${relationName}': the ${tableName} row was not written with it — an upsert whose conflict branch did not write '${plan.localColPropName}'. Include it in onConflict.update, or leave update unset.`,
+              { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
+            );
+          }
+        }
+        if (plan.parentHidden && (await plan.parentHidden(executor, rows))) {
+          throw drizzleError(
+            `Drizzle-GraphQL Error: cannot write through '${relationName}': its \`where\` hides the relation on this ${tableName} row.`,
+            { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
+          );
+        }
+      }
     },
 
     applyChildSide: async (executor, tableName, ops, parentRows, request) => {
@@ -1548,16 +1695,19 @@ export const writeNestedEntry = async (params: {
   ops: NestedOps;
   write: (executor: any, patch: Record<string, any>) => Promise<Record<string, any>[]>;
   request?: NestedWriteRequest;
+  /** The write updates existing rows; see {@link NestedWriteRuntime.applyParentSide}. */
+  existing?: boolean;
 }): Promise<Record<string, any>[]> => {
-  const { executor, runtime, tableName, ops, write, request } = params;
+  const { executor, runtime, tableName, ops, write, request, existing } = params;
   const guarded = runtime.createsParentSide(tableName, ops);
 
   const run = async (tx: any) => {
-    const patch = await runtime.applyParentSide(tx, tableName, ops, request);
-    const rows = await write(tx, patch);
+    const patch = await runtime.applyParentSide(tx, tableName, ops, request, existing);
+    const rows = await write(tx, patch.values);
     if (guarded && !rows.length) {
       throw new NoParentRow();
     }
+    await runtime.checkParentSide(tx, tableName, ops, rows, patch);
     await runtime.applyChildSide(tx, tableName, ops, rows, request);
     return runtime.refreshed(tx, tableName, ops, rows);
   };
@@ -1641,6 +1791,7 @@ export const updateWithNestedOps = async (params: {
       ops,
       write: (target, patch) => write(target, { ...remapValues(columns), ...patch }),
       request,
+      existing: true,
     }),
   );
 };

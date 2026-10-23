@@ -88,7 +88,15 @@ export const runUpdateManyBatch: UpdateManyBatchRunner = ({
       };
       results.push(
         entry.ops
-          ? await writeNestedEntry({ executor: tx, runtime: nested!, tableName, ops: entry.ops, write, request })
+          ? await writeNestedEntry({
+              executor: tx,
+              runtime: nested!,
+              tableName,
+              ops: entry.ops,
+              write,
+              request,
+              existing: true,
+            })
           : await write(tx, {}),
       );
     }

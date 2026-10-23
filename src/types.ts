@@ -851,9 +851,14 @@ export type SchemaFeatures = {
    *   is a `contextValues` column is not offered at all.
    *
    * A relation's own `where` limits the rows its writes reach the same way, and takes its
-   * `create` away. A relation joining on more than one column per side is not offered. A
-   * to-one `connect` must match exactly one row. When the parent write produces no row, a
-   * parent-side `create` made for it is rolled back.
+   * `create` away: on a to-one whose key is on the parent, `disconnect` leaves a key pointing
+   * at a row it hides and a `connect` that would replace one fails. A `where` inherited from
+   * the reverse relation filters the parent, and a write through it on a parent row it hides
+   * the relation for (judged after the write) fails. A relation joining on more than one
+   * column per side is not offered. A to-one `connect` must match exactly one row. When the
+   * parent write produces no row, a parent-side `create` made for it is rolled back, and an
+   * upsert whose conflict branch does not write the join column a parent-side operation set
+   * fails rather than leave its target unattached.
    *
    * PostgreSQL and SQLite only. MySQL cannot return the rows it just wrote, which is how a
    * nested write learns the parent's key, so `buildSchema` rejects the flag there. On SQLite

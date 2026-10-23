@@ -61,7 +61,7 @@ const runSqliteUpdateManyBatch: UpdateManyBatchRunner = ({
       return (await (writes ? query.returning(returning) : query)) as Record<string, any>[];
     };
     return entry.ops
-      ? writeNestedEntry({ executor: tx, runtime: nested!, tableName, ops: entry.ops, write, request })
+      ? writeNestedEntry({ executor: tx, runtime: nested!, tableName, ops: entry.ops, write, request, existing: true })
       : write(tx, {});
   };
 

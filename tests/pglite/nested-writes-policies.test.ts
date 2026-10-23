@@ -388,6 +388,149 @@ describe.sequential("a relation's own where", () => {
   });
 });
 
+describe.sequential("a parent-side relation's own where", () => {
+  const Users = pgTable('users', { id: integer('id').primaryKey(), name: text('name').notNull() });
+  const Posts = pgTable('posts', {
+    id: integer('id').primaryKey(),
+    title: text('title').notNull(),
+    authorId: integer('author_id'),
+    published: boolean('published').notNull().default(false),
+  });
+  const tables = { Users, Posts };
+  const r = createRelationsHelper(tables);
+  const relations = buildRelations(tables, {
+    Users: {
+      publishedPosts: r.many.Posts({
+        from: r.Users.id,
+        to: r.Posts.authorId,
+        where: { published: true },
+        alias: 'pub',
+      }),
+    },
+    Posts: {
+      // No from/to: inherits publishedPosts' where, which then filters the post — the parent,
+      // which holds the key.
+      publishedAuthor: r.one.Users({ alias: 'pub' }),
+      // A where on the target, with the key on the parent.
+      shownAuthor: r.one.Users({ from: r.Posts.authorId, to: r.Users.id, where: { name: { ne: 'hidden' } } }),
+    },
+  });
+  const { state, run } = fixture(
+    { ...tables, relations },
+    [
+      'CREATE TABLE users (id integer PRIMARY KEY, name text NOT NULL)',
+      'CREATE TABLE posts (id integer PRIMARY KEY, title text NOT NULL, author_id integer, published boolean NOT NULL DEFAULT false)',
+    ],
+    { features: { nestedWrites: true } },
+  );
+  const post = async (id: number) => (await state.db.select().from(Posts).where(eq(Posts.id, id)))[0];
+  const userIds = async () => (await state.db.select().from(Users).orderBy(Users.id)).map((x: any) => x.id);
+  const expectInvalid = (res: any, message: RegExp) => {
+    expect(res.errors?.[0]?.message).toMatch(message);
+    expect(res.errors?.[0]?.extensions?.code).toBe('DRIZZLE_NESTED_WRITE_INVALID');
+  };
+
+  beforeEach(async () => {
+    await state.db.execute(sql`TRUNCATE users, posts`);
+    await state.db.insert(Users).values([
+      { id: 1, name: 'a' },
+      { id: 2, name: 'b' },
+      { id: 3, name: 'hidden' },
+    ]);
+    await state.db.insert(Posts).values([
+      { id: 1, title: 'published', authorId: null, published: true },
+      { id: 2, title: 'draft', authorId: null, published: false },
+      { id: 3, title: 'hidden author', authorId: 3, published: true },
+      { id: 4, title: 'shown author', authorId: 1, published: true },
+    ]);
+  });
+
+  describe('inherited from the reverse relation', () => {
+    it('refuses a connect on a parent row it hides the relation for', async () => {
+      const res = await run(
+        'mutation { updatePostsSingle(where: { id: { eq: 2 } }, set: { publishedAuthor: { connect: { id: { eq: 2 } } } }) { id } }',
+      );
+      expectInvalid(res, /hides the relation/);
+      expect((await post(2)).authorId).toBeNull();
+    });
+
+    it('allows it on a parent row it shows, or one the same write makes visible', async () => {
+      const shown = await run(
+        'mutation { updatePostsSingle(where: { id: { eq: 1 } }, set: { publishedAuthor: { connect: { id: { eq: 2 } } } }) { id publishedAuthor { id } } }',
+      );
+      expect(shown.errors).toBeUndefined();
+      expect((shown.data as any).updatePostsSingle.publishedAuthor).toEqual({ id: 2 });
+
+      const published = await run(
+        'mutation { updatePostsSingle(where: { id: { eq: 2 } }, set: { published: true, publishedAuthor: { connect: { id: { eq: 2 } } } }) { id } }',
+      );
+      expect(published.errors).toBeUndefined();
+      expect((await post(2)).authorId).toBe(2);
+    });
+
+    it('refuses a parent-side create, and rolls back the row it inserted', async () => {
+      const res = await run(
+        'mutation { updatePostsSingle(where: { id: { eq: 2 } }, set: { publishedAuthor: { create: { id: 9, name: "new" } } }) { id } }',
+      );
+      expectInvalid(res, /hides the relation/);
+      expect((await post(2)).authorId).toBeNull();
+      expect(await userIds()).toEqual([1, 2, 3]);
+    });
+
+    it('refuses a write through it on a row being created hidden', async () => {
+      const res = await run(
+        'mutation { createPostsSingle(values: { id: 5, title: "new draft", publishedAuthor: { connect: { id: { eq: 2 } } } }) { id } }',
+      );
+      expectInvalid(res, /hides the relation/);
+      expect(await post(5)).toBeUndefined();
+    });
+  });
+
+  describe('on the target', () => {
+    it('disconnect leaves a row the relation hides', async () => {
+      const res = await run(
+        'mutation { updatePostsSingle(where: { id: { eq: 3 } }, set: { shownAuthor: { disconnect: true } }) { id } }',
+      );
+      expect(res.errors).toBeUndefined();
+      expect((await post(3)).authorId).toBe(3);
+    });
+
+    it('disconnect still detaches a row the relation shows', async () => {
+      const res = await run(
+        'mutation { updatePosts(where: { id: { inArray: [3, 4] } }, set: { shownAuthor: { disconnect: true } }) { id } }',
+      );
+      expect(res.errors).toBeUndefined();
+      expect((await post(3)).authorId).toBe(3);
+      expect((await post(4)).authorId).toBeNull();
+    });
+
+    it('disconnect through updateMany leaves a hidden row too', async () => {
+      const res = await run(
+        'mutation { updatePostsMany(updates: [{ where: { id: { eq: 3 } }, set: { shownAuthor: { disconnect: true } } }]) { id } }',
+      );
+      expect(res.errors).toBeUndefined();
+      expect((await post(3)).authorId).toBe(3);
+    });
+
+    it('refuses a connect that would detach a row the relation hides', async () => {
+      const res = await run(
+        'mutation { updatePostsSingle(where: { id: { eq: 3 } }, set: { shownAuthor: { connect: { id: { eq: 2 } } } }) { id } }',
+      );
+      expectInvalid(res, /hides/);
+      expect((await post(3)).authorId).toBe(3);
+    });
+
+    it('connect replaces a row the relation shows, or fills an empty key', async () => {
+      const res = await run(
+        'mutation { updatePosts(where: { id: { inArray: [1, 4] } }, set: { shownAuthor: { connect: { id: { eq: 2 } } } }) { id } }',
+      );
+      expect(res.errors).toBeUndefined();
+      expect((await post(1)).authorId).toBe(2);
+      expect((await post(4)).authorId).toBe(2);
+    });
+  });
+});
+
 describe.sequential('a child-side to-one connect', () => {
   const Users = pgTable('users', { id: integer('id').primaryKey(), name: text('name').notNull() });
   const Profiles = pgTable('profiles', {
@@ -505,6 +648,34 @@ describe.sequential('a parent-side create whose parent write matches nothing', (
     expect(res.errors).toBeUndefined();
     expect((res.data as any).upsertPosts).toEqual([{ id: 2 }]);
     expect(await users()).toEqual([53]);
+  });
+
+  it('an upsert whose conflict branch does not write the key refuses a parent-side create', async () => {
+    const res = await run(
+      'mutation { upsertPostsSingle(values: { id: 1, title: "new", author: { create: { id: 54, name: "orphan" } } }, onConflict: { update: [title] }) { id } }',
+    );
+    expect(res.errors?.[0]?.message).toMatch(/did not write 'authorId'/);
+    expect((res.errors?.[0] as any)?.extensions?.code).toBe('DRIZZLE_NESTED_WRITE_INVALID');
+    expect(await users()).toEqual([]);
+    expect((await state.db.select().from(Posts))[0]).toMatchObject({ title: 'p', authorId: null });
+  });
+
+  it('and a parent-side connect', async () => {
+    await state.db.insert(Users).values({ id: 60, name: 'existing' });
+    const res = await run(
+      'mutation { upsertPostsSingle(values: { id: 1, title: "new", author: { connect: { id: { eq: 60 } } } }, onConflict: { update: [title] }) { id } }',
+    );
+    expect((res.errors?.[0] as any)?.extensions?.code).toBe('DRIZZLE_NESTED_WRITE_INVALID');
+    expect((await state.db.select().from(Posts))[0]).toMatchObject({ title: 'p', authorId: null });
+  });
+
+  it('an upsert whose conflict branch writes the key attaches the created row', async () => {
+    const res = await run(
+      'mutation { upsertPostsSingle(values: { id: 1, title: "new", author: { create: { id: 55, name: "kept" } } }) { id authorId } }',
+    );
+    expect(res.errors).toBeUndefined();
+    expect((res.data as any).upsertPostsSingle).toEqual({ id: 1, authorId: 55 });
+    expect(await users()).toEqual([55]);
   });
 });
 
