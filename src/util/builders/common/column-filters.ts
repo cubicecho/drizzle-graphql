@@ -62,6 +62,21 @@ export const columnDialect = (column: Column): 'pg' | 'mysql' | 'sqlite' | undef
 export const isJsonColumn = (column: Column): boolean =>
   ((column as any).dataType ?? '').includes('json') && (column as any).columnType !== 'PgGeometryObject';
 
+/**
+ * SQLite `blob({ mode: 'bigint' })`: the bigint is stored as the bytes of its decimal text, and
+ * SQLite compares blobs byte by byte, so `9` sorts above `10`. Equality still holds, so it can be
+ * grouped and made distinct on, but not ordered or given a min/max.
+ */
+export const isSqliteBlobBigIntColumn = (column: Column): boolean => (column as any).columnType === 'SQLiteBigInt';
+
+/**
+ * Whether `orderBy` (and so cursor pagination) offers a column. JSON has no meaningful order:
+ * PostgreSQL `json` cannot be ordered at all, and MySQL's JSON ordering disagrees with any
+ * keyset comparison a cursor could make. A SQLite blob bigint orders as text.
+ */
+export const isOrderableColumn = (column: Column): boolean =>
+  !isJsonColumn(column) && !isSqliteBlobBigIntColumn(column);
+
 /** How a column's generic filter input should be shaped, alongside the cache key to store it under. */
 interface GenericFilterDescriptor {
   name: string;

@@ -3,7 +3,7 @@
 
 import type { Column, Table } from 'drizzle-orm';
 import { and, eq, getColumns, gt, is, isNotNull, isNull, lt, or, type SQL, sql } from 'drizzle-orm';
-import { MySqlDateTime, MySqlTimestamp } from 'drizzle-orm/mysql-core';
+import { MySqlDateTime, MySqlEnumColumn, MySqlEnumObjectColumn, MySqlTimestamp } from 'drizzle-orm/mysql-core';
 import { PgTimestamp } from 'drizzle-orm/pg-core';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { drizzleError } from './errors.ts';
@@ -260,6 +260,22 @@ export const decodeCursor = (after: string, entries: CursorOrderEntry[]): any[] 
 };
 
 /**
+ * `col > value` (asc) or `col < value` (desc), compared by the rule the ORDER BY sorts by.
+ * MySQL sorts an ENUM by its declaration index but compares it with a string as a string, so
+ * there the comparison is between `col + 0` (the 1-based index) and the value's own index.
+ */
+const strictComparison = (col: Column, direction: 'asc' | 'desc', value: unknown): SQL => {
+  if (is(col, MySqlEnumColumn) || is(col, MySqlEnumObjectColumn)) {
+    const index = ((col as any).enumValues as readonly string[] | undefined)?.indexOf(value as string) ?? -1;
+    if (index >= 0) {
+      const position = sql`(${col} + 0)`;
+      return direction === 'asc' ? sql`${position} > ${index + 1}` : sql`${position} < ${index + 1}`;
+    }
+  }
+  return direction === 'asc' ? gt(col, value) : lt(col, value);
+};
+
+/**
  * The keyset predicate selecting rows strictly after the cursor position in the given total
  * order — the expanded lexicographic form
  * `after(k0) OR (k0 = v0 AND after(k1)) OR (k0 = v0 AND k1 = v1 AND after(k2)) …`,
@@ -297,7 +313,7 @@ export const buildCursorCondition = (
       // Nothing sorts after NULL when NULLs are last; every non-NULL row does when first.
       strictlyAfter = nullsSortLast ? undefined : isNotNull(col);
     } else {
-      const comparison = direction === 'asc' ? gt(col, value) : lt(col, value);
+      const comparison = strictComparison(col, direction, value);
       strictlyAfter = nullsSortLast ? or(comparison, isNull(col)) : comparison;
     }
 

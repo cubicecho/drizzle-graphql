@@ -10,6 +10,7 @@
 
 import { getColumns, is, Table } from 'drizzle-orm';
 import type { BuildSchemaConfig, TableLimitPolicy } from '../types.ts';
+import { isOrderableColumn } from './builders/common/column-filters.ts';
 import {
   DEFAULT_TRANSACTION_TIMEOUT_MS,
   type DefaultOrderByFor,
@@ -175,6 +176,11 @@ export const resolveBuildConfig = (
         if (config?.exclude?.columns?.[tableName]?.includes(columnName)) {
           throw new Error(
             `Drizzle-GraphQL Error: config.defaults.${tableName}.orderBy names '${columnName}', which config.exclude.columns hides. A default ordering is encoded into every row's cursor, so it can only use columns the schema exposes.`,
+          );
+        }
+        if (!isOrderableColumn(columns[columnName]!)) {
+          throw new Error(
+            `Drizzle-GraphQL Error: config.defaults.${tableName}.orderBy names '${columnName}', which has no meaningful ordering (a JSON column, or a SQLite blob bigint), so the generated orderBy does not offer it either.`,
           );
         }
         const direction = typeof entry === 'string' ? entry : entry?.direction;

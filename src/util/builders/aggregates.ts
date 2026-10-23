@@ -14,6 +14,7 @@ import {
   max,
   min,
   ne,
+  sql,
   sum,
   type Table,
 } from 'drizzle-orm';
@@ -33,6 +34,7 @@ import type { ResolveTree } from '../parse-resolve-info.ts';
 import { parseResolveInfo } from '../parse-resolve-info.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type { ConvertedColumn } from '../type-converter/types.ts';
+import { columnDialect } from './common/column-filters.ts';
 import {
   columnDocs,
   type DeletedMode,
@@ -76,8 +78,16 @@ type AggregateOp = (typeof AGGREGATE_OPS)[number];
 /** Ops whose result is a row count: never null, and returned as `Int!` rather than the column's type. */
 const COUNT_OPS = new Set<AggregateOp>(['countNonNull', 'countDistinct']);
 
+/**
+ * `avg`, except on MySQL, where AVG over an integer column is a DECIMAL rounded to
+ * `div_precision_increment` (4 by default) digits. Averaging the value as a DOUBLE keeps the
+ * fraction the `Float` output promises, as the other two dialects do.
+ */
+const avgOf = (col: Column) =>
+  columnDialect(col) === 'mysql' ? sql<string | null>`avg(cast(${col} as double))`.mapWith(String) : avg(col);
+
 const OP_FNS: Record<AggregateOp, (col: Column) => any> = {
-  avg,
+  avg: avgOf,
   sum,
   min,
   max,
@@ -88,11 +98,29 @@ const OP_FNS: Record<AggregateOp, (col: Column) => any> = {
 /** Separator for flat select aliases (`avg__price`) — reassembled into nested output by the resolver. */
 const SEP = '__';
 
+/**
+ * Column types PostgreSQL can test for equality but has no `min`/`max` aggregate for, plus the
+ * SQLite bigint blob, whose bytes compare as text (`max(9, 10)` is 9). They still count
+ * distinct values and group.
+ */
+const NO_MIN_MAX_COLUMN_TYPES: ReadonlySet<string> = new Set([
+  'PgUUID',
+  'PgMacaddr',
+  'PgMacaddr8',
+  'PgBinaryVector',
+  'SQLiteBigInt',
+]);
+
 interface AggregateColumnSets {
   /** Columns avg/sum apply to: plain Int/Float scalars. */
   numeric: Record<string, Column>;
   /** Columns min/max apply to: anything with a total ordering the DB supports (numbers, strings, dates, enums). */
   orderable: Record<string, { column: Column; converted: ConvertedColumn }>;
+  /**
+   * Columns with an equality the DB supports, for countDistinct and grouping: the orderable ones
+   * plus the few types that compare but have no min/max ({@link NO_MIN_MAX_COLUMN_TYPES}).
+   */
+  comparable: Record<string, { column: Column; converted: ConvertedColumn }>;
   /** Every column — `count(col)` is valid whatever the type. */
   all: Record<string, Column>;
 }
@@ -136,6 +164,7 @@ const classifyAggregateColumns = (table: Table, tableName: string): AggregateCol
 
   const numeric: AggregateColumnSets['numeric'] = {};
   const orderable: AggregateColumnSets['orderable'] = {};
+  const comparable: AggregateColumnSets['comparable'] = {};
   const all: AggregateColumnSets['all'] = {};
 
   for (const [columnName, column] of Object.entries(visibleColumns(table))) {
@@ -160,13 +189,16 @@ const classifyAggregateColumns = (table: Table, tableName: string): AggregateCol
       continue;
     }
 
-    orderable[columnName] = { column, converted };
+    comparable[columnName] = { column, converted };
+    if (!NO_MIN_MAX_COLUMN_TYPES.has((column as any).columnType)) {
+      orderable[columnName] = { column, converted };
+    }
     if (dataType === 'number') {
       numeric[columnName] = column;
     }
   }
 
-  const sets = { numeric, orderable, all };
+  const sets = { numeric, orderable, comparable, all };
   byName.set(tableName, sets);
 
   return sets;
@@ -179,7 +211,7 @@ const classifyAggregateColumns = (table: Table, tableName: string): AggregateCol
  *   and avg/sum of integers overflow Int / produce decimals)
  * - `min` / `max` — per orderable column, the column's own (nullable) scalar type
  * - `countNonNull` — per column, `Int!`: how many matching rows have a non-null value there
- * - `countDistinct` — per orderable column, `Int!`: how many distinct non-null values there are
+ * - `countDistinct` — per comparable column, `Int!`: how many distinct non-null values there are
  * Each wrapper is omitted when no column qualifies for it.
  */
 export const generateAggregateTypes = (
@@ -193,7 +225,7 @@ export const generateAggregateTypes = (
     return cached;
   }
 
-  const { numeric, orderable, all } = classifyAggregateColumns(table, tableName);
+  const { numeric, orderable, comparable, all } = classifyAggregateColumns(table, tableName);
   const nameOf = (op: string) =>
     cacheCtx?.typeName({
       kind: 'aggregate',
@@ -234,8 +266,8 @@ export const generateAggregateTypes = (
   }
 
   // `count(col)` works on any column type; `count(distinct col)` needs an equality operator,
-  // which is the same requirement min/max have, so it reuses the orderable set.
-  const countSets: Record<string, Record<string, unknown>> = { countNonNull: all, countDistinct: orderable };
+  // so it takes the comparable set.
+  const countSets: Record<string, Record<string, unknown>> = { countNonNull: all, countDistinct: comparable };
   for (const [op, columns] of Object.entries(countSets)) {
     const columnNames = Object.keys(columns);
     if (!columnNames.length) {
@@ -669,15 +701,15 @@ const HAVING_OPS = { eq, ne, gt, gte, lt, lte } as const;
 
 /**
  * Columns a query can group on. Grouping needs an equality operator, which is the same
- * requirement min/max has, plus booleans — orderable excludes them because a min/max over
+ * requirement countDistinct has, plus booleans — comparable excludes them because a min/max over
  * true/false says nothing, but `GROUP BY isConfirmed` is perfectly ordinary.
  */
 const groupableColumns = (
   table: Table,
   tableName: string,
 ): Record<string, { column: Column; converted: ConvertedColumn }> => {
-  const { orderable } = classifyAggregateColumns(table, tableName);
-  const groupable: Record<string, { column: Column; converted: ConvertedColumn }> = { ...orderable };
+  const { comparable } = classifyAggregateColumns(table, tableName);
+  const groupable: Record<string, { column: Column; converted: ConvertedColumn }> = { ...comparable };
 
   for (const [columnName, column] of Object.entries(visibleColumns(table))) {
     if (groupable[columnName]) {
@@ -741,7 +773,7 @@ export const generateHavingInput = (
   typeName: string,
   cacheCtx?: TypeCacheCtx,
 ): GraphQLInputObjectType => {
-  const { numeric, orderable, all } = classifyAggregateColumns(table, tableName);
+  const { numeric, comparable, all } = classifyAggregateColumns(table, tableName);
   const resolveName = cacheCtx?.typeName ?? ((info: GeneratedTypeInfo) => info.defaultName);
   const numberFilter = aggregateNumberFilterType(resolveName);
 
@@ -755,7 +787,7 @@ export const generateHavingInput = (
     min: numeric,
     max: numeric,
     countNonNull: all,
-    countDistinct: orderable,
+    countDistinct: comparable,
   };
 
   for (const [op, columns] of Object.entries(opColumns)) {
@@ -831,11 +863,20 @@ export const generateGroupByType = (
   });
 };
 
-/** Turns one `${typeName}Having` entry into SQL conditions over the matching aggregate expression. */
-const havingComparisons = (expression: any, filter: Record<string, any>): any[] =>
-  Object.entries(filter)
+/**
+ * Turns one `${typeName}Having` entry into SQL conditions over the matching aggregate expression.
+ *
+ * The operand is a `Float`, but PostgreSQL types an untyped parameter after what it is compared
+ * with: count and sum of integers are bigint, min/max of an int column int, so `gt: 1.5` would
+ * fail to parse. There the aggregate is compared as `numeric`, which holds every one of them
+ * exactly. MySQL and SQLite already compare numbers across types.
+ */
+const havingComparisons = (expression: any, filter: Record<string, any>, isPg: boolean): any[] => {
+  const compared = isPg ? sql`cast(${expression} as numeric)` : expression;
+  return Object.entries(filter)
     .filter(([op, value]) => value != null && op in HAVING_OPS)
-    .map(([op, value]) => HAVING_OPS[op as keyof typeof HAVING_OPS](expression, value));
+    .map(([op, value]) => HAVING_OPS[op as keyof typeof HAVING_OPS](compared, value));
+};
 
 const buildHavingCondition = (having: Record<string, any> | undefined, columns: Record<string, Column>) => {
   if (!having) {
@@ -843,13 +884,15 @@ const buildHavingCondition = (having: Record<string, any> | undefined, columns: 
   }
 
   const conditions: any[] = [];
+  const firstColumn = Object.values(columns)[0];
+  const isPg = firstColumn ? columnDialect(firstColumn) === 'pg' : false;
 
   for (const [key, value] of Object.entries(having)) {
     if (value == null) {
       continue;
     }
     if (key === 'count') {
-      conditions.push(...havingComparisons(count(), value));
+      conditions.push(...havingComparisons(count(), value, isPg));
       continue;
     }
     if (!AGGREGATE_OPS.includes(key as AggregateOp)) {
@@ -860,7 +903,7 @@ const buildHavingCondition = (having: Record<string, any> | undefined, columns: 
       if (!column || filter == null) {
         continue;
       }
-      conditions.push(...havingComparisons(OP_FNS[key as AggregateOp](column), filter));
+      conditions.push(...havingComparisons(OP_FNS[key as AggregateOp](column), filter, isPg));
     }
   }
 

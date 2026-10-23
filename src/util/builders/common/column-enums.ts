@@ -3,6 +3,7 @@
 
 import type { Column, Table } from 'drizzle-orm';
 import { GraphQLEnumType } from 'graphql';
+import { isJsonColumn } from './column-filters.ts';
 import { excludedColumnsKey, visibleColumns } from './exclusions.ts';
 import type { TypeNameResolver } from './type-names.ts';
 
@@ -81,6 +82,8 @@ export const generateDistinctEnum = (
     table,
     resolveName?.({ kind: 'columnEnum', defaultName, table: tableKey, operation: 'distinct' }) ?? defaultName,
     `Columns of ${typeName} that a query can be made distinct on`,
+    // JSON has no ordering, and on PostgreSQL `json` not even equality, so it cannot partition.
+    (column) => !isJsonColumn(column),
   );
 };
 

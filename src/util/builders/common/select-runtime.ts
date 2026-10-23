@@ -21,7 +21,7 @@ import { primaryKeyRestriction, selectDistinctKeys } from './distinct.ts';
 import { drizzleError } from './errors.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
-import { assertPagingNotNegative } from './limits.ts';
+import { assertPagingNotNegative, offsetOnlyLimit } from './limits.ts';
 import type { TypeNameMapper } from './naming.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { DeletedMode, ScopeResolver } from './policies.ts';
@@ -245,7 +245,7 @@ export const runRelationalSelect = async (opts: {
     }
   }
 
-  params.limit = distinctKeys ? undefined : opts.limit;
+  params.limit = distinctKeys ? undefined : offsetOnlyLimit(table, opts.limit, offset);
   const result = await queryBase.findMany(omitUndefinedKeys(params));
   if (cursorEntries && cursorSelected) {
     // On the raw rows, before remapping rewrites dates/bigints into transport forms.

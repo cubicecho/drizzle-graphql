@@ -33,7 +33,7 @@ export const deletedArg = (
     : {};
 
 export const selectArrayArgs = (
-  orderArgs: GraphQLInputObjectType,
+  orderArgs: GraphQLInputObjectType | undefined,
   filterArgs: GraphQLInputObjectType,
   distinctEnum?: GraphQLEnumType,
   softDelete?: SoftDeleteFor,
@@ -42,7 +42,7 @@ export const selectArrayArgs = (
 ): Record<string, { type: any; description?: string }> => ({
   offset: { type: GraphQLInt },
   limit: { type: GraphQLInt },
-  orderBy: { type: orderArgs },
+  ...(orderArgs ? { orderBy: { type: orderArgs } } : {}),
   where: { type: filterArgs },
   after: {
     type: GraphQLString,
@@ -55,14 +55,14 @@ export const selectArrayArgs = (
 
 /** GraphQL argument map for a single-row select field (no `limit`). */
 export const selectSingleArgs = (
-  orderArgs: GraphQLInputObjectType,
+  orderArgs: GraphQLInputObjectType | undefined,
   filterArgs: GraphQLInputObjectType,
   softDelete?: SoftDeleteFor,
   tableName?: string,
   resolveName?: TypeNameResolver,
 ): Record<string, { type: any }> => ({
   offset: { type: GraphQLInt },
-  orderBy: { type: orderArgs },
+  ...(orderArgs ? { orderBy: { type: orderArgs } } : {}),
   where: { type: filterArgs },
   ...deletedArg(softDelete, tableName!, resolveName),
 });

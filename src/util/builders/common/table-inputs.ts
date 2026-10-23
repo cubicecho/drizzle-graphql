@@ -1,13 +1,13 @@
 // The per-table input types — Filters, OrderBy, and the select field map — each cached so a
 // schema builds one of them per table no matter how many fields reference it.
 
-import type { Table } from 'drizzle-orm';
+import type { Column, Table } from 'drizzle-orm';
 import { is, One } from 'drizzle-orm';
 import { GraphQLInputObjectType, GraphQLList, GraphQLNonNull, GraphQLString } from 'graphql';
 import { drizzleColumnToGraphQLType } from '../../type-converter/index.ts';
 import type { ConvertedColumn, ConvertedInputColumn } from '../../type-converter/types.ts';
 import type { TableNamedRelations } from '../types.ts';
-import { generateColumnFilterValues } from './column-filters.ts';
+import { generateColumnFilterValues, isOrderableColumn } from './column-filters.ts';
 import { CURSOR_FIELD_NAME, rowCursorResolver } from './cursor.ts';
 import { columnDocs } from './docs.ts';
 import { hasExcludedColumns, visibleColumns } from './exclusions.ts';
@@ -38,7 +38,9 @@ const generateTableOrderCached = (table: Table, innerOrder: GraphQLInputObjectTy
     const columnEntries = Object.entries(columns);
 
     remapped = Object.fromEntries(
-      columnEntries.map(([columnName, _columnDescription]) => [columnName, { type: innerOrder }]),
+      columnEntries
+        .filter(([, column]) => isOrderableColumn(column))
+        .map(([columnName]) => [columnName, { type: innerOrder }]),
     );
 
     if (cacheable) {
@@ -120,54 +122,96 @@ export const generateTableSelectTypeFieldsCached = (
 };
 
 /**
+ * The to-one relations a table's OrderBy can order through, as `[relationName, targetTableName]`.
+ * To-many relations are left out: "order a parent by its many children" has no single defined
+ * value to sort on. A relation whose name collides with a column is skipped — the column keeps
+ * the name, even one with no ordering of its own, so `extractOrderBy` never reads it as a relation.
+ */
+const orderRelations = (
+  tableName: string,
+  relationMap?: Record<string, Record<string, TableNamedRelations>>,
+  tables?: Record<string, Table>,
+): [string, string][] => {
+  const relations = relationMap?.[tableName];
+  const table = tables?.[tableName];
+  if (!relations || !tables || !table) {
+    return [];
+  }
+  const columns = visibleColumns(table);
+  return Object.entries(relations)
+    .filter(([relationName, relEntry]) => {
+      const relation = (relEntry as any).relation ?? relEntry;
+      return (
+        !(relationName in columns) &&
+        !!tables[relEntry.targetTableName] &&
+        is(relation, One) &&
+        isFilterableRelation(relation)
+      );
+    })
+    .map(([relationName, relEntry]) => [relationName, relEntry.targetTableName]);
+};
+
+/**
+ * Whether a table's OrderBy would have any field: an orderable column of its own, or a to-one
+ * relation to a table that has one. A table of nothing but JSON columns has none, and an input
+ * object with no fields is an invalid schema, so such a table gets no OrderBy and no `orderBy`
+ * argument at all.
+ */
+const hasOrderFields = (
+  tableName: string,
+  relationMap: Record<string, Record<string, TableNamedRelations>> | undefined,
+  tables: Record<string, Table>,
+  visiting: Set<string> = new Set(),
+): boolean => {
+  const table = tables[tableName];
+  if (table && Object.values(visibleColumns(table)).some((column) => isOrderableColumn(column as Column))) {
+    return true;
+  }
+  if (visiting.has(tableName)) {
+    return false;
+  }
+  visiting.add(tableName);
+  return orderRelations(tableName, relationMap, tables).some(([, target]) =>
+    hasOrderFields(target, relationMap, tables, visiting),
+  );
+};
+
+/**
  * Order fields for a table's to-one relations: each takes the target table's own OrderBy
  * input, so a list can be sorted by a related row's column (compiled as a correlated
- * subquery in the ORDER BY — see `extractOrderBy`). To-many relations are left out: "order
- * a parent by its many children" has no single defined value to sort on. A relation whose
- * name collides with a column is skipped — the column keeps the field.
+ * subquery in the ORDER BY — see `extractOrderBy`). A target with no OrderBy of its own is
+ * left out.
  */
 const generateRelationOrderFields = (
   tableName: string,
   cacheCtx: TypeCacheCtx,
   typeNameMapper: TypeNameMapper | undefined,
-  columnFields: Record<string, ConvertedInputColumn>,
   relationMap?: Record<string, Record<string, TableNamedRelations>>,
   tables?: Record<string, Table>,
 ): Record<string, { type: GraphQLInputObjectType; description?: string }> => {
-  const relations = relationMap?.[tableName];
-  if (!relations || !tables) {
-    return {};
-  }
-
   const fields: Record<string, { type: GraphQLInputObjectType; description?: string }> = {};
 
-  for (const [relationName, relEntry] of Object.entries(relations)) {
-    if (relationName in columnFields) {
-      continue;
+  for (const [relationName, targetTableName] of orderRelations(tableName, relationMap, tables)) {
+    const type = generateTableOrderTypeCached(
+      tables![targetTableName]!,
+      targetTableName,
+      typeNameMapper,
+      cacheCtx,
+      relationMap,
+      tables,
+    );
+    if (type) {
+      fields[relationName] = { type, description: `Order by columns of the related ${relationName} row` };
     }
-
-    const targetTable = tables[relEntry.targetTableName];
-    const relation = (relEntry as any).relation ?? relEntry;
-    if (!targetTable || !is(relation, One) || !isFilterableRelation(relation)) {
-      continue;
-    }
-
-    fields[relationName] = {
-      type: generateTableOrderTypeCached(
-        targetTable,
-        relEntry.targetTableName,
-        typeNameMapper,
-        cacheCtx,
-        relationMap,
-        tables,
-      ),
-      description: `Order by columns of the related ${relationName} row`,
-    };
   }
 
   return fields;
 };
 
+/**
+ * The table's `<Type>OrderBy` input, or `undefined` when it would have no fields (see
+ * {@link hasOrderFields}); the caller then leaves the `orderBy` argument out.
+ */
 export const generateTableOrderTypeCached = (
   table: Table,
   tableName: string,
@@ -175,9 +219,12 @@ export const generateTableOrderTypeCached = (
   cacheCtx: TypeCacheCtx,
   relationMap?: Record<string, Record<string, TableNamedRelations>>,
   tables?: Record<string, Table>,
-) => {
+): GraphQLInputObjectType | undefined => {
   if (cacheCtx.orderTypeCache.has(table)) {
     return cacheCtx.orderTypeCache.get(table)!;
+  }
+  if (!hasOrderFields(tableName, relationMap, { ...tables, [tableName]: table })) {
+    return undefined;
   }
 
   // Fields are thunked so that relation order fields, which reference other tables' order
@@ -188,13 +235,10 @@ export const generateTableOrderTypeCached = (
       defaultName: `${resolveTypeName(tableName, typeNameMapper)}OrderBy`,
       table: tableName,
     }),
-    fields: () => {
-      const orderColumns = generateTableOrderCached(table, innerOrderType(cacheCtx.typeName));
-      return {
-        ...orderColumns,
-        ...generateRelationOrderFields(tableName, cacheCtx, typeNameMapper, orderColumns, relationMap, tables),
-      };
-    },
+    fields: () => ({
+      ...generateTableOrderCached(table, innerOrderType(cacheCtx.typeName)),
+      ...generateRelationOrderFields(tableName, cacheCtx, typeNameMapper, relationMap, tables),
+    }),
   });
 
   cacheCtx.orderTypeCache.set(table, order);

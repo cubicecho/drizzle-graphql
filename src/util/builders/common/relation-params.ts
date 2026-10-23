@@ -8,7 +8,7 @@ import type { ProcessedTableSelectArgs, TableNamedRelations, TableSelectArgs } f
 import { isCursorFieldSelected } from './cursor.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
-import { applyLimitPolicy, assertPagingNotNegative, withDefaultOrderBy } from './limits.ts';
+import { applyLimitPolicy, assertPagingNotNegative, offsetOnlyLimit, withDefaultOrderBy } from './limits.ts';
 import type { TypeNameMapper } from './naming.ts';
 import { resolveObjectTypeName } from './naming.ts';
 import { extractOrderBy } from './order-by.ts';
@@ -205,7 +205,7 @@ export const extractRelationsParams = (
         ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
         : undefined;
     thisRecord.offset = offset;
-    thisRecord.limit = limit;
+    thisRecord.limit = offsetOnlyLimit(tables[targetTableName]!, limit, offset);
 
     const relWith = extractRelationsParams(relationMap, tables, targetTableName, field, relTypeName, options);
     thisRecord.with = relWith;

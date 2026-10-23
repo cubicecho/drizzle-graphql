@@ -138,6 +138,42 @@ const jsonContains = (column: Column, columnName: string, value: any): SQL => {
 };
 
 /**
+ * The nodes of a SQLite JSON document as `(path, kind, value)` rows, for a structural
+ * comparison. Integers and reals share one kind so `1` and `1.0` are the same number, as they
+ * are on the other two dialects.
+ */
+const sqliteJsonNodes = (document: unknown): SQL =>
+  sql`select fullkey, case when type in ('integer', 'real') then 'number' else type end, atom from json_tree(${document})`;
+
+/**
+ * Whole-document `eq` / `ne` on a JSON column, comparing documents rather than their text:
+ * - Postgres: as `jsonb` (a plain `json` column has no `=` operator at all)
+ * - MySQL: against `CAST(? AS JSON)`; a bare string parameter would be a JSON string scalar
+ * - SQLite: the two documents' node sets must match both ways, so object key order and
+ *   whitespace do not matter, while array order still does
+ * A SQL NULL column matches neither, as with `=` / `<>` on any other column.
+ */
+const jsonEquality = (column: Column, columnName: string, value: unknown, negated: boolean): SQL => {
+  const serialized = JSON.stringify(value);
+  switch (columnDialect(column)) {
+    case 'pg': {
+      const left = (column as any).columnType === 'PgJson' ? sql`${column}::jsonb` : sql`${column}`;
+      return negated ? sql`${left} <> ${serialized}::jsonb` : sql`${left} = ${serialized}::jsonb`;
+    }
+    case 'mysql':
+      return negated ? sql`${column} <> cast(${serialized} as json)` : sql`${column} = cast(${serialized} as json)`;
+    case 'sqlite': {
+      const equal = sql`(not exists (${sqliteJsonNodes(column)} except ${sqliteJsonNodes(serialized)}) and not exists (${sqliteJsonNodes(serialized)} except ${sqliteJsonNodes(column)}))`;
+      return negated ? sql`(${column} is not null and not ${equal})` : sql`(${column} is not null and ${equal})`;
+    }
+    default:
+      throw drizzleError(`WHERE ${columnName}: JSON equality is not supported for this dialect!`, {
+        code: 'DRIZZLE_INVALID_FILTER',
+      });
+  }
+};
+
+/**
  * Constant predicates, used where an operator's operand list is empty and the answer is
  * therefore known without touching the column. Written as `1 = 0` / `1 = 1` rather than the
  * `FALSE` / `TRUE` keywords so they compile identically on all three dialects. Built fresh
@@ -176,7 +212,8 @@ const NUMERIC_TEXT_PATTERN = '^\\s*-?(\\d+\\.?\\d*|\\.\\d+)([eE][-+]?\\d+)?\\s*$
  *   pattern guard.
  * - **SQLite** — `json_extract` returns the value in SQLite's own type, so the reads cast
  *   explicitly: without that, SQLite's cross-type ordering puts every string above every
- *   number and `'admin' > 0` would be true.
+ *   number and `'admin' > 0` would be true. A JSON boolean comes back as 1 / 0, so every read
+ *   also checks `json_type` to keep booleans and numbers apart.
  */
 const jsonPathExprs = (
   column: Column,
@@ -208,11 +245,13 @@ const jsonPathExprs = (
     }
     default: {
       const extracted = sql`json_extract(${column}, ${jsonPathString(path)})`;
+      // SQLite has no boolean type: `json_extract` returns a JSON `true` as the integer 1, so
+      // each read checks `json_type`, which still tells `true` apart from `1`.
+      const type = sql`json_type(${column}, ${jsonPathString(path)})`;
       return {
-        text: sql`cast(${extracted} as text)`,
-        number: sql`(case when typeof(${extracted}) in ('integer', 'real') then ${extracted} end)`,
-        // SQLite has no boolean type: a JSON `true` comes back as the integer 1.
-        boolean: extracted,
+        text: sql`(case ${type} when 'true' then 'true' when 'false' then 'false' else cast(${extracted} as text) end)`,
+        number: sql`(case when ${type} in ('integer', 'real') then ${extracted} end)`,
+        boolean: sql`(case when ${type} in ('true', 'false') then ${extracted} end)`,
         encodeBoolean: (value) => (value ? 1 : 0),
       };
     }
@@ -347,7 +386,9 @@ export const extractFiltersColumn = <TColumn extends Column>(
       continue;
     }
 
-    if (operatorName in singleValueOps) {
+    if ((operatorName === 'eq' || operatorName === 'ne') && isJsonColumn(column)) {
+      variants.push(jsonEquality(column, columnName, operatorValue, operatorName === 'ne'));
+    } else if (operatorName in singleValueOps) {
       const singleValue = remapFromGraphQLCore(operatorValue, column, columnName);
       variants.push(
         foldCase
@@ -357,10 +398,14 @@ export const extractFiltersColumn = <TColumn extends Column>(
     } else if (operatorName in stringValueOps) {
       // Under `insensitive`, `like`/`notLike` compile the same way their `i` counterparts
       // do; `ilike`/`notIlike` are already case-insensitive and are left alone.
-      const insensitivePattern = foldCase && (operatorName === 'like' || operatorName === 'notLike');
+      // MySQL and SQLite have no `ILIKE` keyword, so there `ilike`/`notIlike` go through the
+      // same `lower()` form instead of drizzle's Postgres-only helpers.
+      const insensitivePattern =
+        (foldCase && (operatorName === 'like' || operatorName === 'notLike')) ||
+        ((operatorName === 'ilike' || operatorName === 'notIlike') && columnDialect(column) !== 'pg');
       variants.push(
         insensitivePattern
-          ? insensitiveLike(column, operatorValue as string, operatorName === 'notLike')
+          ? insensitiveLike(column, operatorValue as string, operatorName === 'notLike' || operatorName === 'notIlike')
           : stringValueOps[operatorName]!(column, operatorValue as string),
       );
     } else if (operatorName === 'path' && isJsonColumn(column)) {
