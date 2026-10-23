@@ -15,6 +15,7 @@ import {
   DEFAULT_TRANSACTION_TIMEOUT_MS,
   type DefaultOrderByFor,
   type LimitPolicyFor,
+  MAX_TIMER_MS,
   normalizeWriteHooks,
   type ResolvedLimitPolicy,
   type ResolvedWriteHooks,
@@ -110,6 +111,18 @@ export const resolveBuildConfig = (
           timeoutMs:
             (transactionsOpt === 'auto' ? undefined : transactionsOpt.timeoutMs) ?? DEFAULT_TRANSACTION_TIMEOUT_MS,
         };
+  // The timeout goes into `setTimeout`, which clamps any delay above 2^31-1 ms — Infinity
+  // included — to 1 ms and would roll the shared transaction back between two fields.
+  // Infinity is honoured as "no inactivity timer"; anything else must fit a timer.
+  if (
+    transactions &&
+    transactions.timeoutMs !== Number.POSITIVE_INFINITY &&
+    !(Number.isInteger(transactions.timeoutMs) && transactions.timeoutMs >= 1 && transactions.timeoutMs <= MAX_TIMER_MS)
+  ) {
+    throw new Error(
+      `Drizzle-GraphQL Error: config.transactions.timeoutMs must be a positive integer no greater than ${MAX_TIMER_MS}, or Infinity for no timeout; got ${transactions.timeoutMs}.`,
+    );
+  }
 
   // A limit policy is only built when the caller configured one; otherwise `limits` stays
   // undefined and every list keeps its unbounded behavior. Policies are resolved once per

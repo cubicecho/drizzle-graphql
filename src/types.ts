@@ -1324,7 +1324,15 @@ export type BuildSchemaConfig = {
    * after a failure are not executed against the rolled-back transaction — they fail fast.
    * The object form additionally sets the safety timeout (default 30000ms) after which an
    * abandoned transaction — e.g. the host server stopped calling resolvers because of a
-   * non-null completion error — is rolled back instead of leaking a connection.
+   * non-null completion error — is rolled back instead of leaking a connection. It must be a
+   * positive integer no greater than 2147483647 (the longest delay `setTimeout` honours), or
+   * `Infinity` to turn the timer off; `buildSchema` throws for anything else. With the timer off
+   * an abandoned transaction holds its connection until the process ends, so prefer a finite
+   * value. A later field that finds the transaction rolled back by the timeout fails with
+   * `DRIZZLE_TRANSACTION_ABORTED` and a message naming the timeout.
+   *
+   * A root field whose arguments fail to coerce (its resolver never runs) is not waited for:
+   * the transaction commits once the fields that do run have completed.
    *
    * Never nests: a caller-supplied executor on the GraphQL context under
    * `drizzleExecutorKey` always wins, and the library opens nothing of its own.

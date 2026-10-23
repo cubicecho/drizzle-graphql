@@ -2397,7 +2397,13 @@ are untouched.
     does this) — it keys the per-request transaction state
 -   `timeoutMs` (default `30000`) rolls back an abandoned transaction, e.g. when the host
     server stopped calling resolvers because of a non-null completion error, instead of
-    leaking the connection
+    leaking the connection. It must be a positive integer up to `2147483647` (the longest
+    delay `setTimeout` honours), or `Infinity` to turn the timer off; `buildSchema` throws for
+    anything else. With the timer off an abandoned transaction keeps its connection, so prefer
+    a finite value. Fields after a timeout fail with `DRIZZLE_TRANSACTION_ABORTED`, naming the
+    timeout as the cause
+-   A root field whose arguments fail to coerce is answered with an error without its resolver
+    running, so it is not waited for: the transaction commits once the other fields complete
 -   A document that mixes in mutation fields this build did not generate is left alone: their
     completion cannot be tracked, so no transaction is opened
 -   It never nests — an executor supplied on the context wins, as below
