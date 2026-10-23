@@ -6,7 +6,7 @@ Site: [cubicecho.github.io/drizzle-graphql](https://cubicecho.github.io/drizzle-
 
 ## Usage
 
--   Pass your drizzle database instance and schema into builder to generate `{ schema, entities }` object
+-   Pass your drizzle database instance into the builder to generate a `{ schema, entities }` object. The tables are read from the `relations` you gave the drizzle constructor (`drizzle({ client, relations })`), so a table missing from your relations config is not part of the generated schema
 -   Use `schema` if pre-built schema already satisfies all your needs. It's compatible with any server that consumes `GraphQLSchema` class instance
 
     Example: hosting schema using [GraphQL Yoga](https://the-guild.dev/graphql/yoga-server)
@@ -39,6 +39,7 @@ Site: [cubicecho.github.io/drizzle-graphql](https://cubicecho.github.io/drizzle-
 
     // Schema contains 'Users' and 'Customers' tables
     import { db } from './database'
+    import { users } from './schema'
 
     const { entities } = buildSchema(db)
 
@@ -63,7 +64,7 @@ Site: [cubicecho.github.io/drizzle-graphql](https://cubicecho.github.io/drizzle-
                     },
                     resolve: async (source, args, context, info) => {
                         // Your custom logic goes here...
-                        const result = await db.select(schema.Users).where()...
+                        const result = await db.select().from(users).where(/* … */)
 
                         return result
                     }
@@ -168,8 +169,9 @@ const { schema } = buildSchema(db, {
     turns the group-by queries off with it
 -   Turning off `insert` or `update` also drops the input type that only that mutation
     used (`Create<Type>Input` / `Update<Type>Input`)
--   Turning off all three mutation features omits the `Mutation` type entirely, the same as
-    `mutations: false`
+-   Turning off every mutation feature omits the `Mutation` type entirely, the same as
+    `mutations: false` — unless a table has `softDelete`, whose `restore` mutations are
+    generated regardless
 -   List and single queries are always generated, so `Query` is never empty
 
 ### Per-table operations
@@ -344,9 +346,7 @@ Together the two close the loop: `contextValues` decides which tenant a new row 
 
 Names that match nothing throw at build time, the same as `exclude` — a renamed column fails the
 build instead of quietly ceasing to be scoped.
-> request who may see what is a job for [`graphql-shield`](https://the-guild.dev/graphql/shield)
-> or an equivalent layer above the schema, which has the request context this library
-> does not.
+
 ## Naming
 
 Type and field names are derived from the Drizzle schema keys. Three options change them.
@@ -463,7 +463,7 @@ Keyed by the **Drizzle schema key**, like `scope` and `exclude`. A function form
 accepted, for a convention applied across the schema:
 
 ```Typescript
-softDelete: (table, tableName) => ('deletedAt' in getTableColumns(table) ? 'deletedAt' : undefined)
+softDelete: (table, tableName) => ('deletedAt' in getColumns(table) ? 'deletedAt' : undefined)
 ```
 
 What a declared table gets:
@@ -612,6 +612,7 @@ generated SDL says what a field actually holds instead of falling back to `Strin
 | `timestamp` / `datetime` (either `mode`)    | `DateTime`   | an ISO-8601 string                   |
 | SQLite `integer({ mode: 'timestamp' })` / `'timestamp_ms'` | `DateTime` | an ISO-8601 string       |
 | `date` (either `mode`)                      | `Date`       | a `YYYY-MM-DD` string                |
+| `numeric` / `decimal`                       | `Decimal`    | a decimal string                     |
 
 ```graphql
 mutation {
@@ -629,6 +630,8 @@ mutation {
     `Number.MAX_SAFE_INTEGER` survive the round-trip. Integer literals are accepted on input;
     floats and non-numeric strings are rejected
 -   **`UUID`** validates the format on the way in, including inside `where` filters
+-   **`Decimal`** is a decimal string in both directions, so the precision the column declares
+    is not lost to a JS float. Non-numeric and non-finite input is rejected
 -   **`Date`** is a calendar day — no time, no offset — and is the same type in every position
     a `date` column appears in: the object field, the create and update inputs, the
     `DateFilter` operands, aggregate `min` / `max` and group keys. It takes and returns an
@@ -656,7 +659,7 @@ mutation {
 The scalars are exported if you need them in a hand-written schema:
 
 ```Typescript
-import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLJSON, GraphQLUUID } from '@vantreeseba/drizzle-graphql'
+import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLDecimalString, GraphQLJSON, GraphQLUUID } from '@vantreeseba/drizzle-graphql'
 ```
 
 `GraphQLBigIntString` is the `BigInt` scalar — named for what it does rather than what it is
@@ -781,7 +784,7 @@ only has to handle the cases it cares about:
 ```Typescript
 const { schema } = buildSchema(db, {
     // `schema` is the Postgres schema the enum was declared in, if any; `values` is its
-    // value list. Everything but `enumName` is always present.
+    // value list. `enumName` and `schema` are undefined for an inline value list.
     enumNameMapper: ({ enumName, schema }) =>
         schema === 'reporting' ? `Reporting${enumName}Enum` : undefined,
 })
@@ -861,9 +864,40 @@ const { schema } = buildSchema(db, {
 
 -   `describeColumn` reaches every place the column appears: the object type, the create and
     update inputs, the filter input's field, `Min`/`Max` aggregates and `GroupKeys`
--   The hook receives the drizzle column itself, so a project that keeps its documentation in
-    the schema (a `.$type()` brand, a custom column property, a comment table) can read it
-    straight off
+-   `describeColumn` receives the drizzle column itself and `describeTable` the drizzle table
+    itself, so a project that keeps its documentation in the schema (a `WeakMap` keyed by
+    column/table, a custom property, a comment table) can read it straight off:
+
+    ```Typescript
+    import type { Table } from 'drizzle-orm';
+
+    const docs = new WeakMap<object, string>();
+
+    // Register docs on the *built* table and its columns. `text('email')` is only a builder:
+    // pgTable creates a new column object from it, so keying on the builder never matches.
+    const described = <T extends Table>(
+        table: T,
+        description: string,
+        columns: Partial<Record<keyof T['_']['columns'], string>> = {},
+    ): T => {
+        docs.set(table, description);
+        for (const [key, columnText] of Object.entries(columns)) {
+            docs.set((table as any)[key], columnText as string);
+        }
+        return table;
+    };
+
+    export const users = described(
+        pgTable('users', { id: integer('id').primaryKey(), email: text('email').notNull() }),
+        'A person who can sign in',
+        { email: 'Primary login address' },
+    );
+
+    buildSchema(db, {
+        describeColumn: (column) => docs.get(column),
+        describeTable: (_tableName, table) => docs.get(table),
+    });
+    ```
 -   `deprecateColumn` marks output fields and *optional* input fields. A required input field
     is skipped: GraphQL forbids deprecating one, and emitting it would make the schema invalid
 -   Filter and `orderBy` fields are never deprecated — filtering on a deprecated column is how
@@ -1090,7 +1124,8 @@ that column's `inArray` list instead of by the column's value:
 ## Filtering inside JSON documents
 
 `json` / `jsonb` columns get a `path` filter that compares the value at one path inside the
-document, alongside the whole-document `eq` / `ne` / `contains` operators:
+document, alongside the whole-document `eq` / `ne` operators and, on PostgreSQL and MySQL,
+structural `contains` (SQLite stores JSON as text and has no containment operator):
 
 ```graphql
 {
@@ -1256,9 +1291,10 @@ columns you group by.
 }
 ```
 
--   `having: { count: … }` filters on the row count; `avg` / `sum` / `min` / `max` /
-    `countNonNull` / `countDistinct` take one filter per column, over the same columns the
-    matching aggregate type exposes
+-   `having: { count: … }` filters on the row count; `avg` / `sum` / `min` / `max` take one
+    filter per numeric column (the comparison is numeric, so a `max` over a text or date
+    column has no `having` entry even though the aggregate type returns it),
+    `countNonNull` one per column, and `countDistinct` one per column `countDistinct` exposes
 -   Every entry in a `having` is ANDed together
 -   A group filter does not need to be in the selection — `having: { count: { gt: 3 } }` works
     whether or not you asked for `count`
@@ -1297,6 +1333,8 @@ can count or summarise related rows without fetching them:
 -   A parent with no related rows gets `count: 0` and `null` for every other aggregate
 -   To-one relations get no aggregate field — there is nothing to aggregate over
 -   The field is skipped if its name would collide with a column or another relation
+-   Set `features: { relationAggregates: false }` (globally or per table) to leave these
+    fields out
 
 All parents in a selection are aggregated with a single
 `SELECT <fk>, … WHERE <fk> IN (…) GROUP BY <fk>` per request, so `postsAggregate` on a list of
@@ -1320,7 +1358,8 @@ enum. Rows sharing the same combination of those columns collapse to one:
 ```
 
 -   Which row survives each group is decided by `orderBy` — the first one wins. With no
-    `orderBy`, that's the lowest primary key
+    `orderBy`, the table's [default ordering](#default-ordering) decides, and failing that the
+    lowest primary key
 -   `where` is applied **before** rows are collapsed; `limit` and `offset` are applied
     **after**, so `limit: 10` returns ten distinct rows
 -   Several columns are treated as one combined key, not as independent ones
@@ -1339,7 +1378,7 @@ or **SQLite 3.25+**), and a table with no primary key cannot use it.
 SQL gives no ordering guarantee for a query that has no `ORDER BY`, so paging through an
 unordered result can return the same row twice or skip one entirely. To keep pages stable,
 a query that returns only part of a table is ordered by its primary key when the request
-supplies no `orderBy`:
+supplies no `orderBy` and the table has no [default ordering](#default-ordering):
 
 -   list queries with `limit` and/or `offset`
 -   `<tableName>Single` queries, which are an implicit `limit 1`
@@ -1347,7 +1386,8 @@ supplies no `orderBy`:
     `orderBy` you do supply, so per-parent slices are deterministic)
 
 An explicit `orderBy` always takes precedence, composite primary keys are ordered by every
-key column, and an unpaginated list query is left unordered so no sort is paid for.
+key column, and an unpaginated list query of a table with no `defaults` entry is left
+unordered so no sort is paid for.
 
 ## Default ordering
 
@@ -1434,14 +1474,16 @@ field, and passing it back as `after` resumes strictly after that row.
     window
 -   `after` compiles to a keyset predicate built from drizzle's `and`/`or`/`gt`/`lt`
     comparisons (not SQL row-value syntax), so mixed-direction `orderBy` works
--   `NULL`s in ordered columns follow each dialect's native `ORDER BY` placement —
-    PostgreSQL sorts them largest (last in `asc`), MySQL and SQLite smallest (first in
-    `asc`) — and the predicate matches, so rows with `NULL` in an ordered column are paged
-    through, not skipped
+-   `NULL`s in ordered columns sort where the entry's `nulls: first | last` says or, without
+    it, at each dialect's native `ORDER BY` placement — PostgreSQL sorts them largest (last
+    in `asc`), MySQL and SQLite smallest (first in `asc`). The predicate matches either way,
+    so rows with `NULL` in an ordered column are paged through, not skipped, and `nulls` is
+    part of the ordering a cursor is tied to
 -   Dates and bigints round-trip losslessly through the cursor
 -   A cursor is only valid under the ordering it was issued for — reusing it with a
     different `orderBy` (or a malformed/corrupted cursor) returns a `GraphQLError`
--   `after` cannot be combined with `distinct` or with `matchFilterOrder`, and a table with
+-   `after` cannot be combined with `distinct`, with `matchFilterOrder`, or with an `orderBy`
+    that orders through a relation (`cursor` resolves to `null` there), and a table with
     no primary key cannot use cursor pagination (its `cursor` field resolves to `null`)
 -   If a table has a real column named `cursor`, the column wins and the meta field is
     skipped
@@ -1595,8 +1637,10 @@ mutation {
 }
 ```
 
--   `connect`, `disconnect` and `set` take the target's own `Filters` input, so they select
-    rows the same way a query does. A filter that matches everything is rejected rather than
+-   `connect`, `disconnect` and `set` take the target's own `Filters` input — a list of them
+    on a to-many relation, a single one that must match exactly one row on a to-one — so they
+    select rows the same way a query does. A to-one `disconnect` is just `disconnect: true`,
+    since there is only one row to detach. A filter that matches everything is rejected rather than
     attaching the whole table
 -   `set` replaces the relation wholesale — everything attached is detached first, then the
     filters attach. It runs before `create`, so a row created in the same write survives it
@@ -1944,8 +1988,8 @@ const yoga = createYoga({ schema, plugins: armor.protect().plugins });
 
 Armor's `costLimit` is its own document-shape estimate and does not read the `complexity`
 extensions above; the two compose, if you want a cheap static ceiling alongside row-count
-aware pricing. Neither one bounds an individual `limit` argument, so a single unbounded list
-query is still a full table scan — cap `limit` yourself if that matters.
+aware pricing. Neither one bounds an individual `limit` argument — a list query with no
+`limit` is still a full table scan unless you set a [`limits`](#bounding-page-size) policy.
 
 ## Authorization
 
@@ -1987,21 +2031,17 @@ request context actually lives.
     or through your own resolver wrapper, and let the ability answer the questions.
 
 What neither can do is **narrow** a query. They permit or deny a field; they do not append
-`WHERE user_id = …` to the SQL a generated resolver runs, and a permitted `users` query still
-returns every tenant's rows. Until row scoping is a first-class option here, the ways to get
-it are, in increasing order of effort:
-
--   supply the tenant predicate as an ordinary `where` argument from a trusted gateway, and
-    deny the raw generated fields to everyone else;
--   build the schema by hand from `entities`, exposing only the generated resolvers you have
-    wrapped;
--   put the scoped tables behind database row-level security and give the driver the
-    request's identity, so the narrowing happens below Drizzle entirely.
+`WHERE org_id = …` to the SQL a generated resolver runs, so a permitted `posts` query still
+returns every tenant's rows. That is what [`scope`](#row-scoping-and-multi-tenancy) is for: a
+per-table predicate built from the request context and ANDed onto every read and write of
+that table, nested relation fields included. Pair it with
+[`contextValues`](#columns-the-server-owns) so new rows are stamped with the caller's tenant.
+The usual split is shield (or CASL) to decide who may reach a field, and `scope` to decide
+which rows they see through it.
 
 None of this removes anything from introspection either — `deny` hides the data, not the
-shape. If the schema must not so much as mention a table, keep that table out of the Drizzle
-instance you pass to `buildSchema` (a second instance over a narrowed schema object is
-cheap).
+shape. If the schema must not so much as mention a table or column, leave it out with
+[`exclude`](#excluding-tables-and-columns).
 
 Nor is it a row bound: a complexity ceiling prices the `limit` a client asks for, it does not
 cap it. Use [`limits`](#bounding-page-size) for that.
@@ -2142,6 +2182,9 @@ are untouched.
 -   A document that mixes in mutation fields this build did not generate is left alone: their
     completion cannot be tracked, so no transaction is opened
 -   It never nests — an executor supplied on the context wins, as below
+-   A single mutation field can still run in a transaction of its own when it carries a
+    nested write or its table has an `onWrite` hook — those open one regardless of this
+    setting
 
 ### Supplying your own executor
 
@@ -2175,17 +2218,6 @@ The value does not have to be a transaction — any object with the same interfa
 example a pooled connection bound to a tenant, or a logging proxy around `db`. Because the
 key is created with `Symbol.for`, the ESM and CJS builds of this package agree on it when
 both end up loaded in one process.
-
-Or let the library open one per request: `transactions: 'auto'` wraps a document that fires
-more than one generated mutation in a single transaction, committed when the last one
-completes and rolled back if any of them fails.
-
-```Typescript
-buildSchema(db, { transactions: 'auto' })
-```
-
-A document with one mutation, or one that selects a mutation field this build did not
-generate, still runs unwrapped — there is nothing to keep atomic.
 
 ## Write hooks
 
@@ -2347,12 +2379,12 @@ Generated schemas resolve nested relations without N+1 query explosions:
     relation in a single round-trip using Drizzle's relational query builder
     (`with:`), including nested relations and per-relation `where` / `orderBy` /
     `limit` / `offset` arguments.
--   **Mutations (PostgreSQL & SQLite)** — after an insert or update, if the selection set
+-   **Mutations (PostgreSQL & SQLite)** — after an insert, upsert, update or `updateMany`, if the selection set
     includes relation fields, the affected rows are re-fetched by primary key through one
     relational query so their relations are eagerly loaded (single- and composite-column
-    primary keys are supported). `delete` mutations keep using the request-scoped batch
-    loader, since the rows no longer exist to re-fetch. MySQL mutations return only a
-    success flag (no row payload), so this step does not apply there.
+    primary keys are supported). `delete` and `restore` mutations keep using the
+    request-scoped batch loader. MySQL mutations return only a success flag (no row
+    payload), so this step does not apply there.
 -   **Custom schemas** — each relation field also has a standalone resolver, exported as
     `entities.fieldResolvers[TableName][relationName]`. When you wire generated types
     into your own schema and your root resolver does **not** pre-fetch relations, these
@@ -2369,9 +2401,8 @@ Generated schemas resolve nested relations without N+1 query explosions:
 
 > [!IMPORTANT]
 > Per-parent paginated relations (a to-many relation field with `limit` or `offset`)
-> rely on SQL window functions. These require **PostgreSQL**, **MySQL 8.0+**, or
-> **SQLite 3.25+**. Relations without pagination, and all other query/mutation paths,
-> have no such requirement.
+> and the `distinct` argument rely on SQL window functions. These require **PostgreSQL**,
+> **MySQL 8.0+**, or **SQLite 3.25+**. Everything else has no such requirement.
 
 ### Relation nullability
 
@@ -2475,9 +2506,10 @@ into its nested entry, and leaves `<relation>Aggregate` selections out — they 
 `resolveSelection` additionally accepts `single`, `orderBy`, `limit`, `offset` and `after`,
 and returns the rows already remapped to their GraphQL transport forms.
 
-Both take a `typeNameMapper` option. If the schema was built with one, pass the same
-function here — the translation matches selections against GraphQL type names, so a build
-that renames its types has to say so.
+Both take the naming options the build used — `typeNameMapper`, `derivedTypeNameMapper`,
+`typeNamePrefix` and `typeNameSuffix`. The translation matches selections against the
+published GraphQL type names, so a build that renames its types has to say so here too. If
+the build used `typeNameMapper: 'singularize'`, pass the exported `singularizeMapper`.
 
 ## Identifying generated fields
 
@@ -2548,7 +2580,7 @@ that explains it, where there is one.
 | `mutations` | `true` | `false` omits the `Mutation` type entirely |
 | `features` | see [Choosing what gets generated](#choosing-what-gets-generated) | which operations are generated, per operation |
 | `exclude` | none | [tables and columns left out](#excluding-tables-and-columns) of the generated schema entirely |
-| `relationsDepthLimit` | unlimited | how deep relation fields are generated; `0` gives a flat, columns-only schema |
+| `relationsDepthLimit` | unlimited | `0` generates no relation fields (a flat, columns-only schema); any other value currently behaves like the default |
 | `prefixes` / `suffixes` / `typeNameMapper` | see [Naming](#naming) | operation and type names |
 | `typeNamePrefix` / `typeNameSuffix` / `derivedTypeNameMapper` | none | [names of the derived types](#renaming-the-derived-types) — filters, inputs, aggregates, shared inputs |
 | `scalars` / `mapColumnType` | built-in detection | [override a column's GraphQL type](#overriding-a-columns-scalar), by name or by rule |
@@ -2556,7 +2588,7 @@ that explains it, where there is one.
 | `enumValueNameMapper` | the stored value | [names the enum's values](#enum-value-names); `'constant'` for CONSTANT_CASE |
 | `describeColumn` / `describeTable` / `describeRelation` | none | [GraphQL descriptions](#documenting-the-schema) |
 | `deprecateColumn` | none | `@deprecated` on a column's output and optional input fields |
-| `conflictDoNothing` | `false` | PostgreSQL only — `ON CONFLICT DO NOTHING` on inserts, which makes `create<Table>Single` nullable |
+| `conflictDoNothing` | `false` | **Deprecated** — use [`onConflict: { action: NOTHING }`](#upsert) per request. PostgreSQL and SQLite: `ON CONFLICT DO NOTHING` on every insert, which makes `create<Table>Single` nullable; ignored on MySQL |
 | `complexity` | on | [cost hints](#query-cost) in field extensions; `false` turns them off |
 | `transactions` | `'none'` | `'auto'` wraps a multi-mutation request in one [transaction](#transactions) |
 | `limits` | unbounded | [default and maximum page size](#bounding-page-size), globally or per table |
