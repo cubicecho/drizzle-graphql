@@ -54,36 +54,55 @@ export const getOrCreateLoader = <K, V>(context: any, key: string, batchFn: Batc
   return loaders.get(key) as BatchLoader<K, V>;
 };
 
+type RequestCacheNode = { children: WeakMap<object, RequestCacheNode>; entries: Map<string, unknown> };
+
+const requestCacheNode = (): RequestCacheNode => ({ children: new WeakMap(), entries: new Map() });
+
 /**
  * Memoizes a value that a resolver derives from its own field — its args and its selection —
  * for the length of one request. Resolvers run once per parent row, so anything derived only
  * from the field is otherwise recomputed for every row of a batch.
  *
- * The cache lives on the context (weakly keyed by the AST node the value is derived from, so a
- * document cached across requests never carries values between them) and `key` separates fields
- * that share a node: one fragment selection can resolve for more than one parent type. Without a
- * context object there is nowhere request-scoped to cache, so the value is simply computed.
+ * The value is keyed by every AST node of the field — `info.fieldNodes`, the nodes graphql-js
+ * merged into this one response field — not only the first. A fragment's field node is the first
+ * node wherever the fragment is spread, but the merged selection differs when a sibling selection
+ * at one spread site adds to it, so keying on one node would serve one site the other's selection.
+ * The nodes are matched by identity, in order, through a chain of weak maps, so a document cached
+ * across requests never carries values between them (the root lives on the context), and an array
+ * graphql rebuilds per call still hits. `key` separates fields that share nodes: one fragment
+ * selection can resolve for more than one parent type. Without a context object, or without
+ * nodes, there is nowhere request-scoped to cache, so the value is simply computed.
  *
  * `compute` must not read the parent row.
  */
 export const getOrCreateRequestValue = <T>(
   context: any,
-  node: object | undefined,
+  nodes: readonly object[] | undefined,
   key: string,
   compute: () => T,
 ): T => {
-  if (!context || typeof context !== 'object' || !node || typeof node !== 'object') {
+  if (
+    !context ||
+    typeof context !== 'object' ||
+    !Array.isArray(nodes) ||
+    !nodes.length ||
+    nodes.some((node) => !node || typeof node !== 'object')
+  ) {
     return compute();
   }
   if (!context[DRIZZLE_REQUEST_CACHE_KEY]) {
-    context[DRIZZLE_REQUEST_CACHE_KEY] = new WeakMap<object, Map<string, unknown>>();
+    context[DRIZZLE_REQUEST_CACHE_KEY] = requestCacheNode();
   }
-  const cache = context[DRIZZLE_REQUEST_CACHE_KEY] as WeakMap<object, Map<string, unknown>>;
-  let entries = cache.get(node);
-  if (!entries) {
-    entries = new Map<string, unknown>();
-    cache.set(node, entries);
+  let level = context[DRIZZLE_REQUEST_CACHE_KEY] as RequestCacheNode;
+  for (const node of nodes) {
+    let next = level.children.get(node);
+    if (!next) {
+      next = requestCacheNode();
+      level.children.set(node, next);
+    }
+    level = next;
   }
+  const entries = level.entries;
   if (entries.has(key)) {
     return entries.get(key) as T;
   }

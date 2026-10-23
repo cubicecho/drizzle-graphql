@@ -603,7 +603,7 @@ export const createRelationAggregateFactory = (
         // request and reused by every sibling the batch serves.
         const { request, loaderKey } = getOrCreateRequestValue(
           context,
-          info?.fieldNodes?.[0],
+          info?.fieldNodes,
           `aggregate:${tableName}::${relationName}`,
           () => {
             const request = parseAggregateRequest(info, target);

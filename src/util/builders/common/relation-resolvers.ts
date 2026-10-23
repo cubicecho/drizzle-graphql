@@ -253,7 +253,7 @@ export const createRelationResolverFactory =
       // re-stringifying the loader key N times.
       const { orderByArg, limit, distinct, cursorEntries, cursorValues, columns, loaderKey } = getOrCreateRequestValue(
         context,
-        info?.fieldNodes?.[0],
+        info?.fieldNodes,
         `relation:${tableName}::${relationName}`,
         () => {
           // A relation field falls back to the *target* table's default ordering, since that is
