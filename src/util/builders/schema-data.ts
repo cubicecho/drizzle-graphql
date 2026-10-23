@@ -19,8 +19,9 @@ import {
   generateOnConflictInput,
   generateUpdateManyInput,
   generateWriteCount,
-  getUniqueColumnSets,
+  getUniqueTargets,
   type TablesRelationalConfig,
+  type UniqueTarget,
 } from '../builders/common.ts';
 import { createSchemaBuilder, type MutationRegistration, type SchemaBuildAdapter } from './build-context.ts';
 import type { CreatedResolver, SchemaGeneratorOptions } from './types.ts';
@@ -55,7 +56,7 @@ export type DialectSchemaAdapter = SchemaBuildAdapter<true> & {
  */
 export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
   const primaryKeyPropNames = adapter.primaryKeyPropNames;
-  const uniqueColumnSets = (table: Table): string[][] => getUniqueColumnSets(table, adapter.getTableConfig);
+  const uniqueTargets = (table: Table): UniqueTarget[] => getUniqueTargets(table, adapter.getTableConfig);
   const { generateInsert, generateUpsert, generateUpdate, generateDelete } = buildWriteResolvers(primaryKeyPropNames);
   // The three stretches of a build that have nothing to do with the dialect: everything up to
   // each table's types, the read fields in the middle, and the relation resolvers at the end.
@@ -134,7 +135,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
         : undefined;
       // An upsert needs something to conflict on, so a table with no primary key and no
       // unique constraint gets no upsert mutations rather than ones that always fail.
-      const uniqueSets = tableFeatures.upsert ? uniqueColumnSets(schema[tableName] as Table) : [];
+      const uniqueSets = tableFeatures.upsert ? uniqueTargets(schema[tableName] as Table) : [];
       const onConflictInput = tableFeatures.upsert
         ? generateOnConflictInput({
             table: schema[tableName] as Table,

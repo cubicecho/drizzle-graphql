@@ -25,12 +25,18 @@ export const generateColumnEnum = (
   enumName: string,
   description: string,
   predicate: (column: Column, columnName: string) => boolean = () => true,
+  /**
+   * Identifies a `predicate` that varies between builds of the same table (one build's
+   * server-owned columns, say), so each variant gets its own cached enum. Leave it out for
+   * a predicate that only reads the table.
+   */
+  variant = '',
 ): GraphQLEnumType | undefined => {
   // The exclusions are part of the key, not a reason to skip the cache: a table's enum is
   // asked for from more than one place in a build (a list query's `distinct` argument and the
   // same argument on a to-many relation field pointing at it), and handing those two call
   // sites separate instances would put two types of the same name in one schema.
-  const cacheKey = `${enumName}\u0000${excludedColumnsKey(table)}`;
+  const cacheKey = `${enumName}\u0000${excludedColumnsKey(table)}\u0000${variant}`;
   let tableCache = columnEnumCache.get(table);
   const cached = tableCache?.get(cacheKey);
   if (cached) {

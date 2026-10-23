@@ -1,7 +1,7 @@
 // Primary keys and unique column sets, read off a table however its dialect stores them.
 
 import type { Table } from 'drizzle-orm';
-import { asc, getColumns } from 'drizzle-orm';
+import { asc, getColumns, type SQL } from 'drizzle-orm';
 import { visibleColumns } from './exclusions.ts';
 
 /**
@@ -119,9 +119,22 @@ export const primaryKeyOrderExprs = (table: Table, pkNames: readonly string[]): 
 // ── cursor (keyset) pagination ───────────────────────────────────────────────
 
 /**
- * Every set of columns that uniquely identifies a row of `table`: the primary key first,
- * then each unique constraint and unique index, then each column declared `.unique()`
- * inline. Sets are property names (what GraphQL inputs use), not database column names.
+ * A unique column set, and the predicate it holds under when it comes from a partial unique
+ * index (`uniqueIndex().on(…).where(…)`). `where` is absent for a constraint that covers
+ * every row.
+ */
+export type UniqueTarget = { columns: string[]; where?: SQL };
+
+type UniqueTableConfig = {
+  primaryKeys: { columns: { name: string }[] }[];
+  uniqueConstraints?: { columns: { name: string }[] }[];
+  indexes?: { config: { unique?: boolean; columns: any[]; where?: SQL } }[];
+};
+
+/**
+ * Every set of columns that is unique on `table`: the primary key first, then each unique
+ * constraint and unique index, then each column declared `.unique()` inline. Sets are
+ * property names (what GraphQL inputs use), not database column names.
  *
  * `getTableConfig` is the dialect's own — the three dialects expose the same
  * `{ primaryKeys, uniqueConstraints, indexes }` shape but from different modules, so the
@@ -130,16 +143,16 @@ export const primaryKeyOrderExprs = (table: Table, pkNames: readonly string[]): 
  * Index entries whose columns are SQL expressions rather than plain columns are skipped:
  * an expression index is a valid conflict target in the database but cannot be named by a
  * column enum. Deduplicated, order-insensitive — a column that is both the primary key and
- * a unique constraint yields one set.
+ * a unique constraint yields one set, and a set that is unique both outright and under a
+ * partial index keeps the outright one.
+ *
+ * A partial unique index carries its predicate as `where`: it is a conflict target only
+ * together with that predicate, and it does not make the set unique across the whole table.
  */
-export const getUniqueColumnSets = <TTable extends Table>(
+export const getUniqueTargets = <TTable extends Table>(
   table: TTable,
-  getTableConfig: (table: TTable) => {
-    primaryKeys: { columns: { name: string }[] }[];
-    uniqueConstraints?: { columns: { name: string }[] }[];
-    indexes?: { config: { unique?: boolean; columns: any[] } }[];
-  },
-): string[][] => {
+  getTableConfig: (table: TTable) => UniqueTableConfig,
+): UniqueTarget[] => {
   const cols = visibleColumns(table);
   const propNameByColumnName = new Map(Object.entries(cols).map(([propName, col]) => [(col as any).name, propName]));
   // A set is usable only if every one of its columns maps back to a property on the table.
@@ -154,35 +167,60 @@ export const getUniqueColumnSets = <TTable extends Table>(
     }
     return propNames.length ? propNames : undefined;
   };
+  const whole = (columns: string[] | undefined): UniqueTarget | undefined => (columns ? { columns } : undefined);
 
   const config = getTableConfig(table);
-  const candidates: (string[] | undefined)[] = [
+  const candidates: (UniqueTarget | undefined)[] = [
     // Inline `.primaryKey()` columns, then table-level `primaryKey({ columns })`.
-    Object.entries(cols)
-      .filter(([, col]) => (col as any).primary)
-      .map(([propName]) => propName),
-    ...config.primaryKeys.map((pk) => toPropNames(pk.columns.map((c) => c.name))),
-    ...(config.uniqueConstraints ?? []).map((uc) => toPropNames(uc.columns.map((c) => c.name))),
+    whole(
+      Object.entries(cols)
+        .filter(([, col]) => (col as any).primary)
+        .map(([propName]) => propName),
+    ),
+    ...config.primaryKeys.map((pk) => whole(toPropNames(pk.columns.map((c) => c.name)))),
+    ...(config.uniqueConstraints ?? []).map((uc) => whole(toPropNames(uc.columns.map((c) => c.name)))),
     ...(config.indexes ?? [])
       .filter((index) => index.config.unique)
-      .map((index) => toPropNames(index.config.columns.map((c) => (c as any)?.name))),
+      .map((index) => {
+        const columns = toPropNames(index.config.columns.map((c) => (c as any)?.name));
+        return columns ? { columns, ...(index.config.where ? { where: index.config.where } : {}) } : undefined;
+      }),
     ...Object.entries(cols)
       .filter(([, col]) => (col as any).isUnique)
-      .map(([propName]) => [propName]),
+      .map(([propName]) => ({ columns: [propName] })),
   ];
 
-  const seen = new Set<string>();
-  const sets: string[][] = [];
-  for (const set of candidates) {
-    if (!set?.length) {
+  const byKey = new Map<string, UniqueTarget>();
+  for (const candidate of candidates) {
+    if (!candidate?.columns.length) {
       continue;
     }
-    const key = [...set].sort().join(',');
-    if (seen.has(key)) {
-      continue;
+    const key = [...candidate.columns].sort().join(',');
+    const seen = byKey.get(key);
+    if (!seen) {
+      byKey.set(key, candidate);
+    } else if (seen.where && !candidate.where) {
+      // Whole-table uniqueness wins over a partial index on the same columns: it is the
+      // stronger guarantee, and conflicting on it needs no predicate.
+      byKey.set(key, { columns: seen.columns });
     }
-    seen.add(key);
-    sets.push(set);
   }
-  return sets;
+  return [...byKey.values()];
 };
+
+/**
+ * The column sets that identify at most one row of `table` — {@link getUniqueTargets}
+ * without the partial unique indexes, which only constrain the rows their predicate
+ * matches (a soft-deleted duplicate is allowed), and so do not.
+ *
+ * Pass `{ partial: true }` to keep them, for callers that only need to know a set is
+ * unique among the rows that matter.
+ */
+export const getUniqueColumnSets = <TTable extends Table>(
+  table: TTable,
+  getTableConfig: (table: TTable) => UniqueTableConfig,
+  options: { partial?: boolean } = {},
+): string[][] =>
+  getUniqueTargets(table, getTableConfig)
+    .filter((target) => options.partial || !target.where)
+    .map((target) => target.columns);

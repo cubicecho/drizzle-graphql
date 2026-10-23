@@ -335,7 +335,9 @@ const { schema } = buildSchema(db, {
     send it at all — the SDL itself says the column is server-owned. It stays readable on the
     object type.
 -   Every insert stamps it, including rows created by a nested `create`.
--   Updates never write it, so an update cannot hand a row to another owner.
+-   Updates never write it, so an update cannot hand a row to another owner. Neither does the
+    conflict branch of an upsert: it is left out of the default overwrite and of the columns
+    `onConflict.update` can name.
 
 Together the two close the loop: `contextValues` decides which tenant a new row belongs to, and
 `scope` decides which rows a request can see and change afterwards.
@@ -984,6 +986,9 @@ input StockItemIdLocationIdKey {
     composes with column filters, relation filters, `OR` / `AND` / `NOT`
 -   Composite primary keys get a field like any other unique constraint
 -   Single-column constraints do not: `eq` on the column already names the row
+-   Partial unique indexes (`uniqueIndex().on(…).where(…)`) do not either: they are unique
+    only among the rows the predicate matches, so with soft-deleted rows included
+    (`deleted: INCLUDE`) the key can match more than one
 -   A field name a column or relation already holds is skipped, the same way a relation
     yields to a same-named column
 -   It compiles to exactly the equalities you would have written by hand; the guarantee is in
@@ -1566,9 +1571,17 @@ mutation {
 -   Columns the request did not supply are never overwritten — a partial upsert does not null
     out the rest of the row. Listing an unsupplied column in `update` is an error rather than
     a silent no-op
+-   That holds per row: a batch whose rows supply different columns is split into one
+    statement per run of consecutive rows that write the same columns, run in one transaction,
+    so a row that left a column out keeps it. The rows come back in the order they were sent
 -   `target` must match one of the table's unique constraints exactly; anything else is
     rejected with the list of valid targets, instead of the database's opaque "no unique or
     exclusion constraint matching" error
+-   `target` can be a partial unique index — the `WHERE deleted_at IS NULL` companion of
+    [soft delete](#soft-delete), say. Its predicate goes into `ON CONFLICT (…) WHERE …`, so a
+    conflict is detected only against the rows the index covers
+-   `contextValues` columns are never overwritten on conflict — see
+    [columns the server owns](#columns-the-server-owns)
 -   `action: NOTHING` inserts nothing and returns nothing for the conflicting row. An `UPDATE`
     with no columns left to write degrades to the same thing
 -   `values` is the same `Create<Type>Input` the insert mutations take, so turning `insert`
@@ -1603,7 +1616,9 @@ Dialect differences:
 -   **PostgreSQL** and **SQLite** — the full surface above. A table with no primary key and no
     unique constraint has nothing to conflict on, so it gets no upsert mutations at all
 -   **MySQL** — `ON DUPLICATE KEY UPDATE` fires on whichever unique key was violated and takes
-    no predicate, so `<Type>OnConflict` there has only `action` and `update`. `action: NOTHING`
+    no predicate, so `<Type>OnConflict` there has only `action` and `update`. Because the
+    conflict can be on any unique key, the default overwrite leaves out the primary key as well
+    — copying a new row's key over the conflicting row's would move it. `action: NOTHING`
     becomes `INSERT IGNORE`, and the mutations return `MutationReturn` like every other MySQL
     mutation
 
@@ -2580,8 +2595,11 @@ It understands `values` (one object or a list), `where` (`eq` for one row, `inAr
 many, an equality on every column of a composite key), and the per-entry `where` inside a
 batch update's `updates`. Check `complete` before treating `rows` as the affected set: it
 is `false` when the arguments do not pin the rows down — an insert whose key the database
-generates, a filter on something other than the primary key, an unbounded update, or a
-table with no primary key at all.
+generates, a filter on something other than the primary key, an unbounded update, a
+table with no primary key at all, or an upsert whose `onConflict` targets another unique key
+or can skip a conflicting row (`action: NOTHING`, a `where`). On MySQL, where an upsert has
+no `target` and conflicts on whichever unique key it hits, `complete` assumes the primary
+key: do not rely on it for a table with other unique keys.
 
 > [!NOTE]
 > `extensions.drizzle` is stable API. The point of publishing it is that consumers stop
