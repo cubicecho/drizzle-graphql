@@ -4,6 +4,18 @@
 import type { Relation, SQL, Table } from 'drizzle-orm';
 import { and, Column, eq, getColumns, inArray, is, or, relationsFilterToSQL, sql } from 'drizzle-orm';
 import type { GraphQLFieldResolver, GraphQLObjectType } from 'graphql';
+import {
+  mySqlDateTimeTextToIso,
+  pgTimestampTextToIso,
+  rawColumnValue,
+  remapFromGraphQLCore,
+} from '../../data-mappers/index.ts';
+import { dateToCalendarDate } from '../../scalars/index.ts';
+import {
+  isDateOnlyColumn,
+  isMySqlDateTimeStringColumn,
+  isPgTimestampStringColumn,
+} from '../../type-converter/index.ts';
 import type { TableNamedRelations } from '../types.ts';
 
 /**
@@ -269,12 +281,98 @@ export const extractRelationJoinColumnPairs = (
   return pairs;
 };
 
+/** A decimal written as text, in a form `canonicalDecimal` can normalise. */
+const DECIMAL_TEXT = /^([+-]?)(\d*)(?:\.(\d*))?$/;
+
+/**
+ * Decimal text without the zeros that do not change its value: `1.500` and `01.5` are both
+ * `1.5`, as SQL compares them. Anything else (an exponent, `NaN`) is returned unchanged.
+ */
+const canonicalDecimal = (value: string): string => {
+  const match = DECIMAL_TEXT.exec(value);
+  if (!match || (!match[2] && !match[3])) {
+    return value;
+  }
+  const whole = match[2]!.replace(/^0+(?=\d)/, '') || '0';
+  const fraction = (match[3] ?? '').replace(/0+$/, '');
+  const digits = fraction ? `${whole}.${fraction}` : whole;
+  return match[1] === '-' && digits !== '0' ? `-${digits}` : digits;
+};
+
+/** An ISO instant without trailing zeros in its fraction: `…:00.100Z` and `…:00.1Z` agree. */
+const trimIsoFraction = (iso: string): string => iso.replace(/(\.\d*?)0+Z$/, '$1Z').replace(/\.Z$/, 'Z');
+
+/**
+ * One join value in a form both sides of a relation produce for the same SQL value. The parent's
+ * key and a related row's can arrive in different JS forms — a `Date` and the text of the same
+ * instant, `1.50` and `1.500` from decimals of different scale — and `String()` would tell them
+ * apart (it even drops a `Date`'s milliseconds).
+ */
+const joinValueKey = (value: unknown, column: Column | undefined): string => {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      return String(value);
+    }
+    if (column && isDateOnlyColumn(column)) {
+      return dateToCalendarDate(value) ?? value.toISOString();
+    }
+    return trimIsoFraction(value.toISOString());
+  }
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('hex');
+  }
+  if (typeof value === 'string' && column) {
+    if (isMySqlDateTimeStringColumn(column)) {
+      return trimIsoFraction(mySqlDateTimeTextToIso(value));
+    }
+    if (isPgTimestampStringColumn(column)) {
+      return trimIsoFraction(pgTimestampTextToIso(value));
+    }
+    if (((column as any).dataType ?? '') === 'string numeric') {
+      return canonicalDecimal(value);
+    }
+  }
+  return String(value);
+};
+
 /**
  * A string identifying one combination of join-column values, for grouping a batch's rows by
- * parent. Values are compared by their string form, as a single-column key always has been.
+ * parent. `columns` are the columns the values were read from, in the same order: the parent's
+ * join columns for a parent key, the target's (or the junction's) for a related row. Values the
+ * database compares equal give the same key — see {@link joinValueKey}.
  */
-export const joinKeyOf = (values: readonly unknown[]): string =>
-  values.length === 1 ? String(values[0]) : JSON.stringify(values.map((value) => String(value)));
+export const joinKeyOf = (values: readonly unknown[], columns?: readonly Column[]): string =>
+  values.length === 1
+    ? joinValueKey(values[0], columns?.[0])
+    : JSON.stringify(values.map((value, i) => joinValueKey(value, columns?.[i])));
+
+/**
+ * The parent row's values for the relation's join columns, as the database holds them. The row
+ * a relation field resolves under has been remapped to its GraphQL form — a `Date` is an ISO
+ * string by then, a `bigint` a decimal string — which can neither be bound back through every
+ * column's encoder (SQLite's integer timestamp calls `getTime()` on it) nor be compared with the
+ * related rows' decoded values. The values from before remapping are used when the row kept
+ * them; otherwise the output form is mapped back the way an input value would be.
+ */
+export const parentJoinValues = (parent: Record<string, any>, pairs: readonly RelationJoinColumnPair[]): unknown[] =>
+  pairs.map(({ localColPropName, localCol }) => {
+    const raw = rawColumnValue(parent, localColPropName);
+    if (raw.found) {
+      return raw.value;
+    }
+    const value = parent[localColPropName];
+    if (value == null) {
+      return value;
+    }
+    try {
+      return remapFromGraphQLCore(value, localCol, localColPropName);
+    } catch {
+      return value;
+    }
+  });
 
 /**
  * The rows whose `cols` hold one of `keys`: `col IN (…)` for a single join column, and an `OR`

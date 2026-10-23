@@ -37,6 +37,7 @@ import {
   extractJunctionColumns,
   extractRelationJoinColumnPairs,
   joinKeyOf,
+  parentJoinValues,
   parentKeyCondition,
   relationOwnCondition,
 } from './relations.ts';
@@ -160,7 +161,8 @@ export const createRelationResolverFactory =
       return undefined;
     }
 
-    const localColPropNames = joinPairs.map((pair) => pair.localColPropName);
+    // The parent's join columns, which a parent key is read from and keyed by.
+    const localCols = joinPairs.map((pair) => pair.localCol);
     // The target column a junction is joined on. A usable `.through()` relation has exactly one
     // pair — a composite junction is `null` below and refused.
     const foreignCol = joinPairs[0]!.foreignCol;
@@ -237,7 +239,7 @@ export const createRelationResolverFactory =
       }
 
       // A null in any join column matches nothing: SQL equality never holds for it.
-      const localValues = localColPropNames.map((name) => parent[name]);
+      const localValues = parentJoinValues(parent, joinPairs);
       if (localValues.some((value) => value == null)) {
         return isOne ? null : [];
       }
@@ -339,7 +341,7 @@ export const createRelationResolverFactory =
         // Loaders are cached per context, so every call batched here shares this request's
         // executor — the transaction on the context, when there is one.
         const executor = resolveExecutor(db, context);
-        const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key), key])).values()];
+        const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key, localCols), key])).values()];
         // Loaders are keyed per context too, so the scope resolved here is this request's.
         const scope = resolveScope(policies, context, filterCtx);
         let whereCondition = withScope(
@@ -453,7 +455,10 @@ export const createRelationResolverFactory =
         // Group by parent key before remapping (remapping may delete null fields). A junction
         // relation's key is a helper column, dropped once it has been read.
         const keyOf = (row: any) => {
-          const key = joinKeyOf(groupKeys.map((name) => row[name]));
+          const key = joinKeyOf(
+            groupKeys.map((name) => row[name]),
+            groupCols,
+          );
           if (junction) {
             delete row[PARENT_KEY];
           }
@@ -463,15 +468,15 @@ export const createRelationResolverFactory =
         if (isOne) {
           const byKey = new Map(rows.map((row: any) => [keyOf(row), row]));
           remapToGraphQLArrayOutput(rows, targetTableName, targetTable);
-          return parentKeys.map((key) => byKey.get(joinKeyOf(key)) ?? null);
+          return parentKeys.map((key) => byKey.get(joinKeyOf(key, localCols)) ?? null);
         }
 
-        const grouped = new Map<string, any[]>(uniqueKeys.map((key) => [joinKeyOf(key), []]));
+        const grouped = new Map<string, any[]>(uniqueKeys.map((key) => [joinKeyOf(key, localCols), []]));
         for (const row of rows) {
           grouped.get(keyOf(row))?.push(row);
         }
         remapToGraphQLArrayOutput(rows, targetTableName, targetTable);
-        return parentKeys.map((key) => grouped.get(joinKeyOf(key)) ?? []);
+        return parentKeys.map((key) => grouped.get(joinKeyOf(key, localCols)) ?? []);
       });
 
       return loader.load(localValues);

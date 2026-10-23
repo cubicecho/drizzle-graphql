@@ -45,6 +45,7 @@ import {
   type GeneratedTypeInfo,
   generateColumnEnum,
   joinKeyOf,
+  parentJoinValues,
   parentKeyCondition,
   type RelationAggregateFactory,
   type RelationFilterBase,
@@ -524,7 +525,7 @@ export const createRelationAggregateFactory = (
       }
       return undefined;
     }
-    const localColPropNames = joinPairs.map((pair) => pair.localColPropName);
+    const localCols = joinPairs.map((pair) => pair.localCol);
     // The target column a junction is joined on; a usable junction relation has a single pair.
     const foreignCol = joinPairs[0]!.foreignCol;
     // A many-to-many relation reaches its target through a junction table: the parent's key
@@ -586,7 +587,8 @@ export const createRelationAggregateFactory = (
           return {};
         }
 
-        const localValues = localColPropNames.map((name) => parent[name]);
+        // The parent's join values as the database holds them, not their GraphQL output form.
+        const localValues = parentJoinValues(parent, joinPairs);
         // No key to correlate on — the relation is empty by definition.
         if (localValues.some((value) => value == null)) {
           return assembleAggregateRow({}, request, target);
@@ -598,7 +600,7 @@ export const createRelationAggregateFactory = (
         const loader = getOrCreateLoader(context, loaderKey, async (parentKeys: readonly (readonly unknown[])[]) => {
           // Loaders are cached per context, so the whole batch shares this request's executor.
           const executor = resolveExecutor(db, context);
-          const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key), key])).values()];
+          const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key, localCols), key])).values()];
           // An aggregate over a relation counts the same rows the relation itself returns,
           // so it is narrowed by the target table's scope too.
           const scope = resolveScope(policies, context, filterCtx);
@@ -626,11 +628,19 @@ export const createRelationAggregateFactory = (
           const joined = junction ? selected.innerJoin(junction.table, eq(junction.targetCol, foreignCol)) : selected;
           const rows: any[] = await joined.where(whereCondition).groupBy(...groupCols);
 
-          const byKey = new Map(rows.map((row) => [joinKeyOf(groupAliases.map((alias) => row[alias])), row]));
+          const byKey = new Map(
+            rows.map((row) => [
+              joinKeyOf(
+                groupAliases.map((alias) => row[alias]),
+                groupCols,
+              ),
+              row,
+            ]),
+          );
 
           // A parent with no matching rows produces no group — hand back an empty row so it
           // assembles to count 0 / null aggregates rather than dropping the field.
-          return parentKeys.map((key) => byKey.get(joinKeyOf(key)) ?? {});
+          return parentKeys.map((key) => byKey.get(joinKeyOf(key, localCols)) ?? {});
         });
 
         return assembleAggregateRow(await loader.load(localValues), request, target);

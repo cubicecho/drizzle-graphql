@@ -2486,7 +2486,13 @@ Generated schemas resolve nested relations without N+1 query explosions:
     `ROW_NUMBER() OVER (PARTITION BY …)` window function — still one query, not one per
     parent. A relation joined on several columns (`from: [a, b], to: [x, y]`) is batched,
     grouped and partitioned by all of them, matching the parents with
-    `(a = … AND b = …) OR …` instead of `IN (…)`.
+    `(a = … AND b = …) OR …` instead of `IN (…)`. The parent's join values are bound as the
+    column holds them, not in their GraphQL output form, so a relation joined on a timestamp,
+    `date`, `bigint` or decimal column works on this path and in `<relation>Aggregate` too. A
+    parent row this library remapped keeps its original values for that; a parent your own
+    resolver built in GraphQL form (an ISO string for a timestamp, say) has them mapped back the
+    way an input value would be, which cuts a `'string'`-mode microsecond timestamp to
+    milliseconds — return the row as drizzle read it to keep the full precision.
 
     ```Typescript
     // entities.fieldResolvers is keyed by table name, then relation name
