@@ -34,6 +34,8 @@ export interface UpdateManyOptions {
   updateManyInput: GraphQLInputObjectType;
   fieldName: string;
   typeName: string;
+  /** `features.requireWhere`: every entry must carry a non-empty `where`. */
+  requireWhere: boolean;
 }
 
 /** `update<Table>Many` — batch update, whose statement loop is dialect-specific. */
@@ -214,6 +216,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             updateManyInput,
             fieldName: updateManyFieldName,
             typeName,
+            requireWhere: tableFeatures.requireWhere,
           })
         : undefined;
       const deleteGenerated = tableFeatures.delete

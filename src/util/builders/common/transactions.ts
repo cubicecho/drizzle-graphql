@@ -13,12 +13,15 @@
 // (COMMIT) and the first failure rejects it (ROLLBACK).
 // =============================================================================
 
-import type { GraphQLError } from 'graphql';
+import { type GraphQLError, getArgumentValues } from 'graphql';
 import { drizzleError } from './errors.ts';
 import { drizzleExecutorKey, resolveExecutor } from './executor.ts';
 
 /** How long a shared transaction may sit idle between resolver calls before it is rolled back. */
 export const DEFAULT_TRANSACTION_TIMEOUT_MS = 30_000;
+
+/** The longest delay `setTimeout` honours; anything above, Infinity included, fires after 1 ms. */
+export const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /**
  * One per built schema (when `transactions: 'auto'` is on). `fieldNames` is filled by the
@@ -42,6 +45,8 @@ type SharedTxState = {
   /** First failure; set once, before the latch is rejected. */
   failure: unknown;
   aborted: boolean;
+  /** True when the first failure was the inactivity timeout rather than a field's error. */
+  timedOut: boolean;
   /** True once the underlying `db.transaction()` promise has settled (committed or rolled back). */
   done: boolean;
   /** Resolves with the transaction once BEGIN succeeded; rejects if it never will. */
@@ -96,6 +101,7 @@ const collectRootMutationKeys = (
   known: ReadonlySet<string>,
   keys: Set<string>,
   visitedFragments: Set<string>,
+  argumentsCoerce: (field: any) => boolean,
 ): boolean => {
   for (const selection of selectionSet.selections) {
     if (!includedByDirectives(selection, variables)) {
@@ -109,9 +115,25 @@ const collectRootMutationKeys = (
       if (!known.has(name)) {
         return false;
       }
-      keys.add(selection.alias?.value ?? name);
+      // A field whose arguments fail to coerce is answered with an error by the executor
+      // without its resolver ever running. Counting it would leave the transaction waiting
+      // for a completion that never comes — until the timeout rolls back writes the
+      // response already reported as done.
+      if (argumentsCoerce(selection)) {
+        keys.add(selection.alias?.value ?? name);
+      }
     } else if (selection.kind === 'InlineFragment') {
-      if (!collectRootMutationKeys(selection.selectionSet, fragments, variables, known, keys, visitedFragments)) {
+      if (
+        !collectRootMutationKeys(
+          selection.selectionSet,
+          fragments,
+          variables,
+          known,
+          keys,
+          visitedFragments,
+          argumentsCoerce,
+        )
+      ) {
         return false;
       }
     } else if (selection.kind === 'FragmentSpread') {
@@ -124,7 +146,17 @@ const collectRootMutationKeys = (
       if (!fragment) {
         return false;
       }
-      if (!collectRootMutationKeys(fragment.selectionSet, fragments, variables, known, keys, visitedFragments)) {
+      if (
+        !collectRootMutationKeys(
+          fragment.selectionSet,
+          fragments,
+          variables,
+          known,
+          keys,
+          visitedFragments,
+          argumentsCoerce,
+        )
+      ) {
         return false;
       }
     }
@@ -132,9 +164,11 @@ const collectRootMutationKeys = (
   return true;
 };
 
-const abortedBatchError = (): GraphQLError =>
+const abortedBatchError = (state: SharedTxState, timeoutMs: number): GraphQLError =>
   drizzleError(
-    'Drizzle-GraphQL Error: Mutation was not executed because an earlier mutation in the same request failed and the shared transaction was rolled back.',
+    state.timedOut
+      ? `Drizzle-GraphQL Error: Mutation was not executed because the shared transaction timed out after ${timeoutMs}ms waiting for the remaining mutation fields and was rolled back.`
+      : 'Drizzle-GraphQL Error: Mutation was not executed because an earlier mutation in the same request failed and the shared transaction was rolled back.',
     { code: 'DRIZZLE_TRANSACTION_ABORTED' },
   );
 
@@ -192,6 +226,7 @@ const openSharedTx = (
     completed: 0,
     failure: undefined,
     aborted: false,
+    timedOut: false,
     done: false,
     ready,
     settled,
@@ -206,10 +241,15 @@ const openSharedTx = (
     suspendTimer: clearTimer,
     bumpTimer: () => {
       clearTimer();
-      if (state.done) {
+      // Infinity is the configured "never time out"; build-config rejects every other value
+      // `setTimeout` cannot honour.
+      if (state.done || txCtx.timeoutMs === Number.POSITIVE_INFINITY) {
         return;
       }
       timer = setTimeout(() => {
+        if (!state.aborted) {
+          state.timedOut = true;
+        }
         // The host never called the remaining resolvers (e.g. a non-null completion error
         // outside our resolvers aborted serial execution). Roll back rather than leak.
         state.abort(
@@ -245,17 +285,21 @@ const openSharedTx = (
   return state;
 };
 
-const runOnSharedTx = async <T>(state: SharedTxState, body: (executor: any) => Promise<T>): Promise<T> => {
+const runOnSharedTx = async <T>(
+  state: SharedTxState,
+  timeoutMs: number,
+  body: (executor: any) => Promise<T>,
+): Promise<T> => {
   if (state.aborted) {
     // Fail fast: never run a later field against a transaction that already rolled back.
     await (state.settled as Promise<unknown>).catch(() => {});
-    throw abortedBatchError();
+    throw abortedBatchError(state, timeoutMs);
   }
   state.suspendTimer();
   const tx = await state.ready;
   try {
     if (state.aborted) {
-      throw abortedBatchError();
+      throw abortedBatchError(state, timeoutMs);
     }
     const result = await body(tx);
     state.completed += 1;
@@ -317,6 +361,7 @@ export const runMutation = async <T>(
       return forceTx ? db.transaction((tx: any) => body(tx)) : body(db);
     }
     const keys = new Set<string>();
+    const mutationFields = info.schema.getMutationType()?.getFields() ?? {};
     const allKnown = collectRootMutationKeys(
       info.operation.selectionSet,
       info.fragments,
@@ -324,6 +369,20 @@ export const runMutation = async <T>(
       txCtx.fieldNames,
       keys,
       new Set(),
+      (node) => {
+        const fieldDef = mutationFields[node.name.value];
+        if (!fieldDef) {
+          return false;
+        }
+        try {
+          // Passed through untouched, as in `parse-resolve-info.ts`: each graphql major's
+          // `getArgumentValues` takes the variable shape its own resolvers are handed.
+          getArgumentValues(fieldDef as any, node, info.variableValues as any);
+          return true;
+        } catch {
+          return false;
+        }
+      },
     );
     state =
       !allKnown || keys.size <= 1 ? { kind: 'passthrough' } : openSharedTx(db, context, txCtx, stateKey, keys.size);
@@ -334,5 +393,5 @@ export const runMutation = async <T>(
     const executor = resolveExecutor(db, context);
     return forceTx && executor === db ? db.transaction((tx: any) => body(tx)) : body(executor);
   }
-  return runOnSharedTx(state, body);
+  return runOnSharedTx(state, txCtx!.timeoutMs, body);
 };

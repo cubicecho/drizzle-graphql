@@ -2,7 +2,8 @@
 // compiles one into before handing it to the dialect's upsert.
 
 import type { Column, Table } from 'drizzle-orm';
-import { getColumns, type SQL, sql } from 'drizzle-orm';
+import { getColumns, is, type SQL, sql } from 'drizzle-orm';
+import { SQLiteTable } from 'drizzle-orm/sqlite-core';
 import { GraphQLEnumType, GraphQLInputObjectType, GraphQLList, GraphQLNonNull } from 'graphql';
 import { generateColumnEnum } from './column-enums.ts';
 import { drizzleError } from './errors.ts';
@@ -265,6 +266,41 @@ export const resolveConflictPlan = (params: {
     }
   }
   return batches.map(({ values: rows, plan }) => ({ values: rows, plan }));
+};
+
+/**
+ * Adds a {@link ConflictPlan}'s clause to a PostgreSQL or SQLite insert.
+ *
+ * SQLite needs two things drizzle's builder does not give it when the target is a partial
+ * unique index:
+ *
+ * - The index predicate written literally. SQLite matches a conflict target to an index by
+ *   comparing the predicates as written, and a bound `?` never equals `'active'`, so a
+ *   predicate that compares to a value would never find its index. Its params are inlined.
+ * - A `DO NOTHING` it can parse. Drizzle writes the predicate after `do nothing`, which is a
+ *   syntax error, so the action is spelled as an update that matches no row instead:
+ *   `ON CONFLICT (…) WHERE … DO UPDATE SET col = col WHERE 0 = 1`. A row that is not updated is
+ *   not returned, which is what `DO NOTHING` does too.
+ */
+export const applyConflictPlan = (query: any, table: Table, plan: ConflictPlan, setWhere: SQL | undefined): any => {
+  const sqlite = is(table, SQLiteTable);
+  const targetWhere = sqlite && plan.targetWhere ? sql`${plan.targetWhere}`.inlineParams() : plan.targetWhere;
+  if (plan.action === 'UPDATE') {
+    return query.onConflictDoUpdate({ target: plan.target!, targetWhere, set: plan.set, setWhere });
+  }
+  if (!plan.target) {
+    return query.onConflictDoNothing();
+  }
+  if (sqlite && targetWhere) {
+    const [key] = Object.entries(getColumns(table)).find(([, column]) => column === plan.target![0])!;
+    return query.onConflictDoUpdate({
+      target: plan.target,
+      targetWhere,
+      set: { [key]: sql`${plan.target[0]}` },
+      setWhere: sql`0 = 1`,
+    });
+  }
+  return query.onConflictDoNothing({ target: plan.target, where: targetWhere });
 };
 
 /** `excluded.<column>` — PostgreSQL and SQLite name the rejected row this way. */

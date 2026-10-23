@@ -1,7 +1,15 @@
 import { PGlite } from '@electric-sql/pglite';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
-import { GraphQLInt, GraphQLList, GraphQLNonNull, GraphQLObjectType, GraphQLSchema, graphql } from 'graphql';
+import {
+  GraphQLInt,
+  GraphQLList,
+  GraphQLNonNull,
+  GraphQLObjectType,
+  GraphQLSchema,
+  getNamedType,
+  graphql,
+} from 'graphql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildSchema, type LimitsConfig, resolveSelection } from '@/index';
 import * as schema from '../schema/pg';
@@ -279,6 +287,18 @@ describe.sequential('limit policy', () => {
       expect(estimator({ args: { limit: 2 }, childComplexity: 1 })).toBe(2);
       // Never priced above what the policy would actually let through.
       expect(estimator({ args: { limit: 100 }, childComplexity: 1 })).toBe(5);
+    });
+
+    it('prices an unlimited list at maxLimit when only maxLimit is configured', () => {
+      // An omitted limit runs at maxLimit, so it must be priced there, not at defaultListSize.
+      const gqlSchema = buildWith({ maxLimit: 1000 });
+      const root = (gqlSchema.getQueryType()!.getFields()['posts'] as any).extensions.complexity;
+      expect(root({ args: {}, childComplexity: 1 })).toBe(1000);
+      expect(root({ args: { limit: 3 }, childComplexity: 1 })).toBe(3);
+
+      const userType = getNamedType(gqlSchema.getQueryType()!.getFields()['users']!.type) as GraphQLObjectType;
+      const relation = (userType.getFields()['posts'] as any).extensions.complexity;
+      expect(relation({ args: {}, childComplexity: 1 })).toBe(1000);
     });
   });
 

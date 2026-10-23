@@ -155,7 +155,8 @@ export type UpdateManyArgs<TTable extends Table> = {
  * predicate, so neither field is generated there.
  *
  * `target` may name a partial unique index; its predicate is repeated in the statement's
- * `ON CONFLICT (…) WHERE …`, which is what lets the database match it.
+ * `ON CONFLICT (…) WHERE …`, which is what lets the database match it. On SQLite its values
+ * are written inline, since SQLite matches the predicate to the index as written.
  */
 export type UpsertConflictArgs<TTable extends Table> = {
   action?: 'UPDATE' | 'NOTHING';
@@ -850,9 +851,14 @@ export type SchemaFeatures = {
    *   is a `contextValues` column is not offered at all.
    *
    * A relation's own `where` limits the rows its writes reach the same way, and takes its
-   * `create` away. A relation joining on more than one column per side is not offered. A
-   * to-one `connect` must match exactly one row. When the parent write produces no row, a
-   * parent-side `create` made for it is rolled back.
+   * `create` away: on a to-one whose key is on the parent, `disconnect` leaves a key pointing
+   * at a row it hides and a `connect` that would replace one fails. A `where` inherited from
+   * the reverse relation filters the parent, and a write through it on a parent row it hides
+   * the relation for (judged after the write) fails. A relation joining on more than one
+   * column per side is not offered. A to-one `connect` must match exactly one row. When the
+   * parent write produces no row, a parent-side `create` made for it is rolled back, and an
+   * upsert whose conflict branch does not write the join column a parent-side operation set
+   * fails rather than leave its target unattached.
    *
    * PostgreSQL and SQLite only. MySQL cannot return the rows it just wrote, which is how a
    * nested write learns the parent's key, so `buildSchema` rejects the flag there. On SQLite
@@ -922,6 +928,10 @@ export type SchemaFeatures = {
    * Makes `where` non-null on the plural `update<Table>` / `delete<Table>` mutations, and
    * rejects a `where` that collapses to no filters (e.g. `where: {}`), so a schema can rule
    * out unbounded writes at the type level. Off by default for backwards compatibility.
+   *
+   * It covers `update<Table>Many` too: an entry with no `where`, or one that collapses to no
+   * filters, rejects the whole batch with `DRIZZLE_WHERE_REQUIRED` before any entry runs. The
+   * entry input's `where` stays nullable in the schema; the check runs at request time.
    *
    * The `Single` variants (`update<Table>Single` / `delete<Table>Single`) require a
    * non-empty `where` regardless of this flag.
@@ -1324,7 +1334,15 @@ export type BuildSchemaConfig = {
    * after a failure are not executed against the rolled-back transaction — they fail fast.
    * The object form additionally sets the safety timeout (default 30000ms) after which an
    * abandoned transaction — e.g. the host server stopped calling resolvers because of a
-   * non-null completion error — is rolled back instead of leaking a connection.
+   * non-null completion error — is rolled back instead of leaking a connection. It must be a
+   * positive integer no greater than 2147483647 (the longest delay `setTimeout` honours), or
+   * `Infinity` to turn the timer off; `buildSchema` throws for anything else. With the timer off
+   * an abandoned transaction holds its connection until the process ends, so prefer a finite
+   * value. A later field that finds the transaction rolled back by the timeout fails with
+   * `DRIZZLE_TRANSACTION_ABORTED` and a message naming the timeout.
+   *
+   * A root field whose arguments fail to coerce (its resolver never runs) is not waited for:
+   * the transaction commits once the fields that do run have completed.
    *
    * Never nests: a caller-supplied executor on the GraphQL context under
    * `drizzleExecutorKey` always wins, and the library opens nothing of its own.
@@ -1518,8 +1536,9 @@ export type BuildSchemaConfig = {
    * - A marked row still occupies its unique keys, so inserting a row that reuses the natural
    *   key of a deleted one still fails on the constraint.
    * - An upsert whose conflict target hits a marked row updates nothing on PostgreSQL and
-   *   SQLite (the conflict predicate excludes it) but revives it on MySQL, whose
-   *   `ON DUPLICATE KEY UPDATE` takes no predicate.
+   *   SQLite (the conflict predicate excludes it). On MySQL, whose `ON DUPLICATE KEY UPDATE`
+   *   takes no predicate, it overwrites the marked row's columns but leaves the marker set,
+   *   so the row stays deleted; `restore<Table>` brings it back.
    *
    * Marking a parent deleted does not mark its children — a cascade is a schema decision.
    */
@@ -1553,6 +1572,9 @@ export type BuildSchemaConfig = {
    *   `drizzleExecutorKey`, the request's auto-transaction, or, for a field that would
    *   otherwise have run unwrapped, a transaction opened for it because the hook is there.
    * - **Throwing rolls the mutation back.** That is the point of the position.
+   * - **SQLite needs an asynchronous driver** (libsql, D1). A synchronous one (better-sqlite3,
+   *   `node:sqlite`) commits before an awaited hook runs, so `buildSchema` throws for `onWrite`
+   *   on one rather than let a throwing hook leave its write behind.
    * - **`rows` are the post-write rows as the database returned them**, before the output
    *   mapper. Empty at the `before` position, and on MySQL, whose mutations return no rows.
    * - **A row holds the columns the client selected**, because `RETURNING` is built from the

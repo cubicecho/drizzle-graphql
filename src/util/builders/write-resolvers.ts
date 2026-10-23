@@ -23,6 +23,7 @@ import {
 import type { ResolveTree } from '../parse-resolve-info.ts';
 import { parseResolveInfo } from '../parse-resolve-info.ts';
 import {
+  applyConflictPlan,
   applyContextValues,
   applyContextValuesAll,
   applyObjectTypeName,
@@ -330,23 +331,12 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           });
 
           const batchQuery = (executor: any, { values: rows, plan }: (typeof batches)[number]) => {
-            let query = executor.insert(table).values(rows).returning(returning);
+            const query = executor.insert(table).values(rows).returning(returning);
             // On conflict the statement updates a row that already exists, so the scope applies
             // to it exactly as it would to `update<Table>`: a conflicting row the caller cannot
             // see is left alone rather than taken over.
             const setWhere = withScope(scope, tableName, table, plan.setWhere);
-            query =
-              plan.action === 'NOTHING'
-                ? (query.onConflictDoNothing(
-                    plan.target ? { target: plan.target, where: plan.targetWhere } : undefined,
-                  ) as any)
-                : (query.onConflictDoUpdate({
-                    target: plan.target!,
-                    targetWhere: plan.targetWhere,
-                    set: plan.set,
-                    setWhere,
-                  }) as any);
-            return query;
+            return applyConflictPlan(query, table, plan, setWhere);
           };
 
           // Rows that write different columns on conflict go in as separate statements, which

@@ -14,12 +14,11 @@ import type { GraphQLFieldConfigArgumentMap } from 'graphql';
 import { GraphQLList, GraphQLNonNull } from 'graphql';
 import {
   drizzleError,
-  extractFilters,
   mutationSelection,
   relationFilterCtx,
+  scopedWhere,
   stripContextValues,
   withEagerRelations,
-  withScope,
   writeResolver,
 } from '../builders/common.ts';
 import { remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
@@ -89,7 +88,15 @@ export const runUpdateManyBatch: UpdateManyBatchRunner = ({
       };
       results.push(
         entry.ops
-          ? await writeNestedEntry({ executor: tx, runtime: nested!, tableName, ops: entry.ops, write, request })
+          ? await writeNestedEntry({
+              executor: tx,
+              runtime: nested!,
+              tableName,
+              ops: entry.ops,
+              write,
+              request,
+              existing: true,
+            })
           : await write(tx, {}),
       );
     }
@@ -115,7 +122,7 @@ export const createUpdateManyGenerator = (
 ): UpdateManyGenerator => {
   return (build: WriteBuildOptions, opts: UpdateManyOptions): CreatedResolver => {
     const { db, tables, relationMap, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } = build;
-    const { tableName, table, updateManyInput, fieldName, typeName } = opts;
+    const { tableName, table, updateManyInput, fieldName, typeName, requireWhere } = opts;
     const queryArgs = {
       updates: {
         type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(updateManyInput))),
@@ -183,14 +190,16 @@ export const createUpdateManyGenerator = (
           return {
             set: input,
             ops,
-            filters: withScope(
+            // Under `requireWhere` every entry must carry a non-empty `where`, as the plural
+            // update must.
+            filters: scopedWhere({
               scope,
               tableName,
               table,
-              where
-                ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, scope))
-                : undefined,
-            ),
+              where,
+              relationCtx: relationFilterCtx(filterCtx, tableName, scope),
+              required: requireWhere,
+            }),
           };
         });
 

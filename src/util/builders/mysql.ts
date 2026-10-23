@@ -1,4 +1,4 @@
-import { type Column, getColumns, sql, type Table } from 'drizzle-orm';
+import { type Column, getColumns, is, SQL, Subquery, sql, Table } from 'drizzle-orm';
 import { type MySqlAsyncDatabase, MySqlTable, getTableConfig as mysqlTableConfig } from 'drizzle-orm/mysql-core';
 import {
   GraphQLBoolean,
@@ -14,7 +14,6 @@ import {
   applyContextValuesAll,
   assertSingleMatch,
   drizzleError,
-  extractFilters,
   generateOnConflictInput,
   generateUpdateManyInput,
   generateWriteCount,
@@ -32,7 +31,6 @@ import {
   stripContextValues,
   type TablesRelationalConfig,
   type WriteOperation,
-  withScope,
   writeResolver,
 } from '../builders/common.ts';
 import { remapFromGraphQLArrayInput, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
@@ -180,22 +178,19 @@ const generateUpsert = (
         serverOwned: Object.keys(contextColumns ?? {}),
       });
 
-      const requestedNothing = args.onConflict?.action === 'NOTHING';
       const runBatch = async (target: any, { values, plan }: (typeof batches)[number]) => {
-        if (plan.action === 'NOTHING' && !requestedNothing) {
-          // An UPDATE left with nothing to write (only the key, or only server-owned columns,
-          // were supplied) keeps the row as it is with a no-op assignment, rather than
-          // becoming INSERT IGNORE — which would also downgrade the insert's own errors to
-          // warnings.
+        if (plan.action === 'NOTHING') {
+          // `action: NOTHING`, or an UPDATE left with nothing to write (only the key, or only
+          // server-owned columns, were supplied), keeps the row as it is with a no-op
+          // assignment. INSERT IGNORE would skip the duplicate too, but it also downgrades
+          // every other error of the insert — a truncated value, a bad date, a foreign-key
+          // violation — to a warning and writes or drops the row regardless.
           const columns = getColumns(table) as Record<string, Column>;
           const keyName = pkNames[0] ?? Object.keys(columns)[0]!;
           await target
             .insert(table)
             .values(values)
             .onDuplicateKeyUpdate({ set: { [keyName]: sql`${sql.identifier(columns[keyName]!.name)}` } });
-        } else if (plan.action === 'NOTHING') {
-          // INSERT IGNORE is the closest MySQL gets to DO NOTHING.
-          await target.insert(table).ignore().values(values);
         } else {
           await target.insert(table).values(values).onDuplicateKeyUpdate({ set: plan.set });
         }
@@ -276,7 +271,7 @@ const generateUpdate = (
 
       let query = executor.update(table).set(input);
       if (filters) {
-        query = query.where(filters) as any;
+        query = query.where(mysqlWriteFilter(table, filters)) as any;
       }
 
       await query;
@@ -301,6 +296,7 @@ const generateUpdateMany = (
   table: MySqlTable,
   updateManyInput: GraphQLInputObjectType,
   fieldName: string,
+  requireWhere: boolean,
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
   policies?: ResolverPolicies,
@@ -336,12 +332,16 @@ const generateUpdateMany = (
         }
         return {
           set: input,
-          filters: withScope(
+          // Under `requireWhere` every entry must carry a non-empty `where`, as the plural
+          // update must.
+          filters: scopedWhere({
             scope,
             tableName,
             table,
-            where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, scope)) : undefined,
-          ),
+            where,
+            relationCtx: relationFilterCtx(filterCtx, tableName, scope),
+            required: requireWhere,
+          }),
         };
       });
 
@@ -352,7 +352,7 @@ const generateUpdateMany = (
         for (const entry of entries) {
           let query = tx.update(table).set(entry.set);
           if (entry.filters) {
-            query = query.where(entry.filters) as any;
+            query = query.where(mysqlWriteFilter(table, entry.filters)) as any;
           }
           await query;
         }
@@ -440,7 +440,7 @@ const generateDelete = (
               .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
           : executor.delete(table);
       if (filters) {
-        query = query.where(filters) as any;
+        query = query.where(mysqlWriteFilter(table, filters)) as any;
       }
 
       await query;
@@ -457,6 +457,58 @@ const getTableConfig = memoizeTableConfig(mysqlTableConfig);
 /** Primary-key property names for a MySQL table, including table-level composite keys. */
 const mysqlPrimaryKeyPropNames = (table: MySqlTable): string[] =>
   getPrimaryKeyPropNamesFromConfig(table, getTableConfig);
+
+const TABLE_ORIGINAL_NAME = Symbol.for('drizzle:OriginalName');
+const TABLE_SCHEMA = Symbol.for('drizzle:Schema');
+
+/** Whether `chunk` reads `table` anywhere — under an alias, in a subquery, however deep. */
+const readsTable = (chunk: unknown, table: Table): boolean => {
+  if (Array.isArray(chunk)) {
+    return chunk.some((part) => readsTable(part, table));
+  }
+  if (is(chunk, Table)) {
+    return (
+      (chunk as any)[TABLE_ORIGINAL_NAME] === (table as any)[TABLE_ORIGINAL_NAME] &&
+      (chunk as any)[TABLE_SCHEMA] === (table as any)[TABLE_SCHEMA]
+    );
+  }
+  if (is(chunk, SQL)) {
+    return readsTable(chunk.queryChunks, table);
+  }
+  if (is(chunk, SQL.Aliased)) {
+    return readsTable(chunk.sql, table);
+  }
+  if (is(chunk, Subquery)) {
+    return readsTable((chunk as any)._.sql, table);
+  }
+  return false;
+};
+
+/**
+ * The `where` of an UPDATE or DELETE, in a form MySQL accepts. MySQL refuses a statement whose
+ * `where` reads the table it writes (error 1093, "You can't specify target table … for update
+ * in FROM clause") — which a relation filter through a self-referencing relation, or a scope
+ * written as one, does. Such a filter is resolved to the primary keys it matches first, through
+ * a derived table MySQL materializes (`DISTINCT` keeps the optimizer from merging it back in),
+ * and the write matches those keys. Any other filter is returned as it is.
+ */
+const mysqlWriteFilter = (table: MySqlTable, filters: SQL | undefined): SQL | undefined => {
+  if (!filters || !readsTable(filters, table)) {
+    return filters;
+  }
+  const columns = getColumns(table) as Record<string, Column>;
+  const keys = mysqlPrimaryKeyPropNames(table).map((name) => columns[name]!);
+  if (!keys.length) {
+    // Nothing identifies a row to match by; the statement is left for MySQL to refuse.
+    return filters;
+  }
+  const keyList = sql.join(
+    keys.map((column) => sql.identifier(column.name)),
+    sql`, `,
+  );
+  const target = keys.length === 1 ? sql`${keys[0]}` : sql`(${sql.join(keys, sql`, `)})`;
+  return sql`${target} in (select ${keyList} from (select distinct ${sql.join(keys, sql`, `)} from ${table} where ${filters}) as ${sql.identifier('dgql_write_target')})`;
+};
 
 // MySQL sorts NULLs as the smallest values (first in ASC), and its writes return no rows.
 const { prepareBuild, forEachTable, finalizeBuild } = createSchemaBuilder({
@@ -638,6 +690,7 @@ export const generateSchemaData = <
           schema[tableName] as MySqlTable,
           updateManyInput,
           updateManyFieldName,
+          tableFeatures.requireWhere,
           filterCtx,
           mutationTxCtx,
           policies,
@@ -720,6 +773,7 @@ export const generateSchemaData = <
             txCtx: mutationTxCtx,
             policies,
             returnsRows: false,
+            writeFilter: (filters) => mysqlWriteFilter(schema[tableName] as MySqlTable, filters)!,
           })
         : undefined;
     const deleteCountGenerated =
@@ -736,6 +790,7 @@ export const generateSchemaData = <
             txCtx: mutationTxCtx,
             policies,
             returnsRows: false,
+            writeFilter: (filters) => mysqlWriteFilter(schema[tableName] as MySqlTable, filters)!,
           })
         : undefined;
     // Each mutation is paired with the identity it publishes on `extensions.drizzle`, so a

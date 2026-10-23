@@ -154,7 +154,7 @@ const { schema } = buildSchema(db, {
         nestedWrites: true,       // relation fields on the create/update inputs (off by default)
         fieldUpdateOperations: true, // increment/push operations on the update input (off by default)
         countMutations: true,     // update<Table>Count / delete<Table>Count mutations (off by default)
-        requireWhere: true,       // make `where` non-null on plural update/delete (off by default)
+        requireWhere: true,       // require a `where` on plural update/delete/updateMany (off by default)
         uniqueKeyFilters: true,   // a `where` field per compound unique constraint (off by default)
     },
 })
@@ -238,7 +238,7 @@ An excluded **column** disappears from every surface at once:
 | `<Type>OrderBy` | field removed |
 | `<Type>MinAggregate` / `<Type>MaxAggregate` / … | field removed |
 | `<Type>DistinctColumn` / `<Type>GroupByColumn` | value removed |
-| `<Type>ConflictColumn` (upsert targets) | value removed |
+| `<Type>ConflictTarget` / `<Type>UpdateColumn` (upsert `onConflict`) | value removed |
 
 Two details worth stating plainly:
 
@@ -1738,7 +1738,10 @@ mutation {
     exclusion constraint matching" error
 -   `target` can be a partial unique index — the `WHERE deleted_at IS NULL` companion of
     [soft delete](#soft-delete), say. Its predicate goes into `ON CONFLICT (…) WHERE …`, so a
-    conflict is detected only against the rows the index covers
+    conflict is detected only against the rows the index covers. On SQLite the predicate is
+    written with its values inline (SQLite matches it to the index as written, so
+    `status = 'active'` works), and `action: NOTHING` on such a target is spelled as an update
+    that matches no row, since SQLite cannot parse the predicate before `DO NOTHING`
 -   `contextValues` columns are never overwritten on conflict — see
     [columns the server owns](#columns-the-server-owns)
 -   `action: NOTHING` inserts nothing and returns nothing for the conflicting row. An `UPDATE`
@@ -1778,7 +1781,9 @@ Dialect differences:
     no predicate, so `<Type>OnConflict` there has only `action` and `update`. Because the
     conflict can be on any unique key, the default overwrite leaves out the primary key as well
     — copying a new row's key over the conflicting row's would move it. `action: NOTHING`
-    becomes `INSERT IGNORE`, and the mutations return `MutationReturn` like every other MySQL
+    becomes a no-op `ON DUPLICATE KEY UPDATE <key> = <key>` rather than `INSERT IGNORE`, so
+    only a duplicate key is skipped: a value too long for its column or a foreign-key violation
+    still fails the write. The mutations return `MutationReturn` like every other MySQL
     mutation
 
 The build-wide `conflictDoNothing` option is deprecated in favour of this: it applies to every
@@ -1851,6 +1856,11 @@ mutation {
 -   When the parent write produces no row — an update whose `where` matched nothing, an
     insert or upsert a conflict turned into a no-op — whatever a parent-side `create` inserted
     for it is rolled back too, so no orphan is left. In a batch only that entry is undone
+-   An upsert whose conflict branch does not write the parent's join column (an
+    `onConflict.update` that leaves it out) would update the existing row without attaching
+    what a parent-side `create` or `connect` produced. That fails with
+    `DRIZZLE_NESTED_WRITE_INVALID` and rolls the write back; list the column in
+    `onConflict.update`, or leave `update` unset so every supplied column is written
 -   The returned rows reflect the nested write: on a self-referencing relation
     (`reports: { connect: … }` on the row itself), where a child-side statement rewrites the
     parent row, the parent rows are read back after it
@@ -1863,7 +1873,9 @@ A relation declared with a `where` (`publishedPosts: r.many.posts({ …, where: 
 is written through the same way it is read: only the rows it shows.
 
 -   `disconnect`, `set`, and the detaching a to-one attach does, reach only rows that satisfy
-    the `where` — `publishedPosts: { set: [] }` leaves the drafts attached
+    the `where` — `publishedPosts: { set: [] }` leaves the drafts attached. On a to-one whose
+    key is on the parent, `disconnect` leaves a key that points at a row the `where` hides,
+    and a `connect` that would replace such a key fails with `DRIZZLE_NESTED_WRITE_INVALID`
 -   `connect` and `set` attach only rows that satisfy it, so the relation shows what was
     attached. A to-one `connect` must match exactly one such row
 -   There is no `create`: the inserted row is attached whether or not it satisfies the
@@ -1872,7 +1884,9 @@ is written through the same way it is read: only the rows it shows.
 -   A many-to-many `set` unlinks only the links to rows the `where` shows
 -   A relation that inherits its `where` from the other side (declared without `from` / `to`)
     filters the parent rather than the target. Writing through it on a parent row it is
-    hidden for fails with `DRIZZLE_NESTED_WRITE_INVALID`
+    hidden for fails with `DRIZZLE_NESTED_WRITE_INVALID`. When the key is on the parent
+    (`connect`, `create` or `disconnect` on a to-one), the row is judged as the write leaves
+    it, so a write that also makes the row visible goes through
 
 ### The target table's own rules
 
@@ -2068,7 +2082,9 @@ deliberate rather than accidental:
 The plural mutations still accept a missing `where` (a full-table write) by default. To rule
 that out at the type level, `features: { requireWhere: true }` makes `where` non-null on
 `update<Table>` / `delete<Table>` and rejects a `where` with no filters, exactly like the
-Single variants. It defaults to `false` for backwards compatibility.
+Single variants. It also covers `update<Table>Many`: an entry without a `where`, or with one
+that has no filters, rejects the whole batch with `DRIZZLE_WHERE_REQUIRED` before any entry
+runs. It defaults to `false` for backwards compatibility.
 
 ## Bounding page size
 
@@ -2137,8 +2153,8 @@ So `users(limit: 20) { id posts(limit: 5) { id } }` costs `20 * (1 + 5 * 1)` = 1
 same query without limits costs `10 * (1 + 10 * 1)` = 110.
 
 A [limit policy](#bounding-page-size) feeds into the hint: a field with no `limit` is priced at
-its `defaultLimit` rather than `defaultListSize`, and nothing is priced above `maxLimit`, so the
-cost matches the rows the query can actually pull.
+its `defaultLimit` (or at `maxLimit` when the policy sets only that) rather than `defaultListSize`,
+and nothing is priced above `maxLimit`, so the cost matches the rows the query can actually pull.
 
 The hints do nothing until you install a complexity rule, so they are generated by default:
 
@@ -2397,7 +2413,13 @@ are untouched.
     does this) — it keys the per-request transaction state
 -   `timeoutMs` (default `30000`) rolls back an abandoned transaction, e.g. when the host
     server stopped calling resolvers because of a non-null completion error, instead of
-    leaking the connection
+    leaking the connection. It must be a positive integer up to `2147483647` (the longest
+    delay `setTimeout` honours), or `Infinity` to turn the timer off; `buildSchema` throws for
+    anything else. With the timer off an abandoned transaction keeps its connection, so prefer
+    a finite value. Fields after a timeout fail with `DRIZZLE_TRANSACTION_ABORTED`, naming the
+    timeout as the cause
+-   A root field whose arguments fail to coerce is answered with an error without its resolver
+    running, so it is not waited for: the transaction commits once the other fields complete
 -   A document that mixes in mutation fields this build did not generate is left alone: their
     completion cannot be tracked, so no transaction is opened
 -   It never nests — an executor supplied on the context wins, as below
@@ -2535,6 +2557,10 @@ The payload:
     not have to know which.
 -   **Throwing rolls the mutation back.** A hook that can only log is what a logging plugin
     already does.
+-   **SQLite needs an asynchronous driver** (libsql, D1). A synchronous one (better-sqlite3,
+    `node:sqlite`) commits before an awaited hook runs, so a throw could not roll anything
+    back; `buildSchema` throws for `onWrite` on one, as it does for `nestedWrites` and
+    `transactions: 'auto'`.
 -   **`rows` is empty** at the `before` position, and on MySQL, whose mutations return no rows.
     The `before` position and `args` still work there.
 -   With `nestedWrites`, the hooks of **every table a nested write reaches** fire too —

@@ -61,7 +61,7 @@ const runSqliteUpdateManyBatch: UpdateManyBatchRunner = ({
       return (await (writes ? query.returning(returning) : query)) as Record<string, any>[];
     };
     return entry.ops
-      ? writeNestedEntry({ executor: tx, runtime: nested!, tableName, ops: entry.ops, write, request })
+      ? writeNestedEntry({ executor: tx, runtime: nested!, tableName, ops: entry.ops, write, request, existing: true })
       : write(tx, {});
   };
 
@@ -110,7 +110,7 @@ const sqliteSchemaData = createSchemaDataGenerator({
   returnsRows: true,
   // A synchronous driver (e.g. better-sqlite3) commits the moment its transaction callback
   // returns, so it can neither interleave awaited statements inside one transaction nor hold
-  // one open across resolver calls — which is what both of these features require.
+  // one open across resolver calls — which is what all three of these features require.
   preflight: (db, options) => {
     if (options.features.nestedWrites && (db as any).resultKind === 'sync') {
       throw new Error(
@@ -120,6 +120,13 @@ const sqliteSchemaData = createSchemaDataGenerator({
     if (options.transactions && (db as any).resultKind === 'sync') {
       throw new Error(
         "Drizzle-GraphQL Error: transactions: 'auto' requires an asynchronous SQLite driver (e.g. libsql). Synchronous drivers cannot hold a transaction open across resolvers.",
+      );
+    }
+    // A hook may be async, and it has to run inside the mutation's transaction so a throw can
+    // roll the write back. A synchronous driver would commit before the awaited hook ran.
+    if (options.policies?.onWrite && (db as any).resultKind === 'sync') {
+      throw new Error(
+        'Drizzle-GraphQL Error: onWrite requires an asynchronous SQLite driver (e.g. libsql). Synchronous drivers commit before an awaited hook runs, so a throwing hook could not roll the mutation back.',
       );
     }
   },

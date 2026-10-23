@@ -370,4 +370,34 @@ describe.sequential('features.requireWhere', () => {
     expect(remove.errors).toBeUndefined();
     expect(remove.data?.deletePosts).toHaveLength(2);
   });
+
+  it('rejects an updateMany entry without a non-empty where, and writes nothing', async () => {
+    for (const entry of ['{ set: { name: "Nobody" } }', '{ where: {}, set: { name: "Nobody" } }']) {
+      const res = await rwCtx.gql.queryGql(/* GraphQL */ `
+        mutation {
+          updateUsersMany(updates: [{ where: { id: { eq: 1 } }, set: { name: "First" } }, ${entry}]) {
+            id
+          }
+        }
+      `);
+      expect(res.errors?.[0]?.message).toContain('at least one filter');
+      expect(res.errors?.[0]?.extensions?.['code']).toBe('DRIZZLE_WHERE_REQUIRED');
+    }
+    const touched = await rwCtx.db.select().from(schema.Users).where(eq(schema.Users.name, 'Nobody'));
+    expect(touched).toHaveLength(0);
+    const first = await rwCtx.db.select().from(schema.Users).where(eq(schema.Users.name, 'First'));
+    expect(first).toHaveLength(0);
+  });
+
+  it('runs updateMany normally when every entry has a where', async () => {
+    const res = await rwCtx.gql.queryGql(/* GraphQL */ `
+      mutation {
+        updateUsersMany(updates: [{ where: { id: { eq: 1 } }, set: { name: "First" } }]) {
+          id
+          name
+        }
+      }
+    `);
+    expect(res).toStrictEqual({ data: { updateUsersMany: [{ id: 1, name: 'First' }] } });
+  });
 });
