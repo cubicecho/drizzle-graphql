@@ -48,23 +48,79 @@ const escapeLikeValue = (value: string): string => value.replace(/[\\%_]/g, (cha
  * builds the LIKE pattern with the term's `%` / `_` / `\` escaped and the `ESCAPE` clause pinned.
  * The `i`-prefixed variants match case-insensitively.
  */
-const safeLikeOps: Record<string, { buildPattern: (value: string) => string; insensitive: boolean }> = {
-  startsWith: { buildPattern: (value) => `${escapeLikeValue(value)}%`, insensitive: false },
-  endsWith: { buildPattern: (value) => `%${escapeLikeValue(value)}`, insensitive: false },
-  contains: { buildPattern: (value) => `%${escapeLikeValue(value)}%`, insensitive: false },
-  iStartsWith: { buildPattern: (value) => `${escapeLikeValue(value)}%`, insensitive: true },
-  iEndsWith: { buildPattern: (value) => `%${escapeLikeValue(value)}`, insensitive: true },
-  iContains: { buildPattern: (value) => `%${escapeLikeValue(value)}%`, insensitive: true },
+const safeLikeOps: Record<
+  string,
+  { buildPattern: (value: string) => string; buildGlob: (value: string) => string; insensitive: boolean }
+> = {
+  startsWith: {
+    buildPattern: (value) => `${escapeLikeValue(value)}%`,
+    buildGlob: (value) => `${escapeGlobValue(value)}*`,
+    insensitive: false,
+  },
+  endsWith: {
+    buildPattern: (value) => `%${escapeLikeValue(value)}`,
+    buildGlob: (value) => `*${escapeGlobValue(value)}`,
+    insensitive: false,
+  },
+  contains: {
+    buildPattern: (value) => `%${escapeLikeValue(value)}%`,
+    buildGlob: (value) => `*${escapeGlobValue(value)}*`,
+    insensitive: false,
+  },
+  iStartsWith: {
+    buildPattern: (value) => `${escapeLikeValue(value)}%`,
+    buildGlob: (value) => `${escapeGlobValue(value)}*`,
+    insensitive: true,
+  },
+  iEndsWith: {
+    buildPattern: (value) => `%${escapeLikeValue(value)}`,
+    buildGlob: (value) => `*${escapeGlobValue(value)}`,
+    insensitive: true,
+  },
+  iContains: {
+    buildPattern: (value) => `%${escapeLikeValue(value)}%`,
+    buildGlob: (value) => `*${escapeGlobValue(value)}*`,
+    insensitive: true,
+  },
 };
 
 /**
- * `LIKE <pattern> ESCAPE '\'` for a safe string operator. Case-insensitive variants use
- * Postgres's native `ILIKE`; MySQL and SQLite have no `ILIKE`, so they compare `lower()`
- * on both sides instead (mirroring how the raw `ilike` operator is Postgres-only).
+ * Escapes SQLite's `GLOB` wildcards (`*`, `?`, `[`) in a literal search term by wrapping each in
+ * a one-character class, so the term only ever matches literally inside a GLOB pattern. GLOB
+ * has no escape character; `]` outside a class and everything else is already literal.
  */
-const safeLikeCondition = (column: Column, pattern: string, insensitive: boolean): SQL => {
+const escapeGlobValue = (value: string): string => value.replace(/[*?[]/g, (char) => `[${char}]`);
+
+/**
+ * A caller-written LIKE pattern as the GLOB pattern matching the same strings, for SQLite's
+ * case-sensitive `like` / `notLike`: `%` → `*`, `_` → `?`, and GLOB's own wildcards escaped.
+ * The raw operators bind no `ESCAPE` clause, so `\` is an ordinary character in both.
+ */
+const likePatternToGlob = (pattern: string): string =>
+  pattern.replace(/[%_*?[]/g, (char) => (char === '%' ? '*' : char === '_' ? '?' : `[${char}]`));
+
+/**
+ * The safe string operator's predicate. Case-insensitive variants use Postgres's native
+ * `ILIKE`; MySQL and SQLite have no `ILIKE`, so they compare `lower()` on both sides instead
+ * (mirroring how the raw `ilike` operator is Postgres-only).
+ *
+ * The case-sensitive variants are `LIKE <pattern> ESCAPE '\'`, except on SQLite, whose `LIKE`
+ * folds ASCII case — `contains: "App"` would match `apple`. There they are `GLOB`, which is
+ * case-sensitive, as `LIKE` is on Postgres. `dialectColumn` names the column the dialect is read
+ * from when `column` is an expression over it (a JSON path read).
+ */
+const safeLikeCondition = (
+  column: Column,
+  value: string,
+  op: (typeof safeLikeOps)[string],
+  insensitive: boolean,
+  dialectColumn: Column = column,
+): SQL => {
+  const pattern = op.buildPattern(value);
   if (!insensitive) {
-    return sql`${column} like ${pattern} escape ${LIKE_ESCAPE_CHAR}`;
+    return columnDialect(dialectColumn) === 'sqlite'
+      ? sql`${column} glob ${op.buildGlob(value)}`
+      : sql`${column} like ${pattern} escape ${LIKE_ESCAPE_CHAR}`;
   }
 
   const isPg = (((column as any).columnType ?? '') as string).startsWith('Pg');
@@ -305,7 +361,7 @@ const jsonPathCondition = (column: Column, columnName: string, filter: Record<st
     }
 
     if (operatorName in safeLikeOps) {
-      const { buildPattern, insensitive } = safeLikeOps[operatorName]!;
+      const op = safeLikeOps[operatorName]!;
       if (typeof operatorValue !== 'string') {
         throw drizzleError(`WHERE ${locator}: operator '${operatorName}' takes a string`, {
           code: 'DRIZZLE_INVALID_FILTER',
@@ -313,7 +369,7 @@ const jsonPathCondition = (column: Column, columnName: string, filter: Record<st
       }
       // The extracted value is an expression, not a column, so the case-insensitive form
       // always goes through `lower()` rather than Postgres's ILIKE.
-      variants.push(safeLikeCondition(exprs.text as any, buildPattern(operatorValue), insensitive));
+      variants.push(safeLikeCondition(exprs.text as any, operatorValue, op, op.insensitive, column));
       continue;
     }
 
@@ -400,14 +456,19 @@ export const extractFiltersColumn = <TColumn extends Column>(
       // do; `ilike`/`notIlike` are already case-insensitive and are left alone.
       // MySQL and SQLite have no `ILIKE` keyword, so there `ilike`/`notIlike` go through the
       // same `lower()` form instead of drizzle's Postgres-only helpers.
-      const insensitivePattern =
-        (foldCase && (operatorName === 'like' || operatorName === 'notLike')) ||
-        ((operatorName === 'ilike' || operatorName === 'notIlike') && columnDialect(column) !== 'pg');
-      variants.push(
-        insensitivePattern
-          ? insensitiveLike(column, operatorValue as string, operatorName === 'notLike' || operatorName === 'notIlike')
-          : stringValueOps[operatorName]!(column, operatorValue as string),
-      );
+      const isLike = operatorName === 'like' || operatorName === 'notLike';
+      const isIlike = operatorName === 'ilike' || operatorName === 'notIlike';
+      if ((isLike && foldCase) || (isIlike && columnDialect(column) !== 'pg')) {
+        variants.push(
+          insensitiveLike(column, operatorValue as string, operatorName === 'notLike' || operatorName === 'notIlike'),
+        );
+      } else if (isLike && columnDialect(column) === 'sqlite') {
+        // SQLite's LIKE folds ASCII case; the same pattern as a GLOB keeps it, as on Postgres.
+        const glob = likePatternToGlob(operatorValue as string);
+        variants.push(operatorName === 'like' ? sql`${column} glob ${glob}` : sql`${column} not glob ${glob}`);
+      } else {
+        variants.push(stringValueOps[operatorName]!(column, operatorValue as string));
+      }
     } else if (operatorName === 'path' && isJsonColumn(column)) {
       // Several path predicates on one column are ANDed, matching how sibling operators
       // already combine. GraphQL coerces a lone object into a one-element list.
@@ -422,8 +483,8 @@ export const extractFiltersColumn = <TColumn extends Column>(
       // safe substring operator handled by safeLikeOps below.
       variants.push(jsonContains(column, columnName, operatorValue));
     } else if (operatorName in safeLikeOps) {
-      const { buildPattern, insensitive: alwaysInsensitive } = safeLikeOps[operatorName]!;
-      variants.push(safeLikeCondition(column, buildPattern(operatorValue as string), alwaysInsensitive || foldCase));
+      const op = safeLikeOps[operatorName]!;
+      variants.push(safeLikeCondition(column, operatorValue as string, op, op.insensitive || foldCase));
     } else if (operatorName in arrayValueOps) {
       // An empty candidate list is a well-formed question with a known answer — nothing is
       // `IN ()`, everything is `NOT IN ()` — so it resolves to a constant predicate rather

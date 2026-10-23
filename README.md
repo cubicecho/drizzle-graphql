@@ -1098,6 +1098,18 @@ PostgreSQL compares exactly. That is the database's configured behaviour, not so
 library adds: give a column a binary or `*_as_cs` collation (`varchar(…) COLLATE utf8mb4_bin`)
 where it has to compare exactly.
 
+### Case sensitivity of the pattern operators on SQLite
+
+`like` / `notLike` and the safe `startsWith` / `endsWith` / `contains` are case-sensitive, as
+they are on PostgreSQL: `contains: "App"` matches `Apple` and not `apple`. SQLite's own `LIKE`
+folds ASCII case, so on SQLite they compile to `GLOB` instead, with `%` / `_` translated to its
+`*` / `?` and every other wildcard in the operand matched literally. The `i`-prefixed operators
+and `insensitive: true` fold case on SQLite as everywhere else.
+
+> **Upgrading — SQLite.** These operators used to compile to `LIKE` on SQLite and so matched
+> case-insensitively. Queries that relied on that should use the `i`-prefixed operator or
+> `insensitive: true`.
+
 ## Which operators a column gets
 
 A filter input carries the operators that can express a question about that column type, and
