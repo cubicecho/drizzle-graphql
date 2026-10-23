@@ -1,7 +1,31 @@
 // The `limits`, `defaults` and `complexity` configs resolved per table, plus the estimator
 // functions the generated fields publish on `extensions.complexity`.
 
+import { getColumns, type Table } from 'drizzle-orm';
+import { columnDialect } from './column-filters.ts';
 import { type DrizzleErrorContext, drizzleError } from './errors.ts';
+
+/**
+ * The `limit` to send with an `offset` the request gave without one. SQLite and MySQL accept
+ * `OFFSET` only after a `LIMIT`, so `offset` alone has to carry a limit that means "all of
+ * them": SQLite reads `LIMIT -1` that way, and on MySQL it is the largest integer every driver
+ * binds exactly (MySQL's own documented 2^64-1 does not fit a JS number). PostgreSQL takes
+ * `OFFSET` alone, so the limit is left as it was.
+ */
+export const offsetOnlyLimit = (table: Table, limit: number | undefined, offset: number | undefined) => {
+  if (limit != null || !offset) {
+    return limit;
+  }
+  const firstColumn = Object.values(getColumns(table))[0];
+  switch (firstColumn ? columnDialect(firstColumn) : undefined) {
+    case 'sqlite':
+      return -1;
+    case 'mysql':
+      return Number.MAX_SAFE_INTEGER;
+    default:
+      return limit;
+  }
+};
 
 /** The shape `graphql-query-complexity`'s `fieldExtensionsEstimator` hands to a field's hint. */
 type ComplexityEstimatorArgs = { args: Record<string, any>; childComplexity: number };

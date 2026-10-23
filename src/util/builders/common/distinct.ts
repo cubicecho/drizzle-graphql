@@ -6,6 +6,7 @@ import { and, asc, eq, getColumns, inArray, or, type SQL, sql } from 'drizzle-or
 import { DISTINCT_RN } from './column-enums.ts';
 import { drizzleError } from './errors.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
+import { offsetOnlyLimit } from './limits.ts';
 import { orderByEntries, orderExpressions } from './order-by.ts';
 
 /**
@@ -104,8 +105,10 @@ export const selectDistinctKeys = async (params: {
   if (offset) {
     query = query.offset(offset);
   }
-  if (limit != null) {
-    query = query.limit(limit);
+  const effectiveLimit = offsetOnlyLimit(table, limit, offset);
+  if (effectiveLimit != null) {
+    // The select builders drop a negative limit, so SQLite's `-1` goes in as a bound value.
+    query = query.limit(effectiveLimit < 0 ? sql`${effectiveLimit}` : effectiveLimit);
   }
 
   return await query;
