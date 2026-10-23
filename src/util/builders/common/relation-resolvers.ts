@@ -44,7 +44,7 @@ import {
   relatedRowParents,
   relationOwnCondition,
 } from './relations.ts';
-import { extractSelectedColumnsFromTreeSQLFormat } from './selected-columns.ts';
+import { extractSelectedColumnsFromTreeSQLFormat, subquerySafeSelection } from './selected-columns.ts';
 
 /**
  * Fetches a to-many relation with per-parent limit/offset for ALL parents in a
@@ -87,8 +87,13 @@ const batchedPaginatedRelationQuery = async (
   // Partitioned by the whole parent key: every join column, or the junction's source column.
   const rowNumber = sql`row_number() over (partition by ${sql.join([...partitionCols], sql`, `)}${orderClause})`.as(RN);
 
-  // Subquery: every target column plus a per-partition row number.
-  const sub = withJunction(db.select({ ...cols, [RN]: rowNumber }).from(targetTable), junction, foreignCol)
+  // Subquery: every target column plus a per-partition row number. Each column has to come
+  // out under its own name, since the outer select reads it back by that name.
+  const sub = withJunction(
+    db.select({ ...subquerySafeSelection(cols), [RN]: rowNumber }).from(targetTable),
+    junction,
+    foreignCol,
+  )
     .where(whereCondition)
     .as('__paginated');
 
