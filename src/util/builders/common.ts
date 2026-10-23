@@ -132,6 +132,7 @@ export type { RelationAggregateFactory, RelationResolverFactory, TablesRelationa
 export {
   attachTargetPrimaryKeys,
   buildNamedRelations,
+  extractJunctionColumns,
   extractRelationJoinColumns,
   relationColumns,
   unwrapRelationColumn,

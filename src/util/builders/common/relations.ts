@@ -220,6 +220,34 @@ export const extractRelationJoinColumns = (
   return { localColPropName, foreignCol: targetCol, foreignColPropName };
 };
 
+/**
+ * The junction table and its two columns for a `.through()` (many-to-many) relation:
+ * `sourceCol` holds the parent's key, `targetCol` the target's. `undefined` for a relation
+ * with no junction; `null` for one whose junction cannot be used here — more than one column
+ * on either side, or columns that are not on the junction table.
+ */
+export const extractJunctionColumns = (
+  relEntry: TableNamedRelations,
+): { table: Table; sourceCol: Column; targetCol: Column } | null | undefined => {
+  const rel = (relEntry as any).relation ?? relEntry;
+  const junction = rel?.throughTable as Table | undefined;
+  if (!junction) {
+    return undefined;
+  }
+  const sourceEntries: unknown[] | undefined = rel.through?.source;
+  const targetEntries: unknown[] | undefined = rel.through?.target;
+  if (sourceEntries?.length !== 1 || targetEntries?.length !== 1) {
+    return null;
+  }
+  const junctionCols = Object.values(getColumns(junction));
+  const sourceCol = unwrapRelationColumn(sourceEntries[0]);
+  const targetCol = unwrapRelationColumn(targetEntries[0]);
+  if (!sourceCol || !targetCol || !junctionCols.includes(sourceCol) || !junctionCols.includes(targetCol)) {
+    return null;
+  }
+  return { table: junction, sourceCol, targetCol };
+};
+
 export type RelationResolverFactory = (params: {
   tableName: string;
   relationName: string;
