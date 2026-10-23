@@ -168,7 +168,7 @@ export const resolveLimitPolicy = (
  * fields it mentions. `childComplexity` floors at 1 so a row is never free.
  *
  * The page size is the *effective* one: a request without `limit` is priced at the policy's
- * `defaultLimit` rather than the estimator's guess, and no request is priced above `maxLimit`,
+ * `defaultLimit` (or its `maxLimit` when that is all it sets) rather than the estimator's guess, and no request is priced above `maxLimit`,
  * so the cost a query is charged matches the rows it can actually pull.
  */
 export const listFieldComplexity =
@@ -176,7 +176,9 @@ export const listFieldComplexity =
   ({ args, childComplexity }) => {
     const limit = args['limit'];
     const requested = typeof limit === 'number' && limit > 0 ? limit : undefined;
-    let rows = requested ?? policy?.defaultLimit ?? options.defaultListSize;
+    // Same fallback as `applyLimitPolicy`: an omitted limit runs at `defaultLimit`, or at
+    // `maxLimit` when only that is configured.
+    let rows = requested ?? policy?.defaultLimit ?? policy?.maxLimit ?? options.defaultListSize;
     if (policy?.maxLimit !== undefined) {
       rows = Math.min(rows, policy.maxLimit);
     }
