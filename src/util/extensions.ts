@@ -217,17 +217,23 @@ const keysFromWhere = (
 
   // A composite key is only pinned by an equality on each of its columns — one column
   // carrying a list would describe a rectangle of key tuples, not the rows written.
+  //
+  // A `null` operand is no operand at all to the filter compiler — `{ id: { eq: null } }`
+  // compiles to no condition and the write reaches every row — so it pins nothing.
   if (primaryKey.length > 1) {
     const row: Record<string, unknown> = {};
+    let exact = Object.keys(filters).length === primaryKey.length;
     for (const column of primaryKey) {
       const operators = filters[column];
-      if (!operators || typeof operators !== 'object' || operators.eq === undefined) {
+      if (!operators || typeof operators !== 'object' || operators.eq === undefined || operators.eq === null) {
         return none;
       }
       row[column] = operators.eq;
+      // A second operator on a key column (`{ eq: 2, ne: 2 }`) can narrow the match away.
+      exact &&= Object.keys(operators).length === 1;
     }
     // Filters beyond the key can only narrow further, so the key alone is not the answer.
-    return { rows: [row], complete: Object.keys(filters).length === primaryKey.length };
+    return { rows: [row], complete: exact };
   }
 
   const column = primaryKey[0];
@@ -241,10 +247,16 @@ const keysFromWhere = (
 
   const exact = Object.keys(filters).length === 1 && Object.keys(operators).length === 1;
   if (operators.eq !== undefined) {
-    return { rows: [{ [column]: operators.eq }], complete: exact };
+    return operators.eq === null ? none : { rows: [{ [column]: operators.eq }], complete: exact };
   }
   if (Array.isArray(operators.inArray)) {
-    return { rows: operators.inArray.map((value: unknown) => ({ [column]: value })), complete: exact };
+    // `IN (…, NULL)` matches no row by its NULL, so a null element names nothing.
+    return {
+      rows: operators.inArray
+        .filter((value: unknown) => value !== null && value !== undefined)
+        .map((value: unknown) => ({ [column]: value })),
+      complete: exact,
+    };
   }
   return none;
 };

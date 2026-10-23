@@ -2842,7 +2842,9 @@ It understands `values` (one object or a list), `where` (`eq` for one row, `inAr
 many, an equality on every column of a composite key), and the per-entry `where` inside a
 batch update's `updates`. Check `complete` before treating `rows` as the affected set: it
 is `false` when the arguments do not pin the rows down — an insert whose key the database
-generates, a filter on something other than the primary key, an unbounded update, a
+generates, a filter on something other than the primary key, a key operand that is `null`
+(which filters nothing, so the write reaches every row), a second operator beside a key
+column's `eq`, an unbounded update, a
 table with no primary key at all, or an upsert whose `onConflict` targets another unique key
 or can skip a conflicting row (`action: NOTHING`, a `where`). On MySQL, where an upsert has
 no `target` and conflicts on whichever unique key it hits, `complete` assumes the primary

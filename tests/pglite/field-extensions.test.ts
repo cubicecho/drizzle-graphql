@@ -208,6 +208,19 @@ describe('identifyRows', () => {
     expect(identifyRows(mutationField('updateUsers'), {})).toMatchObject({ rows: [], complete: false });
   });
 
+  it('reads a null key operand as no key at all, as the filter compiler does', () => {
+    // `{ eq: null }` compiles to no condition, so the write reaches every row.
+    expect(identifyRows(mutationField('deleteUsers'), { where: { id: { eq: null } } })).toMatchObject({
+      rows: [],
+      complete: false,
+    });
+    // A NULL in an `IN` list matches no row.
+    expect(identifyRows(mutationField('deleteUsers'), { where: { id: { inArray: [1, null] } } })).toMatchObject({
+      rows: [{ id: 1 }],
+      complete: true,
+    });
+  });
+
   it('trusts an upsert’s keys only when it conflicts on the primary key and updates every conflict', () => {
     const upsert = mutationField('upsertUsers');
     const values = [{ id: 99, email: 'a@x', name: 'new' }];
