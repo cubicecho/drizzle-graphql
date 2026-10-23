@@ -212,7 +212,8 @@ const NUMERIC_TEXT_PATTERN = '^\\s*-?(\\d+\\.?\\d*|\\.\\d+)([eE][-+]?\\d+)?\\s*$
  *   pattern guard.
  * - **SQLite** — `json_extract` returns the value in SQLite's own type, so the reads cast
  *   explicitly: without that, SQLite's cross-type ordering puts every string above every
- *   number and `'admin' > 0` would be true.
+ *   number and `'admin' > 0` would be true. A JSON boolean comes back as 1 / 0, so every read
+ *   also checks `json_type` to keep booleans and numbers apart.
  */
 const jsonPathExprs = (
   column: Column,
@@ -244,11 +245,13 @@ const jsonPathExprs = (
     }
     default: {
       const extracted = sql`json_extract(${column}, ${jsonPathString(path)})`;
+      // SQLite has no boolean type: `json_extract` returns a JSON `true` as the integer 1, so
+      // each read checks `json_type`, which still tells `true` apart from `1`.
+      const type = sql`json_type(${column}, ${jsonPathString(path)})`;
       return {
-        text: sql`cast(${extracted} as text)`,
-        number: sql`(case when typeof(${extracted}) in ('integer', 'real') then ${extracted} end)`,
-        // SQLite has no boolean type: a JSON `true` comes back as the integer 1.
-        boolean: extracted,
+        text: sql`(case ${type} when 'true' then 'true' when 'false' then 'false' else cast(${extracted} as text) end)`,
+        number: sql`(case when ${type} in ('integer', 'real') then ${extracted} end)`,
+        boolean: sql`(case when ${type} in ('true', 'false') then ${extracted} end)`,
         encodeBoolean: (value) => (value ? 1 : 0),
       };
     }
