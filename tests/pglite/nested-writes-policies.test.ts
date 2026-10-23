@@ -387,3 +387,62 @@ describe.sequential("a relation's own where", () => {
     expect(linked.map((x: any) => x.tagId)).toEqual([3]);
   });
 });
+
+describe.sequential('a child-side to-one connect', () => {
+  const Users = pgTable('users', { id: integer('id').primaryKey(), name: text('name').notNull() });
+  const Profiles = pgTable('profiles', {
+    id: integer('id').primaryKey(),
+    userId: integer('user_id'),
+    bio: text('bio'),
+  });
+  const tables = { Users, Profiles };
+  const r = createRelationsHelper(tables);
+  const relations = buildRelations(tables, {
+    Users: { profile: r.one.Profiles({ from: r.Users.id, to: r.Profiles.userId }) },
+  });
+  const { state, run } = fixture(
+    { ...tables, relations },
+    [
+      'CREATE TABLE users (id integer PRIMARY KEY, name text NOT NULL)',
+      'CREATE TABLE profiles (id integer PRIMARY KEY, user_id integer, bio text)',
+    ],
+    { features: { nestedWrites: true } },
+  );
+  const attachedTo1 = async () =>
+    (await state.db.select().from(Profiles).where(eq(Profiles.userId, 1))).map((x: any) => x.id).sort();
+
+  beforeEach(async () => {
+    await state.db.execute(sql`TRUNCATE users, profiles`);
+    await state.db.insert(Users).values({ id: 1, name: 'a' });
+    await state.db.insert(Profiles).values([
+      { id: 100, userId: 1, bio: 'current' },
+      { id: 101, userId: null, bio: 'free 1' },
+      { id: 102, userId: null, bio: 'free 2' },
+    ]);
+  });
+
+  it('rejects a filter that matches nothing, and keeps the current row', async () => {
+    const res = await run(
+      'mutation { updateUsersSingle(where: { id: { eq: 1 } }, set: { profile: { connect: { id: { eq: 999 } } } }) { id } }',
+    );
+    expect(res.errors?.[0]?.message).toMatch(/exactly one/);
+    expect((res.errors?.[0] as any)?.extensions?.code).toBe('DRIZZLE_NESTED_WRITE_INVALID');
+    expect(await attachedTo1()).toEqual([100]);
+  });
+
+  it('rejects a filter that matches two rows', async () => {
+    const res = await run(
+      'mutation { updateUsersSingle(where: { id: { eq: 1 } }, set: { profile: { connect: { id: { inArray: [101, 102] } } } }) { id } }',
+    );
+    expect(res.errors?.[0]?.message).toMatch(/exactly one/);
+    expect(await attachedTo1()).toEqual([100]);
+  });
+
+  it('swaps the attached row when it matches exactly one', async () => {
+    const res = await run(
+      'mutation { updateUsersSingle(where: { id: { eq: 1 } }, set: { profile: { connect: { id: { eq: 101 } } } }) { id } }',
+    );
+    expect(res.errors).toBeUndefined();
+    expect(await attachedTo1()).toEqual([101]);
+  });
+});

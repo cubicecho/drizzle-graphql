@@ -883,6 +883,13 @@ export type NestedWriteRuntime = {
 export const mergedOps = (entries: { ops: NestedOps }[]): NestedOps =>
   Object.assign({}, ...entries.map((entry) => entry.ops));
 
+/** A to-one `connect` whose filter did not match exactly one row. */
+const connectMatchError = (relationName: string, matched: number) =>
+  drizzleError(
+    `Drizzle-GraphQL Error: 'connect' on '${relationName}' matched ${matched} rows — it attaches a single row, so its filter must match exactly one.`,
+    { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
+  );
+
 const asArray = (value: any): any[] => (Array.isArray(value) ? value : value === undefined ? [] : [value]);
 
 const supplied = (value: any) => value !== undefined && value !== null;
@@ -1295,10 +1302,7 @@ export const createNestedWriteRuntime = (params: {
             .from(plan.targetTable)
             .where(conditionOf(plan, op['connect'], 'connect', scope));
           if (rows.length !== 1) {
-            throw drizzleError(
-              `Drizzle-GraphQL Error: 'connect' on '${relationName}' matched ${rows.length} rows — it attaches a single row, so its filter must match exactly one.`,
-              { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
-            );
+            throw connectMatchError(relationName, rows.length);
           }
           patch[plan.localColPropName] = rows[0][plan.foreignColPropName];
         } else if (op['disconnect'] === true) {
@@ -1391,6 +1395,18 @@ export const createNestedWriteRuntime = (params: {
                   'update',
                 );
               }
+            }
+          }
+
+          // A to-one `connect` attaches a single row, so its filter has to match exactly one —
+          // checked before anything is detached, so a miss leaves the current row in place.
+          if (plan.isOne && op['connect'] !== undefined) {
+            const matched = await executor
+              .select({ [plan.foreignColPropName]: plan.foreignCol })
+              .from(plan.targetTable)
+              .where(conditionOf(plan, op['connect'], 'connect', scope));
+            if (matched.length !== 1) {
+              throw connectMatchError(relationName, matched.length);
             }
           }
 
