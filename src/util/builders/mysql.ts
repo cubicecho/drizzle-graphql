@@ -1,4 +1,4 @@
-import type { Table } from 'drizzle-orm';
+import { type Column, getColumns, sql, type Table } from 'drizzle-orm';
 import { type MySqlAsyncDatabase, MySqlTable, getTableConfig as mysqlTableConfig } from 'drizzle-orm/mysql-core';
 import {
   GraphQLBoolean,
@@ -153,11 +153,12 @@ const generateUpsert = (
       },
     },
     run: async ({ executor, args, context, before, after }) => {
+      const contextColumns = policies?.contextValues?.(tableName);
       const input = applyContextValuesAll(
         single
           ? [remapFromGraphQLSingleInput(args.values as Record<string, any>, table)]
           : remapFromGraphQLArrayInput(args.values as Record<string, any>[], table),
-        policies?.contextValues?.(tableName),
+        contextColumns,
         context,
       );
       if (!input.length) {
@@ -166,8 +167,9 @@ const generateUpsert = (
       await before();
 
       // MySQL's ON DUPLICATE KEY UPDATE fires on whichever unique key was violated, so
-      // there is no target to resolve and no predicate to attach.
-      const plan = resolveConflictPlan({
+      // there is no target to resolve and no predicate to attach. That is also why the
+      // primary key is never in the SET list: the conflict may be on another unique key.
+      const batches = resolveConflictPlan({
         table,
         values: input,
         onConflict: args.onConflict,
@@ -175,13 +177,39 @@ const generateUpsert = (
         uniqueSets: [],
         excludedRef: mysqlValuesColumnRef,
         withTarget: false,
+        serverOwned: Object.keys(contextColumns ?? {}),
       });
 
-      if (plan.action === 'NOTHING') {
-        // INSERT IGNORE is the closest MySQL gets to DO NOTHING.
-        await executor.insert(table).ignore().values(input);
+      const requestedNothing = args.onConflict?.action === 'NOTHING';
+      const runBatch = async (target: any, { values, plan }: (typeof batches)[number]) => {
+        if (plan.action === 'NOTHING' && !requestedNothing) {
+          // An UPDATE left with nothing to write (only the key, or only server-owned columns,
+          // were supplied) keeps the row as it is with a no-op assignment, rather than
+          // becoming INSERT IGNORE — which would also downgrade the insert's own errors to
+          // warnings.
+          const columns = getColumns(table) as Record<string, Column>;
+          const keyName = pkNames[0] ?? Object.keys(columns)[0]!;
+          await target
+            .insert(table)
+            .values(values)
+            .onDuplicateKeyUpdate({ set: { [keyName]: sql`${sql.identifier(columns[keyName]!.name)}` } });
+        } else if (plan.action === 'NOTHING') {
+          // INSERT IGNORE is the closest MySQL gets to DO NOTHING.
+          await target.insert(table).ignore().values(values);
+        } else {
+          await target.insert(table).values(values).onDuplicateKeyUpdate({ set: plan.set });
+        }
+      };
+      // Rows that write different columns on conflict go in as separate statements, which
+      // have to commit or fail together, as the one statement they replace would have.
+      if (batches.length === 1) {
+        await runBatch(executor, batches[0]!);
       } else {
-        await executor.insert(table).values(input).onDuplicateKeyUpdate({ set: plan.set });
+        await executor.transaction(async (tx: any) => {
+          for (const batch of batches) {
+            await runBatch(tx, batch);
+          }
+        });
       }
 
       await after();

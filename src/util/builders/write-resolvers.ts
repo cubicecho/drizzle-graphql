@@ -45,6 +45,7 @@ import {
   stripContextValues,
   type TypeNameMapper,
   type TypeNameResolver,
+  type UniqueTarget,
   type WriteOperation,
   withEagerRelations,
   withScope,
@@ -103,7 +104,7 @@ export interface InsertOptions extends WriteTableOptions {
 export interface UpsertOptions extends WriteTableOptions {
   baseType: GraphQLInputObjectType;
   onConflictType: GraphQLInputObjectType;
-  uniqueSets: string[][];
+  uniqueSets: UniqueTarget[];
 }
 
 export interface UpdateOptions extends WriteTableOptions {
@@ -313,7 +314,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         // — whose rows go in one at a time, each already carrying whatever its parent-side
         // operations produced — resolves its plan per row rather than once for the batch.
         const runUpsert = async (target: any, values: Record<string, any>[]) => {
-          const plan = resolveConflictPlan({
+          const batches = resolveConflictPlan({
             table,
             values,
             onConflict: args.onConflict,
@@ -321,20 +322,42 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             uniqueSets,
             excludedRef: excludedColumnRef,
             withTarget: true,
+            serverOwned: Object.keys(contextColumns ?? {}),
             buildWhere: (where) => extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)),
           });
 
-          let query = target.insert(table).values(values).returning(returning);
-          // On conflict the statement updates a row that already exists, so the scope applies
-          // to it exactly as it would to `update<Table>`: a conflicting row the caller cannot
-          // see is left alone rather than taken over.
-          const setWhere = withScope(scope, tableName, table, plan.setWhere);
-          query =
-            plan.action === 'NOTHING'
-              ? (query.onConflictDoNothing(plan.target ? { target: plan.target } : undefined) as any)
-              : (query.onConflictDoUpdate({ target: plan.target!, set: plan.set, setWhere }) as any);
+          const runBatch = async (executor: any, { values: rows, plan }: (typeof batches)[number]) => {
+            let query = executor.insert(table).values(rows).returning(returning);
+            // On conflict the statement updates a row that already exists, so the scope applies
+            // to it exactly as it would to `update<Table>`: a conflicting row the caller cannot
+            // see is left alone rather than taken over.
+            const setWhere = withScope(scope, tableName, table, plan.setWhere);
+            query =
+              plan.action === 'NOTHING'
+                ? (query.onConflictDoNothing(
+                    plan.target ? { target: plan.target, where: plan.targetWhere } : undefined,
+                  ) as any)
+                : (query.onConflictDoUpdate({
+                    target: plan.target!,
+                    targetWhere: plan.targetWhere,
+                    set: plan.set,
+                    setWhere,
+                  }) as any);
+            return (await query) as Record<string, any>[];
+          };
 
-          return (await query) as Record<string, any>[];
+          // Rows that write different columns on conflict go in as separate statements, which
+          // have to commit or fail together, as the one statement they replace would have.
+          if (batches.length === 1) {
+            return runBatch(target, batches[0]!);
+          }
+          return target.transaction(async (tx: any) => {
+            const rows: Record<string, any>[] = [];
+            for (const batch of batches) {
+              rows.push(...(await runBatch(tx, batch)));
+            }
+            return rows;
+          });
         };
 
         const written = nestedEntries

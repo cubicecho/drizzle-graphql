@@ -344,7 +344,8 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       ? buildNestedWritePlans(
           tables,
           namedRelations,
-          (target) => uniqueColumnSets(target as Table),
+          // A partial unique index still says which side of a one-to-one holds the key.
+          (target) => getUniqueColumnSets(target as Table, adapter.getTableConfig, { partial: true }),
           (target) => primaryKeyPropNames(target as Table),
           extractRelationJoinColumns,
           // A junction is written without being a relation target, so it is named from the

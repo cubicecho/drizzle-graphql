@@ -1,6 +1,6 @@
 import Docker from 'dockerode';
 import { buildRelations, createRelationsHelper, eq, sql } from 'drizzle-orm';
-import { boolean, datetime, int, mysqlTable, text } from 'drizzle-orm/mysql-core';
+import { boolean, datetime, int, mysqlTable, text, varchar } from 'drizzle-orm/mysql-core';
 import { drizzle } from 'drizzle-orm/mysql2';
 import getPort from 'get-port';
 import { type GraphQLInputObjectType, type GraphQLObjectType, type GraphQLSchema, graphql } from 'graphql';
@@ -47,9 +47,17 @@ const Audit = mysqlTable('audit', {
   position: text('position').notNull(),
   rowCount: int('row_count').notNull(),
 });
-const r = createRelationsHelper({ Orgs, Items, Flags, Audit });
+// An auto-increment key beside another unique key: a MySQL upsert can conflict on either.
+const Members = mysqlTable('members', {
+  id: int('id').autoincrement().primaryKey(),
+  email: varchar('email', { length: 64 }).notNull().unique(),
+  name: text('name'),
+  nickname: text('nickname'),
+  managerId: int('manager_id'),
+});
+const r = createRelationsHelper({ Orgs, Items, Flags, Audit, Members });
 const relations = buildRelations(
-  { Orgs, Items, Flags, Audit },
+  { Orgs, Items, Flags, Audit, Members },
   {
     Orgs: { items: r.many.Items({ from: r.Orgs.id, to: r.Items.orgId }) },
     Items: { org: r.one.Orgs({ from: r.Items.orgId, to: r.Orgs.id }) },
@@ -164,6 +172,15 @@ beforeAll(async () => {
     \`row_count\` int NOT NULL,
     CONSTRAINT \`audit_id\` PRIMARY KEY(\`id\`)
   );`);
+  await db.execute(sql`CREATE TABLE \`members\` (
+    \`id\` int AUTO_INCREMENT NOT NULL,
+    \`email\` varchar(64) NOT NULL,
+    \`name\` text,
+    \`nickname\` text,
+    \`manager_id\` int,
+    CONSTRAINT \`members_id\` PRIMARY KEY(\`id\`),
+    CONSTRAINT \`members_email_unique\` UNIQUE(\`email\`)
+  );`);
 });
 
 afterAll(async () => {
@@ -177,6 +194,7 @@ beforeEach(async () => {
   await db.execute(sql`DELETE FROM \`items\``);
   await db.execute(sql`DELETE FROM \`flags\``);
   await db.execute(sql`DELETE FROM \`orgs\``);
+  await db.execute(sql`DELETE FROM \`members\``);
   await db.insert(Orgs).values([
     { id: 1, name: 'Acme' },
     { id: 2, name: 'Globex' },
@@ -189,6 +207,10 @@ beforeEach(async () => {
   await db.insert(Flags).values([
     { id: 1, label: 'live', isArchived: false },
     { id: 2, label: 'archived', isArchived: true },
+  ]);
+  await db.insert(Members).values([
+    { id: 1, email: 'boss@x', name: 'boss', nickname: 'B' },
+    { id: 2, email: 'worker@x', name: 'worker', nickname: 'W', managerId: 1 },
   ]);
 });
 
@@ -407,6 +429,58 @@ describe.sequential('MySQL contextValues', () => {
 
     expect(res.errors).toBeUndefined();
     expect((await itemsInDb()).find((row) => row.id === 5).orgId).toBe(2);
+  });
+});
+
+describe.sequential('MySQL upsert', () => {
+  const membersInDb = async (): Promise<any[]> => await db.select().from(Members).orderBy(Members.id);
+
+  it('does not hand a conflicting row to the caller through a contextValues column', async () => {
+    const gqlSchema = buildWith({
+      features: { upsert: true },
+      scope: { Items: (ctx: any) => ({ orgId: { eq: ctx.orgId } }) },
+      contextValues: { Items: { orgId: (ctx: any) => ctx.orgId } },
+    } as any);
+    // Item 3 is org 2's. Org 1 upserting its key must not move it into org 1.
+    const res = await run(
+      gqlSchema,
+      `mutation { upsertItemsSingle(values: { id: 3, name: "hijacked" }) { isSuccess } }`,
+      {
+        orgId: 1,
+      },
+    );
+
+    expect(res.errors).toBeUndefined();
+    expect((await itemsInDb()).find((row) => row.id === 3).orgId).toBe(2);
+    // The insert half still stamps it.
+    await run(gqlSchema, `mutation { upsertItemsSingle(values: { id: 4, name: "mine" }) { isSuccess } }`, { orgId: 1 });
+    expect((await itemsInDb()).find((row) => row.id === 4).orgId).toBe(1);
+  });
+
+  it('does not rewrite the primary key of a row that conflicts on another unique key', async () => {
+    const gqlSchema = buildWith({ features: { upsert: true } } as any);
+    const res = await run(
+      gqlSchema,
+      `mutation { upsertMembers(values: [{ id: 50, email: "new@x", name: "new" }, { email: "boss@x", name: "boss renamed" }]) { isSuccess } }`,
+    );
+
+    expect(res.errors).toBeUndefined();
+    const boss = (await membersInDb()).find((row) => row.email === 'boss@x');
+    expect(boss).toMatchObject({ id: 1, name: 'boss renamed' });
+  });
+
+  it('leaves a column alone on a batch row that did not supply it', async () => {
+    const gqlSchema = buildWith({ features: { upsert: true } } as any);
+    const res = await run(
+      gqlSchema,
+      `mutation { upsertMembers(values: [{ id: 1, email: "boss@x", name: "Boss2" }, { id: 2, email: "worker@x", nickname: "W2" }]) { isSuccess } }`,
+    );
+
+    expect(res.errors).toBeUndefined();
+    expect((await membersInDb()).map(({ id, name, nickname }) => ({ id, name, nickname }))).toEqual([
+      { id: 1, name: 'Boss2', nickname: 'B' },
+      { id: 2, name: 'worker', nickname: 'W2' },
+    ]);
   });
 });
 

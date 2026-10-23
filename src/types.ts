@@ -153,6 +153,9 @@ export type UpdateManyArgs<TTable extends Table> = {
  * `target` and `where` exist on PostgreSQL and SQLite only: MySQL's
  * `ON DUPLICATE KEY UPDATE` fires on whichever unique key was violated and takes no
  * predicate, so neither field is generated there.
+ *
+ * `target` may name a partial unique index; its predicate is repeated in the statement's
+ * `ON CONFLICT (…) WHERE …`, which is what lets the database match it.
  */
 export type UpsertConflictArgs<TTable extends Table> = {
   action?: 'UPDATE' | 'NOTHING';
@@ -933,7 +936,9 @@ export type SchemaFeatures = {
    * have — the guarantee is in the input type.
    *
    * Single-column constraints get no field (`eq` on the column already says it), and a
-   * constraint whose field name is taken by a column or a relation is skipped. The fields live
+   * constraint whose field name is taken by a column or a relation is skipped. So is a partial
+   * unique index (`uniqueIndex().on(…).where(…)`): it is unique only among the rows its
+   * predicate matches, so its columns do not name one row of the table. The fields live
    * on `<Type>Filters`, so they are accepted wherever a filter is: the `Single` reads and
    * writes they are meant for, but also list queries, relation filters and `onConflict.where`.
    *
@@ -1454,7 +1459,8 @@ export type BuildSchemaConfig = {
    * - The column is removed from the generated insert and update inputs, so a client cannot
    *   send it at all — the schema itself documents that it is server-owned.
    * - Every insert stamps it, including the rows created by a nested `create`.
-   * - Updates never write it: an update cannot hand a row to another owner.
+   * - Updates never write it: an update cannot hand a row to another owner. That includes
+   *   the conflict branch of an upsert, whose `onConflict.update` does not offer it.
    * - Keyed by the Drizzle schema key, then by the column's property name (not its database
    *   name), the same keying {@link BuildSchemaConfig.exclude} uses.
    */
