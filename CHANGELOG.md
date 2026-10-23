@@ -1,3 +1,9 @@
+## [15.1.4](https://github.com/cubicecho/drizzle-graphql/compare/v15.1.3...v15.1.4) (2026-10-23)
+
+### Bug Fixes
+
+* read multi-column relations by every join column ([df6d272](https://github.com/cubicecho/drizzle-graphql/commit/df6d272cf5fdc708677e00d3a0b99e87b8fab14e))
+
 ## [15.1.3](https://github.com/cubicecho/drizzle-graphql/compare/v15.1.2...v15.1.3) (2026-10-23)
 
 ### Bug Fixes
