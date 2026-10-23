@@ -1,3 +1,50 @@
+## [16.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v15.1.6...v16.0.0) (2026-10-23)
+
+### ⚠ BREAKING CHANGES
+
+* with features.requireWhere on, an update<Table>Many entry
+without a `where`, or with one that has no filters, is now rejected.
+* on SQLite, `contains`, `startsWith`, `endsWith`, `like` and
+`notLike` are case-sensitive. Queries that relied on SQLite's case folding
+must use the `i`-prefixed operator or `insensitive: true`.
+* SQLite `integer()` columns in number mode change from Int to
+Float in output, create / update input, primary-key and unique-key argument,
+filter (IntFilter -> FloatFilter), aggregate min / max, group-key and field
+update (IntFieldUpdate -> FloatFieldUpdate) positions. Documents declaring an
+Int variable for these fields must declare Float.
+* <Type>OrderBy no longer has fields for JSON columns or SQLite blob bigint columns, and <Type>DistinctColumn no longer lists JSON columns. A query that ordered or made distinct on one is now a validation error, and defaults.orderBy naming one throws at build time.
+
+### Bug Fixes
+
+* allow MySQL writes filtered through a self-referencing relation ([84662c2](https://github.com/cubicecho/drizzle-graphql/commit/84662c27efebb72cc04ff36f3bef3ad42ce27f8a))
+* append the primary-key tiebreak to an ordered eager relation page ([f5fc2d4](https://github.com/cubicecho/drizzle-graphql/commit/f5fc2d4a07be50b175bf199058ecb101ca1ffb06))
+* apply a junction's scope and soft delete to relation fields and aggregates ([b981382](https://github.com/cubicecho/drizzle-graphql/commit/b981382a9322bcbc8f9236dfd69581fa687e55ed))
+* apply features.requireWhere to update<Table>Many entries ([a53bd35](https://github.com/cubicecho/drizzle-graphql/commit/a53bd357a4eec553c9fd0af7f82a10c7e28a2c66))
+* average as DOUBLE on MySQL so avg keeps its fraction ([4c8b2d7](https://github.com/cubicecho/drizzle-graphql/commit/4c8b2d7f37ad4117d88f7807d3b86f9cf9b05019))
+* balance the key OR that narrows a distinct read ([5cbd1b7](https://github.com/cubicecho/drizzle-graphql/commit/5cbd1b7bf4c86d18402009126c12a9b19acdfde6))
+* compare having operands as numeric on PostgreSQL ([f155d35](https://github.com/cubicecho/drizzle-graphql/commit/f155d35245bbb60574093132c3c9f0b9ee0b1503))
+* compare whole JSON documents in eq / ne on every dialect ([abf9846](https://github.com/cubicecho/drizzle-graphql/commit/abf9846a6e19c0eb447666b8907e0f455afaa707))
+* compile ilike and notIlike through lower() on MySQL and SQLite ([7c87f7e](https://github.com/cubicecho/drizzle-graphql/commit/7c87f7ef6487ac7b0d963a78e91b57b87d6a1b81))
+* enforce a relation's own where on parent-side nested writes ([550bdf8](https://github.com/cubicecho/drizzle-graphql/commit/550bdf86cfd381042ae2ca7602c27c355765dc4f))
+* keep JSON booleans apart from 1 / 0 in SQLite path filters ([a9a4648](https://github.com/cubicecho/drizzle-graphql/commit/a9a46486bfd10d5afc4cac31da7dcd9f9e75c061))
+* key the per-request field memo on every merged field node ([1359667](https://github.com/cubicecho/drizzle-graphql/commit/1359667c8f8547f5b23b25941092d96aceb27bd9))
+* leave JSON columns out of orderBy and distinct ([9d5ea3f](https://github.com/cubicecho/drizzle-graphql/commit/9d5ea3f93932aa7ccf6fbb19eb395096f9779365))
+* leave types without a usable min / max out of min / max ([3bbfc8e](https://github.com/cubicecho/drizzle-graphql/commit/3bbfc8ea4a0590c20f716b6863488801a78c4081))
+* make SQLite upserts on a partial unique index work ([44843a8](https://github.com/cubicecho/drizzle-graphql/commit/44843a8a79fc196a2b3f65a8a9b280e0de395879))
+* match case in SQLite's case-sensitive pattern operators ([6eb9a23](https://github.com/cubicecho/drizzle-graphql/commit/6eb9a2390318d31c5518b365d75ba48583ab4fa1))
+* name enum values and types GraphQL does not allow as written ([5ed08b7](https://github.com/cubicecho/drizzle-graphql/commit/5ed08b7506fd83e1f4838d7a93742c50802acc2e))
+* omit an empty OrderBy and its orderBy argument ([ef5e3ab](https://github.com/cubicecho/drizzle-graphql/commit/ef5e3abb9192d56dbe5f052e6fa945a0713a23a5))
+* page MySQL cursors over an ENUM by declaration order ([22bb9af](https://github.com/cubicecho/drizzle-graphql/commit/22bb9af4aae3b0000140d2960de45c431b358a7f))
+* price an omitted limit at maxLimit when the policy sets only maxLimit ([a4dead0](https://github.com/cubicecho/drizzle-graphql/commit/a4dead0657021af6d533032ada198f7a5e877b17))
+* read a SQLite blob holding 0 apart from a NULL one ([65e0337](https://github.com/cubicecho/drizzle-graphql/commit/65e03370a16f38f81dbcbcb5e11b56fdc78c4f2c))
+* refuse onWrite on a synchronous SQLite driver ([96122f6](https://github.com/cubicecho/drizzle-graphql/commit/96122f67694f9301a827cce339ae6c052eadeeeb))
+* return the join columns of lazily-resolved relations from writes ([10eb7dc](https://github.com/cubicecho/drizzle-graphql/commit/10eb7dc2dc874e2db22a30e592bdc75fa9068f8f))
+* send a limit with an offset-only page on SQLite and MySQL ([13822de](https://github.com/cubicecho/drizzle-graphql/commit/13822de77d5d8ed600130fd6d94d3c4d60a70146))
+* settle auto transactions on timeout overflow and uncoercible fields ([50d143c](https://github.com/cubicecho/drizzle-graphql/commit/50d143cbea827cadff07254a7cff0626648bfb95))
+* skip only duplicate keys on a MySQL onConflict NOTHING ([5d300f1](https://github.com/cubicecho/drizzle-graphql/commit/5d300f19e1036a4882f421fb2481732ea0a68640))
+* type SQLite integer columns as Float, not Int ([c6c7362](https://github.com/cubicecho/drizzle-graphql/commit/c6c73622d945d95af4c7f33dfce77a4860069ea3))
+* write array, byte and geometric column values ([ddbba91](https://github.com/cubicecho/drizzle-graphql/commit/ddbba9109c5ae54e90cda5f48311bd753f6ab9df))
+
 ## [15.1.6](https://github.com/cubicecho/drizzle-graphql/compare/v15.1.5...v15.1.6) (2026-10-23)
 
 ### Bug Fixes
