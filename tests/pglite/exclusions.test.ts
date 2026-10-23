@@ -223,6 +223,24 @@ describe.sequential('schema exclusions', () => {
     });
   });
 
+  describe('cursors', () => {
+    // Documented behaviour, not a leak to fix: a cursor is base64url JSON of the row's ordering
+    // values, primary key included, so excluding the key does not hide it from a client that
+    // decodes one. Pagination keeps working.
+    it('still encode an excluded primary key, and still paginate', async () => {
+      const gqlSchema = buildWith({ columns: { Posts: ['id'] } });
+      const first = await run(gqlSchema, `{ posts(limit: 1) { content cursor } }`);
+      expect(first.errors).toBeUndefined();
+      const [row] = (first.data as any).posts;
+      const [lowest] = await db.execute(sql`select id from posts order by id limit 1`).then((r: any) => r.rows);
+      expect(Buffer.from(row.cursor, 'base64url').toString('utf8')).toContain(String(lowest.id));
+
+      const next = await run(gqlSchema, `{ posts(limit: 1, after: "${row.cursor}") { content } }`);
+      expect(next.errors).toBeUndefined();
+      expect((next.data as any).posts).toHaveLength(1);
+    });
+  });
+
   describe('config validation', () => {
     it('throws for a table that does not exist', () => {
       expect(() => buildWith({ tables: ['Nope'] })).toThrow(/config\.exclude\.tables names 'Nope'/);
@@ -258,6 +276,19 @@ describe.sequential('schema exclusions', () => {
       } finally {
         warn.mockRestore();
       }
+    });
+
+    it('throws for a default ordering on an excluded column', () => {
+      // The default ordering is encoded into every row's cursor, which the client can decode.
+      expect(() =>
+        buildWith({ columns: { Posts: ['content'] } }, { defaults: { Posts: { orderBy: { content: 'desc' } } } }),
+      ).toThrow(/config\.defaults\.Posts\.orderBy names 'content', which config\.exclude\.columns hides/);
+    });
+
+    it('accepts a default ordering on a visible column of a table with exclusions', () => {
+      expect(() =>
+        buildWith({ columns: { Posts: ['content'] } }, { defaults: { Posts: { orderBy: { authorId: 'desc' } } } }),
+      ).not.toThrow();
     });
 
     it('accepts column entries for a table that is itself excluded', () => {

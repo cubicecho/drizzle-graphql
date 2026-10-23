@@ -1397,7 +1397,8 @@ export type BuildSchemaConfig = {
    *   what an `after`-only page is ordered by. Changing a table's default changes what its
    *   existing cursors mean.
    * - Entries name column property names of that table; a direction alone is shorthand for
-   *   `{ direction }`. Unknown table or column names throw at build time.
+   *   `{ direction }`. Unknown table or column names throw at build time, and so does a
+   *   column hidden by `exclude.columns`: cursors carry the ordering values in readable form.
    * - Aggregates and `groupBy` take their own ordering and are unaffected.
    *
    * Off by default: a table with no entry keeps returning rows in whatever order the database
@@ -1587,6 +1588,11 @@ export type BuildSchemaConfig = {
    * `distinct` and `groupBy` enums, and the upsert conflict targets. The exclusion is
    * deliberately all-or-nothing: a column you can filter on but not select is an oracle, since
    * `where: { keyHash: { eq: '…' } }` confirms a value without ever returning it.
+   *
+   * One value stays readable: a row's `cursor` is base64url JSON of its ordering values, and the
+   * primary key is always among them, so excluding the primary key does not hide it from a
+   * client that decodes a cursor. Wrap cursors in your own opaque token if it must stay secret.
+   * A `defaults` ordering on an excluded column throws at build time for the same reason.
    *
    * Excluding a `NOT NULL` column that has no default makes that table's inserts impossible to
    * satisfy — `buildSchema` warns on the console when it sees this, and still builds, since a

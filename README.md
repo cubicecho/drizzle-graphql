@@ -249,6 +249,12 @@ Two details worth stating plainly:
 -   **Nothing changes below the schema.** An excluded column is still written by its
     default, still read by the primary-key and cursor machinery, and still usable by your
     own resolvers. Only the generated schema stops mentioning it.
+-   **A cursor carries the primary key in readable form.** A [cursor](#cursor-pagination)
+    is base64url JSON of the row's ordering values, and the primary key is always one of
+    them. Excluding the primary key removes the field, but anyone holding a cursor can still
+    decode the key's value. If the key itself must stay secret, wrap the cursors in your own
+    opaque or encrypted form. A `defaults.<table>.orderBy` that names an excluded column
+    throws at build time, because its values would ride along in every cursor too.
 
 Names that match nothing throw at build time, so renaming a column fails the build instead
 of quietly un-hiding it. Excluding a `NOT NULL` column with no default is allowed — the
@@ -1508,6 +1514,12 @@ field, and passing it back as `after` resumes strictly after that row.
     millisecond JS `Date` that `mode: 'date'` reads it into, so the cursor carries the
     database's own text of the value instead, and rows a microsecond apart are still distinct
     pages
+-   A cursor is opaque by convention only. It is base64url-encoded JSON of the row's
+    ordering values, primary key included, so a client can decode it and read those values,
+    even for a primary key hidden by [`exclude`](#excluding-tables-and-columns). It is not
+    signed or encrypted. If the ordering values must stay private, wrap the cursor in your
+    own opaque or encrypted token before it leaves the server, and unwrap it on the way back
+    in
 -   A cursor is only valid under the ordering it was issued for — reusing it with a
     different `orderBy` (or a malformed/corrupted cursor) returns a `GraphQLError`
 -   `after` cannot be combined with `distinct`, with `matchFilterOrder`, or with an `orderBy`
