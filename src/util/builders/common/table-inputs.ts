@@ -7,7 +7,7 @@ import { GraphQLInputObjectType, GraphQLList, GraphQLNonNull, GraphQLString } fr
 import { drizzleColumnToGraphQLType } from '../../type-converter/index.ts';
 import type { ConvertedColumn, ConvertedInputColumn } from '../../type-converter/types.ts';
 import type { TableNamedRelations } from '../types.ts';
-import { generateColumnFilterValues } from './column-filters.ts';
+import { generateColumnFilterValues, isOrderableColumn } from './column-filters.ts';
 import { CURSOR_FIELD_NAME, rowCursorResolver } from './cursor.ts';
 import { columnDocs } from './docs.ts';
 import { hasExcludedColumns, visibleColumns } from './exclusions.ts';
@@ -38,7 +38,9 @@ const generateTableOrderCached = (table: Table, innerOrder: GraphQLInputObjectTy
     const columnEntries = Object.entries(columns);
 
     remapped = Object.fromEntries(
-      columnEntries.map(([columnName, _columnDescription]) => [columnName, { type: innerOrder }]),
+      columnEntries
+        .filter(([, column]) => isOrderableColumn(column))
+        .map(([columnName]) => [columnName, { type: innerOrder }]),
     );
 
     if (cacheable) {
