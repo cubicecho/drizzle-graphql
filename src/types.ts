@@ -155,7 +155,8 @@ export type UpdateManyArgs<TTable extends Table> = {
  * predicate, so neither field is generated there.
  *
  * `target` may name a partial unique index; its predicate is repeated in the statement's
- * `ON CONFLICT (…) WHERE …`, which is what lets the database match it.
+ * `ON CONFLICT (…) WHERE …`, which is what lets the database match it. On SQLite its values
+ * are written inline, since SQLite matches the predicate to the index as written.
  */
 export type UpsertConflictArgs<TTable extends Table> = {
   action?: 'UPDATE' | 'NOTHING';

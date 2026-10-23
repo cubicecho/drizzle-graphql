@@ -1738,7 +1738,10 @@ mutation {
     exclusion constraint matching" error
 -   `target` can be a partial unique index — the `WHERE deleted_at IS NULL` companion of
     [soft delete](#soft-delete), say. Its predicate goes into `ON CONFLICT (…) WHERE …`, so a
-    conflict is detected only against the rows the index covers
+    conflict is detected only against the rows the index covers. On SQLite the predicate is
+    written with its values inline (SQLite matches it to the index as written, so
+    `status = 'active'` works), and `action: NOTHING` on such a target is spelled as an update
+    that matches no row, since SQLite cannot parse the predicate before `DO NOTHING`
 -   `contextValues` columns are never overwritten on conflict — see
     [columns the server owns](#columns-the-server-owns)
 -   `action: NOTHING` inserts nothing and returns nothing for the conflicting row. An `UPDATE`
