@@ -1042,6 +1042,11 @@ The pattern operators are `like` / `notLike` / `ilike` / `notIlike`, the safe
 `startsWith` / `endsWith` / `contains` and their `i`-prefixed forms, plus the `insensitive`
 flag that modifies them.
 
+An operand of `null` leaves its operator out, as though it had not been sent. `false` is an
+ordinary value: `active: { eq: false }` matches the rows that are false, `ne: false` the rows
+that are true, and `has: false` the arrays holding a `false`. Only the flag operators —
+`isNull`, `isNotNull` and `isEmpty` — read `false` as "add no condition".
+
 The omissions are the cases where the operator cannot ask anything a caller means:
 
 -   **Pattern matching a timestamp, a boolean or an enum member** compares whatever the value
