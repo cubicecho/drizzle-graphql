@@ -72,6 +72,7 @@ import {
   buildNestedWritePlans,
   createNestedWriteRuntime,
   createNestedWriteTypes,
+  dropContextValueRelations,
   gateNestedWritePlans,
   type NestedWriteRuntime,
   type NestedWriteTypes,
@@ -363,6 +364,16 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
           omitted.length > 5 ? `${omitted.slice(0, 5).join(', ')} and ${omitted.length - 5} more` : omitted.join(', ');
         console.warn(
           `Drizzle-GraphQL Warning: config.features — nestedWrites leaves out the nested inputs whose table has that write turned off: ${listed}.`,
+        );
+      }
+    }
+    // A relation keyed on a `contextValues` column would let a nested input write the column
+    // the server stamps, so it is not offered at all.
+    if (nestedPlans) {
+      const omitted = dropContextValueRelations(nestedPlans, contextValuesOf);
+      if (omitted.length) {
+        console.warn(
+          `Drizzle-GraphQL Warning: config.contextValues — nestedWrites leaves out the relations whose foreign key the server stamps from context: ${omitted.join(', ')}.`,
         );
       }
     }

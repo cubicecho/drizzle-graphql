@@ -301,7 +301,7 @@ narrow the scope, never widen it. It reaches every path that touches the table:
 | `orderBy` through a to-one — `comments(orderBy: { post: { title: … } })` | an out-of-scope post sorts as `NULL` |
 | `updatePosts`, `updatePostsMany`, `deletePosts` | an out-of-scope row is simply not matched |
 | `upsertPosts` (conflict branch) | a conflicting row outside the scope is left alone, not taken over |
-| nested `connect` / `disconnect` / `set` | only in-scope rows can be attached or detached |
+| nested `connect` / `disconnect` / `set` | only in-scope rows can be attached or detached; a many-to-many `set` keeps the links to out-of-scope rows |
 
 Two things it deliberately does not do:
 
@@ -347,10 +347,14 @@ const { schema } = buildSchema(db, {
 -   The column is **removed from `CreatePostsInput` and `UpdatePostsInput`**, so a client cannot
     send it at all — the SDL itself says the column is server-owned. It stays readable on the
     object type.
--   Every insert stamps it, including rows created by a nested `create`.
+-   Every insert stamps it, including rows created by a nested `create` and junction rows a
+    many-to-many `connect` / `set` inserts.
 -   Updates never write it, so an update cannot hand a row to another owner. Neither does the
     conflict branch of an upsert: it is left out of the default overwrite and of the columns
     `onConflict.update` can name.
+-   A relation whose foreign key is such a column gets no
+    [nested-write](#nested-writes) field from either side: every nested operation on it would
+    write that column. The build notes which relations it left out.
 
 Together the two close the loop: `contextValues` decides which tenant a new row belongs to, and
 `scope` decides which rows a request can see and change afterwards.
@@ -493,8 +497,8 @@ What a declared table gets:
 | relation filters — `users(where: { posts: { some: {} } })`, `none`, `every`, `.through()` junctions | a marked post neither matches nor blocks `none`, with the same default as the relation field (see below) |
 | `orderBy` through a to-one | a marked target the relation field hides sorts as `NULL` |
 | `updatePosts`, `updatePostsMany`, a second `deletePosts` | a marked row is simply not matched |
-| nested `connect` / `disconnect` / `set` | a marked row cannot be attached or detached |
-| `CreatePostsInput`, `UpdatePostsInput` | the marker column is **removed** — only the mutations write it |
+| nested `connect` / `disconnect` / `set` | a marked row cannot be attached or detached; a many-to-many `set` keeps the links to marked rows |
+| `CreatePostsInput`, `UpdatePostsInput`, nested `create` payloads | the marker column is **removed** — only the mutations write it |
 
 Every read path also gains a `deleted` argument for the cases the default hides:
 
@@ -1692,9 +1696,10 @@ mutation {
 
 -   `connect`, `disconnect` and `set` take the target's own `Filters` input — a list of them
     on a to-many relation, a single one that must match exactly one row on a to-one — so they
-    select rows the same way a query does. A to-one `disconnect` is just `disconnect: true`,
-    since there is only one row to detach. A filter that matches everything is rejected rather than
-    attaching the whole table
+    select rows the same way a query does. A to-one `connect` that matches no row, or several,
+    fails with `DRIZZLE_NESTED_WRITE_INVALID` before anything is detached. A to-one
+    `disconnect` is just `disconnect: true`, since there is only one row to detach. A filter
+    that matches everything is rejected rather than attaching the whole table
 -   `set` replaces the relation wholesale — everything attached is detached first, then the
     filters attach. It runs before `create`, so a row created in the same write survives it
 -   A to-one relation takes one operation at a time (`connect` **or** `disconnect` **or**
@@ -1716,14 +1721,42 @@ mutation {
     — so a failure anywhere leaves nothing behind
 -   A `set` that carries only relation fields is a valid update: it changes what the row is
     attached to without rewriting the row
+-   When the parent write produces no row — an update whose `where` matched nothing, an
+    insert or upsert a conflict turned into a no-op — whatever a parent-side `create` inserted
+    for it is rolled back too, so no orphan is left. In a batch only that entry is undone
+-   The returned rows reflect the nested write: on a self-referencing relation
+    (`reports: { connect: … }` on the row itself), where a child-side statement rewrites the
+    parent row, the parent rows are read back after it
+-   A relation joining on more than one column per side gets no nested-write field: setting
+    one key would leave the rest of the join (a tenant column, say) unmatched and unwritten
+
+### A relation's own `where`
+
+A relation declared with a `where` (`publishedPosts: r.many.posts({ …, where: { published: true } })`)
+is written through the same way it is read: only the rows it shows.
+
+-   `disconnect`, `set`, and the detaching a to-one attach does, reach only rows that satisfy
+    the `where` — `publishedPosts: { set: [] }` leaves the drafts attached
+-   `connect` and `set` attach only rows that satisfy it, so the relation shows what was
+    attached. A to-one `connect` must match exactly one such row
+-   There is no `create`: the inserted row is attached whether or not it satisfies the
+    `where`, and the relation could come back without it. Create it with its own mutation, or
+    through a relation with no `where`
+-   A many-to-many `set` unlinks only the links to rows the `where` shows
+-   A relation that inherits its `where` from the other side (declared without `from` / `to`)
+    filters the parent rather than the target. Writing through it on a parent row it is
+    hidden for fails with `DRIZZLE_NESTED_WRITE_INVALID`
 
 ### The target table's own rules
 
 A nested write is a write to another table, so it follows that table's rules, not just the
 root field's:
 
--   **`scope`** narrows the rows `connect` / `disconnect` / `set` can reach, and
-    **`contextValues`** stamp the rows a nested `create` inserts
+-   **`scope`** and **`softDelete`** narrow the rows `connect` / `disconnect` / `set` can
+    reach — a many-to-many `set` keeps the links to rows it cannot reach — and
+    **`contextValues`** stamp the rows a nested `create` inserts. A relation keyed on a
+    `contextValues` column is not offered at all, and the payload of a nested `create` leaves
+    out the context columns and the soft-delete marker, as the target's own create input does
 -   **`features`**: each nested input is generated only when the table it writes has that
     write turned on. Whatever is left out is noted on the console at build time, and a
     relation with nothing left loses its field altogether
@@ -1767,7 +1800,8 @@ mutation {
     re-connecting is a no-op rather than a unique-constraint error
 -   `disconnect` deletes only the links, never the rows they pointed at
 -   `set: []` unlinks everything and links nothing back, which is how a many-to-many relation
-    is cleared
+    is cleared. "Everything" is everything the request could have unlinked: links to rows
+    outside the target's `scope`, soft-deleted, or hidden by the relation's own `where` stay
 -   There is no `create`: inserting a row *and* linking it is a write to two tables, and the
     link is what the relation field is for. Create the row with its own mutation, then
     `connect` it

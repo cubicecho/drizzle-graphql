@@ -1,5 +1,5 @@
 import { type Client, createClient } from '@libsql/client';
-import { buildRelations, createRelationsHelper, sql } from 'drizzle-orm';
+import { buildRelations, createRelationsHelper, ne, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/libsql';
 import { integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { type GraphQLInputObjectType, type GraphQLSchema, graphql } from 'graphql';
@@ -501,5 +501,67 @@ describe.sequential("SQLite nested inputs follow the target table's features", (
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe.sequential('SQLite nested writes under policies', () => {
+  const runWith = (built: GraphQLSchema, source: string, contextValue: any = {}) =>
+    graphql({ schema: built, source, contextValue });
+
+  it('leaves out a relation whose foreign key is a contextValues column', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const stamped = buildSchema(db, {
+        features: { nestedWrites: true },
+        contextValues: { Posts: { authorId: (ctx: any) => ctx.userId } },
+      }).schema;
+
+      expect(fieldsOf(stamped, 'UpdatePostsInput')!['author']).toBeUndefined();
+      expect(fieldsOf(stamped, 'CreateAuthorsInput')!['posts']).toBeUndefined();
+      expect(fieldsOf(stamped, 'UpdatePostsInput')!['tags']).toBeDefined();
+      const messages = warn.mock.calls.map((args) => String(args[0]));
+      expect(messages.some((m) => m.includes('contextValues') && m.includes('Posts.author'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps out-of-scope links on a many-to-many set', async () => {
+    await db.insert(Posts).values({ title: 'P' });
+    await db.insert(Tags).values([{ name: 'open' }, { name: 'secret' }]);
+    await db.insert(PostsToTags).values([
+      { postId: 1, tagId: 1 },
+      { postId: 1, tagId: 2 },
+    ]);
+    const scoped = buildSchema(db, {
+      features: { nestedWrites: true },
+      scope: { Tags: (_ctx: any, t: any) => ne(t.name, 'secret') },
+    }).schema;
+
+    const result = await runWith(
+      scoped,
+      'mutation { updatePostsSingle(where: { id: { eq: 1 } }, set: { tags: { set: [] } }) { id } }',
+    );
+
+    expect(result.errors).toBeUndefined();
+    expect(await links()).toEqual(['1:2']);
+  });
+
+  it('rolls back a parent-side create whose update matched nothing', async () => {
+    await db.insert(Posts).values({ title: 'P' });
+
+    const single = await run(
+      'mutation { updatePosts(where: { id: { eq: 999 } }, set: { author: { create: { name: "Orphan" } } }) { id } }',
+    );
+    expect(single.errors).toBeUndefined();
+    expect((single.data as any).updatePosts).toEqual([]);
+
+    const many = await run(`mutation { updatePostsMany(updates: [
+      { where: { id: { eq: 999 } }, set: { author: { create: { name: "Orphan" } } } },
+      { where: { id: { eq: 1 } }, set: { author: { create: { name: "Kept" } } } }
+    ]) { id } }`);
+    expect(many.errors).toBeUndefined();
+    expect((many.data as any).updatePostsMany).toEqual([null, { id: 1 }]);
+    expect((await authors()).map((row: any) => row.name)).toEqual(['Kept']);
   });
 });

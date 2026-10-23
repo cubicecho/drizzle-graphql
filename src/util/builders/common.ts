@@ -137,6 +137,7 @@ export {
   extractJunctionColumns,
   extractRelationJoinColumnPairs,
   extractRelationJoinColumns,
+  isRelationFilterReversed,
   joinKeyOf,
   parentKeyCondition,
   relationColumns,

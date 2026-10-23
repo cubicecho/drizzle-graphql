@@ -7,6 +7,7 @@ import {
   memoizeTableConfig,
   type TablesRelationalConfig,
 } from '../builders/common.ts';
+import { writeNestedEntry } from './nested-writes.ts';
 import { createSchemaDataGenerator } from './schema-data.ts';
 import type { SchemaGeneratorOptions } from './types.ts';
 import { createUpdateManyGenerator, type UpdateManyBatchRunner, type UpdateManyEntry } from './update-many.ts';
@@ -48,23 +49,20 @@ const runSqliteUpdateManyBatch: UpdateManyBatchRunner = ({
   // can do inside a transaction — `features.nestedWrites` rejects a sync driver at build
   // time, so this path is always on one.
   const runNestedEntry = async (tx: any, entry: UpdateManyEntry) => {
-    const values = entry.ops
-      ? { ...entry.set, ...(await nested!.applyParentSide(tx, tableName, entry.ops, request)) }
-      : entry.set;
-
-    // Same as the single update: an entry with no column values reads the rows its `where`
-    // matched so the nested operations have something to attach to.
-    const writes = Object.keys(values).length > 0;
-    let query = writes ? tx.update(table).set(values) : tx.select(returning).from(table);
-    if (entry.filters) {
-      query = query.where(entry.filters);
-    }
-    const rows = (await (writes ? query.returning(returning) : query)) as Record<string, any>[];
-
-    if (entry.ops) {
-      await nested!.applyChildSide(tx, tableName, entry.ops, rows, request);
-    }
-    return rows;
+    const write = async (target: any, patch: Record<string, any>) => {
+      const values = { ...entry.set, ...patch };
+      // Same as the single update: an entry with no column values reads the rows its `where`
+      // matched so the nested operations have something to attach to.
+      const writes = Object.keys(values).length > 0;
+      let query = writes ? target.update(table).set(values) : target.select(returning).from(table);
+      if (entry.filters) {
+        query = query.where(entry.filters);
+      }
+      return (await (writes ? query.returning(returning) : query)) as Record<string, any>[];
+    };
+    return entry.ops
+      ? writeNestedEntry({ executor: tx, runtime: nested!, tableName, ops: entry.ops, write, request })
+      : write(tx, {});
   };
 
   // On a caller-supplied transaction — or the shared multi-mutation transaction opened by

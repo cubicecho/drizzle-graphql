@@ -24,7 +24,7 @@ import {
 } from '../builders/common.ts';
 import { remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
 import { remapUpdateInput } from './field-updates.ts';
-import { mergedOps, type NestedWriteRequest, type NestedWriteRuntime } from './nested-writes.ts';
+import { mergedOps, type NestedWriteRequest, type NestedWriteRuntime, writeNestedEntry } from './nested-writes.ts';
 import type { UpdateManyGenerator, UpdateManyOptions } from './schema-data.ts';
 import type { CreatedResolver, Filters } from './types.ts';
 import type { WriteBuildOptions } from './write-resolvers.ts';
@@ -76,23 +76,22 @@ export const runUpdateManyBatch: UpdateManyBatchRunner = ({
   executor.transaction(async (tx: any) => {
     const results: Record<string, any>[][] = [];
     for (const entry of entries) {
-      const values = entry.ops
-        ? { ...entry.set, ...(await nested!.applyParentSide(tx, tableName, entry.ops, request)) }
-        : entry.set;
-
-      // Same as the single update: an entry with no column values reads the rows its
-      // `where` matched so the nested operations have something to attach to.
-      const writes = Object.keys(values).length > 0;
-      let query = writes ? tx.update(table).set(values) : tx.select(returning).from(table);
-      if (entry.filters) {
-        query = query.where(entry.filters) as any;
-      }
-      const rows = (await (writes ? (query.returning(returning) as any) : query)) as Record<string, any>[];
-
-      if (entry.ops) {
-        await nested!.applyChildSide(tx, tableName, entry.ops, rows, request);
-      }
-      results.push(rows);
+      const write = async (target: any, patch: Record<string, any>) => {
+        const values = { ...entry.set, ...patch };
+        // Same as the single update: an entry with no column values reads the rows its
+        // `where` matched so the nested operations have something to attach to.
+        const writes = Object.keys(values).length > 0;
+        let query = writes ? target.update(table).set(values) : target.select(returning).from(table);
+        if (entry.filters) {
+          query = query.where(entry.filters) as any;
+        }
+        return (await (writes ? (query.returning(returning) as any) : query)) as Record<string, any>[];
+      };
+      results.push(
+        entry.ops
+          ? await writeNestedEntry({ executor: tx, runtime: nested!, tableName, ops: entry.ops, write, request })
+          : await write(tx, {}),
+      );
     }
     return results;
   });

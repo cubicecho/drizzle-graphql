@@ -844,8 +844,15 @@ export type SchemaFeatures = {
    *   relation left with no input loses its field.
    * - **`onWrite`** — the hooks of the table a nested statement writes fire on the same `tx`,
    *   with `payload.nested` set. See {@link BuildSchemaConfig.onWrite}.
-   * - **`scope`** and **`contextValues`** — `connect` / `disconnect` / `set` reach only
-   *   in-scope rows, and a nested `create` is stamped like any insert.
+   * - **`scope`**, **`softDelete`** and **`contextValues`** — `connect` / `disconnect` / `set`
+   *   reach only in-scope, unmarked rows (a many-to-many `set` keeps the links it cannot
+   *   reach), and a nested `create` is stamped like any insert. A relation whose foreign key
+   *   is a `contextValues` column is not offered at all.
+   *
+   * A relation's own `where` limits the rows its writes reach the same way, and takes its
+   * `create` away. A relation joining on more than one column per side is not offered. A
+   * to-one `connect` must match exactly one row. When the parent write produces no row, a
+   * parent-side `create` made for it is rolled back.
    *
    * PostgreSQL and SQLite only. MySQL cannot return the rows it just wrote, which is how a
    * nested write learns the parent's key, so `buildSchema` rejects the flag there. On SQLite
@@ -1466,6 +1473,8 @@ export type BuildSchemaConfig = {
    * - Every insert stamps it, including the rows created by a nested `create`.
    * - Updates never write it: an update cannot hand a row to another owner. That includes
    *   the conflict branch of an upsert, whose `onConflict.update` does not offer it.
+   * - With `nestedWrites`, a relation whose foreign key is such a column gets no nested-write
+   *   field, since every nested operation on it would write the column.
    * - Keyed by the Drizzle schema key, then by the column's property name (not its database
    *   name), the same keying {@link BuildSchemaConfig.exclude} uses.
    */

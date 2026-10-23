@@ -9,7 +9,7 @@
 // foreign key and whether that column is nullable, so the schema never advertises
 // an operation whose every call would be a database error.
 // =============================================================================
-import { and, type Column, eq, getColumns, inArray, is, One, type Table } from 'drizzle-orm';
+import { and, type Column, eq, getColumns, inArray, is, One, or, type SQL, type Table } from 'drizzle-orm';
 import { GraphQLBoolean, GraphQLInputObjectType, type GraphQLInputType, GraphQLList, GraphQLNonNull } from 'graphql';
 import { capitalize } from '../case-ops/index.ts';
 import { remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
@@ -26,8 +26,11 @@ import {
   applyContextValues,
   type ContextValuesFor,
   extractFilters,
+  isRelationFilterReversed,
   type RelationFilterBase,
+  relationColumns,
   relationFilterCtx,
+  relationOwnCondition,
   resolveScope,
   resolveTypeName,
   type ScopeResolver,
@@ -76,6 +79,23 @@ export type NestedRelationPlan = {
    */
   targetKeyColumns: Record<string, Column>;
   /**
+   * The target's primary-key property names. Used when the target is the parent's own table,
+   * to read the parent rows back after the child-side statements may have rewritten them.
+   */
+  targetPrimaryKey?: string[];
+  /**
+   * The relation's own `where`, compiled against the target: the rows the relation shows.
+   * Every statement that selects rows to attach or detach is narrowed by it, so a write
+   * through the relation reaches only what a read through it returns.
+   */
+  ownCondition?: () => SQL;
+  /**
+   * For a relation whose `where` is inherited from its reverse and so filters the *parent*:
+   * whether the parent row keyed `key` shows the relation at all. A child-side write through
+   * a relation that shows nothing for its parent is refused.
+   */
+  parentShows?: (executor: any, key: any) => Promise<boolean>;
+  /**
    * The relation field's inputs the relation's shape allows (no `create` through a junction,
    * no `disconnect` / `set` on a NOT NULL key), narrowed by {@link gateNestedWritePlans} to
    * the ones whose write the table it lands on has turned on.
@@ -113,6 +133,41 @@ export type NestedOps = Record<string, Record<string, any>>;
 const isOptionalOnInsert = (column: Column): boolean =>
   !column.notNull || !!column.hasDefault || !!(column as any).defaultFn;
 
+/**
+ * The plan fields that carry a relation's own `where` (see {@link relationOwnCondition}).
+ *
+ * A `where` on the target narrows every row selection the write makes, and takes `create`
+ * away: the row it inserts is attached whether or not it satisfies the `where`, so the
+ * relation could come back without it. A `where` inherited from the reverse relation filters
+ * the parent instead, and becomes a per-parent check.
+ */
+const ownWherePlan = (
+  relEntry: TableNamedRelations,
+  parentTable: Table,
+  targetTable: Table,
+  localCol: Column,
+): Pick<NestedRelationPlan, 'ownCondition' | 'parentShows'> => {
+  const condition = () => relationOwnCondition(relEntry, parentTable, targetTable, [localCol], [localCol]);
+  if (!condition()) {
+    return {};
+  }
+  if (!isRelationFilterReversed((relEntry as any).relation ?? relEntry)) {
+    return { ownCondition: () => condition()! };
+  }
+  // The reversed condition reads `localCol in (select localCol from parent where …)`, so
+  // matching it against the one parent row answers whether that row passes the filter.
+  return {
+    parentShows: async (executor, key) =>
+      (
+        await executor
+          .select({ key: localCol })
+          .from(parentTable)
+          .where(and(eq(localCol, key), condition()))
+          .limit(1)
+      ).length > 0,
+  };
+};
+
 /** The property name a column is stored under on its table, matched by identity. */
 const propNameOf = (table: Table, column: Column | undefined): string | undefined => {
   if (!column) {
@@ -143,6 +198,7 @@ const propNameOf = (table: Table, column: Column | undefined): string | undefine
  */
 const buildThroughPlan = (
   relationName: string,
+  relEntry: TableNamedRelations,
   relation: any,
   table: Table,
   targetTableName: string,
@@ -217,6 +273,7 @@ const buildThroughPlan = (
       targetCol,
     },
     targetKeyColumns: { [foreignColPropName]: foreignCol },
+    ...ownWherePlan(relEntry, table, targetTable, localCol),
     allowed: new Set(['connect', 'disconnect', 'set']),
   };
 };
@@ -228,8 +285,9 @@ const buildThroughPlan = (
  * rather than a foreign-key one — see {@link buildThroughPlan}.
  *
  * Skipped, and so absent from the generated inputs rather than failing at runtime:
- * relations whose join columns cannot be read off the drizzle relation; and relations where
- * neither join column is unique, which leaves no way to tell which side stores the key.
+ * relations whose join columns cannot be read off the drizzle relation; relations joining on
+ * more than one column per side; and relations where neither join column is unique, which
+ * leaves no way to tell which side stores the key.
  */
 export const buildNestedWritePlans = (
   tables: Record<string, Table>,
@@ -296,6 +354,7 @@ export const buildNestedWritePlans = (
       if ((relation as any).through) {
         const throughPlan = buildThroughPlan(
           relationName,
+          relEntry,
           relation,
           table,
           targetTableName,
@@ -306,6 +365,17 @@ export const buildNestedWritePlans = (
         if (throughPlan) {
           tablePlans[relationName] = throughPlan;
         }
+        continue;
+      }
+
+      // A relation joining on more than one column per side cannot be written by setting one
+      // key: `extractJoinColumns` reads the first pair only, so the rest of the join — a
+      // tenant column, say — would be neither matched nor written. Left out, as a junction
+      // with a composite join is.
+      if (
+        (relationColumns(relation, 'source')?.length ?? 0) > 1 ||
+        (relationColumns(relation, 'target')?.length ?? 0) > 1
+      ) {
         continue;
       }
 
@@ -349,13 +419,18 @@ export const buildNestedWritePlans = (
 
       const fkColumn = fkSide === 'child' ? foreignCol : localCol;
       const targetColumns = getColumns(targetTable);
+      const targetPrimaryKey = resolvePrimaryKeys(targetTable).filter((name) => targetColumns[name]);
       const targetKeyColumns: Record<string, Column> = Object.fromEntries(
-        resolvePrimaryKeys(targetTable)
-          .filter((name) => targetColumns[name])
-          .map((name) => [name, targetColumns[name] as Column]),
+        targetPrimaryKey.map((name) => [name, targetColumns[name] as Column]),
       );
       targetKeyColumns[foreignColPropName] = foreignCol;
 
+      const ownWhere = ownWherePlan(relEntry, table, targetTable, localCol);
+      const ops: readonly NestedWriteOp[] = !fkColumn.notNull
+        ? isOne
+          ? ['create', 'connect', 'disconnect']
+          : ALL_OPS
+        : ['create', 'connect'];
       tablePlans[relationName] = {
         relationName,
         targetTableName,
@@ -368,12 +443,13 @@ export const buildNestedWritePlans = (
         fkSide,
         canDetach: !fkColumn.notNull,
         targetKeyColumns,
+        targetPrimaryKey,
+        ...ownWhere,
         // `set` replaces a to-many's whole set, and `disconnect` / `set` need a key that can
         // be nulled. Whether the input is the update one, and whether `connect` has a filter
-        // to select with, is decided where the input types are built.
-        allowed: new Set<NestedWriteOp>(
-          !fkColumn.notNull ? (isOne ? ['create', 'connect', 'disconnect'] : ALL_OPS) : ['create', 'connect'],
-        ),
+        // to select with, is decided where the input types are built. A `where` on the
+        // target takes `create` away — see ownWherePlan.
+        allowed: new Set<NestedWriteOp>(ownWhere.ownCondition ? ops.filter((op) => op !== 'create') : ops),
       };
     }
 
@@ -464,6 +540,51 @@ export const gateNestedWritePlans = (
   return omitted;
 };
 
+/**
+ * Takes out every relation whose foreign key is a `contextValues` column of the table storing
+ * it — the parent's own column for a parent-side relation, the target's for a child-side one,
+ * either junction column for a many-to-many.
+ *
+ * Every operation on such a relation writes that column: `connect`, `disconnect` and `set`
+ * by definition, and a child-side `create` too, since it fills the key in from the parent row
+ * rather than from context. That column is the server's to set — an insert stamps it and an
+ * update never touches it — so writing it from a nested input would let a client pick, or
+ * change, the owner the server assigns. Whole relations are dropped, not single inputs: no
+ * operation on them is left that does not write the key.
+ *
+ * Returns one line per relation taken out, for the build note.
+ */
+export const dropContextValueRelations = (
+  plans: NestedWritePlans,
+  contextValuesOf: ContextValuesFor | undefined,
+): string[] => {
+  const omitted: string[] = [];
+  if (!contextValuesOf) {
+    return omitted;
+  }
+  for (const [tableName, tablePlans] of Object.entries(plans)) {
+    for (const [relationName, plan] of Object.entries(tablePlans)) {
+      const keys: [string | undefined, string][] = plan.through
+        ? [
+            [plan.through.tableName, plan.through.sourceColPropName],
+            [plan.through.tableName, plan.through.targetColPropName],
+          ]
+        : plan.fkSide === 'parent'
+          ? [[tableName, plan.localColPropName]]
+          : [[plan.targetTableName, plan.foreignColPropName]];
+      const stamped = keys.find(([owner, column]) => owner !== undefined && contextValuesOf(owner)?.[column]);
+      if (stamped) {
+        delete tablePlans[relationName];
+        omitted.push(`${tableName}.${relationName} (${stamped[0]}.${stamped[1]} is a contextValues column)`);
+      }
+    }
+    if (!Object.keys(tablePlans).length) {
+      delete plans[tableName];
+    }
+  }
+  return omitted;
+};
+
 // ── input types ──────────────────────────────────────────────────────────────
 
 /**
@@ -527,11 +648,15 @@ export const createNestedWriteTypes = (params: {
 
     const omitted = plan.fkSide === 'child' ? plan.foreignColPropName : undefined;
     // Same rule as the table's own create input: a column the server fills in from context
-    // is not something a nested `create` may supply either.
+    // is not something a nested `create` may supply either, and neither is the soft-delete
+    // marker, which only the delete and restore mutations write.
     const contextColumns = cacheCtx.contextValuesOf?.(plan.targetTableName);
+    const markerColumn = cacheCtx.softDeleteOf?.(plan.targetTableName)?.columnName;
     const fields = Object.fromEntries(
       Object.entries(visibleColumns(plan.targetTable))
-        .filter(([columnName]) => columnName !== omitted && !contextColumns?.[columnName])
+        .filter(
+          ([columnName]) => columnName !== omitted && !contextColumns?.[columnName] && columnName !== markerColumn,
+        )
         .map(([columnName, column]) => [
           columnName,
           drizzleColumnToGraphQLType(column as Column, columnName, plan.targetTableName, false, true, true),
@@ -758,6 +883,20 @@ export type NestedWriteRuntime = {
     parentRows: Record<string, any>[],
     request?: NestedWriteRequest,
   ) => Promise<void>;
+  /** Whether the operations insert a target row before the parent row is written. */
+  createsParentSide: (tableName: string, ops: NestedOps) => boolean;
+  /**
+   * The parent rows as they stand after the child-side statements. Those statements write the
+   * target table, which on a self-referencing relation is the parent's own — so the rows the
+   * parent write returned can be stale. Returned unchanged when no operation targets the
+   * parent's own table.
+   */
+  refreshed: (
+    executor: any,
+    tableName: string,
+    ops: NestedOps,
+    rows: Record<string, any>[],
+  ) => Promise<Record<string, any>[]>;
 };
 
 /**
@@ -766,6 +905,13 @@ export type NestedWriteRuntime = {
  */
 export const mergedOps = (entries: { ops: NestedOps }[]): NestedOps =>
   Object.assign({}, ...entries.map((entry) => entry.ops));
+
+/** A to-one `connect` whose filter did not match exactly one row. */
+const connectMatchError = (relationName: string, matched: number) =>
+  drizzleError(
+    `Drizzle-GraphQL Error: 'connect' on '${relationName}' matched ${matched} rows — it attaches a single row, so its filter must match exactly one.`,
+    { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
+  );
 
 const asArray = (value: any): any[] => (Array.isArray(value) ? value : value === undefined ? [] : [value]);
 
@@ -905,6 +1051,16 @@ const registerChildSteps = (steps: HookSteps, plan: NestedRelationPlan, op: Reco
 const attachingOp = (op: Record<string, any>): NestedWriteOp | undefined =>
   op['connect'] !== undefined ? 'connect' : op['create'] !== undefined ? 'create' : undefined;
 
+/** The child-side relation in `ops` whose target is the parent's own table, if there is one. */
+const selfTargetingPlan = (
+  tablePlans: Record<string, NestedRelationPlan> | undefined,
+  tableName: string,
+  ops: NestedOps,
+): NestedRelationPlan | undefined =>
+  Object.keys(ops)
+    .map((relationName) => tablePlans?.[relationName])
+    .find((plan) => plan?.fkSide === 'child' && !plan.through && plan.targetTableName === tableName);
+
 export const createNestedWriteRuntime = (params: {
   plans: NestedWritePlans;
   filterCtx: RelationFilterBase | undefined;
@@ -938,8 +1094,10 @@ export const createNestedWriteRuntime = (params: {
     }
     // The filter selects rows to attach or detach, so it is a write against the target
     // table and is narrowed by its scope: `connect` cannot reach a row the caller cannot
-    // see, and out-of-scope rows are not detached.
-    return withScope(scope, plan.targetTableName, plan.targetTable, condition)!;
+    // see, and out-of-scope rows are not detached. The relation's own `where` narrows it the
+    // same way: only rows the relation shows are detached, and only rows it would show are
+    // attached.
+    return withScope(scope, plan.targetTableName, plan.targetTable, and(condition, plan.ownCondition?.()))!;
   };
 
   const assertSingleOperation = (plan: NestedRelationPlan, op: Record<string, any>) => {
@@ -987,6 +1145,7 @@ export const createNestedWriteRuntime = (params: {
     op: Record<string, any>,
     scope: ScopeResolver | undefined,
     steps: HookSteps,
+    context: any,
   ) => {
     const through = plan.through!;
 
@@ -1004,7 +1163,13 @@ export const createNestedWriteRuntime = (params: {
         for (const targetKey of await selectedTargetKeys(executor, plan, filter, operation, scope)) {
           if (!existing.has(targetKey)) {
             existing.add(targetKey);
-            rows.push({ [through.sourceColPropName]: key, [through.targetColPropName]: targetKey });
+            rows.push(
+              applyContextValues(
+                { [through.sourceColPropName]: key, [through.targetColPropName]: targetKey },
+                through.tableName ? contextValues?.(through.tableName) : undefined,
+                context,
+              ),
+            );
           }
         }
       }
@@ -1016,8 +1181,25 @@ export const createNestedWriteRuntime = (params: {
     // Replace-the-set first, so a `set` alongside a `connect` reads as "these rows, plus that
     // one". `set: []` unlinks everything and links nothing back, which is how the relation is
     // cleared.
+    //
+    // "Everything" is everything the caller could have attached: links to targets outside the
+    // scope, soft-deleted, or hidden by the relation's own `where` are kept, exactly as
+    // `disconnect` could not have reached them.
     if (supplied(op['set'])) {
-      await steps.run(executor.delete(through.table).where(eq(through.sourceCol, key)), 'set', 'delete');
+      const reachable = withScope(scope, plan.targetTableName, plan.targetTable, plan.ownCondition?.());
+      const unlink = reachable
+        ? and(
+            eq(through.sourceCol, key),
+            inArray(
+              through.targetCol,
+              executor
+                .select({ [plan.foreignColPropName]: plan.foreignCol })
+                .from(plan.targetTable)
+                .where(reachable),
+            ),
+          )
+        : eq(through.sourceCol, key);
+      await steps.run(executor.delete(through.table).where(unlink), 'set', 'delete');
       await link(asArray(op['set']), 'set');
     }
 
@@ -1053,7 +1235,14 @@ export const createNestedWriteRuntime = (params: {
       executor
         .update(plan.targetTable)
         .set({ [plan.foreignColPropName]: null })
-        .where(withScope(scope, plan.targetTableName, plan.targetTable, eq(plan.foreignCol, key))),
+        .where(
+          withScope(
+            scope,
+            plan.targetTableName,
+            plan.targetTable,
+            and(eq(plan.foreignCol, key), plan.ownCondition?.()),
+          ),
+        ),
       op,
       'update',
     );
@@ -1092,7 +1281,47 @@ export const createNestedWriteRuntime = (params: {
           (columns as any)[plan.localColPropName] = allColumns[plan.localColPropName];
         }
       }
+      // A self-referencing write reads the parent rows back by primary key — see `refreshed`.
+      for (const name of selfTargetingPlan(tablePlans, tableName, ops)?.targetPrimaryKey ?? []) {
+        if (!(name in columns) && allColumns[name]) {
+          (columns as any)[name] = allColumns[name];
+        }
+      }
       return columns;
+    },
+
+    createsParentSide: (tableName, ops) =>
+      Object.entries(ops).some(
+        ([relationName, op]) => plans[tableName]?.[relationName]?.fkSide === 'parent' && supplied(op?.['create']),
+      ),
+
+    refreshed: async (executor, tableName, ops, rows) => {
+      const plan = selfTargetingPlan(plans[tableName], tableName, ops);
+      const pk = plan?.targetPrimaryKey ?? [];
+      if (!plan || !pk.length || !rows.length || !pk.every((name) => name in rows[0]!)) {
+        return rows;
+      }
+      const columns = getColumns(plan.targetTable) as Record<string, Column>;
+      const selection = Object.fromEntries(
+        Object.keys(rows[0]!)
+          .filter((name) => columns[name])
+          .map((name) => [name, columns[name]!]),
+      );
+      const keyOf = (row: Record<string, any>) => pk.map((name) => String(row[name])).join('\u0000');
+      const match =
+        pk.length === 1
+          ? inArray(
+              columns[pk[0]!]!,
+              rows.map((row) => row[pk[0]!]),
+            )
+          : or(...rows.map((row) => and(...pk.map((name) => eq(columns[name]!, row[name])))));
+      const fresh = new Map<string, Record<string, any>>(
+        ((await executor.select(selection).from(plan.targetTable).where(match)) as Record<string, any>[]).map((row) => [
+          keyOf(row),
+          row,
+        ]),
+      );
+      return rows.map((row) => ({ ...row, ...fresh.get(keyOf(row)) }));
     },
 
     applyParentSide: async (executor, tableName, ops, request) => {
@@ -1146,10 +1375,7 @@ export const createNestedWriteRuntime = (params: {
             .from(plan.targetTable)
             .where(conditionOf(plan, op['connect'], 'connect', scope));
           if (rows.length !== 1) {
-            throw drizzleError(
-              `Drizzle-GraphQL Error: 'connect' on '${relationName}' matched ${rows.length} rows — it attaches a single row, so its filter must match exactly one.`,
-              { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
-            );
+            throw connectMatchError(relationName, rows.length);
           }
           patch[plan.localColPropName] = rows[0][plan.foreignColPropName];
         } else if (op['disconnect'] === true) {
@@ -1157,6 +1383,12 @@ export const createNestedWriteRuntime = (params: {
         }
       }
 
+      // A context-derived column is the server's to set, never a nested input's. No relation
+      // whose key is one is planned (see dropContextValueRelations); this keeps the patch from
+      // ever overriding the stamped value, or reassigning it on an update, regardless.
+      for (const columnName of Object.keys(contextValues?.(tableName) ?? {})) {
+        delete patch[columnName];
+      }
       return patch;
     },
 
@@ -1192,8 +1424,15 @@ export const createNestedWriteRuntime = (params: {
             );
           }
 
+          if (plan.parentShows && !(await plan.parentShows(executor, key))) {
+            throw drizzleError(
+              `Drizzle-GraphQL Error: cannot write through '${relationName}': its \`where\` hides the relation on this ${tableName} row.`,
+              { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
+            );
+          }
+
           if (plan.through) {
-            await applyThroughOps(executor, plan, key, op, scope, steps);
+            await applyThroughOps(executor, plan, key, op, scope, steps, context);
             continue;
           }
 
@@ -1232,6 +1471,18 @@ export const createNestedWriteRuntime = (params: {
             }
           }
 
+          // A to-one `connect` attaches a single row, so its filter has to match exactly one —
+          // checked before anything is detached, so a miss leaves the current row in place.
+          if (plan.isOne && op['connect'] !== undefined) {
+            const matched = await executor
+              .select({ [plan.foreignColPropName]: plan.foreignCol })
+              .from(plan.targetTable)
+              .where(conditionOf(plan, op['connect'], 'connect', scope));
+            if (matched.length !== 1) {
+              throw connectMatchError(relationName, matched.length);
+            }
+          }
+
           // A to-one relation holds one row, so attaching a new one detaches whatever was
           // there — otherwise both rows point at this parent and the relation is ambiguous.
           const attachedBy = attachingOp(op);
@@ -1253,14 +1504,15 @@ export const createNestedWriteRuntime = (params: {
           }
 
           if (op['create'] !== undefined) {
-            const rows = asArray(op['create']).map((row) => ({
-              ...applyContextValues(
-                remapFromGraphQLSingleInput({ ...row }, plan.targetTable),
+            // The context values go on last: a relation whose key is one of them is never
+            // planned (see dropContextValueRelations), and the server's value wins regardless.
+            const rows = asArray(op['create']).map((row) =>
+              applyContextValues(
+                { ...remapFromGraphQLSingleInput({ ...row }, plan.targetTable), [plan.foreignColPropName]: key },
                 contextValues?.(plan.targetTableName),
                 context,
               ),
-              [plan.foreignColPropName]: key,
-            }));
+            );
             if (rows.length) {
               await steps.run(executor.insert(plan.targetTable).values(rows), 'create', 'insert');
             }
@@ -1271,6 +1523,56 @@ export const createNestedWriteRuntime = (params: {
       }
     },
   };
+};
+
+/** Thrown inside an entry's savepoint to undo a parent-side `create` whose parent was never written. */
+class NoParentRow extends Error {}
+
+/**
+ * One parent write with its nested operations around it: the parent-side operations, whose
+ * values `write` receives as a patch, then the write, then the child-side operations — and
+ * the rows it returns read back when a child-side statement may have changed them.
+ *
+ * A parent write can come back empty: an update whose `where` matched nothing, an insert or
+ * upsert that a conflict turned into a no-op. Anything a parent-side `create` inserted would
+ * then be left with nothing pointing at it, so such an entry runs in a savepoint of its own
+ * that is rolled back when the write produced no row, and the entry returns no rows — as it
+ * would have without the nested operation. The rest of the batch is unaffected.
+ *
+ * `executor` must already be a transaction.
+ */
+export const writeNestedEntry = async (params: {
+  executor: any;
+  runtime: NestedWriteRuntime;
+  tableName: string;
+  ops: NestedOps;
+  write: (executor: any, patch: Record<string, any>) => Promise<Record<string, any>[]>;
+  request?: NestedWriteRequest;
+}): Promise<Record<string, any>[]> => {
+  const { executor, runtime, tableName, ops, write, request } = params;
+  const guarded = runtime.createsParentSide(tableName, ops);
+
+  const run = async (tx: any) => {
+    const patch = await runtime.applyParentSide(tx, tableName, ops, request);
+    const rows = await write(tx, patch);
+    if (guarded && !rows.length) {
+      throw new NoParentRow();
+    }
+    await runtime.applyChildSide(tx, tableName, ops, rows, request);
+    return runtime.refreshed(tx, tableName, ops, rows);
+  };
+
+  if (!guarded) {
+    return run(executor);
+  }
+  try {
+    return await executor.transaction(run);
+  } catch (error) {
+    if (error instanceof NoParentRow) {
+      return [];
+    }
+    throw error;
+  }
 };
 
 /**
@@ -1300,9 +1602,14 @@ export const writeWithNestedOps = async (params: {
   return executor.transaction(async (tx: any) => {
     const rows: Record<string, any>[] = [];
     for (const entry of entries) {
-      const patch = await runtime.applyParentSide(tx, tableName, entry.ops, request);
-      const written = await write(tx, { ...remapValues(entry.columns), ...patch });
-      await runtime.applyChildSide(tx, tableName, entry.ops, written, request);
+      const written = await writeNestedEntry({
+        executor: tx,
+        runtime,
+        tableName,
+        ops: entry.ops,
+        write: (target, patch) => write(target, { ...remapValues(entry.columns), ...patch }),
+        request,
+      });
       rows.push(...written);
     }
     return rows;
@@ -1326,10 +1633,14 @@ export const updateWithNestedOps = async (params: {
 }): Promise<Record<string, any>[]> => {
   const { executor, runtime, tableName, columns, ops, remapValues, write, request } = params;
 
-  return executor.transaction(async (tx: any) => {
-    const patch = await runtime.applyParentSide(tx, tableName, ops, request);
-    const rows = await write(tx, { ...remapValues(columns), ...patch });
-    await runtime.applyChildSide(tx, tableName, ops, rows, request);
-    return rows;
-  });
+  return executor.transaction((tx: any) =>
+    writeNestedEntry({
+      executor: tx,
+      runtime,
+      tableName,
+      ops,
+      write: (target, patch) => write(target, { ...remapValues(columns), ...patch }),
+      request,
+    }),
+  );
 };
