@@ -119,6 +119,8 @@ export {
   applyContextValuesAll,
   bindPolicies,
   deletedFilterEnumType,
+  junctionPolicy,
+  junctionTableName,
   relationDeletedDefault,
   resolveScope,
   resolveSoftDeleteInfo,

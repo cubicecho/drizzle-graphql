@@ -313,7 +313,9 @@ Two things it deliberately does not do:
 
 A relation filter or an ordering through a relation sees exactly the rows the relation field
 would return. Through a `.through()` relation, the junction table's own `scope` and soft delete
-apply as well. A scope that returns a filter object is the server's own predicate, so the
+apply as well — to the relation field, its `<relation>Aggregate` and a relation filter alike,
+so a link row the caller cannot read links nothing on any of them (see
+[junction rows](#junction-rows)). A scope that returns a filter object is the server's own predicate, so the
 relations it reaches through are read without their targets' scopes.
 
 Returning `undefined` means *no restriction for this context*, so one hook can let an
@@ -565,6 +567,27 @@ field shows. They take no `deleted` argument of their own.
 
 `scope` changes reads only. A nested `connect` / `disconnect` / `set` still refuses to attach a
 marked row under either setting, and the table's own writes are unaffected.
+
+#### Junction rows
+
+A `.through()` relation links only through the junction rows the junction table's own `scope`
+and soft delete keep, on every path that reads it: the relation field (eager or batched,
+paginated or `distinct`), `<relation>Aggregate`, and a relation filter. A marked junction row is
+a removed link, so the junction is always read at `EXCLUDE`:
+
+-   The relation's `deleted` argument is about the **target** rows. `tags(deleted: INCLUDE)`
+    brings back marked tags that are still linked, never a tag whose link was marked.
+-   The junction's own `softDelete.scope` only decides what the junction table's own fields
+    return. `'root'` keeps a retired row rendering where a relation points *at* it; a relation
+    passes *through* a junction row and never renders it, so there is nothing for `'root'` to
+    keep, and a marked link stays hidden under either setting.
+
+Drizzle's `with:` joins the junction itself and offers no way to add a condition to it, so a
+relation whose junction has a `scope` or soft delete is loaded by its field resolver's batch
+loader rather than with its parent — still one query per relation per request, not one per
+parent. A junction joined on more than one column per side cannot be loaded that way, so
+selecting such a relation while its junction has a policy fails with
+`DRIZZLE_UNSUPPORTED_RELATION` instead of returning links the policy hides.
 
 ### Purging a row
 

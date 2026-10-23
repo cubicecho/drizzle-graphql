@@ -47,6 +47,8 @@ import {
   type GeneratedTypeInfo,
   generateColumnEnum,
   joinKeyOf,
+  junctionPolicy,
+  junctionTableName,
   parentJoinValues,
   parentKeyChunks,
   parentKeyCondition,
@@ -570,6 +572,9 @@ export const createRelationAggregateFactory = (
       return undefined;
     }
     const groupCols = junction ? [junction.sourceCol] : joinPairs.map((pair) => pair.foreignCol);
+    // The junction's schema key: it counts only through the links its own policies keep, as the
+    // relation field and a relation filter do — see `junctionPolicy`.
+    const junctionName = junction ? junctionTableName(tables, relEntry) : undefined;
     const groupAliases = groupCols.map((_, i) => `${GROUP_KEY}${i}`);
     const ownCondition = relationOwnCondition(
       relEntry,
@@ -650,6 +655,7 @@ export const createRelationAggregateFactory = (
               and(
                 parentKeyCondition(groupCols, chunk),
                 ownCondition,
+                junction ? junctionPolicy(scope, junctionName, junction.table) : undefined,
                 whereArg
                   ? extractFilters(
                       targetTable,

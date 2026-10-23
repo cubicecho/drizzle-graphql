@@ -327,6 +327,40 @@ export const withScope = (
   return predicate ? and(condition, predicate) : condition;
 };
 
+/**
+ * The junction table a `.through()` relation links through, by its schema key — the key its
+ * `scope` and `softDelete` are configured under. `undefined` for a relation with no junction,
+ * or a junction that is not one of the build's tables.
+ */
+export const junctionTableName = (tables: Record<string, Table>, relEntry: unknown): string | undefined => {
+  const throughTable = ((relEntry as any)?.relation ?? relEntry)?.throughTable as Table | undefined;
+  return throughTable ? Object.keys(tables).find((name) => tables[name] === throughTable) : undefined;
+};
+
+/**
+ * Whether a `.through()` relation's junction restricts which links exist for this request —
+ * a `scope` on the junction table, or a soft delete it declares.
+ */
+export const hasJunctionPolicy = (scope: ScopeResolver | undefined, junctionName: string | undefined): boolean =>
+  !!junctionName && !!scope?.has(junctionName, 'EXCLUDE');
+
+/**
+ * The junction's own row policy, compiled against the junction table as the query names it.
+ * A `.through()` relation links only through the junction rows this keeps, on every path that
+ * reads the relation — the relation field, `<relation>Aggregate`, and a relation filter — so
+ * they all agree on which rows are related.
+ *
+ * The junction is always read at `EXCLUDE`: a marked junction row is a removed link. The
+ * relation's `deleted` argument is about the *target* rows, and the junction's own
+ * `softDelete.scope` only governs reads of the junction table's own fields — a link row has no
+ * field of its own on the relation that `'root'` could keep rendering.
+ */
+export const junctionPolicy = (
+  scope: ScopeResolver | undefined,
+  junctionName: string | undefined,
+  table: Table,
+): SQL | undefined => (hasJunctionPolicy(scope, junctionName) ? scope!.on(junctionName!, table, 'EXCLUDE') : undefined);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Context-derived column values
 // ─────────────────────────────────────────────────────────────────────────────

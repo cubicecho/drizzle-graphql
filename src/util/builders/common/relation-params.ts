@@ -6,6 +6,7 @@ import { is, One } from 'drizzle-orm';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import type { ProcessedTableSelectArgs, TableNamedRelations, TableSelectArgs } from '../types.ts';
 import { isCursorFieldSelected } from './cursor.ts';
+import { drizzleError } from './errors.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import { applyLimitPolicy, assertPagingNotNegative, offsetOnlyLimit, withDefaultOrderBy } from './limits.ts';
@@ -13,9 +14,10 @@ import type { TypeNameMapper } from './naming.ts';
 import { resolveObjectTypeName } from './naming.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { DeletedMode, ScopeResolver } from './policies.ts';
-import { withScope } from './policies.ts';
+import { hasJunctionPolicy, junctionTableName, withScope } from './policies.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
+import { extractJunctionColumns } from './relations.ts';
 import { omitUndefinedKeys } from './rqb-config.ts';
 import { extractSelectedColumnsFromTree } from './selected-columns.ts';
 import type { TypeNameResolver } from './type-names.ts';
@@ -117,6 +119,23 @@ export const extractRelationsParams = (
         !!(eagerArgs?.distinct as string[] | undefined)?.length ||
         isCursorFieldSelected(relFieldSelection, tables[targetTableName]!))
     ) {
+      continue;
+    }
+
+    // A `.through()` relation links only through the junction rows the junction's own policies
+    // keep (see `junctionPolicy`), and drizzle's `with:` joins the junction under an alias of its
+    // own choosing, with no hook to put a condition on it. So a relation whose junction carries a
+    // policy in this request is left to the field resolver's batch loader, which joins the
+    // junction itself — still one query per relation. A junction the loader cannot express
+    // (several columns on a side) would read every link, so it is refused instead.
+    const junctionName = junctionTableName(tables, relEntry);
+    if (hasJunctionPolicy(scope, junctionName)) {
+      if (!extractJunctionColumns(relEntry)) {
+        throw drizzleError(
+          `Relation '${tableName}.${relName}' goes through '${junctionName}', which has a scope or soft delete, over a composite key. Its links can only be filtered when the junction joins on one column per side.`,
+          { code: 'DRIZZLE_UNSUPPORTED_RELATION', table: tableName, operation: 'relation', relation: relName },
+        );
+      }
       continue;
     }
 
