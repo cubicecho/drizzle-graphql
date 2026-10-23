@@ -14,6 +14,7 @@ import {
   max,
   min,
   ne,
+  sql,
   sum,
   type Table,
 } from 'drizzle-orm';
@@ -33,6 +34,7 @@ import type { ResolveTree } from '../parse-resolve-info.ts';
 import { parseResolveInfo } from '../parse-resolve-info.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type { ConvertedColumn } from '../type-converter/types.ts';
+import { columnDialect } from './common/column-filters.ts';
 import {
   columnDocs,
   type DeletedMode,
@@ -76,8 +78,16 @@ type AggregateOp = (typeof AGGREGATE_OPS)[number];
 /** Ops whose result is a row count: never null, and returned as `Int!` rather than the column's type. */
 const COUNT_OPS = new Set<AggregateOp>(['countNonNull', 'countDistinct']);
 
+/**
+ * `avg`, except on MySQL, where AVG over an integer column is a DECIMAL rounded to
+ * `div_precision_increment` (4 by default) digits. Averaging the value as a DOUBLE keeps the
+ * fraction the `Float` output promises, as the other two dialects do.
+ */
+const avgOf = (col: Column) =>
+  columnDialect(col) === 'mysql' ? sql<string | null>`avg(cast(${col} as double))`.mapWith(String) : avg(col);
+
 const OP_FNS: Record<AggregateOp, (col: Column) => any> = {
-  avg,
+  avg: avgOf,
   sum,
   min,
   max,
