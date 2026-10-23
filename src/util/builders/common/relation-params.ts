@@ -6,6 +6,7 @@ import { is, One } from 'drizzle-orm';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import type { ProcessedTableSelectArgs, TableNamedRelations, TableSelectArgs } from '../types.ts';
 import { isCursorFieldSelected } from './cursor.ts';
+import { drizzleError } from './errors.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import { applyLimitPolicy, assertPagingNotNegative, offsetOnlyLimit, withDefaultOrderBy } from './limits.ts';
@@ -13,9 +14,10 @@ import type { TypeNameMapper } from './naming.ts';
 import { resolveObjectTypeName } from './naming.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { DeletedMode, ScopeResolver } from './policies.ts';
-import { withScope } from './policies.ts';
+import { hasJunctionPolicy, junctionTableName, withScope } from './policies.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
+import { extractJunctionColumns } from './relations.ts';
 import { omitUndefinedKeys } from './rqb-config.ts';
 import { extractSelectedColumnsFromTree } from './selected-columns.ts';
 import type { TypeNameResolver } from './type-names.ts';
@@ -120,6 +122,23 @@ export const extractRelationsParams = (
       continue;
     }
 
+    // A `.through()` relation links only through the junction rows the junction's own policies
+    // keep (see `junctionPolicy`), and drizzle's `with:` joins the junction under an alias of its
+    // own choosing, with no hook to put a condition on it. So a relation whose junction carries a
+    // policy in this request is left to the field resolver's batch loader, which joins the
+    // junction itself — still one query per relation. A junction the loader cannot express
+    // (several columns on a side) would read every link, so it is refused instead.
+    const junctionName = junctionTableName(tables, relEntry);
+    if (hasJunctionPolicy(scope, junctionName)) {
+      if (!extractJunctionColumns(relEntry)) {
+        throw drizzleError(
+          `Relation '${tableName}.${relName}' goes through '${junctionName}', which has a scope or soft delete, over a composite key. Its links can only be filtered when the junction joins on one column per side.`,
+          { code: 'DRIZZLE_UNSUPPORTED_RELATION', table: tableName, operation: 'relation', relation: relName },
+        );
+      }
+      continue;
+    }
+
     const columns = extractSelectedColumnsFromTree(relFieldSelection, tables[targetTableName]!, {
       tableName: targetTableName,
       relationMap,
@@ -187,22 +206,29 @@ export const extractRelationsParams = (
               ),
           }
         : undefined;
-    // When a relation is paginated (limit/offset) but unordered, default to the target's
-    // primary key so the per-parent slice is deterministic. Drizzle's RQB calls orderBy
-    // with the aliased table proxy, so resolve the PK columns from it. targetPkNames is
-    // resolved at build time and includes composite keys.
+    // When a relation is paginated (limit/offset), the target's primary key is appended as a
+    // tiebreak to whatever ordering applies — the client's, the default, or none (`orderBy: {}`
+    // included) — so the per-parent slice is deterministic and the same slice the batched
+    // resolver's window picks. Drizzle's RQB calls orderBy with the aliased table proxy, so
+    // resolve the PK columns from it. targetPkNames is resolved at build time and includes
+    // composite keys.
     const hasPagination = offset != null || limit != null;
     const pkNames = targetPkNames ?? [];
-    thisRecord.orderBy = relationArgs?.orderBy
-      ? (aliasedTable: Table) =>
-          extractOrderBy(
-            aliasedTable,
-            relationArgs.orderBy!,
-            relationFilterCtx(filterCtx, targetTableName, scope),
-            relWhere,
-          )
-      : hasPagination && pkNames.length
-        ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
+    const tiebreak = hasPagination && pkNames.length > 0;
+    const requestOrder = relationArgs?.orderBy;
+    thisRecord.orderBy =
+      requestOrder || tiebreak
+        ? (aliasedTable: Table) => [
+            ...(requestOrder
+              ? extractOrderBy(
+                  aliasedTable,
+                  requestOrder,
+                  relationFilterCtx(filterCtx, targetTableName, scope),
+                  relWhere,
+                )
+              : []),
+            ...(tiebreak ? primaryKeyOrderExprs(aliasedTable, pkNames) : []),
+          ]
         : undefined;
     thisRecord.offset = offset;
     thisRecord.limit = offsetOnlyLimit(tables[targetTableName]!, limit, offset);

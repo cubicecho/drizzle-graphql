@@ -137,7 +137,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
    * one-element list.
    */
   const generateInsert = (build: WriteBuildOptions, opts: InsertOptions): CreatedResolver => {
-    const { db, tables, relationMap, typeNameMapper, txCtx, nested, limits, policies, resolveName } = build;
+    const { db, tables, relationMap, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } = build;
     const { tableName, table, baseType, fieldName, typeName, single, conflictDoNothing = false } = opts;
     const queryArgs: GraphQLFieldConfigArgumentMap = {
       values: {
@@ -183,6 +183,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
 
         const { columns, hasRelations, withParams } = mutationSelection(info, {
           relationMap,
+          filterCtx,
           tables,
           tableName,
           typeName,
@@ -294,6 +295,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
 
         const { columns, hasRelations, withParams } = mutationSelection(info, {
           relationMap,
+          filterCtx,
           tables,
           tableName,
           typeName,
@@ -439,6 +441,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
 
         const { columns, hasRelations, withParams } = mutationSelection(info, {
           relationMap,
+          filterCtx,
           tables,
           tableName,
           typeName,

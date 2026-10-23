@@ -3,7 +3,7 @@
 // IN-clause query.
 
 import type { Column, Table } from 'drizzle-orm';
-import { and, eq, getColumns, gt, lte, or, type SQL, sql } from 'drizzle-orm';
+import { and, eq, getColumns, gt, lte, type SQL, sql } from 'drizzle-orm';
 import { getOrCreateLoader, getOrCreateRequestValue } from '../../batch-loader/index.ts';
 import { remapToGraphQLArrayOutput } from '../../data-mappers/index.ts';
 import { relationFieldExtension } from '../../extensions.ts';
@@ -29,11 +29,12 @@ import type { LimitPolicyFor } from './limits.ts';
 import { applyLimitPolicy, assertPagingNotNegative, withDefaultOrderBy } from './limits.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { TablePolicies } from './policies.ts';
-import { relationDeletedDefault, resolveScope, withScope } from './policies.ts';
+import { junctionPolicy, junctionTableName, relationDeletedDefault, resolveScope, withScope } from './policies.ts';
 import type { RelationFilterBase, RelationFilterContext } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import type { RelationResolverFactory } from './relations.ts';
 import {
+  balancedOr,
   extractJunctionColumns,
   extractRelationJoinColumnPairs,
   joinKeyOf,
@@ -173,6 +174,9 @@ export const createRelationResolverFactory =
     const junction = extractJunctionColumns(relEntry);
     const groupCols = junction ? [junction.sourceCol] : joinPairs.map((pair) => pair.foreignCol);
     const groupKeys = junction ? [PARENT_KEY] : joinPairs.map((pair) => pair.foreignColPropName);
+    // The junction's schema key, which its own `scope` and soft delete are configured under: a
+    // link the junction's policies drop links nothing — see `junctionPolicy`.
+    const junctionName = junction ? junctionTableName(tables, relEntry) : undefined;
     // The relation's own `where`, which drizzle applies on the eager path.
     const ownCondition = relationOwnCondition(
       relEntry,
@@ -253,7 +257,7 @@ export const createRelationResolverFactory =
       // re-stringifying the loader key N times.
       const { orderByArg, limit, distinct, cursorEntries, cursorValues, columns, loaderKey } = getOrCreateRequestValue(
         context,
-        info?.fieldNodes?.[0],
+        info?.fieldNodes,
         `relation:${tableName}::${relationName}`,
         () => {
           // A relation field falls back to the *target* table's default ordering, since that is
@@ -357,6 +361,7 @@ export const createRelationResolverFactory =
             and(
               parentKeyCondition(groupCols, chunkKeys),
               ownCondition,
+              junction ? junctionPolicy(scope, junctionName, junction.table) : undefined,
               whereArg
                 ? extractFilters(
                     targetTable,
@@ -393,12 +398,13 @@ export const createRelationResolverFactory =
               return new Map();
             }
             // Through a junction, a key is kept for one parent and not necessarily another, so the
-            // batch is narrowed to (parent, row) pairs rather than to rows.
+            // batch is narrowed to (parent, row) pairs rather than to rows — one term per pair,
+            // nested as a balanced tree so a large batch stays within SQLite's expression depth.
             whereCondition = and(
               whereCondition,
               junction
-                ? or(
-                    ...keys.map((key) =>
+                ? balancedOr(
+                    keys.map((key) =>
                       and(
                         eq(junction.sourceCol, key[DISTINCT_PARENT]),
                         primaryKeyRestriction(targetTable, targetPkNames, [key]),

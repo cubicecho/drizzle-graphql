@@ -49,7 +49,15 @@ export const hardDeleteArg = {
  * re-key rows). Returns everything the resolver needs to decide whether to eager-load.
  */
 export interface PrepareMutationRelationColumnsParams {
+  /** The eager-load map: the relations the re-fetch attaches through `with:`. */
   relationMap: Record<string, Record<string, TableNamedRelations>>;
+  /**
+   * The build's relation-filter context. Its `relationMap` is every relation, including the ones
+   * `eagerLoadRelations` leaves to their own resolver, which still need their join column (and
+   * the primary key) in RETURNING; and a relation argument that filters or orders through a
+   * relation needs it to compile in the re-fetch. Required so no write path can leave it off.
+   */
+  filterCtx: RelationFilterBase | undefined;
   tables: Record<string, Table>;
   tableName: string;
   typeName: string;
@@ -71,11 +79,12 @@ export const prepareMutationRelationColumns = (
   hasRelations: boolean;
   withParams: Record<string, Partial<ProcessedTableSelectArgs>> | undefined;
 } => {
-  const { relationMap, tables, tableName, typeNameMapper, table, pkNames, parsedInfo, resolveName } = params;
+  const { relationMap, filterCtx, tables, tableName, typeNameMapper, table, pkNames, parsedInfo, resolveName } = params;
   const typeName = resolveObjectTypeName(tableName, typeNameMapper, resolveName);
   const withParams = relationMap[tableName]
     ? extractRelationsParams(relationMap, tables, tableName, parsedInfo, typeName, {
         typeNameMapper,
+        filterCtx,
         limits: params.limits,
         scope: params.scope,
         defaultOrderBy: params.defaultOrderBy,
@@ -87,6 +96,7 @@ export const prepareMutationRelationColumns = (
     tableName,
     relationMap,
     tables,
+    allRelations: filterCtx?.relationMap,
   });
   const columns = hasRelations ? withPrimaryKeyColumns(baseColumns, table, pkNames) : baseColumns;
   return { columns, hasRelations, withParams };

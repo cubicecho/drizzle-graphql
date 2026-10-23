@@ -2,12 +2,13 @@
 // resolver runs first, and the primary-key restriction it feeds into the real select.
 
 import type { Column, Table } from 'drizzle-orm';
-import { and, asc, eq, getColumns, inArray, or, type SQL, sql } from 'drizzle-orm';
+import { and, asc, eq, getColumns, inArray, type SQL, sql } from 'drizzle-orm';
 import { DISTINCT_RN } from './column-enums.ts';
 import { drizzleError } from './errors.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import { offsetOnlyLimit } from './limits.ts';
 import { orderByEntries, orderExpressions } from './order-by.ts';
+import { balancedOr } from './relations.ts';
 
 /**
  * Alias the parent key comes back under when the pass runs through a junction table. See
@@ -116,8 +117,9 @@ export const selectDistinctKeys = async (params: {
 
 /**
  * Condition matching exactly the rows identified by `keys` — an `IN (…)` for a single-column
- * primary key, an `OR` of per-row equality for a composite one. `table` may be the aliased
- * RQB proxy.
+ * primary key, an `OR` of per-row equality for a composite one — nested as a balanced tree, so
+ * thousands of keys stay within SQLite's expression-depth limit. `table` may be the aliased RQB
+ * proxy.
  */
 export const primaryKeyRestriction = (table: Table, pkNames: readonly string[], keys: Record<string, any>[]): SQL => {
   const cols = getColumns(table);
@@ -130,5 +132,5 @@ export const primaryKeyRestriction = (table: Table, pkNames: readonly string[], 
     );
   }
 
-  return or(...keys.map((key) => and(...pkNames.map((name) => eq(cols[name]!, key[name])))))!;
+  return balancedOr(keys.map((key) => and(...pkNames.map((name) => eq(cols[name]!, key[name])))))!;
 };
