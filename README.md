@@ -1361,6 +1361,9 @@ can count or summarise related rows without fetching them:
     and applies only to the related rows
 -   A parent with no related rows gets `count: 0` and `null` for every other aggregate
 -   To-one relations get no aggregate field — there is nothing to aggregate over
+-   A relation joined on several columns (`from: [a, b], to: [x, y]`) is grouped by all of
+    them, so each parent counts only the rows that match it on every column. A many-to-many
+    (`.through()`) relation whose junction has a composite key gets no aggregate field
 -   The field is skipped if its name would collide with a column or another relation
 -   Set `features: { relationAggregates: false }` (globally or per table) to leave these
     fields out
@@ -2447,7 +2450,9 @@ Generated schemas resolve nested relations without N+1 query explosions:
     (request-scoped, keyed on the GraphQL `context`), preventing N+1. Per-parent
     `limit` / `offset` on a to-many relation is applied across the whole batch using a
     `ROW_NUMBER() OVER (PARTITION BY …)` window function — still one query, not one per
-    parent.
+    parent. A relation joined on several columns (`from: [a, b], to: [x, y]`) is batched,
+    grouped and partitioned by all of them, matching the parents with
+    `(a = … AND b = …) OR …` instead of `IN (…)`.
 
     ```Typescript
     // entities.fieldResolvers is keyed by table name, then relation name

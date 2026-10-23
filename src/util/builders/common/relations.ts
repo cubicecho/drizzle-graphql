@@ -2,7 +2,7 @@
 // config, plus the factory signatures the dialect builders implement.
 
 import type { Relation, SQL, Table } from 'drizzle-orm';
-import { Column, getColumns, is, relationsFilterToSQL, sql } from 'drizzle-orm';
+import { and, Column, eq, getColumns, inArray, is, or, relationsFilterToSQL, sql } from 'drizzle-orm';
 import type { GraphQLFieldResolver, GraphQLObjectType } from 'graphql';
 import type { TableNamedRelations } from '../types.ts';
 
@@ -193,6 +193,11 @@ export const warnUnresolvedJoin = (
  * Returns the JS property name of the local column on the parent table and the
  * Column object for the foreign column on the target table, or undefined if the
  * relation internals are not accessible.
+ *
+ * Only the relation's *first* column pair is reported. A relation joined on several columns
+ * (`from: [a, b], to: [x, y]`) is not described fully by it, so anything that reads rows by
+ * this pair alone mixes up parents that share the first column. Read paths use
+ * {@link extractRelationJoinColumnPairs}, which returns every pair.
  */
 export const extractRelationJoinColumns = (
   relEntry: TableNamedRelations,
@@ -219,6 +224,70 @@ export const extractRelationJoinColumns = (
 
   return { localColPropName, foreignCol: targetCol, foreignColPropName };
 };
+
+/** One column pair a relation joins on: the parent's column and the target's it equals. */
+export interface RelationJoinColumnPair {
+  localColPropName: string;
+  localCol: Column;
+  foreignColPropName: string;
+  foreignCol: Column;
+}
+
+/**
+ * Every column pair the relation joins on, in declaration order — one for an ordinary relation,
+ * several for one declared `from: [a, b], to: [x, y]`. A row of the target belongs to a parent
+ * only when *all* pairs match, so a read path has to correlate on every one of them.
+ *
+ * `undefined` when the relation's columns cannot be matched to the two tables, or when its two
+ * sides list a different number of columns.
+ */
+export const extractRelationJoinColumnPairs = (
+  relEntry: TableNamedRelations,
+  parentTable: Table,
+  targetTable: Table,
+): RelationJoinColumnPair[] | undefined => {
+  const rel = (relEntry as any).relation ?? relEntry;
+  const sourceCols = relationColumns(rel, 'source');
+  const targetCols = relationColumns(rel, 'target');
+  if (!sourceCols?.length || sourceCols.length !== targetCols?.length) {
+    return undefined;
+  }
+
+  const parentEntries = Object.entries(getColumns(parentTable));
+  const targetEntries = Object.entries(getColumns(targetTable));
+  const pairs: RelationJoinColumnPair[] = [];
+  for (let i = 0; i < sourceCols.length; i++) {
+    const localCol = sourceCols[i]!;
+    const foreignCol = targetCols[i]!;
+    const localColPropName = parentEntries.find(([, c]) => c === localCol)?.[0];
+    const foreignColPropName = targetEntries.find(([, c]) => c === foreignCol)?.[0];
+    if (!localColPropName || !foreignColPropName) {
+      return undefined;
+    }
+    pairs.push({ localColPropName, localCol, foreignColPropName, foreignCol });
+  }
+  return pairs;
+};
+
+/**
+ * A string identifying one combination of join-column values, for grouping a batch's rows by
+ * parent. Values are compared by their string form, as a single-column key always has been.
+ */
+export const joinKeyOf = (values: readonly unknown[]): string =>
+  values.length === 1 ? String(values[0]) : JSON.stringify(values.map((value) => String(value)));
+
+/**
+ * The rows whose `cols` hold one of `keys`: `col IN (…)` for a single join column, and an `OR`
+ * of per-parent equalities for several — `(a = 1 AND b = 1) OR (a = 1 AND b = 2)` — which
+ * every dialect accepts, unlike a row-value `IN` list.
+ */
+export const parentKeyCondition = (cols: readonly Column[], keys: readonly (readonly unknown[])[]): SQL | undefined =>
+  cols.length === 1
+    ? inArray(
+        cols[0]!,
+        keys.map((key) => key[0]),
+      )
+    : or(...keys.map((key) => and(...cols.map((col, i) => eq(col, key[i])))));
 
 /**
  * The junction table and its two columns for a `.through()` (many-to-many) relation:
@@ -256,15 +325,16 @@ export const extractJunctionColumns = (
  *
  * A reversed filter (inherited from the relation on the other side) is written against the
  * parent table, so it is applied as "the row's parent key belongs to a parent that passes it".
- * `parentKeyCol` is the parent's join column and `groupCol` the column in the query that holds
- * the parent key for each row — the target's foreign key, or the junction's source column.
+ * `parentKeyCols` are the parent's join columns and `groupCols` the columns in the query that
+ * hold the parent key for each row — the target's foreign key, or the junction's source
+ * column — in the same order. A key of several columns is compared as a row value.
  */
 export const relationOwnCondition = (
   relEntry: TableNamedRelations,
   parentTable: Table,
   targetTable: Table,
-  parentKeyCol: Column,
-  groupCol: Column,
+  parentKeyCols: readonly Column[],
+  groupCols: readonly Column[],
 ): SQL | undefined => {
   const rel = (relEntry as any).relation ?? relEntry;
   const ownWhere = relationOwnWhere(rel);
@@ -275,7 +345,10 @@ export const relationOwnCondition = (
     return relationsFilterToSQL(targetTable, ownWhere as any);
   }
   const parentFilter = relationsFilterToSQL(parentTable, ownWhere as any);
-  return sql`${groupCol} in (select ${parentKeyCol} from ${parentTable} where ${parentFilter})`;
+  if (groupCols.length === 1) {
+    return sql`${groupCols[0]} in (select ${parentKeyCols[0]} from ${parentTable} where ${parentFilter})`;
+  }
+  return sql`(${sql.join([...groupCols], sql`, `)}) in (select ${sql.join([...parentKeyCols], sql`, `)} from ${parentTable} where ${parentFilter})`;
 };
 
 export type RelationResolverFactory = (params: {
