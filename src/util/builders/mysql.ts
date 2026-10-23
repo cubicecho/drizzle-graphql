@@ -1,5 +1,10 @@
 import { type Column, getColumns, is, SQL, Subquery, sql, Table } from 'drizzle-orm';
-import { type MySqlAsyncDatabase, MySqlTable, getTableConfig as mysqlTableConfig } from 'drizzle-orm/mysql-core';
+import {
+  type MySqlAsyncDatabase,
+  MySqlSelectBase,
+  MySqlTable,
+  getTableConfig as mysqlTableConfig,
+} from 'drizzle-orm/mysql-core';
 import {
   GraphQLBoolean,
   type GraphQLInputObjectType,
@@ -185,12 +190,18 @@ const generateUpsert = (
           // assignment. INSERT IGNORE would skip the duplicate too, but it also downgrades
           // every other error of the insert — a truncated value, a bad date, a foreign-key
           // violation — to a warning and writes or drops the row regardless.
+          //
+          // drizzle appends every `$onUpdate` column to that SET list, so each one is assigned
+          // to itself as well — a skipped duplicate must leave the row exactly as it was.
           const columns = getColumns(table) as Record<string, Column>;
           const keyName = pkNames[0] ?? Object.keys(columns)[0]!;
+          const unchanged = Object.entries(columns)
+            .filter(([name, column]) => name === keyName || (column as any).onUpdateFn !== undefined)
+            .map(([name, column]) => [name, sql`${sql.identifier(column.name)}`]);
           await target
             .insert(table)
             .values(values)
-            .onDuplicateKeyUpdate({ set: { [keyName]: sql`${sql.identifier(columns[keyName]!.name)}` } });
+            .onDuplicateKeyUpdate({ set: Object.fromEntries(unchanged) });
         } else {
           await target.insert(table).values(values).onDuplicateKeyUpdate({ set: plan.set });
         }
@@ -480,6 +491,12 @@ const readsTable = (chunk: unknown, table: Table): boolean => {
   }
   if (is(chunk, Subquery)) {
     return readsTable((chunk as any)._.sql, table);
+  }
+  // A select *builder* used as an operand — `inArray(t.id, db.select(…).from(t))`, drizzle's
+  // own way to write `IN (subquery)` — is embedded as itself and compiled only when the
+  // statement is; its SQL is what names the tables it reads.
+  if (is(chunk, MySqlSelectBase)) {
+    return readsTable(chunk.getSQL(), table);
   }
   return false;
 };
