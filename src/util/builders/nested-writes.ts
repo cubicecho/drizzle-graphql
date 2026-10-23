@@ -464,6 +464,51 @@ export const gateNestedWritePlans = (
   return omitted;
 };
 
+/**
+ * Takes out every relation whose foreign key is a `contextValues` column of the table storing
+ * it — the parent's own column for a parent-side relation, the target's for a child-side one,
+ * either junction column for a many-to-many.
+ *
+ * Every operation on such a relation writes that column: `connect`, `disconnect` and `set`
+ * by definition, and a child-side `create` too, since it fills the key in from the parent row
+ * rather than from context. That column is the server's to set — an insert stamps it and an
+ * update never touches it — so writing it from a nested input would let a client pick, or
+ * change, the owner the server assigns. Whole relations are dropped, not single inputs: no
+ * operation on them is left that does not write the key.
+ *
+ * Returns one line per relation taken out, for the build note.
+ */
+export const dropContextValueRelations = (
+  plans: NestedWritePlans,
+  contextValuesOf: ContextValuesFor | undefined,
+): string[] => {
+  const omitted: string[] = [];
+  if (!contextValuesOf) {
+    return omitted;
+  }
+  for (const [tableName, tablePlans] of Object.entries(plans)) {
+    for (const [relationName, plan] of Object.entries(tablePlans)) {
+      const keys: [string | undefined, string][] = plan.through
+        ? [
+            [plan.through.tableName, plan.through.sourceColPropName],
+            [plan.through.tableName, plan.through.targetColPropName],
+          ]
+        : plan.fkSide === 'parent'
+          ? [[tableName, plan.localColPropName]]
+          : [[plan.targetTableName, plan.foreignColPropName]];
+      const stamped = keys.find(([owner, column]) => owner !== undefined && contextValuesOf(owner)?.[column]);
+      if (stamped) {
+        delete tablePlans[relationName];
+        omitted.push(`${tableName}.${relationName} (${stamped[0]}.${stamped[1]} is a contextValues column)`);
+      }
+    }
+    if (!Object.keys(tablePlans).length) {
+      delete plans[tableName];
+    }
+  }
+  return omitted;
+};
+
 // ── input types ──────────────────────────────────────────────────────────────
 
 /**
@@ -987,6 +1032,7 @@ export const createNestedWriteRuntime = (params: {
     op: Record<string, any>,
     scope: ScopeResolver | undefined,
     steps: HookSteps,
+    context: any,
   ) => {
     const through = plan.through!;
 
@@ -1004,7 +1050,13 @@ export const createNestedWriteRuntime = (params: {
         for (const targetKey of await selectedTargetKeys(executor, plan, filter, operation, scope)) {
           if (!existing.has(targetKey)) {
             existing.add(targetKey);
-            rows.push({ [through.sourceColPropName]: key, [through.targetColPropName]: targetKey });
+            rows.push(
+              applyContextValues(
+                { [through.sourceColPropName]: key, [through.targetColPropName]: targetKey },
+                through.tableName ? contextValues?.(through.tableName) : undefined,
+                context,
+              ),
+            );
           }
         }
       }
@@ -1157,6 +1209,12 @@ export const createNestedWriteRuntime = (params: {
         }
       }
 
+      // A context-derived column is the server's to set, never a nested input's. No relation
+      // whose key is one is planned (see dropContextValueRelations); this keeps the patch from
+      // ever overriding the stamped value, or reassigning it on an update, regardless.
+      for (const columnName of Object.keys(contextValues?.(tableName) ?? {})) {
+        delete patch[columnName];
+      }
       return patch;
     },
 
@@ -1193,7 +1251,7 @@ export const createNestedWriteRuntime = (params: {
           }
 
           if (plan.through) {
-            await applyThroughOps(executor, plan, key, op, scope, steps);
+            await applyThroughOps(executor, plan, key, op, scope, steps, context);
             continue;
           }
 
@@ -1253,14 +1311,15 @@ export const createNestedWriteRuntime = (params: {
           }
 
           if (op['create'] !== undefined) {
-            const rows = asArray(op['create']).map((row) => ({
-              ...applyContextValues(
-                remapFromGraphQLSingleInput({ ...row }, plan.targetTable),
+            // The context values go on last: a relation whose key is one of them is never
+            // planned (see dropContextValueRelations), and the server's value wins regardless.
+            const rows = asArray(op['create']).map((row) =>
+              applyContextValues(
+                { ...remapFromGraphQLSingleInput({ ...row }, plan.targetTable), [plan.foreignColPropName]: key },
                 contextValues?.(plan.targetTableName),
                 context,
               ),
-              [plan.foreignColPropName]: key,
-            }));
+            );
             if (rows.length) {
               await steps.run(executor.insert(plan.targetTable).values(rows), 'create', 'insert');
             }

@@ -503,3 +503,23 @@ describe.sequential("SQLite nested inputs follow the target table's features", (
     }
   });
 });
+
+describe.sequential('SQLite nested writes under policies', () => {
+  it('leaves out a relation whose foreign key is a contextValues column', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const stamped = buildSchema(db, {
+        features: { nestedWrites: true },
+        contextValues: { Posts: { authorId: (ctx: any) => ctx.userId } },
+      }).schema;
+
+      expect(fieldsOf(stamped, 'UpdatePostsInput')!['author']).toBeUndefined();
+      expect(fieldsOf(stamped, 'CreateAuthorsInput')!['posts']).toBeUndefined();
+      expect(fieldsOf(stamped, 'UpdatePostsInput')!['tags']).toBeDefined();
+      const messages = warn.mock.calls.map((args) => String(args[0]));
+      expect(messages.some((m) => m.includes('contextValues') && m.includes('Posts.author'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
