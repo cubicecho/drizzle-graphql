@@ -2,9 +2,12 @@ import { is, Table } from 'drizzle-orm';
 import { MySqlAsyncDatabase, getTableConfig as mysqlTableConfig } from 'drizzle-orm/mysql-core';
 import { PgAsyncDatabase, getTableConfig as pgTableConfig } from 'drizzle-orm/pg-core';
 import { SQLiteAsyncDatabase, getTableConfig as sqliteTableConfig } from 'drizzle-orm/sqlite-core';
-import type { GraphQLResolveInfo } from 'graphql';
+import { type GraphQLResolveInfo, getNamedType } from 'graphql';
 import type { AnyDrizzleDB } from '../types.ts';
+import { type BuildRuntime, runtimeForDb, runtimeForType } from './builders/common/build-registry.ts';
+import type { DeletedMode, ScopeResolver } from './builders/common/policies.ts';
 import {
+  applyLimitPolicy,
   attachTargetPrimaryKeys,
   buildNamedRelations,
   type DerivedTypeNameMapper,
@@ -17,6 +20,7 @@ import {
   runRelationalSelect,
   type TypeNameMapper,
   type TypeNameResolver,
+  withDefaultOrderBy,
 } from './builders/common.ts';
 import type { TableNamedRelations } from './builders/types.ts';
 import { parseResolveInfo, type ResolveTree } from './parse-resolve-info.ts';
@@ -136,6 +140,11 @@ export type SelectionOptions = {
   derivedTypeNameMapper?: DerivedTypeNameMapper;
   typeNamePrefix?: string;
   typeNameSuffix?: string;
+  /**
+   * The resolver's GraphQL context. The build's `scope` hooks are called with it, so a build
+   * that configures `scope` requires it — the helpers throw rather than read unscoped.
+   */
+  context?: any;
 };
 
 /** The build's naming rule, reassembled from the three options a caller passes back. */
@@ -145,6 +154,55 @@ const namingRuleOf = (options: SelectionOptions): TypeNameResolver =>
     typeNamePrefix: options.typeNamePrefix,
     typeNameSuffix: options.typeNameSuffix,
   });
+
+/**
+ * The build whose policies the read applies. Looked up through the generated types the
+ * resolve info reaches — the field's return type, the root table's type in the executing
+ * schema, the parent type — so a resolver over a generated type finds its own build. Without
+ * resolve info (a parsed tree was passed), the instance's only build is used.
+ */
+const runtimeFor = (
+  info: GraphQLResolveInfo | ResolveTree,
+  db: AnyDrizzleDB<any>,
+  typeName: string,
+  helper: string,
+): BuildRuntime | undefined => {
+  if (!('fieldsByTypeName' in info)) {
+    const candidates = [
+      info.returnType ? getNamedType(info.returnType) : undefined,
+      info.schema?.getType(typeName),
+      info.parentType,
+    ];
+    for (const candidate of candidates) {
+      const runtime = runtimeForType(candidate);
+      if (runtime && runtime.db === db) {
+        return runtime;
+      }
+    }
+  }
+  return runtimeForDb(db as object, helper);
+};
+
+/**
+ * The request's row policies under `runtime`, bound to the context the caller passed. A build
+ * with `scope` hooks cannot be read without that context: the hooks would be called with
+ * nothing, and running the read unscoped is the leak the option exists to prevent.
+ */
+const scopeFor = (
+  runtime: BuildRuntime | undefined,
+  options: SelectionOptions,
+  helper: string,
+): ScopeResolver | undefined => {
+  if (!runtime?.policies?.scope) {
+    return undefined;
+  }
+  if (runtime.scoped && !('context' in options)) {
+    throw new Error(
+      `Drizzle-GraphQL Error: the schema this selection belongs to configures \`scope\`, so ${helper} needs the request context to apply it. Pass the resolver's context as the \`context\` option.`,
+    );
+  }
+  return runtime.policies.scope(options.context);
+};
 
 /**
  * Reads the parsed selection tree out of a resolver's `info`, resolving fragments and
@@ -176,6 +234,10 @@ const parseInfo = (info: GraphQLResolveInfo | ResolveTree): ResolveTree | undefi
  * const row = await tx.query.Users.findFirst({ where: { id: { eq } }, with: withTree });
  * ```
  *
+ * Every nested entry carries the build's row policies — `scope`, `softDelete`, `limits` and
+ * `defaults.orderBy` — exactly as the generated `with:` clause does. The build is found
+ * through the resolve info; pass `context` when it configures `scope`.
+ *
  * Returns `undefined` when the selection asks for no relations, which is the value the
  * query builder wants for "no `with` clause".
  */
@@ -193,15 +255,18 @@ export const selectionToWith = (
     return undefined;
   }
 
+  const typeName = resolveObjectTypeName(table, typeNameMapper, resolveName);
+  const runtime = runtimeFor(info, db, typeName, 'selectionToWith');
   const parsed = parseInfo(info);
-  const params = extractRelationsParams(
-    relationMap,
-    tables,
-    table,
-    parsed,
-    resolveObjectTypeName(table, typeNameMapper, resolveName),
-    { typeNameMapper, filterCtx, resolveName },
-  );
+  const params = extractRelationsParams(relationMap, tables, table, parsed, typeName, {
+    typeNameMapper,
+    filterCtx: runtime?.filterCtx ?? filterCtx,
+    resolveName,
+    // The nested relations get the same policies the generated `with:` clause applies.
+    scope: scopeFor(runtime, options, 'selectionToWith'),
+    limits: runtime?.limits,
+    defaultOrderBy: runtime?.policies?.defaultOrderBy,
+  });
   // A selection with no relations in it gets no `with` clause at all, rather than an empty
   // object the query builder would have to be asked to ignore.
   return params && Object.keys(params).length ? params : undefined;
@@ -224,6 +289,11 @@ export type ResolveSelectionOptions = SelectionOptions & {
   offset?: number;
   /** The generated `after` cursor argument, for keyset pagination. */
   after?: string;
+  /**
+   * The generated `deleted` argument, for a soft-deleting table. Defaults to `EXCLUDE`, as the
+   * generated field does.
+   */
+  deleted?: DeletedMode;
 };
 
 /**
@@ -234,11 +304,13 @@ export type ResolveSelectionOptions = SelectionOptions & {
  * This is what an override usually wants after it has done its own work:
  *
  * ```ts
- * const rows = await resolveSelection(info, { db, table: 'Users', where, executor: tx });
+ * const rows = await resolveSelection(info, { db, table: 'Users', context, where, executor: tx });
  * ```
  *
  * Relation arguments and aggregate fields keep behaving as they do in the generated schema,
- * because it is the generated schema's own code path.
+ * because it is the generated schema's own code path. So do the build's row policies: the
+ * root table and every nested relation are scoped and soft-delete-filtered, and the limit
+ * policy and default ordering apply. Pass `context` when the build configures `scope`.
  */
 export const resolveSelection = async (
   info: GraphQLResolveInfo | ResolveTree,
@@ -255,6 +327,7 @@ export const resolveSelection = async (
     limit,
     offset,
     after,
+    deleted,
   } = options;
   const resolveName = namingRuleOf(options);
   const { tables, relationMap, filterCtx, primaryKeyOf } = contextFor(db);
@@ -276,24 +349,37 @@ export const resolveSelection = async (
     );
   }
 
+  // The build's policies, applied the way the generated select field applies them: the scope
+  // and soft delete on the root table and every nested relation, the limit policy and the
+  // default ordering on the root list and on every relation.
+  const typeName = resolveObjectTypeName(tableName, typeNameMapper, resolveName);
+  const runtime = runtimeFor(info, db, typeName, 'resolveSelection');
+  const scope = scopeFor(runtime, options, 'resolveSelection');
+  const defaultOrderBy = runtime?.policies?.defaultOrderBy;
+
   return runRelationalSelect({
     queryBase,
     tables,
     tableName,
     table,
     relationMap,
-    typeName: resolveObjectTypeName(tableName, typeNameMapper, resolveName),
+    typeName,
     typeNameMapper,
     resolveName,
     parsedInfo,
     single,
     where,
-    orderBy,
-    limit,
+    orderBy: withDefaultOrderBy({ orderBy }, tableName, defaultOrderBy).orderBy,
+    limit: single ? limit : applyLimitPolicy(limit, runtime?.limits?.(tableName)),
     offset,
     after,
-    filterCtx,
+    filterCtx: runtime?.filterCtx ?? filterCtx,
     pkNames: primaryKeyOf(tableName),
     db: source,
+    scope,
+    deleted,
+    limits: runtime?.limits,
+    defaultOrderBy,
+    nullOrdering: runtime?.nullOrdering,
   });
 };

@@ -2532,12 +2532,13 @@ import { resolveSelection, selectionToWith } from '@vantreeseba/drizzle-graphql'
 const rows = await resolveSelection(info, {
     db,
     table: 'Users',
+    context, // the resolver's context — required when the build configures `scope`
     where: { id: { eq: userId } },
     executor: tx, // defaults to `db`; pass a transaction to see its own writes
 })
 
 // Or just the `with:` tree, if you are building the query yourself.
-const withTree = selectionToWith(info, { db, table: 'Users' })
+const withTree = selectionToWith(info, { db, table: 'Users', context })
 const row = await tx.query.Users.findFirst({ where: { id: userId }, with: withTree })
 ```
 
@@ -2548,8 +2549,27 @@ relation they select, compiles each relation's `where` / `orderBy` / `limit` / `
 into its nested entry, and leaves `<relation>Aggregate` selections out — they are not
 `with:` entries. It returns `undefined` when the selection asks for no relations.
 
-`resolveSelection` additionally accepts `single`, `orderBy`, `limit`, `offset` and `after`,
-and returns the rows already remapped to their GraphQL transport forms.
+`resolveSelection` additionally accepts `single`, `orderBy`, `limit`, `offset`, `after` and
+`deleted`, and returns the rows already remapped to their GraphQL transport forms.
+
+Both apply the build's row policies the way the generated fields do, so an override is not a
+way around them. `resolveSelection` scopes and soft-delete-filters the root table, applies the
+table's `limits` and `defaults.orderBy` to the root list, and applies all four to every nested
+relation. `selectionToWith` applies them to the nested relations in the tree it returns. The
+root query you run with it is yours to scope.
+
+They find the build through the resolve info: the field's return type, the root table's type in
+the executing schema, or the parent type, whichever the build generated. That works for a schema
+assembled from `entities.types`, and for one a tool such as `mapSchema` rebuilt, because the
+build is found through each type's `extensions.drizzle`. Two things follow:
+
+-   **Pass `context`.** Scope hooks take the request context, which resolve info does not
+    carry. When the build configures `scope`, a call without `context` throws instead of
+    reading unscoped. Soft delete, limits and default ordering need no context.
+-   **Pass `info`, not a parsed tree, when one database has several builds.** A parsed
+    selection tree carries no type to find the build by. Over a database with exactly one
+    build, that build's policies apply. With several builds, the call throws if any of them
+    has policies, since picking one could apply the wrong policies.
 
 Both take the naming options the build used — `typeNameMapper`, `derivedTypeNameMapper`,
 `typeNamePrefix` and `typeNameSuffix`. The translation matches selections against the
