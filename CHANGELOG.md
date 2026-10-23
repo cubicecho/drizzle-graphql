@@ -1,3 +1,14 @@
+## [15.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v15.0.0...v15.1.0) (2026-10-23)
+
+### Features
+
+* pass the drizzle table to describeTable ([1fa68de](https://github.com/cubicecho/drizzle-graphql/commit/1fa68de93e1b0d2b62671c2101bcee2b2640b4de))
+
+### Bug Fixes
+
+* count many-to-many relation aggregates through the junction ([40c8ce3](https://github.com/cubicecho/drizzle-graphql/commit/40c8ce3a5b68a724f338d97df90c3dccbfc06b85))
+* lazy relation fields honour junctions and a relation's own where ([fb43641](https://github.com/cubicecho/drizzle-graphql/commit/fb43641eb47b612afca68f0a10958ab8459cccf0))
+
 ## [15.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v14.0.0...v15.0.0) (2026-10-19)
 
 ### ⚠ BREAKING CHANGES
