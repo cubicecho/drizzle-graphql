@@ -1,3 +1,11 @@
+## [15.1.1](https://github.com/cubicecho/drizzle-graphql/compare/v15.1.0...v15.1.1) (2026-10-23)
+
+### Bug Fixes
+
+* bind false as a value for eq/ne and other value filter operators ([d6dcb49](https://github.com/cubicecho/drizzle-graphql/commit/d6dcb49fcf541bacdd2751fa7590571d80badb66))
+* keep sub-millisecond precision in cursors over date-mode timestamps ([e0fe01c](https://github.com/cubicecho/drizzle-graphql/commit/e0fe01c74ad32df316f3ba53d736c24565fb9394))
+* reject a negative limit or offset ([cb4dc21](https://github.com/cubicecho/drizzle-graphql/commit/cb4dc2100bf2d4180a3f342ff9e837205a98ab36))
+
 ## [15.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v15.0.0...v15.1.0) (2026-10-23)
 
 ### Features
