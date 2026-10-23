@@ -811,7 +811,8 @@ type Posts {
 
 -   One type, one filter input (`StatusEnumFilter`), so a client variable typed `StatusEnum!`
     is passable to either table
--   The declared name is PascalCased and suffixed: `user_status` → `UserStatusEnum`
+-   The declared name is PascalCased and suffixed: `user_status` → `UserStatusEnum`. A name
+    that would start with a digit gets a leading underscore: `2fa_mode` → `_2faModeEnum`
 -   A column that lists its values inline (`text('tier', { enum: ['free', 'paid'] })`) has no
     declared name to share, so it keeps a per-column type — `UsersTierEnum`
 -   Two different enums that would land on the same GraphQL name (`status` in two Postgres
@@ -849,8 +850,10 @@ lists is the build-time error above.
 ### Enum value names
 
 A value's GraphQL name is the stored value itself, or `Option<index>` when the stored value
-is not a usable GraphQL name. `enumValueNameMapper` renames the values — most often to follow
-GraphQL's SCREAMING_CASE convention while the database keeps its lowercase values:
+is not a usable GraphQL name — one with a character outside `[_a-zA-Z0-9]` (`hot-fix`), one
+that starts with a digit (`2xl`), or `true` / `false` / `null`. `enumValueNameMapper` renames
+the values — most often to follow GraphQL's SCREAMING_CASE convention while the database keeps
+its lowercase values:
 
 ```Typescript
 export const Runs = pgTable('runs', {

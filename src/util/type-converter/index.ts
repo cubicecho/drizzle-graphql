@@ -45,8 +45,6 @@ import type {
   ScalarOverridesConfig,
 } from './types.ts';
 
-const allowedNameChars = /^[a-zA-Z0-9_]+$/;
-
 /** drizzle's `number` constraints whose values always fit a GraphQL `Int` (32-bit signed). */
 const smallIntegerConstraints = new Set<string>([
   'int8',
@@ -75,13 +73,19 @@ const declaredEnum = (column: Column): { enumName: string; schema: string | unde
     : undefined;
 };
 
-/** `user_status` / `user-status` / `user status` → `UserStatus`; an already-PascalCase name is left alone. */
-const pascalize = (input: string): string =>
-  input
+/**
+ * `user_status` / `user-status` / `user status` → `UserStatus`; an already-PascalCase name is left
+ * alone. A GraphQL name cannot start with a digit, so a name that would (`2fa_mode`) is prefixed
+ * with an underscore: `_2faMode`.
+ */
+const pascalize = (input: string): string => {
+  const pascal = input
     .split(/[^a-zA-Z0-9]+/)
     .filter(Boolean)
     .map((part) => capitalize(part))
     .join('');
+  return /^[0-9]/.test(pascal) ? `_${pascal}` : pascal;
+};
 
 /**
  * Identity of the values a GraphQL enum was built from, so a name claimed twice can be told
@@ -176,7 +180,7 @@ const generateEnumCached = (column: Column, columnName: string, tableName: strin
       typeName: name,
     });
     if (mapped === undefined) {
-      return allowedNameChars.test(value) ? value : `Option${index}`;
+      return validEnumValueName(value) ? value : `Option${index}`;
     }
     if (!validEnumValueName(mapped)) {
       throw new Error(

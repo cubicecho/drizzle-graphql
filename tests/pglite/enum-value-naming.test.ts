@@ -213,3 +213,38 @@ describe.sequential('enum value naming round-trip', () => {
     expect(result.errors?.length).toBeGreaterThan(0);
   });
 });
+
+describe.sequential('enum values and names GraphQL does not allow as written', () => {
+  const modeEnum = pgEnum('2fa_mode', ['2xl', 'true', 'false', 'null', 'set']);
+  const Prefs = pgTable('prefs', {
+    id: text('id').primaryKey(),
+    mode: modeEnum('mode'),
+    flag: text('flag', { enum: ['true', 'false'] }),
+  });
+
+  let prefsSchema: GraphQLSchema;
+  const run = (source: string) => graphql({ schema: prefsSchema, source, contextValue: {} });
+
+  beforeAll(async () => {
+    const prefsDb = (drizzle as any)({ client: pglite, relations: buildRelations({ Prefs }, {}) });
+    await prefsDb.execute(sql`CREATE TYPE "2fa_mode" AS ENUM ('2xl', 'true', 'false', 'null', 'set');`);
+    await prefsDb.execute(sql`CREATE TABLE "prefs" ("id" text PRIMARY KEY, "mode" "2fa_mode", "flag" text);`);
+    prefsSchema = buildSchema(prefsDb).schema;
+  });
+
+  it('names a value that starts with a digit or is true / false / null Option<index>', () => {
+    expect(valueNames(prefsSchema, '_2faModeEnum')).toEqual(['Option0', 'Option1', 'Option2', 'Option3', 'set']);
+    expect(valueNames(prefsSchema, 'PrefsFlagEnum')).toEqual(['Option0', 'Option1']);
+  });
+
+  it('round-trips those values under their Option names', async () => {
+    const created = await run(
+      `mutation { createPrefsSingle(values: { id: "a", mode: Option0, flag: Option1 }) { mode flag } }`,
+    );
+    expect(created.errors).toBeUndefined();
+    expect(created.data?.['createPrefsSingle']).toEqual({ mode: 'Option0', flag: 'Option1' });
+
+    const stored = await run(`{ prefs(where: { mode: { eq: Option0 } }) { id } }`);
+    expect(stored.data?.['prefs']).toEqual([{ id: 'a' }]);
+  });
+});
