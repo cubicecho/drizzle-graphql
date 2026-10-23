@@ -5611,3 +5611,57 @@ describe.sequential('timestamp and datetime columns', () => {
     expect((await run('{ stamps(where: { id: { eq: 3 } }) { id } }')).data?.['stamps']).toEqual([]);
   });
 });
+
+describe.sequential('cursor over microsecond datetime columns', () => {
+  // A `datetime(6)` / `timestamp(6)` in mode 'date' reads into a JS Date, which keeps only
+  // milliseconds. The cursor has to carry the full value, or `after` resumes at the boundary
+  // row itself and paging never advances.
+  const Ticks = mysqlTable('ticks', {
+    id: int('id').primaryKey(),
+    dt: datetime('dt', { fsp: 6 }).notNull(),
+    ts: timestamp('ts', { fsp: 6 }).notNull(),
+  });
+  let ticksSchema: GraphQLSchema;
+
+  beforeAll(async () => {
+    await ctx.client.query('DROP TABLE IF EXISTS ticks');
+    await ctx.client.query(
+      'CREATE TABLE ticks (id int PRIMARY KEY, dt datetime(6) NOT NULL, ts timestamp(6) NOT NULL)',
+    );
+    // Ids run against the time order, so the primary-key tiebreak can't stand in for the lost
+    // microseconds.
+    await ctx.client.query(`INSERT INTO ticks VALUES
+      (4, '2024-01-01 00:00:00.123100', '2024-01-01 00:00:00.123100'),
+      (3, '2024-01-01 00:00:00.123200', '2024-01-01 00:00:00.123200'),
+      (2, '2024-01-01 00:00:00.123300', '2024-01-01 00:00:00.123300'),
+      (1, '2024-01-01 00:00:00.124000', '2024-01-01 00:00:00.124000')`);
+    const db = drizzle({ client: ctx.client, relations: buildRelations({ Ticks }, {}) });
+    ticksSchema = buildSchema(db).schema;
+  });
+
+  afterAll(async () => {
+    await ctx.client.query('DROP TABLE IF EXISTS ticks');
+  });
+
+  for (const column of ['dt', 'ts']) {
+    it(`pages ${column} once per row`, async () => {
+      const seen: number[] = [];
+      let after: string | null = null;
+      for (let i = 0; i < 6; i++) {
+        const res: any = await graphql({
+          schema: ticksSchema,
+          contextValue: {},
+          source: `{ ticks(orderBy: { ${column}: { direction: asc, priority: 1 } }, limit: 1${after ? `, after: "${after}"` : ''}) { id cursor } }`,
+        });
+        expect(res.errors).toBeUndefined();
+        const rows = res.data.ticks;
+        if (!rows.length) {
+          break;
+        }
+        seen.push(rows[0].id);
+        after = rows[0].cursor;
+      }
+      expect(seen).toEqual([4, 3, 2, 1]);
+    });
+  }
+});

@@ -8,7 +8,7 @@ import type { ProcessedTableSelectArgs, TableNamedRelations, TableSelectArgs } f
 import { isCursorFieldSelected } from './cursor.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
-import { applyLimitPolicy, withDefaultOrderBy } from './limits.ts';
+import { applyLimitPolicy, assertPagingNotNegative, withDefaultOrderBy } from './limits.ts';
 import type { TypeNameMapper } from './naming.ts';
 import { resolveObjectTypeName } from './naming.ts';
 import { extractOrderBy } from './order-by.ts';
@@ -138,6 +138,7 @@ export const extractRelationsParams = (
       : withDefaultOrderBy(field.args ?? {}, targetTableName, defaultOrderBy);
 
     const offset = relationArgs?.offset ?? undefined;
+    assertPagingNotNegative({ offset }, { table: targetTableName, operation: 'relation', relation: relName });
     // The eager path reads its arguments off the AST rather than through the relation field's
     // resolver, so the policy has to be applied here too — otherwise an eagerly loaded
     // relation would be the one way around it. A to-one relation takes no `limit` and is a

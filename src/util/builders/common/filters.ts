@@ -316,6 +316,8 @@ const arrayMembershipOps: Record<string, (...args: any[]) => SQL> = {
   hasEvery: arrayContains,
 };
 const nullableOps: Record<string, (...args: any[]) => SQL> = { isNull, isNotNull };
+/** Operators whose operand is an on/off flag rather than a value: `false` adds no condition. */
+const FLAG_OPERATORS: ReadonlySet<string> = new Set(['isNull', 'isNotNull', 'isEmpty']);
 
 export const extractFiltersColumn = <TColumn extends Column>(
   column: TColumn,
@@ -335,7 +337,13 @@ export const extractFiltersColumn = <TColumn extends Column>(
 
   const variants = [] as SQL[];
   for (const [operatorName, operatorValue] of entries) {
-    if (operatorValue === null || operatorValue === false) {
+    // A null operand is an absent operand. `false` means "no restriction" only for the flag
+    // operators (`isNull: false` and friends); every other operator binds it as a value, so
+    // `eq: false` matches the false rows rather than dropping out and matching all of them.
+    if (operatorValue === null || operatorValue === undefined) {
+      continue;
+    }
+    if (operatorValue === false && FLAG_OPERATORS.has(operatorName)) {
       continue;
     }
 

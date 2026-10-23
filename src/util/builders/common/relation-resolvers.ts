@@ -16,6 +16,7 @@ import {
   buildCursorCondition,
   cursorOrderExprs,
   cursorOrderingEntries,
+  cursorPreciseSelection,
   decodeCursor,
   orderByHasRelationEntry,
   selectsCursorField,
@@ -25,7 +26,7 @@ import { type DrizzleErrorContext, drizzleError, toGraphQLError, withErrorContex
 import { resolveExecutor } from './executor.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { LimitPolicyFor } from './limits.ts';
-import { applyLimitPolicy, withDefaultOrderBy } from './limits.ts';
+import { applyLimitPolicy, assertPagingNotNegative, withDefaultOrderBy } from './limits.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { TablePolicies } from './policies.ts';
 import { relationDeletedDefault, resolveScope, withScope } from './policies.ts';
@@ -55,7 +56,7 @@ const batchedPaginatedRelationQuery = async (
   limit: number | null,
   offset: number | null,
   pkNames: readonly string[],
-  columns: Record<string, Column> | undefined,
+  columns: Record<string, Column | SQL.Aliased> | undefined,
   orderCtx?: RelationFilterContext,
   whereArgs?: Record<string, any>,
   junction?: RelationJunction,
@@ -213,7 +214,7 @@ export const createRelationResolverFactory =
           columns[columnName] = column;
         }
       }
-      return columns;
+      return cursorEntries ? { ...columns, ...cursorPreciseSelection(targetTable, cursorEntries) } : columns;
     };
 
     const resolve = async (parent: any, args: any, context: any, info: any) => {
@@ -244,6 +245,7 @@ export const createRelationResolverFactory =
             ? (args as any)?.orderBy
             : withDefaultOrderBy(args ?? {}, targetTableName, policies?.defaultOrderBy).orderBy;
           const limit = applyLimitPolicy(requestedLimit, limitPolicy, errorCtx);
+          assertPagingNotNegative({ offset }, errorCtx);
           const distinct = ((args ?? {}) as any).distinct?.length ? ((args ?? {}) as any).distinct : undefined;
 
           // ── keyset (cursor) pagination ──

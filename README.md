@@ -1042,6 +1042,11 @@ The pattern operators are `like` / `notLike` / `ilike` / `notIlike`, the safe
 `startsWith` / `endsWith` / `contains` and their `i`-prefixed forms, plus the `insensitive`
 flag that modifies them.
 
+An operand of `null` leaves its operator out, as though it had not been sent. `false` is an
+ordinary value: `active: { eq: false }` matches the rows that are false, `ne: false` the rows
+that are true, and `has: false` the arrays holding a `false`. Only the flag operators —
+`isNull`, `isNotNull` and `isEmpty` — read `false` as "add no condition".
+
 The omissions are the cases where the operator cannot ask anything a caller means:
 
 -   **Pattern matching a timestamp, a boolean or an enum member** compares whatever the value
@@ -1479,7 +1484,12 @@ field, and passing it back as `after` resumes strictly after that row.
     in `asc`), MySQL and SQLite smallest (first in `asc`). The predicate matches either way,
     so rows with `NULL` in an ordered column are paged through, not skipped, and `nulls` is
     part of the ordering a cursor is tied to
--   Dates and bigints round-trip losslessly through the cursor
+-   Dates and bigints round-trip losslessly through the cursor, at the column's own precision:
+    a PostgreSQL `timestamp` / `timestamptz` (microseconds unless declared `precision: 3` or
+    less) or a MySQL `datetime` / `timestamp` with `fsp` above 3 holds more than the
+    millisecond JS `Date` that `mode: 'date'` reads it into, so the cursor carries the
+    database's own text of the value instead, and rows a microsecond apart are still distinct
+    pages
 -   A cursor is only valid under the ordering it was issued for — reusing it with a
     different `orderBy` (or a malformed/corrupted cursor) returns a `GraphQLError`
 -   `after` cannot be combined with `distinct`, with `matchFilterOrder`, or with an `orderBy`
@@ -1891,6 +1901,10 @@ Two details worth stating plainly:
 -   **A rejection is the default because truncation lies.** Silently cutting a page down to
     `maxLimit` tells a paginating client it has reached the end when it has not. `clampToMax:
     true` opts into that when you would rather never fail a query.
+-   **A negative `limit` or `offset` is always rejected** with `DRIZZLE_INVALID_INPUT_VALUE`,
+    whether or not `limits` is configured — on root lists, single queries, relation fields and
+    `resolveSelection`. SQLite reads `LIMIT -1` as "no limit", so a negative value would
+    otherwise walk straight past `maxLimit`; `0` stays valid and returns no rows.
 
 The policy applies to root list queries and to to-many relation fields, on both the eager and
 the lazy relation paths. A relation takes the policy of the table it *reads*, not its parent's:
@@ -2114,7 +2128,8 @@ to match on prose:
     `DrizzleErrorContext`.
 
 A value the request could not supply is `DRIZZLE_INVALID_INPUT_VALUE` — a date that does not
-parse, a `BigInt` argument that is not an integer, a malformed JSON column value — and a write
+parse, a `BigInt` argument that is not an integer, a malformed JSON column value, a negative
+`limit` or `offset` — and a write
 naming something that is not a column of its table is `DRIZZLE_UNKNOWN_COLUMN`. The mirror
 image, a stored value the scalar transporting it cannot represent, is
 `DRIZZLE_UNREPRESENTABLE_VALUE`; it says the data is out of range, not that the request was

@@ -12,6 +12,7 @@ import {
   buildCursorCondition,
   cursorOrderExprs,
   cursorOrderingEntries,
+  cursorPreciseExtras,
   decodeCursor,
   isCursorFieldSelected,
   orderByCursorObstacle,
@@ -20,6 +21,7 @@ import { primaryKeyRestriction, selectDistinctKeys } from './distinct.ts';
 import { drizzleError } from './errors.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
+import { assertPagingNotNegative } from './limits.ts';
 import type { TypeNameMapper } from './naming.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { DeletedMode, ScopeResolver } from './policies.ts';
@@ -85,6 +87,9 @@ export const runRelationalSelect = async (opts: {
     deleted,
   } = opts;
   const distinct = opts.distinct?.length ? opts.distinct : undefined;
+  // Every read reaches here — root lists, single reads and `resolveSelection` — so a negative
+  // limit or offset is caught once, before any SQL is built from it.
+  assertPagingNotNegative({ limit: opts.limit, offset });
 
   // ── keyset (cursor) pagination ──
   // Active when the request passes `after` or selects the `cursor` meta field. The cursor is
@@ -224,6 +229,17 @@ export const runRelationalSelect = async (opts: {
   if (cursorEntries && cursorSelected) {
     for (const [column] of cursorEntries) {
       params.columns[column] = true;
+    }
+    // Ordering columns that hold more than a JS Date keeps also come back as the database's
+    // text, so the cursor carries their full precision.
+    const preciseProps = Object.keys(cursorPreciseExtras(table, cursorEntries));
+    if (preciseProps.length) {
+      params.extras = Object.fromEntries(
+        preciseProps.map((prop) => [
+          prop,
+          (aliasedTable: Table) => cursorPreciseExtras(aliasedTable, cursorEntries!)[prop]!,
+        ]),
+      );
     }
   }
 

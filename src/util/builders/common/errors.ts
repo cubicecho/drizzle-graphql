@@ -42,7 +42,7 @@ export type DrizzleErrorCode =
   | 'DRIZZLE_INVALID_DISTINCT'
   /** An `onConflict` named a target or update column the upsert cannot use. */
   | 'DRIZZLE_INVALID_ON_CONFLICT'
-  /** A written value could not be converted to what its column stores. */
+  /** A written value could not be converted to what its column stores, or a `limit` / `offset` was negative. */
   | 'DRIZZLE_INVALID_INPUT_VALUE'
   /** An update's `set` gave a column that cannot hold null an explicit null. */
   | 'DRIZZLE_NOT_NULL'
