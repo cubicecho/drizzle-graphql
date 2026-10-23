@@ -841,11 +841,20 @@ export const generateGroupByType = (
   });
 };
 
-/** Turns one `${typeName}Having` entry into SQL conditions over the matching aggregate expression. */
-const havingComparisons = (expression: any, filter: Record<string, any>): any[] =>
-  Object.entries(filter)
+/**
+ * Turns one `${typeName}Having` entry into SQL conditions over the matching aggregate expression.
+ *
+ * The operand is a `Float`, but PostgreSQL types an untyped parameter after what it is compared
+ * with: count and sum of integers are bigint, min/max of an int column int, so `gt: 1.5` would
+ * fail to parse. There the aggregate is compared as `numeric`, which holds every one of them
+ * exactly. MySQL and SQLite already compare numbers across types.
+ */
+const havingComparisons = (expression: any, filter: Record<string, any>, isPg: boolean): any[] => {
+  const compared = isPg ? sql`cast(${expression} as numeric)` : expression;
+  return Object.entries(filter)
     .filter(([op, value]) => value != null && op in HAVING_OPS)
-    .map(([op, value]) => HAVING_OPS[op as keyof typeof HAVING_OPS](expression, value));
+    .map(([op, value]) => HAVING_OPS[op as keyof typeof HAVING_OPS](compared, value));
+};
 
 const buildHavingCondition = (having: Record<string, any> | undefined, columns: Record<string, Column>) => {
   if (!having) {
@@ -853,13 +862,15 @@ const buildHavingCondition = (having: Record<string, any> | undefined, columns: 
   }
 
   const conditions: any[] = [];
+  const firstColumn = Object.values(columns)[0];
+  const isPg = firstColumn ? columnDialect(firstColumn) === 'pg' : false;
 
   for (const [key, value] of Object.entries(having)) {
     if (value == null) {
       continue;
     }
     if (key === 'count') {
-      conditions.push(...havingComparisons(count(), value));
+      conditions.push(...havingComparisons(count(), value, isPg));
       continue;
     }
     if (!AGGREGATE_OPS.includes(key as AggregateOp)) {
@@ -870,7 +881,7 @@ const buildHavingCondition = (having: Record<string, any> | undefined, columns: 
       if (!column || filter == null) {
         continue;
       }
-      conditions.push(...havingComparisons(OP_FNS[key as AggregateOp](column), filter));
+      conditions.push(...havingComparisons(OP_FNS[key as AggregateOp](column), filter, isPg));
     }
   }
 
