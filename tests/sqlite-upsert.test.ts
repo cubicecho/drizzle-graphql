@@ -70,7 +70,7 @@ describe.sequential('SQLite upsert', () => {
   it('takes its key from a nullable variable, inserting when it is null', async () => {
     // One document for both halves of the upsert: a null key is an absent key, so the
     // rowid fills it in rather than the write failing on the not-null primary key.
-    const SAVE = `mutation Save($id: Int, $name: String!) {
+    const SAVE = `mutation Save($id: Float, $name: String!) {
       upsertItemsSingle(values: { id: $id, sku: "B", region: "eu", name: $name }) { id name }
     }`;
 

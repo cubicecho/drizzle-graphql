@@ -681,6 +681,36 @@ mutation {
     `2026-09-15T10:00:00.000Z` — and filter operands on such a column are floored the same way,
     so `eq` with the value you wrote finds the row you wrote it to
 
+Some columns map to built-in GraphQL types rather than a custom scalar:
+
+| Drizzle column | GraphQL type | Transported as |
+| --- | --- | --- |
+| SQLite `integer()` (number mode) | `Float` | a JS number, exact up to 2^53 |
+| Postgres `bytea`, SQLite `blob({ mode: 'buffer' })` | `[Int!]` | the bytes, each 0–255 |
+| Postgres `point` / `line` (tuple mode), PostGIS `geometry` (tuple mode), `vector`, `halfvec` | `[Float!]` | the tuple or vector |
+| Postgres `point({ mode: 'xy' })`, `line({ mode: 'abc' })` | `JSON` | the object, `{ x, y }` / `{ a, b, c }` |
+
+-   **SQLite `integer()`** holds any 64-bit integer, a rowid primary key included, so it is a
+    `Float`: GraphQL's `Int` is 32-bit and cannot serialize anything past 2^31. Drizzle reads
+    the column as a JS number, so values are exact up to `Number.MAX_SAFE_INTEGER`; declare it
+    `blob({ mode: 'bigint' })` (a `BigInt`) for more. Its `'boolean'` and `'timestamp'` modes
+    keep `Boolean` and `DateTime`
+-   A **tuple** must have its type's length — 2 for a point, 3 for a line — or the write is
+    rejected
+-   An **array column** (`bigint().array()`, `timestamp().array()`, …) is a list of its element
+    type, and each element is converted as a single value would be, in writes and in the `has` /
+    `hasSome` / `hasEvery` operands alike
+
+> **Upgrading — SQLite `integer()` columns.** A SQLite `integer()` column in number mode (the
+> default) used to be `Int`, and reading a value past 2^31 failed with "Int cannot represent
+> non 32-bit signed integer value". It is now `Float` in every position: the object field, the
+> create / update inputs, primary-key and unique-key arguments, `FloatFilter` operands, aggregate
+> `min` / `max` and group keys, and `FloatFieldUpdate`. Variables typed `Int` for these fields
+> become `Float` (an `Int` variable is a validation error in a `Float` position); literals and
+> the values themselves are unchanged. `integer({ mode: 'boolean' })` and the timestamp modes are
+> not affected. A SQLite `blob({ mode: 'buffer' })` column, which used to be `JSON` and could
+> not be written, is now `[Int!]`.
+
 The scalars are exported if you need them in a hand-written schema:
 
 ```Typescript
@@ -797,7 +827,8 @@ type Posts {
 
 -   One type, one filter input (`StatusEnumFilter`), so a client variable typed `StatusEnum!`
     is passable to either table
--   The declared name is PascalCased and suffixed: `user_status` → `UserStatusEnum`
+-   The declared name is PascalCased and suffixed: `user_status` → `UserStatusEnum`. A name
+    that would start with a digit gets a leading underscore: `2fa_mode` → `_2faModeEnum`
 -   A column that lists its values inline (`text('tier', { enum: ['free', 'paid'] })`) has no
     declared name to share, so it keeps a per-column type — `UsersTierEnum`
 -   Two different enums that would land on the same GraphQL name (`status` in two Postgres
@@ -835,8 +866,10 @@ lists is the build-time error above.
 ### Enum value names
 
 A value's GraphQL name is the stored value itself, or `Option<index>` when the stored value
-is not a usable GraphQL name. `enumValueNameMapper` renames the values — most often to follow
-GraphQL's SCREAMING_CASE convention while the database keeps its lowercase values:
+is not a usable GraphQL name — one with a character outside `[_a-zA-Z0-9]` (`hot-fix`), one
+that starts with a digit (`2xl`), or `true` / `false` / `null`. `enumValueNameMapper` renames
+the values — most often to follow GraphQL's SCREAMING_CASE convention while the database keeps
+its lowercase values:
 
 ```Typescript
 export const Runs = pgTable('runs', {
@@ -1064,6 +1097,18 @@ there, and the same holds for `ne`, the ordering comparisons, `inArray`, `orderB
 PostgreSQL compares exactly. That is the database's configured behaviour, not something this
 library adds: give a column a binary or `*_as_cs` collation (`varchar(…) COLLATE utf8mb4_bin`)
 where it has to compare exactly.
+
+### Case sensitivity of the pattern operators on SQLite
+
+`like` / `notLike` and the safe `startsWith` / `endsWith` / `contains` are case-sensitive, as
+they are on PostgreSQL: `contains: "App"` matches `Apple` and not `apple`. SQLite's own `LIKE`
+folds ASCII case, so on SQLite they compile to `GLOB` instead, with `%` / `_` translated to its
+`*` / `?` and every other wildcard in the operand matched literally. The `i`-prefixed operators
+and `insensitive: true` fold case on SQLite as everywhere else.
+
+> **Upgrading — SQLite.** These operators used to compile to `LIKE` on SQLite and so matched
+> case-insensitively. Queries that relied on that should use the `i`-prefixed operator or
+> `insensitive: true`.
 
 ## Which operators a column gets
 

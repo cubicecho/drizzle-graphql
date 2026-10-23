@@ -11,7 +11,7 @@ import {
   MySqlTimestampString,
 } from 'drizzle-orm/mysql-core';
 import { PgDate, PgDateString, PgInteger, PgSerial, PgTimestamp, PgTimestampString, PgUUID } from 'drizzle-orm/pg-core';
-import { SQLiteInteger, SQLiteTimestamp } from 'drizzle-orm/sqlite-core';
+import { SQLiteTimestamp } from 'drizzle-orm/sqlite-core';
 import {
   GraphQLBoolean,
   GraphQLEnumType,
@@ -45,8 +45,6 @@ import type {
   ScalarOverridesConfig,
 } from './types.ts';
 
-const allowedNameChars = /^[a-zA-Z0-9_]+$/;
-
 /** drizzle's `number` constraints whose values always fit a GraphQL `Int` (32-bit signed). */
 const smallIntegerConstraints = new Set<string>([
   'int8',
@@ -75,13 +73,19 @@ const declaredEnum = (column: Column): { enumName: string; schema: string | unde
     : undefined;
 };
 
-/** `user_status` / `user-status` / `user status` → `UserStatus`; an already-PascalCase name is left alone. */
-const pascalize = (input: string): string =>
-  input
+/**
+ * `user_status` / `user-status` / `user status` → `UserStatus`; an already-PascalCase name is left
+ * alone. A GraphQL name cannot start with a digit, so a name that would (`2fa_mode`) is prefixed
+ * with an underscore: `_2faMode`.
+ */
+const pascalize = (input: string): string => {
+  const pascal = input
     .split(/[^a-zA-Z0-9]+/)
     .filter(Boolean)
     .map((part) => capitalize(part))
     .join('');
+  return /^[0-9]/.test(pascal) ? `_${pascal}` : pascal;
+};
 
 /**
  * Identity of the values a GraphQL enum was built from, so a name claimed twice can be told
@@ -176,7 +180,7 @@ const generateEnumCached = (column: Column, columnName: string, tableName: strin
       typeName: name,
     });
     if (mapped === undefined) {
-      return allowedNameChars.test(value) ? value : `Option${index}`;
+      return validEnumValueName(value) ? value : `Option${index}`;
     }
     if (!validEnumValueName(mapped)) {
       throw new Error(
@@ -314,6 +318,35 @@ export const isDateTimeColumn = (column: Column): boolean =>
   isMySqlDateTimeStringColumn(column) ||
   isSQLiteTimestampColumn(column);
 
+/**
+ * Whether the column holds raw bytes: Postgres `bytea` and SQLite `blob({ mode: 'buffer' })`,
+ * both `object buffer` in drizzle v1. Their values are `[Int!]` lists of the bytes.
+ */
+export const isBufferColumn = (column: Column): boolean =>
+  (((column as any).dataType as string | undefined) ?? '').endsWith(' buffer');
+
+/**
+ * Whether the column is a float tuple or vector: drizzle v1 gives every such column an
+ * `array …` data type — `point` / `line` in tuple mode (`array point`, `array line`), PostGIS
+ * `geometry` in tuple mode, pgvector `vector` and `halfvec`. Each value is one list of numbers,
+ * typed `[Float!]`, not a database array of elements.
+ */
+export const isFloatTupleColumn = (column: Column): boolean =>
+  (((column as any).dataType as string | undefined) ?? '').startsWith('array ');
+
+/** The fixed length of a float tuple column's values, or `undefined` for a vector. */
+export const floatTupleLength = (column: Column): number | undefined => {
+  switch ((column as any).dataType) {
+    case 'array point':
+    case 'array geometry':
+      return 2;
+    case 'array line':
+      return 3;
+    default:
+      return undefined;
+  }
+};
+
 const columnToGraphQLCore = (
   column: Column,
   columnName: string,
@@ -364,7 +397,7 @@ const columnBaseToGraphQLCore = (
             type: isInput ? geoXyInputType : geoXyType,
             typeLabel: 'Geometry points XY',
           }
-        : column.columnType === 'PgBytea'
+        : isBufferColumn(column)
           ? {
               type: new GraphQLList(new GraphQLNonNull(GraphQLInt)),
               typeLabel: 'Buffer',
@@ -401,40 +434,28 @@ const columnBaseToGraphQLCore = (
       // mediumint / smallserial and MySQL `year` report these constraints in drizzle v1, and
       // used to fall through to Float. Wider kinds (int53, uint32, uint53) are matched only
       // through the column classes below, as before.
+      //
+      // A SQLite `integer()` in number mode is not among them: SQLite stores any 64-bit integer
+      // in it (a rowid primary key included), and drizzle reads it as a JS number, so values
+      // past 2^31 are ordinary. `Float` carries every integer up to 2^53 exactly; `Int` would
+      // fail to serialize them. Its `'boolean'` and `'timestamp'` modes are other classes and
+      // keep `Boolean` and `DateTime`.
       return (constraint !== undefined && smallIntegerConstraints.has(constraint)) ||
         is(column, PgInteger) ||
         is(column, PgSerial) ||
         is(column, MySqlInt) ||
-        is(column, MySqlSerial) ||
-        is(column, SQLiteInteger)
+        is(column, MySqlSerial)
         ? { type: GraphQLInt, typeLabel: 'Integer' }
         : { type: GraphQLFloat, typeLabel: 'Float' };
     }
     case 'array': {
-      if (column.columnType === 'PgVector') {
-        return {
-          type: new GraphQLList(new GraphQLNonNull(GraphQLFloat)),
-          typeLabel: 'Array<Float>',
-        };
-      }
-
-      if (column.columnType === 'PgGeometry') {
-        return {
-          type: new GraphQLList(new GraphQLNonNull(GraphQLFloat)),
-          typeLabel: 'Tuple<[Float, Float]>',
-        };
-      }
-
-      const innerType = columnToGraphQLCore(
-        (column as unknown as { baseColumn: Column }).baseColumn,
-        columnName,
-        tableName,
-        isInput,
-      );
-
+      // Every drizzle v1 column with an `array …` data type is a float tuple or vector — `.array()`
+      // columns keep their element's data type and count `dimensions` instead (see
+      // `columnToGraphQLCore`).
+      const length = floatTupleLength(column);
       return {
-        type: new GraphQLList(new GraphQLNonNull(innerType.type as GraphQLScalarType)),
-        typeLabel: `Array<${innerType.typeLabel}>`,
+        type: new GraphQLList(new GraphQLNonNull(GraphQLFloat)),
+        typeLabel: length === undefined ? 'Array<Float>' : `Tuple<[${Array(length).fill('Float').join(', ')}]>`,
       };
     }
     default:

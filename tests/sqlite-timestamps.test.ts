@@ -126,8 +126,8 @@ describe('SQLite integer timestamp schema shape', () => {
     expect(String(fields['doc']!.type)).toBe('JSON');
     expect(fieldType('EventsFilters', 'doc')).toBe('JSONFilter');
     expect(String(fields['big']!.type)).toBe('BigInt');
-    // `blob({ mode: 'buffer' })` was `JSON` before and still is.
-    expect(String(fields['raw']!.type)).toBe('JSON');
+    // `blob({ mode: 'buffer' })` is a list of bytes, like Postgres `bytea`.
+    expect(String(fields['raw']!.type)).toBe('[Int!]');
   });
 });
 
