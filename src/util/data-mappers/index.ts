@@ -4,9 +4,12 @@ import { drizzleError } from '../builders/common/errors.ts';
 import type { TableNamedRelations } from '../builders/index.ts';
 import { dateToCalendarDate, isCalendarDate } from '../scalars/index.ts';
 import {
+  floatTupleLength,
   getColumnScalarOverride,
+  isBufferColumn,
   isDateOnlyColumn,
   isDateTimeColumn,
+  isFloatTupleColumn,
   isMySqlDateTimeStringColumn,
   isPgTimestampStringColumn,
   isSQLiteTimestampColumn,
@@ -169,7 +172,9 @@ export const remapToGraphQLCore = (
     return pgTimestampTextToIso(value);
   }
 
-  if (value instanceof Buffer) {
+  // A `bytea` / SQLite `blob({ mode: 'buffer' })` value: a Node `Buffer` from most drivers, a
+  // plain `Uint8Array` from some (PGlite). Either is the `[Int!]` list of its bytes.
+  if (value instanceof Uint8Array) {
     return Array.from(value);
   }
 
@@ -178,7 +183,9 @@ export const remapToGraphQLCore = (
   }
 
   if (Array.isArray(value)) {
-    if (column.columnType === 'PgGeometry' || column.columnType === 'PgVector') {
+    // A float tuple or vector (`point` / `line` in tuple mode, `geometry`, `vector`,
+    // `halfvec`) is one value that happens to be a list of numbers.
+    if (isFloatTupleColumn(column)) {
       return value;
     }
 
@@ -186,7 +193,9 @@ export const remapToGraphQLCore = (
   }
 
   if (typeof value === 'object' && value !== null) {
-    if (column.columnType === 'PgGeometryObject') {
+    // An object-valued column (`point` in `'xy'` mode, `line` in `'abc'` mode, a geometry
+    // object) is carried as the object itself, by `PgGeometryObject` or the `JSON` scalar.
+    if (((column as any).dataType ?? '').startsWith('object')) {
       return value;
     }
 
@@ -318,6 +327,11 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
   // matches the row that input would have written.
   const columnType: string = (column as any).columnType ?? '';
   if (isDateTimeColumn(column)) {
+    // `timestamp().array()` keeps the timestamp column type with a `dimensions` count, so an
+    // array here is a list of instants, converted element by element.
+    if (Array.isArray(value)) {
+      return value.map((element) => remapFromGraphQLCore(element, column, columnName));
+    }
     const isMySql = columnType.startsWith('MySql');
     const isPgString = isPgTimestampStringColumn(column);
     // MySQL / Postgres text with no offset is read as UTC, as on output — `new Date()` would read
@@ -365,8 +379,12 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
     return day;
   }
 
-  // BigInt columns (SQLite: "bigint int64", others: "bigint").
+  // BigInt columns (SQLite: "bigint int64", others: "bigint"). `bigint().array()` is a list of
+  // them, converted element by element.
   if (dataType.includes('bigint')) {
+    if (Array.isArray(value)) {
+      return value.map((element) => remapFromGraphQLCore(element, column, columnName));
+    }
     try {
       return BigInt(value);
     } catch {
@@ -374,83 +392,57 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
     }
   }
 
-  // JSON columns (SQLite: "object json", PG: "json"). The `JSON` scalar has already parsed
-  // the literal, so the value goes to the driver untouched — parsing it again here would
+  // JSON columns (SQLite: "object json", PG: "object json"). The `JSON` scalar has already
+  // parsed the literal, so the value goes to the driver untouched — parsing it again here would
   // wrongly reject a JSON value that happens to be a string, like `"hello"`.
-  // PgGeometryObject is already handled by the switch case below.
-  if (dataType.includes('json') && (column as any).columnType !== 'PgGeometryObject') {
+  if (isJsonColumn(column)) {
     return value;
   }
 
-  switch (dataType) {
-    case 'date': {
-      const formatted = new Date(value);
-      if (Number.isNaN(formatted.getTime())) {
-        throw drizzleError(`Field '${columnName}' is not a valid date!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
-      }
-
-      return formatted;
+  // Byte columns — Postgres `bytea`, SQLite `blob({ mode: 'buffer' })`, both `"object buffer"`
+  // — take their bytes as an `[Int!]` list. `bytea().array()` is a list of those lists.
+  if (isBufferColumn(column)) {
+    if (!Array.isArray(value)) {
+      throw drizzleError(`Field '${columnName}' is not an array!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
+    }
+    if ((column as any).dimensions > 0 && value.every((element) => element === null || Array.isArray(element))) {
+      return value.map((element) => remapFromGraphQLCore(element, column, columnName));
+    }
+    if (!value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
+      throw drizzleError(`Field '${columnName}' is not a list of bytes! Expected integers from 0 to 255.`, {
+        code: 'DRIZZLE_INVALID_INPUT_VALUE',
+      });
     }
 
-    case 'buffer': {
-      if (!Array.isArray(value)) {
-        throw drizzleError(`Field '${columnName}' is not an array!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
-      }
-
-      return Buffer.from(value);
-    }
-
-    case 'json': {
-      if (column.columnType === 'PgGeometryObject') {
-        return value;
-      }
-
-      try {
-        return JSON.parse(value);
-      } catch (e) {
-        throw drizzleError(
-          `Invalid JSON in field '${columnName}':\n${e instanceof Error ? e.message : 'Unknown error'}`,
-          {
-            code: 'DRIZZLE_INVALID_INPUT_VALUE',
-          },
-        );
-      }
-    }
-
-    case 'array': {
-      if (!Array.isArray(value)) {
-        throw drizzleError(`Field '${columnName}' is not an array!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
-      }
-
-      if (column.columnType === 'PgGeometry' && value.length !== 2) {
-        throw drizzleError(
-          `Invalid float tuple in field '${columnName}': expected array with length of 2, received ${value.length}`,
-          { code: 'DRIZZLE_INVALID_INPUT_VALUE' },
-        );
-      }
-
-      return value;
-    }
-
-    case 'bigint': {
-      try {
-        return BigInt(value);
-      } catch (_error) {
-        throw drizzleError(`Field '${columnName}' is not a BigInt!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
-      }
-    }
-
-    default: {
-      // graphql-js coerces input object types using Object.create(null), producing
-      // null-prototype objects. Drizzle's internal is() check accesses
-      // Object.getPrototypeOf(value).constructor and throws for null-prototype objects.
-      // Convert to a plain object so drizzle can process it safely.
-      if (typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === null) {
-        return Object.assign({}, value);
-      }
-      return value;
-    }
+    return Buffer.from(value);
   }
+
+  // Float tuples and vectors ("array point", "array line", "array geometry", "array vector",
+  // "array halfvector"): one value written as a list of numbers. The tuples have a fixed length.
+  if (isFloatTupleColumn(column)) {
+    if (!Array.isArray(value)) {
+      throw drizzleError(`Field '${columnName}' is not an array!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
+    }
+
+    const length = floatTupleLength(column);
+    if (length !== undefined && value.length !== length) {
+      throw drizzleError(
+        `Invalid float tuple in field '${columnName}': expected array with length of ${length}, received ${value.length}`,
+        { code: 'DRIZZLE_INVALID_INPUT_VALUE' },
+      );
+    }
+
+    return value;
+  }
+
+  // graphql-js coerces input object types using Object.create(null), producing
+  // null-prototype objects. Drizzle's internal is() check accesses
+  // Object.getPrototypeOf(value).constructor and throws for null-prototype objects.
+  // Convert to a plain object so drizzle can process it safely.
+  if (typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === null) {
+    return Object.assign({}, value);
+  }
+  return value;
 };
 
 /**

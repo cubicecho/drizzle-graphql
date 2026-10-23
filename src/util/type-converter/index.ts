@@ -314,6 +314,35 @@ export const isDateTimeColumn = (column: Column): boolean =>
   isMySqlDateTimeStringColumn(column) ||
   isSQLiteTimestampColumn(column);
 
+/**
+ * Whether the column holds raw bytes: Postgres `bytea` and SQLite `blob({ mode: 'buffer' })`,
+ * both `object buffer` in drizzle v1. Their values are `[Int!]` lists of the bytes.
+ */
+export const isBufferColumn = (column: Column): boolean =>
+  (((column as any).dataType as string | undefined) ?? '').endsWith(' buffer');
+
+/**
+ * Whether the column is a float tuple or vector: drizzle v1 gives every such column an
+ * `array …` data type — `point` / `line` in tuple mode (`array point`, `array line`), PostGIS
+ * `geometry` in tuple mode, pgvector `vector` and `halfvec`. Each value is one list of numbers,
+ * typed `[Float!]`, not a database array of elements.
+ */
+export const isFloatTupleColumn = (column: Column): boolean =>
+  (((column as any).dataType as string | undefined) ?? '').startsWith('array ');
+
+/** The fixed length of a float tuple column's values, or `undefined` for a vector. */
+export const floatTupleLength = (column: Column): number | undefined => {
+  switch ((column as any).dataType) {
+    case 'array point':
+    case 'array geometry':
+      return 2;
+    case 'array line':
+      return 3;
+    default:
+      return undefined;
+  }
+};
+
 const columnToGraphQLCore = (
   column: Column,
   columnName: string,
@@ -364,7 +393,7 @@ const columnBaseToGraphQLCore = (
             type: isInput ? geoXyInputType : geoXyType,
             typeLabel: 'Geometry points XY',
           }
-        : column.columnType === 'PgBytea'
+        : isBufferColumn(column)
           ? {
               type: new GraphQLList(new GraphQLNonNull(GraphQLInt)),
               typeLabel: 'Buffer',
@@ -411,30 +440,13 @@ const columnBaseToGraphQLCore = (
         : { type: GraphQLFloat, typeLabel: 'Float' };
     }
     case 'array': {
-      if (column.columnType === 'PgVector') {
-        return {
-          type: new GraphQLList(new GraphQLNonNull(GraphQLFloat)),
-          typeLabel: 'Array<Float>',
-        };
-      }
-
-      if (column.columnType === 'PgGeometry') {
-        return {
-          type: new GraphQLList(new GraphQLNonNull(GraphQLFloat)),
-          typeLabel: 'Tuple<[Float, Float]>',
-        };
-      }
-
-      const innerType = columnToGraphQLCore(
-        (column as unknown as { baseColumn: Column }).baseColumn,
-        columnName,
-        tableName,
-        isInput,
-      );
-
+      // Every drizzle v1 column with an `array …` data type is a float tuple or vector — `.array()`
+      // columns keep their element's data type and count `dimensions` instead (see
+      // `columnToGraphQLCore`).
+      const length = floatTupleLength(column);
       return {
-        type: new GraphQLList(new GraphQLNonNull(innerType.type as GraphQLScalarType)),
-        typeLabel: `Array<${innerType.typeLabel}>`,
+        type: new GraphQLList(new GraphQLNonNull(GraphQLFloat)),
+        typeLabel: length === undefined ? 'Array<Float>' : `Tuple<[${Array(length).fill('Float').join(', ')}]>`,
       };
     }
     default:

@@ -440,7 +440,9 @@ export const extractFiltersColumn = <TColumn extends Column>(
       );
     } else if (operatorName === 'has') {
       // Single-element membership: containment with a one-element array (`col @> ARRAY[value]`).
-      variants.push(arrayContains(column, [operatorValue]));
+      // Elements are converted as a write converts them — a `DateTime` to a `Date`, a `BigInt`
+      // string to a bigint — so the column's encoder accepts them.
+      variants.push(arrayContains(column, [remapFromGraphQLCore(operatorValue, column, columnName)]));
     } else if (operatorName in arrayMembershipOps) {
       // Same reasoning as inArray/notInArray: overlapping with no elements is never true,
       // and every array contains all zero of them.
@@ -448,7 +450,12 @@ export const extractFiltersColumn = <TColumn extends Column>(
         variants.push(operatorName === 'hasSome' ? sqlFalse() : sqlTrue());
         continue;
       }
-      variants.push(arrayMembershipOps[operatorName]!(column, operatorValue as any[]));
+      variants.push(
+        arrayMembershipOps[operatorName]!(
+          column,
+          (operatorValue as any[]).map((element) => remapFromGraphQLCore(element, column, columnName)),
+        ),
+      );
     } else if (operatorName === 'isEmpty') {
       variants.push(sql`cardinality(${column}) = 0`);
     } else if (operatorName in nullableOps) {

@@ -23,7 +23,12 @@ import {
 } from 'graphql';
 import { remapFromGraphQLCore, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
 import { GraphQLBigIntString, GraphQLDecimalString } from '../scalars/index.ts';
-import { drizzleColumnToGraphQLType, getColumnScalarOverride } from '../type-converter/index.ts';
+import {
+  drizzleColumnToGraphQLType,
+  getColumnScalarOverride,
+  isBufferColumn,
+  isFloatTupleColumn,
+} from '../type-converter/index.ts';
 import { drizzleError } from './common/errors.ts';
 import type { TypeNameResolver } from './common/type-names.ts';
 
@@ -45,10 +50,10 @@ const NUMERIC_SCALARS = new Set<GraphQLInputType>([
 
 /**
  * Column types that convert to a GraphQL list without being a list *in the database* —
- * a bytea reads as `[Int]`, a vector and a geometry point as `[Float]` — so appending to
- * them is not the operation `push` means.
+ * a bytea or SQLite buffer blob reads as `[Int]`, a vector, a point or a line as `[Float]` —
+ * so appending to them is not the operation `push` means.
  */
-const NON_LIST_ARRAY_COLUMNS = new Set(['PgVector', 'PgGeometry', 'PgBytea']);
+const isNonListArrayColumn = (column: Column): boolean => isFloatTupleColumn(column) || isBufferColumn(column);
 
 const kindCache = new WeakMap<Column, FieldUpdateKind>();
 
@@ -71,7 +76,7 @@ export const fieldUpdateKind = (column: Column, columnName: string, tableName: s
     const { type } = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, true);
     if (NUMERIC_SCALARS.has(type)) {
       kind = 'numeric';
-    } else if (type instanceof GraphQLList && !NON_LIST_ARRAY_COLUMNS.has((column as any).columnType)) {
+    } else if (type instanceof GraphQLList && !isNonListArrayColumn(column)) {
       kind = 'list';
     }
   }

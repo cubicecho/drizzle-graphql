@@ -681,6 +681,20 @@ mutation {
     `2026-09-15T10:00:00.000Z` — and filter operands on such a column are floored the same way,
     so `eq` with the value you wrote finds the row you wrote it to
 
+Some columns map to built-in GraphQL types rather than a custom scalar:
+
+| Drizzle column | GraphQL type | Transported as |
+| --- | --- | --- |
+| Postgres `bytea`, SQLite `blob({ mode: 'buffer' })` | `[Int!]` | the bytes, each 0–255 |
+| Postgres `point` / `line` (tuple mode), PostGIS `geometry` (tuple mode), `vector`, `halfvec` | `[Float!]` | the tuple or vector |
+| Postgres `point({ mode: 'xy' })`, `line({ mode: 'abc' })` | `JSON` | the object, `{ x, y }` / `{ a, b, c }` |
+
+-   A **tuple** must have its type's length — 2 for a point, 3 for a line — or the write is
+    rejected
+-   An **array column** (`bigint().array()`, `timestamp().array()`, …) is a list of its element
+    type, and each element is converted as a single value would be, in writes and in the `has` /
+    `hasSome` / `hasEvery` operands alike
+
 The scalars are exported if you need them in a hand-written schema:
 
 ```Typescript
