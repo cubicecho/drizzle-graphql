@@ -1509,7 +1509,9 @@ supplies no `orderBy` and the table has no [default ordering](#default-ordering)
 -   list queries with `limit` and/or `offset`
 -   `<tableName>Single` queries, which are an implicit `limit 1`
 -   to-many relation fields with `limit` and/or `offset` (as a tiebreak appended to any
-    `orderBy` you do supply, so per-parent slices are deterministic)
+    `orderBy` you do supply or [default ordering](#default-ordering) the target has — and under
+    `orderBy: {}` too — so per-parent slices are deterministic and the eager and lazy paths
+    return the same slice)
 
 An explicit `orderBy` always takes precedence, composite primary keys are ordered by every
 key column, and an unpaginated list query of a table with no `defaults` entry is left

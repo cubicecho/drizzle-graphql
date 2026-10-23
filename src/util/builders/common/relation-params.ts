@@ -187,22 +187,29 @@ export const extractRelationsParams = (
               ),
           }
         : undefined;
-    // When a relation is paginated (limit/offset) but unordered, default to the target's
-    // primary key so the per-parent slice is deterministic. Drizzle's RQB calls orderBy
-    // with the aliased table proxy, so resolve the PK columns from it. targetPkNames is
-    // resolved at build time and includes composite keys.
+    // When a relation is paginated (limit/offset), the target's primary key is appended as a
+    // tiebreak to whatever ordering applies — the client's, the default, or none (`orderBy: {}`
+    // included) — so the per-parent slice is deterministic and the same slice the batched
+    // resolver's window picks. Drizzle's RQB calls orderBy with the aliased table proxy, so
+    // resolve the PK columns from it. targetPkNames is resolved at build time and includes
+    // composite keys.
     const hasPagination = offset != null || limit != null;
     const pkNames = targetPkNames ?? [];
-    thisRecord.orderBy = relationArgs?.orderBy
-      ? (aliasedTable: Table) =>
-          extractOrderBy(
-            aliasedTable,
-            relationArgs.orderBy!,
-            relationFilterCtx(filterCtx, targetTableName, scope),
-            relWhere,
-          )
-      : hasPagination && pkNames.length
-        ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
+    const tiebreak = hasPagination && pkNames.length > 0;
+    const requestOrder = relationArgs?.orderBy;
+    thisRecord.orderBy =
+      requestOrder || tiebreak
+        ? (aliasedTable: Table) => [
+            ...(requestOrder
+              ? extractOrderBy(
+                  aliasedTable,
+                  requestOrder,
+                  relationFilterCtx(filterCtx, targetTableName, scope),
+                  relWhere,
+                )
+              : []),
+            ...(tiebreak ? primaryKeyOrderExprs(aliasedTable, pkNames) : []),
+          ]
         : undefined;
     thisRecord.offset = offset;
     thisRecord.limit = offsetOnlyLimit(tables[targetTableName]!, limit, offset);
