@@ -55,7 +55,8 @@ describe('sqlite: field update operations', () => {
   it('gives numeric columns an operations input', () => {
     const fields = (gqlSchema.getType('UpdateItemsInput') as GraphQLInputObjectType).getFields();
 
-    expect(String(fields['qty']!.type)).toBe('IntFieldUpdate');
+    // A SQLite `integer()` in number mode is `Float`: it holds 64-bit integers.
+    expect(String(fields['qty']!.type)).toBe('FloatFieldUpdate');
     expect(String(fields['ratio']!.type)).toBe('FloatFieldUpdate');
     expect(String(fields['name']!.type)).toBe('String');
   });

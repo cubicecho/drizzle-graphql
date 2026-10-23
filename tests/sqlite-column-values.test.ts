@@ -1,4 +1,7 @@
 // SQLite column values the generated schema has to carry intact:
+// - `integer()` in number mode holds any 64-bit integer, so it is `Float` (exact to 2^53), not
+//   `Int`, which cannot serialize anything past 2^31. Its boolean and timestamp modes keep their
+//   own scalars.
 // - `blob({ mode: 'buffer' })` is a list of bytes, like Postgres `bytea`, and round-trips.
 // - a blob holding 0 is told apart from a NULL one, top-level and inside a nested relation,
 //   where drizzle reads blobs back through `hex()`.
@@ -31,6 +34,8 @@ const relations = defineRelations({ Owners, Items }, (r) => ({
   Items: { owner: r.one.Owners({ from: r.Items.ownerId, to: r.Owners.id }) },
 }));
 
+const BIG = 5_000_000_000;
+
 let client: Client;
 let db: any;
 let schema: GraphQLSchema;
@@ -56,6 +61,63 @@ beforeAll(async () => {
   entities = built.entities;
 });
 afterAll(() => client.close());
+
+describe.sequential('sqlite integer columns', () => {
+  it('type number mode as Float everywhere, and leave boolean and timestamp modes alone', () => {
+    expect(fieldType('Items', 'id')).toBe('Float!');
+    expect(fieldType('Items', 'n')).toBe('Float');
+    expect(fieldType('Items', 'flag')).toBe('Boolean');
+    expect(fieldType('Items', 'at')).toBe('DateTime');
+    expect(inputFieldType('CreateItemsInput', 'n')).toBe('Float');
+    expect(inputFieldType('ItemsFilters', 'n')).toBe('FloatFilter');
+    expect(inputFieldType('ItemsFilters', 'flag')).toBe('BooleanFilter');
+  });
+
+  it('write, read and filter values past 2^31', async () => {
+    await run(`mutation { createOwnersSingle(values: { id: ${BIG}, name: "o" }) { id } }`);
+    const created = await run(
+      `mutation { createItemsSingle(values: { id: ${BIG}, ownerId: ${BIG}, n: 3000000000 }) { id ownerId n } }`,
+    );
+    expect(created.errors).toBeUndefined();
+    expect(created.data.createItemsSingle).toEqual({ id: BIG, ownerId: BIG, n: 3_000_000_000 });
+
+    const read = await run(`{
+      gt: items(where: { id: { gt: 4000000000 } }) { id n owner { id } }
+      byId: itemsSingle(where: { id: { eq: ${BIG} } }) { n }
+      owners(where: { id: { eq: ${BIG} } }) { items { id } }
+    }`);
+    expect(read.errors).toBeUndefined();
+    expect(read.data).toEqual({
+      gt: [{ id: BIG, n: 3_000_000_000, owner: { id: BIG } }],
+      byId: { n: 3_000_000_000 },
+      owners: [{ items: [{ id: BIG }] }],
+    });
+  });
+
+  it('page through them with a cursor', async () => {
+    await run(`mutation { createItemsSingle(values: { id: ${BIG + 1}, n: 1 }) { id } }`);
+    const first = await run(
+      '{ items(where: { id: { gt: 4000000000 } }, orderBy: { id: { direction: asc, priority: 1 } }, limit: 1) { id cursor } }',
+    );
+    expect(first.errors).toBeUndefined();
+    expect(first.data.items.map((row: any) => row.id)).toEqual([BIG]);
+
+    const next = await run(
+      'query($after: String) { items(where: { id: { gt: 4000000000 } }, orderBy: { id: { direction: asc, priority: 1 } }, limit: 1, after: $after) { id } }',
+      { after: first.data.items[0].cursor },
+    );
+    expect(next.errors).toBeUndefined();
+    expect(next.data.items).toEqual([{ id: BIG + 1 }]);
+    await run(`mutation { deleteItems(where: { id: { eq: ${BIG + 1} } }) { id } }`);
+  });
+
+  it('aggregate them without overflowing', async () => {
+    const agg = await run('{ itemsAggregate { max { n id } sum { n } } }');
+    expect(agg.errors).toBeUndefined();
+    expect(agg.data.itemsAggregate.max).toEqual({ n: 3_000_000_000, id: BIG });
+    expect(agg.data.itemsAggregate.sum).toEqual({ n: 3_000_000_000 });
+  });
+});
 
 describe.sequential('sqlite blob columns', () => {
   it('type a buffer blob as a list of bytes', () => {

@@ -685,15 +685,31 @@ Some columns map to built-in GraphQL types rather than a custom scalar:
 
 | Drizzle column | GraphQL type | Transported as |
 | --- | --- | --- |
+| SQLite `integer()` (number mode) | `Float` | a JS number, exact up to 2^53 |
 | Postgres `bytea`, SQLite `blob({ mode: 'buffer' })` | `[Int!]` | the bytes, each 0–255 |
 | Postgres `point` / `line` (tuple mode), PostGIS `geometry` (tuple mode), `vector`, `halfvec` | `[Float!]` | the tuple or vector |
 | Postgres `point({ mode: 'xy' })`, `line({ mode: 'abc' })` | `JSON` | the object, `{ x, y }` / `{ a, b, c }` |
 
+-   **SQLite `integer()`** holds any 64-bit integer, a rowid primary key included, so it is a
+    `Float`: GraphQL's `Int` is 32-bit and cannot serialize anything past 2^31. Drizzle reads
+    the column as a JS number, so values are exact up to `Number.MAX_SAFE_INTEGER`; declare it
+    `blob({ mode: 'bigint' })` (a `BigInt`) for more. Its `'boolean'` and `'timestamp'` modes
+    keep `Boolean` and `DateTime`
 -   A **tuple** must have its type's length — 2 for a point, 3 for a line — or the write is
     rejected
 -   An **array column** (`bigint().array()`, `timestamp().array()`, …) is a list of its element
     type, and each element is converted as a single value would be, in writes and in the `has` /
     `hasSome` / `hasEvery` operands alike
+
+> **Upgrading — SQLite `integer()` columns.** A SQLite `integer()` column in number mode (the
+> default) used to be `Int`, and reading a value past 2^31 failed with "Int cannot represent
+> non 32-bit signed integer value". It is now `Float` in every position: the object field, the
+> create / update inputs, primary-key and unique-key arguments, `FloatFilter` operands, aggregate
+> `min` / `max` and group keys, and `FloatFieldUpdate`. Variables typed `Int` for these fields
+> become `Float` (an `Int` variable is a validation error in a `Float` position); literals and
+> the values themselves are unchanged. `integer({ mode: 'boolean' })` and the timestamp modes are
+> not affected. A SQLite `blob({ mode: 'buffer' })` column, which used to be `JSON` and could
+> not be written, is now `[Int!]`.
 
 The scalars are exported if you need them in a hand-written schema:
 

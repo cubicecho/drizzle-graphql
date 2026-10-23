@@ -11,7 +11,7 @@ import {
   MySqlTimestampString,
 } from 'drizzle-orm/mysql-core';
 import { PgDate, PgDateString, PgInteger, PgSerial, PgTimestamp, PgTimestampString, PgUUID } from 'drizzle-orm/pg-core';
-import { SQLiteInteger, SQLiteTimestamp } from 'drizzle-orm/sqlite-core';
+import { SQLiteTimestamp } from 'drizzle-orm/sqlite-core';
 import {
   GraphQLBoolean,
   GraphQLEnumType,
@@ -434,12 +434,17 @@ const columnBaseToGraphQLCore = (
       // mediumint / smallserial and MySQL `year` report these constraints in drizzle v1, and
       // used to fall through to Float. Wider kinds (int53, uint32, uint53) are matched only
       // through the column classes below, as before.
+      //
+      // A SQLite `integer()` in number mode is not among them: SQLite stores any 64-bit integer
+      // in it (a rowid primary key included), and drizzle reads it as a JS number, so values
+      // past 2^31 are ordinary. `Float` carries every integer up to 2^53 exactly; `Int` would
+      // fail to serialize them. Its `'boolean'` and `'timestamp'` modes are other classes and
+      // keep `Boolean` and `DateTime`.
       return (constraint !== undefined && smallIntegerConstraints.has(constraint)) ||
         is(column, PgInteger) ||
         is(column, PgSerial) ||
         is(column, MySqlInt) ||
-        is(column, MySqlSerial) ||
-        is(column, SQLiteInteger)
+        is(column, MySqlSerial)
         ? { type: GraphQLInt, typeLabel: 'Integer' }
         : { type: GraphQLFloat, typeLabel: 'Float' };
     }

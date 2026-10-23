@@ -62,8 +62,8 @@ describe('integer column types', () => {
   it.each(['float', 'double', 'bigint53'])('mysql %s stays Float', (key) => {
     expect(typeOf(myT, key)).toBe(GraphQLFloat);
   });
-  it('sqlite integer is Int, real stays Float', () => {
-    expect(typeOf(sqT, 'integer')).toBe(GraphQLInt);
+  it('sqlite integer is Float, since it holds 64-bit integers; real stays Float', () => {
+    expect(typeOf(sqT, 'integer')).toBe(GraphQLFloat);
     expect(typeOf(sqT, 'real')).toBe(GraphQLFloat);
   });
 });
