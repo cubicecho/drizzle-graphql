@@ -67,6 +67,7 @@ import {
   generateHavingInput,
   resetAggregateColumnCache,
 } from './aggregates.ts';
+import { registerBuildRuntime } from './common/build-registry.ts';
 import {
   buildNestedWritePlans,
   createNestedWriteRuntime,
@@ -692,6 +693,19 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
         fieldResolvers[tableName] = relResolvers;
       }
     }
+
+    // `resolveSelection` / `selectionToWith` find this build's policies through its types.
+    registerBuildRuntime(
+      {
+        db: ctx.db,
+        filterCtx: ctx.filterCtx,
+        policies: ctx.policies,
+        scoped: !!ctx.tablePolicies?.scope,
+        limits: ctx.limits,
+        nullOrdering: adapter.nullOrdering,
+      },
+      Object.values(ctx.outputs),
+    );
 
     return {
       queries: ctx.queries,

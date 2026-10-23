@@ -249,6 +249,12 @@ Two details worth stating plainly:
 -   **Nothing changes below the schema.** An excluded column is still written by its
     default, still read by the primary-key and cursor machinery, and still usable by your
     own resolvers. Only the generated schema stops mentioning it.
+-   **A cursor carries the primary key in readable form.** A [cursor](#cursor-pagination)
+    is base64url JSON of the row's ordering values, and the primary key is always one of
+    them. Excluding the primary key removes the field, but anyone holding a cursor can still
+    decode the key's value. If the key itself must stay secret, wrap the cursors in your own
+    opaque or encrypted form. A `defaults.<table>.orderBy` that names an excluded column
+    throws at build time, because its values would ride along in every cursor too.
 
 Names that match nothing throw at build time, so renaming a column fails the build instead
 of quietly un-hiding it. Excluding a `NOT NULL` column with no default is allowed — the
@@ -291,6 +297,8 @@ narrow the scope, never widen it. It reaches every path that touches the table:
 | `postsAggregate`, `postsGroupBy` | counted over in-scope rows only |
 | `user.posts`, `user.postsAggregate` | scoped on both the batched and the eager (`with:`) path |
 | cursor pages | the keyset page is taken within the scope |
+| relation filters — `users(where: { posts: { some: … } })`, `none`, `every`, to-one, `.through()` | only in-scope posts can match, block `none` or fail `every` — on reads, aggregates, `groupBy`, and the `where` of updates and deletes |
+| `orderBy` through a to-one — `comments(orderBy: { post: { title: … } })` | an out-of-scope post sorts as `NULL` |
 | `updatePosts`, `updatePostsMany`, `deletePosts` | an out-of-scope row is simply not matched |
 | `upsertPosts` (conflict branch) | a conflicting row outside the scope is left alone, not taken over |
 | nested `connect` / `disconnect` / `set` | only in-scope rows can be attached or detached |
@@ -302,6 +310,11 @@ Two things it deliberately does not do:
     "that row exists but is not yours" is the leak the scope is there to close.
 -   **It does not apply to a plain insert.** There is no existing row to filter. `contextValues`
     is the write-side half.
+
+A relation filter or an ordering through a relation sees exactly the rows the relation field
+would return. Through a `.through()` relation, the junction table's own `scope` and soft delete
+apply as well. A scope that returns a filter object is the server's own predicate, so the
+relations it reaches through are read without their targets' scopes.
 
 Returning `undefined` means *no restriction for this context*, so one hook can let an
 administrator through:
@@ -477,6 +490,8 @@ What a declared table gets:
 | `posts`, `postsSingle`, cursor pages | marked rows are not returned |
 | `postsAggregate`, `postsGroupBy` | counted over unmarked rows only |
 | `user.posts`, `user.postsAggregate` | hidden on both the batched and the eager (`with:`) path |
+| relation filters — `users(where: { posts: { some: {} } })`, `none`, `every`, `.through()` junctions | a marked post neither matches nor blocks `none`, with the same default as the relation field (see below) |
+| `orderBy` through a to-one | a marked target the relation field hides sorts as `NULL` |
 | `updatePosts`, `updatePostsMany`, a second `deletePosts` | a marked row is simply not matched |
 | nested `connect` / `disconnect` / `set` | a marked row cannot be attached or detached |
 | `CreatePostsInput`, `UpdatePostsInput` | the marker column is **removed** — only the mutations write it |
@@ -539,6 +554,10 @@ softDelete: {
 The `deleted` argument is generated on relation fields either way, so a request can override
 whichever default applies — `altKind(deleted: EXCLUDE)` under `'root'`, `altKind(deleted:
 INCLUDE)` under `'all'`.
+
+A relation filter (`items(where: { kind: { name: … } })`) and an `orderBy` through a to-one
+use the same default as the relation field, so they match and sort over exactly the rows the
+field shows. They take no `deleted` argument of their own.
 
 `scope` changes reads only. A nested `connect` / `disconnect` / `set` still refuses to attach a
 marked row under either setting, and the table's own writes are unaffected.
@@ -1495,6 +1514,12 @@ field, and passing it back as `after` resumes strictly after that row.
     millisecond JS `Date` that `mode: 'date'` reads it into, so the cursor carries the
     database's own text of the value instead, and rows a microsecond apart are still distinct
     pages
+-   A cursor is opaque by convention only. It is base64url-encoded JSON of the row's
+    ordering values, primary key included, so a client can decode it and read those values,
+    even for a primary key hidden by [`exclude`](#excluding-tables-and-columns). It is not
+    signed or encrypted. If the ordering values must stay private, wrap the cursor in your
+    own opaque or encrypted token before it leaves the server, and unwrap it on the way back
+    in
 -   A cursor is only valid under the ordering it was issued for — reusing it with a
     different `orderBy` (or a malformed/corrupted cursor) returns a `GraphQLError`
 -   `after` cannot be combined with `distinct`, with `matchFilterOrder`, or with an `orderBy`
@@ -2519,12 +2544,13 @@ import { resolveSelection, selectionToWith } from '@vantreeseba/drizzle-graphql'
 const rows = await resolveSelection(info, {
     db,
     table: 'Users',
+    context, // the resolver's context — required when the build configures `scope`
     where: { id: { eq: userId } },
     executor: tx, // defaults to `db`; pass a transaction to see its own writes
 })
 
 // Or just the `with:` tree, if you are building the query yourself.
-const withTree = selectionToWith(info, { db, table: 'Users' })
+const withTree = selectionToWith(info, { db, table: 'Users', context })
 const row = await tx.query.Users.findFirst({ where: { id: userId }, with: withTree })
 ```
 
@@ -2535,8 +2561,27 @@ relation they select, compiles each relation's `where` / `orderBy` / `limit` / `
 into its nested entry, and leaves `<relation>Aggregate` selections out — they are not
 `with:` entries. It returns `undefined` when the selection asks for no relations.
 
-`resolveSelection` additionally accepts `single`, `orderBy`, `limit`, `offset` and `after`,
-and returns the rows already remapped to their GraphQL transport forms.
+`resolveSelection` additionally accepts `single`, `orderBy`, `limit`, `offset`, `after` and
+`deleted`, and returns the rows already remapped to their GraphQL transport forms.
+
+Both apply the build's row policies the way the generated fields do, so an override is not a
+way around them. `resolveSelection` scopes and soft-delete-filters the root table, applies the
+table's `limits` and `defaults.orderBy` to the root list, and applies all four to every nested
+relation. `selectionToWith` applies them to the nested relations in the tree it returns. The
+root query you run with it is yours to scope.
+
+They find the build through the resolve info: the field's return type, the root table's type in
+the executing schema, or the parent type, whichever the build generated. That works for a schema
+assembled from `entities.types`, and for one a tool such as `mapSchema` rebuilt, because the
+build is found through each type's `extensions.drizzle`. Two things follow:
+
+-   **Pass `context`.** Scope hooks take the request context, which resolve info does not
+    carry. When the build configures `scope`, a call without `context` throws instead of
+    reading unscoped. Soft delete, limits and default ordering need no context.
+-   **Pass `info`, not a parsed tree, when one database has several builds.** A parsed
+    selection tree carries no type to find the build by. Over a database with exactly one
+    build, that build's policies apply. With several builds, the call throws if any of them
+    has policies, since picking one could apply the wrong policies.
 
 Both take the naming options the build used — `typeNameMapper`, `derivedTypeNameMapper`,
 `typeNamePrefix` and `typeNameSuffix`. The translation matches selections against the

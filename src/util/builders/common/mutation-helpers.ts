@@ -390,7 +390,7 @@ export const generateWriteCount = ({
         tableName,
         table,
         where,
-        relationCtx: relationFilterCtx(filterCtx, tableName),
+        relationCtx: relationFilterCtx(filterCtx, tableName, scope),
         required: requireWhere,
         // A hard delete reads at INCLUDE, so it reaches the rows that are already marked.
         deleted: hard ? 'INCLUDE' : undefined,

@@ -170,6 +170,13 @@ export const resolveBuildConfig = (
             `Drizzle-GraphQL Error: config.defaults.${tableName}.orderBy names '${columnName}', which is not a column of '${tableName}'.`,
           );
         }
+        // The effective ordering is encoded into every row's cursor, which a client can decode,
+        // so ordering by a hidden column would hand its values out one row at a time.
+        if (config?.exclude?.columns?.[tableName]?.includes(columnName)) {
+          throw new Error(
+            `Drizzle-GraphQL Error: config.defaults.${tableName}.orderBy names '${columnName}', which config.exclude.columns hides. A default ordering is encoded into every row's cursor, so it can only use columns the schema exposes.`,
+          );
+        }
         const direction = typeof entry === 'string' ? entry : entry?.direction;
         if (direction !== 'asc' && direction !== 'desc') {
           throw new Error(

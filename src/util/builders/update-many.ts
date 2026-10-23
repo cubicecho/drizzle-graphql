@@ -187,7 +187,9 @@ export const createUpdateManyGenerator = (
               scope,
               tableName,
               table,
-              where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
+              where
+                ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, scope))
+                : undefined,
             ),
           };
         });

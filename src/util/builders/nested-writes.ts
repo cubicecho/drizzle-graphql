@@ -928,7 +928,7 @@ export const createNestedWriteRuntime = (params: {
       plan.targetTable,
       plan.targetTableName,
       filter,
-      relationFilterCtx(filterCtx, plan.targetTableName),
+      relationFilterCtx(filterCtx, plan.targetTableName, scope),
     );
     if (!condition) {
       throw drizzleError(

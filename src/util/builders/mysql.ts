@@ -259,7 +259,7 @@ const generateUpdate = (
       }
       await before();
 
-      const relationCtx = relationFilterCtx(filterCtx, tableName);
+      const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
       // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
       const filters = scopedWhere({
         scope,
@@ -340,7 +340,7 @@ const generateUpdateMany = (
             scope,
             tableName,
             table,
-            where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName)) : undefined,
+            where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, scope)) : undefined,
           ),
         };
       });
@@ -412,7 +412,7 @@ const generateDelete = (
       const hard = canHardDelete && args.hard === true;
       const scope = policies?.scope?.(context);
 
-      const relationCtx = relationFilterCtx(filterCtx, tableName);
+      const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
       // Same rule as update: the scope is ANDed on last, so a delete can only ever reach
       // rows inside it — an out-of-scope row is not matched rather than being refused.
       // A soft-deleting table adds the marker predicate the same way: `delete` only sees

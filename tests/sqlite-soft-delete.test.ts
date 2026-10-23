@@ -211,6 +211,24 @@ describe.sequential('SQLite soft delete', () => {
   });
 });
 
+describe.sequential('SQLite soft delete: relation filters', () => {
+  it('a marked row neither satisfies `some` nor blocks `none`', async () => {
+    const gqlSchema = buildWith(softDelete);
+    const res = await run(
+      gqlSchema,
+      `{
+        some: orgs(where: { items: { some: {} } }) { id }
+        none: orgs(where: { items: { none: {} } }) { id }
+      }`,
+    );
+
+    expect(res.errors).toBeUndefined();
+    // Org 2's only item is marked, so it has no visible items.
+    expect(res.data?.['some']).toEqual([{ id: 1 }]);
+    expect(res.data?.['none']).toEqual([{ id: 2 }]);
+  });
+});
+
 describe.sequential('SQLite soft delete: count mutations', () => {
   const counted: Partial<BuildSchemaConfig> = { ...softDelete, features: { countMutations: true } };
   const itemRows = async () => await db.select().from(Items).orderBy(Items.id);

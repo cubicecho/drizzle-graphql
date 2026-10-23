@@ -394,6 +394,22 @@ describe.sequential('MySQL scope', () => {
 
     expect((res.data!['orgs'] as any[]).map((o) => o.id)).toEqual([1, 2]);
   });
+
+  // A relation filter reads the target in a subquery, so the target's scope has to hold there
+  // too — on a read, and on a write that picks its rows with one.
+  it("applies the target's scope inside a relation filter, on reads and writes", async () => {
+    const gqlSchema = buildWith(scoped);
+    const where = `where: { items: { some: { name: { eq: "G1" } } } }`;
+    const read = await run(gqlSchema, `{ orgs(${where}) { id } }`, { orgId: 1 });
+    const update = await run(gqlSchema, `mutation { updateOrgs(set: { name: "hacked" }, ${where}) { isSuccess } }`, {
+      orgId: 1,
+    });
+
+    expect(read.errors).toBeUndefined();
+    expect(read.data!['orgs']).toEqual([]);
+    expect(update.errors).toBeUndefined();
+    expect((await db.select().from(Orgs).orderBy(Orgs.id)).map((o: any) => o.name)).toEqual(['Acme', 'Globex']);
+  });
 });
 
 describe.sequential('MySQL contextValues', () => {
