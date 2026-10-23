@@ -169,7 +169,9 @@ export type IdentifiedRows = {
    *
    * `false` means the arguments do not pin the rows down — an insert whose key the
    * database generates, a `where` that filters on something other than the primary key,
-   * a plural update with no filter at all, or a table with no primary key. `rows` is then
+   * a plural update with no filter at all, a table with no primary key, or an upsert whose
+   * `onConflict` conflicts on another unique key (the row updated is the one holding that
+   * key) or can skip a conflicting row (`action: NOTHING`, a `where` guard). `rows` is then
    * a best-effort subset-free superset: every entry in it is a row the key values name,
    * but other filters may narrow the real set further, and it may be empty.
    */
@@ -248,6 +250,26 @@ const keysFromWhere = (
 };
 
 /**
+ * Whether an upsert's `onConflict` leaves the primary-key values in `values` naming exactly
+ * the rows it writes. It does not when the conflict is detected on another unique key — the
+ * row updated is whichever one holds that key, not the one the supplied primary key names —
+ * nor when conflicting rows can be skipped: `action: NOTHING`, or a `where` guard.
+ */
+const conflictsOnKeyAlone = (onConflict: unknown, primaryKey: readonly string[]): boolean => {
+  if (!onConflict || typeof onConflict !== 'object') {
+    return true;
+  }
+  const { target, action, where } = onConflict as { target?: unknown; action?: unknown; where?: unknown };
+  if (action === 'NOTHING' || (where !== undefined && where !== null)) {
+    return false;
+  }
+  if (!Array.isArray(target) || !target.length) {
+    return true;
+  }
+  return [...target].sort().join(',') === [...primaryKey].sort().join(',');
+};
+
+/**
  * The rows a generated field's arguments are about, as primary-key values.
  *
  * The row identity of a mutation lives in a different argument for every operation —
@@ -290,7 +312,10 @@ export const identifyRows = (
       primaryKey,
       rows: rows.filter((row): row is Record<string, unknown> => !!row),
       // A row whose key the database generates is not identifiable before the write.
-      complete: entries.length > 0 && rows.every(Boolean),
+      complete:
+        entries.length > 0 &&
+        rows.every(Boolean) &&
+        (meta.operation !== 'upsert' || conflictsOnKeyAlone(args?.['onConflict'], primaryKey)),
     };
   }
 

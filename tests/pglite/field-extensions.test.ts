@@ -208,6 +208,25 @@ describe('identifyRows', () => {
     expect(identifyRows(mutationField('updateUsers'), {})).toMatchObject({ rows: [], complete: false });
   });
 
+  it('trusts an upsert’s keys only when it conflicts on the primary key and updates every conflict', () => {
+    const upsert = mutationField('upsertUsers');
+    const values = [{ id: 99, email: 'a@x', name: 'new' }];
+
+    expect(identifyRows(upsert, { values })).toMatchObject({ rows: [{ id: 99 }], complete: true });
+    expect(identifyRows(upsert, { values, onConflict: { target: ['id'], action: 'UPDATE' } })).toMatchObject({
+      complete: true,
+    });
+    // Conflicting on email updates whichever row holds that email — not row 99.
+    expect(
+      identifyRows(upsert, { values, onConflict: { target: ['email'], action: 'UPDATE', update: ['name'] } }),
+    ).toMatchObject({ rows: [{ id: 99 }], complete: false });
+    // A conflicting row can be skipped, so the keys are a superset of what is written.
+    expect(identifyRows(upsert, { values, onConflict: { action: 'NOTHING' } })).toMatchObject({ complete: false });
+    expect(identifyRows(upsert, { values, onConflict: { where: { name: { eq: 'x' } } } })).toMatchObject({
+      complete: false,
+    });
+  });
+
   it('returns undefined for a field the library did not generate', () => {
     expect(identifyRows({ extensions: {} }, { where: { id: { eq: 1 } } })).toBeUndefined();
   });
