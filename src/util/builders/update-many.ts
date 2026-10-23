@@ -154,6 +154,7 @@ export const createUpdateManyGenerator = (
 
         const { columns, hasRelations, withParams } = mutationSelection(info, {
           relationMap,
+          filterCtx,
           tables,
           tableName,
           typeName,
