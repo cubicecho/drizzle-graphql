@@ -253,7 +253,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
           type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(relType))),
           args: {
             where: { type: relSelectData.filters },
-            orderBy: { type: relSelectData.order! },
+            ...(relSelectData.order ? { orderBy: { type: relSelectData.order } } : {}),
             offset: { type: GraphQLInt },
             limit: { type: GraphQLInt },
             ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.typeName),

@@ -402,7 +402,8 @@ export type OrderByArgs<TTable extends Table> = {
 export type GeneratedTableTypesInputs = {
   insertInput: GraphQLInputObjectType;
   updateInput: GraphQLInputObjectType;
-  tableOrder: GraphQLInputObjectType;
+  /** Absent when the table has nothing to order by (see `generateTableOrderTypeCached`). */
+  tableOrder: GraphQLInputObjectType | undefined;
   tableFilters: GraphQLInputObjectType;
 };
 
@@ -427,5 +428,5 @@ export type SelectData<TWithOrder extends boolean> = {
   filters: GraphQLInputObjectType;
   tableFields: Record<string, ConvertedColumn>;
   relationFields: Record<string, ConvertedRelationColumnWithArgs>;
-  order: TWithOrder extends true ? GraphQLInputObjectType : undefined;
+  order: TWithOrder extends true ? GraphQLInputObjectType | undefined : undefined;
 };

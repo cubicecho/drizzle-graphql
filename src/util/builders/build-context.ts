@@ -655,7 +655,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
         ...(tableFeatures.update ? [updateInput] : []),
         ...(built.updateManyInput ? [built.updateManyInput] : []),
         tableFilters,
-        tableOrder,
+        ...(tableOrder ? [tableOrder] : []),
       ];
       activeInputs.forEach((e) => {
         inputs[e.name] = e;

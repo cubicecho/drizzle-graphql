@@ -1476,7 +1476,10 @@ unordered so no sort is paid for.
 
 `<Type>OrderBy` offers every column that has a meaningful order. JSON columns (see
 [Filtering inside JSON documents](#filtering-inside-json-documents)) and SQLite
-`blob({ mode: 'bigint' })` columns, whose bytes sort as text, are left out.
+`blob({ mode: 'bigint' })` columns, whose bytes sort as text, are left out. A table left with
+nothing to order by — no such column, and no to-one relation to a table that has one — gets no
+`<Type>OrderBy` and no `orderBy` argument, on its lists or on relation fields pointing at it, and
+likewise no `<Type>DistinctColumn` or `distinct` argument when no column qualifies for that.
 
 ## Default ordering
 
