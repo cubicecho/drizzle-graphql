@@ -27,6 +27,7 @@ import {
   type ContextValuesFor,
   extractFilters,
   type RelationFilterBase,
+  relationColumns,
   relationFilterCtx,
   resolveScope,
   resolveTypeName,
@@ -228,8 +229,9 @@ const buildThroughPlan = (
  * rather than a foreign-key one — see {@link buildThroughPlan}.
  *
  * Skipped, and so absent from the generated inputs rather than failing at runtime:
- * relations whose join columns cannot be read off the drizzle relation; and relations where
- * neither join column is unique, which leaves no way to tell which side stores the key.
+ * relations whose join columns cannot be read off the drizzle relation; relations joining on
+ * more than one column per side; and relations where neither join column is unique, which
+ * leaves no way to tell which side stores the key.
  */
 export const buildNestedWritePlans = (
   tables: Record<string, Table>,
@@ -306,6 +308,17 @@ export const buildNestedWritePlans = (
         if (throughPlan) {
           tablePlans[relationName] = throughPlan;
         }
+        continue;
+      }
+
+      // A relation joining on more than one column per side cannot be written by setting one
+      // key: `extractJoinColumns` reads the first pair only, so the rest of the join — a
+      // tenant column, say — would be neither matched nor written. Left out, as a junction
+      // with a composite join is.
+      if (
+        (relationColumns(relation, 'source')?.length ?? 0) > 1 ||
+        (relationColumns(relation, 'target')?.length ?? 0) > 1
+      ) {
         continue;
       }
 

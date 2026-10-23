@@ -1,6 +1,6 @@
 import { PGlite } from '@electric-sql/pglite';
 import { buildRelations, createRelationsHelper, eq, sql } from 'drizzle-orm';
-import { integer, pgTable, text } from 'drizzle-orm/pg-core';
+import { integer, pgTable, primaryKey, text } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
 import { type GraphQLInputObjectType, type GraphQLSchema, graphql } from 'graphql';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -109,5 +109,62 @@ describe.sequential('a relation whose foreign key is a contextValues column', ()
     const res = await run('mutation { createPostsSingle(values: { id: 7, title: "z" }) { id } }', caller);
     expect(res.errors).toBeUndefined();
     expect(await authorOf(7)).toBe(2);
+  });
+});
+
+describe.sequential('a relation joined on two columns', () => {
+  const Orders = pgTable(
+    'orders',
+    { tenantId: integer('tenant_id').notNull(), id: integer('id').notNull(), label: text('label') },
+    (t) => [primaryKey({ columns: [t.tenantId, t.id] })],
+  );
+  const Items = pgTable('items', {
+    id: integer('id').primaryKey(),
+    tenantId: integer('tenant_id'),
+    orderId: integer('order_id'),
+  });
+  const tables = { Orders, Items };
+  const r = createRelationsHelper(tables);
+  const relations = buildRelations(tables, {
+    Orders: {
+      items: r.many.Items({ from: [r.Orders.id, r.Orders.tenantId], to: [r.Items.orderId, r.Items.tenantId] }),
+    },
+    Items: {
+      order: r.one.Orders({ from: [r.Items.orderId, r.Items.tenantId], to: [r.Orders.id, r.Orders.tenantId] }),
+    },
+  });
+  const { state, run, inFields } = fixture(
+    { ...tables, relations },
+    [
+      'CREATE TABLE orders (tenant_id integer NOT NULL, id integer NOT NULL, label text, PRIMARY KEY (tenant_id, id))',
+      'CREATE TABLE items (id integer PRIMARY KEY, tenant_id integer, order_id integer)',
+    ],
+    { features: { nestedWrites: true } },
+  );
+  const item = async (id: number) => (await state.db.select().from(Items).where(eq(Items.id, id)))[0];
+
+  beforeEach(async () => {
+    await state.db.execute(sql`TRUNCATE orders, items`);
+    await state.db.insert(Orders).values([
+      { tenantId: 1, id: 1, label: 't1 order 1' },
+      { tenantId: 2, id: 1, label: 't2 order 1' },
+    ]);
+    await state.db.insert(Items).values([
+      { id: 1, tenantId: 1, orderId: 1 },
+      { id: 2, tenantId: 2, orderId: 1 },
+    ]);
+  });
+
+  it('is not offered as a nested input from either side', () => {
+    expect(inFields('UpdateOrdersInput')).not.toContain('items');
+    expect(inFields('CreateItemsInput')).not.toContain('order');
+  });
+
+  it("cannot detach another tenant's item", async () => {
+    const res = await run(
+      'mutation { updateOrdersSingle(where: { tenantId: { eq: 1 }, id: { eq: 1 } }, set: { items: { set: [] } }) { id } }',
+    );
+    expect(res.errors).toBeDefined();
+    expect(await item(2)).toEqual({ id: 2, tenantId: 2, orderId: 1 });
   });
 });
