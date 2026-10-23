@@ -447,6 +447,67 @@ describe.sequential('a child-side to-one connect', () => {
   });
 });
 
+describe.sequential('a parent-side create whose parent write matches nothing', () => {
+  const Users = pgTable('users', { id: integer('id').primaryKey(), name: text('name').notNull() });
+  const Posts = pgTable('posts', {
+    id: integer('id').primaryKey(),
+    title: text('title').notNull(),
+    authorId: integer('author_id'),
+  });
+  const tables = { Users, Posts };
+  const r = createRelationsHelper(tables);
+  const relations = buildRelations(tables, {
+    Posts: { author: r.one.Users({ from: r.Posts.authorId, to: r.Users.id }) },
+  });
+  const { state, run } = fixture(
+    { ...tables, relations },
+    [
+      'CREATE TABLE users (id integer PRIMARY KEY, name text NOT NULL)',
+      'CREATE TABLE posts (id integer PRIMARY KEY, title text NOT NULL, author_id integer)',
+    ],
+    { features: { nestedWrites: true, upsert: true } },
+  );
+  const users = async () => (await state.db.select().from(Users).orderBy(Users.id)).map((x: any) => x.id);
+
+  beforeEach(async () => {
+    await state.db.execute(sql`TRUNCATE users, posts`);
+    await state.db.insert(Posts).values({ id: 1, title: 'p' });
+  });
+
+  it('update leaves no orphan row behind', async () => {
+    const res = await run(
+      'mutation { updatePosts(where: { id: { eq: 999 } }, set: { author: { create: { id: 50, name: "orphan" } } }) { id } }',
+    );
+    expect(res.errors).toBeUndefined();
+    expect((res.data as any).updatePosts).toEqual([]);
+    expect(await users()).toEqual([]);
+  });
+
+  it('updateMany rolls back only the entry that matched nothing', async () => {
+    const res = await run(
+      `mutation { updatePostsMany(updates: [
+        { where: { id: { eq: 999 } }, set: { author: { create: { id: 50, name: "orphan" } } } },
+        { where: { id: { eq: 1 } }, set: { author: { create: { id: 51, name: "kept" } } } }
+      ]) { id authorId } }`,
+    );
+    expect(res.errors).toBeUndefined();
+    expect((res.data as any).updatePostsMany).toEqual([null, { id: 1, authorId: 51 }]);
+    expect(await users()).toEqual([51]);
+  });
+
+  it('an upsert whose conflict branch writes nothing leaves no orphan', async () => {
+    const res = await run(
+      `mutation { upsertPosts(
+        values: [{ id: 1, title: "dup", author: { create: { id: 52, name: "orphan" } } }, { id: 2, title: "new", author: { create: { id: 53, name: "kept" } } }]
+        onConflict: { action: NOTHING }
+      ) { id } }`,
+    );
+    expect(res.errors).toBeUndefined();
+    expect((res.data as any).upsertPosts).toEqual([{ id: 2 }]);
+    expect(await users()).toEqual([53]);
+  });
+});
+
 describe.sequential('the nested create payload and the soft-delete marker', () => {
   const Users = pgTable('users', { id: integer('id').primaryKey(), name: text('name').notNull() });
   const Posts = pgTable('posts', {
@@ -486,5 +547,47 @@ describe.sequential('the nested create payload and the soft-delete marker', () =
     );
     expect(res.errors).toBeDefined();
     expect(await state.db.select().from(Posts)).toEqual([]);
+  });
+});
+
+describe.sequential('a self-referencing nested write', () => {
+  const Users = pgTable('users', { id: integer('id').primaryKey(), managerId: integer('manager_id') });
+  const tables = { Users };
+  const r = createRelationsHelper(tables);
+  const relations = buildRelations(tables, {
+    Users: {
+      manager: r.one.Users({ from: r.Users.managerId, to: r.Users.id, alias: 'mgr' }),
+      reports: r.many.Users({ from: r.Users.id, to: r.Users.managerId, alias: 'mgr' }),
+    },
+  });
+  const { state, run } = fixture(
+    { ...tables, relations },
+    ['CREATE TABLE users (id integer PRIMARY KEY, manager_id integer)'],
+    { features: { nestedWrites: true } },
+  );
+
+  beforeEach(async () => {
+    await state.db.execute(sql`TRUNCATE users`);
+    await state.db.insert(Users).values([{ id: 1 }, { id: 2 }]);
+  });
+
+  it('returns the row as the nested write left it', async () => {
+    const res = await run(
+      'mutation { updateUsersSingle(where: { id: { eq: 1 } }, set: { reports: { connect: [{ id: { eq: 1 } }] } }) { id managerId } }',
+    );
+    expect(res.errors).toBeUndefined();
+    expect((await state.db.select().from(Users).where(eq(Users.id, 1)))[0].managerId).toBe(1);
+    expect((res.data as any).updateUsersSingle).toEqual({ id: 1, managerId: 1 });
+  });
+
+  it('returns every row of a plural update as it now stands, in order', async () => {
+    const res = await run(
+      'mutation { updateUsers(where: { id: { inArray: [1, 2] } }, set: { reports: { connect: [{ id: { eq: 2 } }] } }) { id managerId } }',
+    );
+    expect(res.errors).toBeUndefined();
+    // Both parents connect row 2 in turn; the last one wins.
+    const rows = (res.data as any).updateUsers.sort((a: any, b: any) => a.id - b.id);
+    const stored = await state.db.select().from(Users).orderBy(Users.id);
+    expect(rows).toEqual(stored.map((row: any) => ({ id: row.id, managerId: row.managerId })));
   });
 });

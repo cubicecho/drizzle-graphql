@@ -546,4 +546,22 @@ describe.sequential('SQLite nested writes under policies', () => {
     expect(result.errors).toBeUndefined();
     expect(await links()).toEqual(['1:2']);
   });
+
+  it('rolls back a parent-side create whose update matched nothing', async () => {
+    await db.insert(Posts).values({ title: 'P' });
+
+    const single = await run(
+      'mutation { updatePosts(where: { id: { eq: 999 } }, set: { author: { create: { name: "Orphan" } } }) { id } }',
+    );
+    expect(single.errors).toBeUndefined();
+    expect((single.data as any).updatePosts).toEqual([]);
+
+    const many = await run(`mutation { updatePostsMany(updates: [
+      { where: { id: { eq: 999 } }, set: { author: { create: { name: "Orphan" } } } },
+      { where: { id: { eq: 1 } }, set: { author: { create: { name: "Kept" } } } }
+    ]) { id } }`);
+    expect(many.errors).toBeUndefined();
+    expect((many.data as any).updatePostsMany).toEqual([null, { id: 1 }]);
+    expect((await authors()).map((row: any) => row.name)).toEqual(['Kept']);
+  });
 });
