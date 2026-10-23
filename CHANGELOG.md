@@ -1,3 +1,14 @@
+## [15.1.5](https://github.com/cubicecho/drizzle-graphql/compare/v15.1.4...v15.1.5) (2026-10-23)
+
+### Bug Fixes
+
+* confine nested writes to the rows a relation shows and the caller can reach ([79b2dc1](https://github.com/cubicecho/drizzle-graphql/commit/79b2dc1472921e01ebcddbfbdb654584e7da9390))
+* keep nested writes off relations keyed on a contextValues column ([925bbb2](https://github.com/cubicecho/drizzle-graphql/commit/925bbb2b66e40474166138ea0f5dafb633724b29))
+* leave multi-column relations out of nested writes ([378c4a8](https://github.com/cubicecho/drizzle-graphql/commit/378c4a8c0ad60fccea05efae2aff5a29c06d4f3f))
+* leave the soft-delete marker out of nested create payloads ([3b72321](https://github.com/cubicecho/drizzle-graphql/commit/3b7232157c14e4c95e11a500789f3932dc0ab5d7))
+* require a child-side to-one connect to match exactly one row ([decc949](https://github.com/cubicecho/drizzle-graphql/commit/decc94982046b5baeb71249ec86adc0c8353fdba))
+* roll back orphaned parent-side creates and return fresh rows ([f5e3bbd](https://github.com/cubicecho/drizzle-graphql/commit/f5e3bbde84680514314b935fd091d27636b35a12))
+
 ## [15.1.4](https://github.com/cubicecho/drizzle-graphql/compare/v15.1.3...v15.1.4) (2026-10-23)
 
 ### Bug Fixes
