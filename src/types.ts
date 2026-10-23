@@ -1812,6 +1812,17 @@ export type BuildSchemaConfig = {
    * ```ts
    * buildSchema(db, { describeTable: (tableName) => tableDocs[tableName] });
    * ```
+   *
+   * The second argument is the Drizzle table itself, so documentation attached to the table
+   * where it is declared can be read straight off it:
+   *
+   * ```ts
+   * const tableDocs = new WeakMap<object, string>();
+   * export const Users = pgTable('users', { ... });
+   * tableDocs.set(Users, 'A person who can sign in.');
+   *
+   * buildSchema(db, { describeTable: (_tableName, table) => tableDocs.get(table) });
+   * ```
    */
   describeTable?: TableDescriber;
   /**

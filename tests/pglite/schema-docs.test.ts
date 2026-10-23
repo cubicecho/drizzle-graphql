@@ -1,5 +1,5 @@
 import { PGlite } from '@electric-sql/pglite';
-import { buildRelations, createRelationsHelper } from 'drizzle-orm';
+import { buildRelations, createRelationsHelper, type Table } from 'drizzle-orm';
 import { boolean, integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
 import {
@@ -160,6 +160,53 @@ describe('describeTable and describeRelation', () => {
 
     expect(gqlSchema.getType('Authors')!.description).toBe('All Authors');
     expect(gqlSchema.getType('Posts')!.description).toBe('All Posts');
+  });
+
+  it('passes the drizzle table itself to describeTable', () => {
+    const seen: [string, Table][] = [];
+    build({
+      describeTable: (tableName, table) => {
+        seen.push([tableName, table]);
+        return undefined;
+      },
+    });
+
+    expect(seen.length).toBeGreaterThan(0);
+    for (const [tableName, table] of seen) {
+      expect(table).toBe(tableName === 'Authors' ? Authors : Posts);
+    }
+  });
+
+  it('reads docs attached to the built table and columns (README pattern)', () => {
+    const docs = new WeakMap<object, string>();
+    const described = <T extends Table>(
+      table: T,
+      description: string,
+      columns: Partial<Record<keyof T['_']['columns'], string>> = {},
+    ): T => {
+      docs.set(table, description);
+      for (const [key, columnText] of Object.entries(columns)) {
+        docs.set((table as any)[key], columnText as string);
+      }
+      return table;
+    };
+    described(Authors, 'A person who writes posts', { name: 'Display name' });
+
+    const gqlSchema = build({
+      describeColumn: (column) => docs.get(column),
+      describeTable: (_tableName, table) => docs.get(table),
+    });
+
+    expect(gqlSchema.getType('Authors')!.description).toBe('A person who writes posts');
+    expect(outFields(gqlSchema, 'Authors')['name']!.description).toBe('Display name');
+    expect(outFields(gqlSchema, 'Authors')['bio']!.description).toBeFalsy();
+    expect(gqlSchema.getType('Posts')!.description).toBeFalsy();
+  });
+
+  it('does not match a column builder, only the built column', () => {
+    const builder = text('nickname');
+    const Temp = pgTable('temp', { id: integer('id').primaryKey(), nickname: builder });
+    expect(Temp.nickname).not.toBe(builder);
   });
 
   it('describes relation fields on both sides', () => {

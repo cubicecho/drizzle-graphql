@@ -131,7 +131,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
     // The thunk reads container.fields, which will be populated after recursion completes.
     const shell = new GraphQLObjectType({
       name: typeName,
-      description: cacheCtx.docs.describeTable?.(tableName),
+      description: cacheCtx.docs.describeTable?.(tableName, table),
       fields: () => ({ ...tableFields, ...container!.fields }),
       extensions: { drizzle: tableTypeExtension(tableName, cacheCtx.primaryKeyOf?.(tableName) ?? []) },
     });
@@ -196,7 +196,7 @@ const generateSelectFields = <TWithOrder extends boolean>(
             defaultName: resolveTypeName(targetTableName, typeNameMapper),
             table: targetTableName,
           }),
-          description: cacheCtx.docs.describeTable?.(targetTableName),
+          description: cacheCtx.docs.describeTable?.(targetTableName, targetTable),
           fields: () => ({ ...targetTableFields, ...capturedTargetContainer.fields }),
           extensions: {
             drizzle: tableTypeExtension(targetTableName, cacheCtx.primaryKeyOf?.(targetTableName) ?? []),
@@ -460,7 +460,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
         defaultName: resolveTypeName(tableName, typeNameMapper),
         table: tableName,
       }),
-      description: cacheCtx.docs.describeTable?.(tableName),
+      description: cacheCtx.docs.describeTable?.(tableName, tables[tableName]!),
       fields: { ...tableFields, ...relationFields },
       extensions: { drizzle: tableTypeExtension(tableName, cacheCtx.primaryKeyOf?.(tableName) ?? []) },
     });

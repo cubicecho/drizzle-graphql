@@ -41,6 +41,7 @@ import {
   deletedArg,
   drizzleError,
   extractFilters,
+  extractJunctionColumns,
   extractRelationJoinColumns,
   type GeneratedTypeInfo,
   generateColumnEnum,
@@ -48,6 +49,7 @@ import {
   type RelationFilterBase,
   relationDeletedDefault,
   relationFilterCtx,
+  relationOwnCondition,
   resolveExecutor,
   resolveScope,
   resolveTypeName,
@@ -519,6 +521,22 @@ export const createRelationAggregateFactory = (
       return undefined;
     }
     const { localColPropName, foreignCol } = joinCols;
+    // A many-to-many relation reaches its target through a junction table: the parent's key
+    // is on the junction, not the target, so the rows are grouped by the junction's column and
+    // the target is joined to it. A junction this cannot express gets no aggregate field
+    // rather than one that counts the wrong rows.
+    const junction = extractJunctionColumns(relEntry);
+    if (junction === null) {
+      return undefined;
+    }
+    const groupCol = junction ? junction.sourceCol : foreignCol;
+    const ownCondition = relationOwnCondition(
+      relEntry,
+      parentTable,
+      targetTable,
+      getColumns(parentTable)[localColPropName] as Column,
+      groupCol,
+    );
     // An aggregate over a relation counts the rows the relation itself returns, so it takes
     // the same soft-delete default — a `scope: 'root'` target is not hidden here either.
     const defaultDeleted = relationDeletedDefault(policies?.softDelete, targetTableName, false);
@@ -581,7 +599,8 @@ export const createRelationAggregateFactory = (
             targetTableName,
             targetTable,
             and(
-              inArray(foreignCol, uniqueIds),
+              inArray(groupCol, uniqueIds),
+              ownCondition,
               whereArg
                 ? extractFilters(targetTable, targetTableName, whereArg, relationFilterCtx(filterCtx, targetTableName))
                 : undefined,
@@ -589,11 +608,9 @@ export const createRelationAggregateFactory = (
             deleted ?? defaultDeleted,
           );
 
-          const rows: any[] = await executor
-            .select({ [GROUP_KEY]: foreignCol, ...request.selection })
-            .from(targetTable)
-            .where(whereCondition)
-            .groupBy(foreignCol);
+          const selected = executor.select({ [GROUP_KEY]: groupCol, ...request.selection }).from(targetTable);
+          const joined = junction ? selected.innerJoin(junction.table, eq(junction.targetCol, foreignCol)) : selected;
+          const rows: any[] = await joined.where(whereCondition).groupBy(groupCol);
 
           const byKey = new Map(rows.map((row) => [row[GROUP_KEY], row]));
 
