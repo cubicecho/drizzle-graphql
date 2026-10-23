@@ -98,11 +98,29 @@ const OP_FNS: Record<AggregateOp, (col: Column) => any> = {
 /** Separator for flat select aliases (`avg__price`) — reassembled into nested output by the resolver. */
 const SEP = '__';
 
+/**
+ * Column types PostgreSQL can test for equality but has no `min`/`max` aggregate for, plus the
+ * SQLite bigint blob, whose bytes compare as text (`max(9, 10)` is 9). They still count
+ * distinct values and group.
+ */
+const NO_MIN_MAX_COLUMN_TYPES: ReadonlySet<string> = new Set([
+  'PgUUID',
+  'PgMacaddr',
+  'PgMacaddr8',
+  'PgBinaryVector',
+  'SQLiteBigInt',
+]);
+
 interface AggregateColumnSets {
   /** Columns avg/sum apply to: plain Int/Float scalars. */
   numeric: Record<string, Column>;
   /** Columns min/max apply to: anything with a total ordering the DB supports (numbers, strings, dates, enums). */
   orderable: Record<string, { column: Column; converted: ConvertedColumn }>;
+  /**
+   * Columns with an equality the DB supports, for countDistinct and grouping: the orderable ones
+   * plus the few types that compare but have no min/max ({@link NO_MIN_MAX_COLUMN_TYPES}).
+   */
+  comparable: Record<string, { column: Column; converted: ConvertedColumn }>;
   /** Every column — `count(col)` is valid whatever the type. */
   all: Record<string, Column>;
 }
@@ -146,6 +164,7 @@ const classifyAggregateColumns = (table: Table, tableName: string): AggregateCol
 
   const numeric: AggregateColumnSets['numeric'] = {};
   const orderable: AggregateColumnSets['orderable'] = {};
+  const comparable: AggregateColumnSets['comparable'] = {};
   const all: AggregateColumnSets['all'] = {};
 
   for (const [columnName, column] of Object.entries(visibleColumns(table))) {
@@ -170,13 +189,16 @@ const classifyAggregateColumns = (table: Table, tableName: string): AggregateCol
       continue;
     }
 
-    orderable[columnName] = { column, converted };
+    comparable[columnName] = { column, converted };
+    if (!NO_MIN_MAX_COLUMN_TYPES.has((column as any).columnType)) {
+      orderable[columnName] = { column, converted };
+    }
     if (dataType === 'number') {
       numeric[columnName] = column;
     }
   }
 
-  const sets = { numeric, orderable, all };
+  const sets = { numeric, orderable, comparable, all };
   byName.set(tableName, sets);
 
   return sets;
@@ -189,7 +211,7 @@ const classifyAggregateColumns = (table: Table, tableName: string): AggregateCol
  *   and avg/sum of integers overflow Int / produce decimals)
  * - `min` / `max` — per orderable column, the column's own (nullable) scalar type
  * - `countNonNull` — per column, `Int!`: how many matching rows have a non-null value there
- * - `countDistinct` — per orderable column, `Int!`: how many distinct non-null values there are
+ * - `countDistinct` — per comparable column, `Int!`: how many distinct non-null values there are
  * Each wrapper is omitted when no column qualifies for it.
  */
 export const generateAggregateTypes = (
@@ -203,7 +225,7 @@ export const generateAggregateTypes = (
     return cached;
   }
 
-  const { numeric, orderable, all } = classifyAggregateColumns(table, tableName);
+  const { numeric, orderable, comparable, all } = classifyAggregateColumns(table, tableName);
   const nameOf = (op: string) =>
     cacheCtx?.typeName({
       kind: 'aggregate',
@@ -244,8 +266,8 @@ export const generateAggregateTypes = (
   }
 
   // `count(col)` works on any column type; `count(distinct col)` needs an equality operator,
-  // which is the same requirement min/max have, so it reuses the orderable set.
-  const countSets: Record<string, Record<string, unknown>> = { countNonNull: all, countDistinct: orderable };
+  // so it takes the comparable set.
+  const countSets: Record<string, Record<string, unknown>> = { countNonNull: all, countDistinct: comparable };
   for (const [op, columns] of Object.entries(countSets)) {
     const columnNames = Object.keys(columns);
     if (!columnNames.length) {
@@ -679,15 +701,15 @@ const HAVING_OPS = { eq, ne, gt, gte, lt, lte } as const;
 
 /**
  * Columns a query can group on. Grouping needs an equality operator, which is the same
- * requirement min/max has, plus booleans — orderable excludes them because a min/max over
+ * requirement countDistinct has, plus booleans — comparable excludes them because a min/max over
  * true/false says nothing, but `GROUP BY isConfirmed` is perfectly ordinary.
  */
 const groupableColumns = (
   table: Table,
   tableName: string,
 ): Record<string, { column: Column; converted: ConvertedColumn }> => {
-  const { orderable } = classifyAggregateColumns(table, tableName);
-  const groupable: Record<string, { column: Column; converted: ConvertedColumn }> = { ...orderable };
+  const { comparable } = classifyAggregateColumns(table, tableName);
+  const groupable: Record<string, { column: Column; converted: ConvertedColumn }> = { ...comparable };
 
   for (const [columnName, column] of Object.entries(visibleColumns(table))) {
     if (groupable[columnName]) {
@@ -751,7 +773,7 @@ export const generateHavingInput = (
   typeName: string,
   cacheCtx?: TypeCacheCtx,
 ): GraphQLInputObjectType => {
-  const { numeric, orderable, all } = classifyAggregateColumns(table, tableName);
+  const { numeric, comparable, all } = classifyAggregateColumns(table, tableName);
   const resolveName = cacheCtx?.typeName ?? ((info: GeneratedTypeInfo) => info.defaultName);
   const numberFilter = aggregateNumberFilterType(resolveName);
 
@@ -765,7 +787,7 @@ export const generateHavingInput = (
     min: numeric,
     max: numeric,
     countNonNull: all,
-    countDistinct: orderable,
+    countDistinct: comparable,
   };
 
   for (const [op, columns] of Object.entries(opColumns)) {
