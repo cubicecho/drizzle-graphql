@@ -238,7 +238,7 @@ An excluded **column** disappears from every surface at once:
 | `<Type>OrderBy` | field removed |
 | `<Type>MinAggregate` / `<Type>MaxAggregate` / … | field removed |
 | `<Type>DistinctColumn` / `<Type>GroupByColumn` | value removed |
-| `<Type>ConflictColumn` (upsert targets) | value removed |
+| `<Type>ConflictTarget` / `<Type>UpdateColumn` (upsert `onConflict`) | value removed |
 
 Two details worth stating plainly:
 

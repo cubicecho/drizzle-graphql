@@ -1530,8 +1530,9 @@ export type BuildSchemaConfig = {
    * - A marked row still occupies its unique keys, so inserting a row that reuses the natural
    *   key of a deleted one still fails on the constraint.
    * - An upsert whose conflict target hits a marked row updates nothing on PostgreSQL and
-   *   SQLite (the conflict predicate excludes it) but revives it on MySQL, whose
-   *   `ON DUPLICATE KEY UPDATE` takes no predicate.
+   *   SQLite (the conflict predicate excludes it). On MySQL, whose `ON DUPLICATE KEY UPDATE`
+   *   takes no predicate, it overwrites the marked row's columns but leaves the marker set,
+   *   so the row stays deleted; `restore<Table>` brings it back.
    *
    * Marking a parent deleted does not mark its children — a cascade is a schema decision.
    */
