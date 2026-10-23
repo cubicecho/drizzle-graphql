@@ -5,7 +5,7 @@ import type { Column, Table } from 'drizzle-orm';
 import { getColumns } from 'drizzle-orm';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import type { SelectedColumnsRaw, SelectedSQLColumns, TableNamedRelations } from '../types.ts';
-import { extractRelationJoinColumns } from './relations.ts';
+import { extractRelationJoinColumnPairs } from './relations.ts';
 
 const rqbCrashTypes = ['SQLiteBigInt', 'SQLiteBlobJson', 'SQLiteBlobBuffer'];
 
@@ -73,9 +73,9 @@ const relationJoinColumns = (
       continue;
     }
 
-    const joinCols = extractRelationJoinColumns(relEntry, table, targetTable);
-    if (joinCols) {
-      needed.push(joinCols.localColPropName);
+    // Every join column: a relation on several columns is read by all of them.
+    for (const pair of extractRelationJoinColumnPairs(relEntry, table, targetTable) ?? []) {
+      needed.push(pair.localColPropName);
     }
   }
 

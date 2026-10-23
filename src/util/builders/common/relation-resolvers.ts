@@ -3,7 +3,7 @@
 // IN-clause query.
 
 import type { Column, Table } from 'drizzle-orm';
-import { and, eq, getColumns, gt, inArray, lte, or, type SQL, sql } from 'drizzle-orm';
+import { and, eq, getColumns, gt, lte, or, type SQL, sql } from 'drizzle-orm';
 import { getOrCreateLoader, getOrCreateRequestValue } from '../../batch-loader/index.ts';
 import { remapToGraphQLArrayOutput } from '../../data-mappers/index.ts';
 import { relationFieldExtension } from '../../extensions.ts';
@@ -33,7 +33,13 @@ import { relationDeletedDefault, resolveScope, withScope } from './policies.ts';
 import type { RelationFilterBase, RelationFilterContext } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import type { RelationResolverFactory } from './relations.ts';
-import { extractJunctionColumns, extractRelationJoinColumns, relationOwnCondition } from './relations.ts';
+import {
+  extractJunctionColumns,
+  extractRelationJoinColumnPairs,
+  joinKeyOf,
+  parentKeyCondition,
+  relationOwnCondition,
+} from './relations.ts';
 import { extractSelectedColumnsFromTreeSQLFormat } from './selected-columns.ts';
 
 /**
@@ -51,6 +57,7 @@ const batchedPaginatedRelationQuery = async (
   db: any,
   targetTable: Table,
   foreignCol: Column,
+  partitionCols: readonly Column[],
   whereCondition: SQL | undefined,
   orderByArg: any,
   limit: number | null,
@@ -73,9 +80,8 @@ const batchedPaginatedRelationQuery = async (
   const orderClause = orderExprs.length ? sql` order by ${sql.join(orderExprs, sql`, `)}` : sql``;
   // Namespaced alias so it can't collide with a real column on the target table.
   const RN = '__drizzle_graphql_rn';
-  // A junction relation partitions by the parent key the junction holds, not the target's own.
-  const partitionCol = junction ? junction.sourceCol : foreignCol;
-  const rowNumber = sql`row_number() over (partition by ${partitionCol}${orderClause})`.as(RN);
+  // Partitioned by the whole parent key: every join column, or the junction's source column.
+  const rowNumber = sql`row_number() over (partition by ${sql.join([...partitionCols], sql`, `)}${orderClause})`.as(RN);
 
   // Subquery: every target column plus a per-partition row number.
   const sub = withJunction(db.select({ ...cols, [RN]: rowNumber }).from(targetTable), junction, foreignCol)
@@ -147,25 +153,30 @@ export const createRelationResolverFactory =
       return undefined;
     }
 
-    const joinCols = extractRelationJoinColumns(relEntry, parentTable, targetTable);
-    if (!joinCols) {
+    // Every column pair the relation joins on. A row belongs to a parent only when all of them
+    // match, so the batch is keyed, filtered, grouped and partitioned by the whole tuple.
+    const joinPairs = extractRelationJoinColumnPairs(relEntry, parentTable, targetTable);
+    if (!joinPairs) {
       return undefined;
     }
 
-    const { localColPropName, foreignCol, foreignColPropName } = joinCols;
+    const localColPropNames = joinPairs.map((pair) => pair.localColPropName);
+    // The target column a junction is joined on. A usable `.through()` relation has exactly one
+    // pair — a composite junction is `null` below and refused.
+    const foreignCol = joinPairs[0]!.foreignCol;
     // A `.through()` relation keeps the parent key on its junction table: rows are read with
     // the junction joined in and grouped by its source column. `null` is a junction this
     // resolver cannot express (composite keys); the eager path still serves that relation.
     const junction = extractJunctionColumns(relEntry);
-    const groupCol = junction ? junction.sourceCol : foreignCol;
-    const groupKey = junction ? PARENT_KEY : foreignColPropName;
+    const groupCols = junction ? [junction.sourceCol] : joinPairs.map((pair) => pair.foreignCol);
+    const groupKeys = junction ? [PARENT_KEY] : joinPairs.map((pair) => pair.foreignColPropName);
     // The relation's own `where`, which drizzle applies on the eager path.
     const ownCondition = relationOwnCondition(
       relEntry,
       parentTable,
       targetTable,
-      getColumns(parentTable)[localColPropName] as Column,
-      groupCol,
+      joinPairs.map((pair) => pair.localCol),
+      groupCols,
     );
     // The mode this field reads its target with when the request passes no `deleted` — see
     // `relationDeletedDefault`. Required to-one relations and `scope: 'root'` tables read
@@ -207,7 +218,9 @@ export const createRelationResolverFactory =
       });
 
       const targetColumns = getColumns(targetTable);
-      columns[foreignColPropName] = foreignCol;
+      for (const pair of joinPairs) {
+        columns[pair.foreignColPropName] = pair.foreignCol;
+      }
       for (const [columnName] of cursorEntries ?? []) {
         const column = targetColumns[columnName];
         if (column) {
@@ -223,8 +236,9 @@ export const createRelationResolverFactory =
         return parent[relationName];
       }
 
-      const localValue = parent[localColPropName];
-      if (localValue == null) {
+      // A null in any join column matches nothing: SQL equality never holds for it.
+      const localValues = localColPropNames.map((name) => parent[name]);
+      if (localValues.some((value) => value == null)) {
         return isOne ? null : [];
       }
 
@@ -321,11 +335,11 @@ export const createRelationResolverFactory =
         );
       }
 
-      const loader = getOrCreateLoader(context, loaderKey, async (parentIds: readonly any[]) => {
+      const loader = getOrCreateLoader(context, loaderKey, async (parentKeys: readonly (readonly unknown[])[]) => {
         // Loaders are cached per context, so every call batched here shares this request's
         // executor — the transaction on the context, when there is one.
         const executor = resolveExecutor(db, context);
-        const uniqueIds = [...new Set(parentIds)];
+        const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key), key])).values()];
         // Loaders are keyed per context too, so the scope resolved here is this request's.
         const scope = resolveScope(policies, context, filterCtx);
         let whereCondition = withScope(
@@ -333,7 +347,7 @@ export const createRelationResolverFactory =
           targetTableName,
           targetTable,
           and(
-            inArray(groupCol, uniqueIds),
+            parentKeyCondition(groupCols, uniqueKeys),
             ownCondition,
             whereArg
               ? extractFilters(
@@ -362,13 +376,13 @@ export const createRelationResolverFactory =
             pkNames: targetPkNames,
             where: whereCondition,
             orderBy: orderByArg,
-            partitionBy: [groupCol],
+            partitionBy: groupCols,
             junction: junction
-              ? { table: junction.table, on: eq(junction.targetCol, foreignCol), parentKey: groupCol }
+              ? { table: junction.table, on: eq(junction.targetCol, foreignCol), parentKey: junction.sourceCol }
               : undefined,
           });
           if (!keys.length) {
-            return parentIds.map(() => (isOne ? null : []));
+            return parentKeys.map(() => (isOne ? null : []));
           }
           // Through a junction, a key is kept for one parent and not necessarily another, so the
           // batch is narrowed to (parent, row) pairs rather than to rows.
@@ -377,7 +391,10 @@ export const createRelationResolverFactory =
             junction
               ? or(
                   ...keys.map((key) =>
-                    and(eq(groupCol, key[DISTINCT_PARENT]), primaryKeyRestriction(targetTable, targetPkNames, [key])),
+                    and(
+                      eq(junction.sourceCol, key[DISTINCT_PARENT]),
+                      primaryKeyRestriction(targetTable, targetPkNames, [key]),
+                    ),
                   ),
                 )
               : primaryKeyRestriction(targetTable, targetPkNames, keys),
@@ -385,7 +402,9 @@ export const createRelationResolverFactory =
         }
 
         // A junction relation selects the parent key from the junction under its own alias.
-        const selection = junction ? { ...(columns ?? getColumns(targetTable)), [PARENT_KEY]: groupCol } : columns;
+        const selection = junction
+          ? { ...(columns ?? getColumns(targetTable)), [PARENT_KEY]: junction.sourceCol }
+          : columns;
 
         let rows: any[];
         if (limit != null || offset != null) {
@@ -396,6 +415,7 @@ export const createRelationResolverFactory =
             executor,
             targetTable,
             foreignCol,
+            groupCols,
             whereCondition,
             orderByArg,
             limit ?? null,
@@ -433,7 +453,7 @@ export const createRelationResolverFactory =
         // Group by parent key before remapping (remapping may delete null fields). A junction
         // relation's key is a helper column, dropped once it has been read.
         const keyOf = (row: any) => {
-          const key = String(row[groupKey]);
+          const key = joinKeyOf(groupKeys.map((name) => row[name]));
           if (junction) {
             delete row[PARENT_KEY];
           }
@@ -443,18 +463,18 @@ export const createRelationResolverFactory =
         if (isOne) {
           const byKey = new Map(rows.map((row: any) => [keyOf(row), row]));
           remapToGraphQLArrayOutput(rows, targetTableName, targetTable);
-          return parentIds.map((id) => byKey.get(String(id)) ?? null);
+          return parentKeys.map((key) => byKey.get(joinKeyOf(key)) ?? null);
         }
 
-        const grouped = new Map<string, any[]>(uniqueIds.map((id) => [String(id), []]));
+        const grouped = new Map<string, any[]>(uniqueKeys.map((key) => [joinKeyOf(key), []]));
         for (const row of rows) {
           grouped.get(keyOf(row))?.push(row);
         }
         remapToGraphQLArrayOutput(rows, targetTableName, targetTable);
-        return parentIds.map((id) => grouped.get(String(id)) ?? []);
+        return parentKeys.map((key) => grouped.get(joinKeyOf(key)) ?? []);
       });
 
-      return loader.load(localValue);
+      return loader.load(localValues);
     };
 
     // The context goes on here rather than at each throw: everything this resolver leans on —

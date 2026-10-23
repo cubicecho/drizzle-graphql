@@ -9,7 +9,6 @@ import {
   getColumns,
   gt,
   gte,
-  inArray,
   lt,
   lte,
   max,
@@ -42,9 +41,11 @@ import {
   drizzleError,
   extractFilters,
   extractJunctionColumns,
-  extractRelationJoinColumns,
+  extractRelationJoinColumnPairs,
   type GeneratedTypeInfo,
   generateColumnEnum,
+  joinKeyOf,
+  parentKeyCondition,
   type RelationAggregateFactory,
   type RelationFilterBase,
   relationDeletedDefault,
@@ -512,8 +513,10 @@ export const createRelationAggregateFactory = (
       return undefined;
     }
 
-    const joinCols = extractRelationJoinColumns(relEntry, parentTable, targetTable);
-    if (!joinCols) {
+    // Every column pair the relation joins on: a target row counts for a parent only when all
+    // of them match, so the batch is filtered and grouped by the whole tuple.
+    const joinPairs = extractRelationJoinColumnPairs(relEntry, parentTable, targetTable);
+    if (!joinPairs) {
       const key = `${tableName}.${relationName}`;
       if (!warned.has(key)) {
         warned.add(key);
@@ -521,7 +524,9 @@ export const createRelationAggregateFactory = (
       }
       return undefined;
     }
-    const { localColPropName, foreignCol } = joinCols;
+    const localColPropNames = joinPairs.map((pair) => pair.localColPropName);
+    // The target column a junction is joined on; a usable junction relation has a single pair.
+    const foreignCol = joinPairs[0]!.foreignCol;
     // A many-to-many relation reaches its target through a junction table: the parent's key
     // is on the junction, not the target, so the rows are grouped by the junction's column and
     // the target is joined to it. A junction this cannot express gets no aggregate field
@@ -530,13 +535,14 @@ export const createRelationAggregateFactory = (
     if (junction === null) {
       return undefined;
     }
-    const groupCol = junction ? junction.sourceCol : foreignCol;
+    const groupCols = junction ? [junction.sourceCol] : joinPairs.map((pair) => pair.foreignCol);
+    const groupAliases = groupCols.map((_, i) => `${GROUP_KEY}${i}`);
     const ownCondition = relationOwnCondition(
       relEntry,
       parentTable,
       targetTable,
-      getColumns(parentTable)[localColPropName] as Column,
-      groupCol,
+      joinPairs.map((pair) => pair.localCol),
+      groupCols,
     );
     // An aggregate over a relation counts the rows the relation itself returns, so it takes
     // the same soft-delete default — a `scope: 'root'` target is not hidden here either.
@@ -580,19 +586,19 @@ export const createRelationAggregateFactory = (
           return {};
         }
 
-        const localValue = parent[localColPropName];
+        const localValues = localColPropNames.map((name) => parent[name]);
         // No key to correlate on — the relation is empty by definition.
-        if (localValue == null) {
+        if (localValues.some((value) => value == null)) {
           return assembleAggregateRow({}, request, target);
         }
 
         const whereArg = args?.where;
         const deleted = args?.deleted;
 
-        const loader = getOrCreateLoader(context, loaderKey, async (parentIds: readonly any[]) => {
+        const loader = getOrCreateLoader(context, loaderKey, async (parentKeys: readonly (readonly unknown[])[]) => {
           // Loaders are cached per context, so the whole batch shares this request's executor.
           const executor = resolveExecutor(db, context);
-          const uniqueIds = [...new Set(parentIds)];
+          const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key), key])).values()];
           // An aggregate over a relation counts the same rows the relation itself returns,
           // so it is narrowed by the target table's scope too.
           const scope = resolveScope(policies, context, filterCtx);
@@ -601,7 +607,7 @@ export const createRelationAggregateFactory = (
             targetTableName,
             targetTable,
             and(
-              inArray(groupCol, uniqueIds),
+              parentKeyCondition(groupCols, uniqueKeys),
               ownCondition,
               whereArg
                 ? extractFilters(
@@ -615,18 +621,19 @@ export const createRelationAggregateFactory = (
             deleted ?? defaultDeleted,
           );
 
-          const selected = executor.select({ [GROUP_KEY]: groupCol, ...request.selection }).from(targetTable);
+          const groupSelection = Object.fromEntries(groupAliases.map((alias, i) => [alias, groupCols[i]!]));
+          const selected = executor.select({ ...groupSelection, ...request.selection }).from(targetTable);
           const joined = junction ? selected.innerJoin(junction.table, eq(junction.targetCol, foreignCol)) : selected;
-          const rows: any[] = await joined.where(whereCondition).groupBy(groupCol);
+          const rows: any[] = await joined.where(whereCondition).groupBy(...groupCols);
 
-          const byKey = new Map(rows.map((row) => [row[GROUP_KEY], row]));
+          const byKey = new Map(rows.map((row) => [joinKeyOf(groupAliases.map((alias) => row[alias])), row]));
 
           // A parent with no matching rows produces no group — hand back an empty row so it
           // assembles to count 0 / null aggregates rather than dropping the field.
-          return parentIds.map((id) => byKey.get(id) ?? {});
+          return parentKeys.map((key) => byKey.get(joinKeyOf(key)) ?? {});
         });
 
-        return assembleAggregateRow(await loader.load(localValue), request, target);
+        return assembleAggregateRow(await loader.load(localValues), request, target);
       } catch (e) {
         throw withErrorContext(toGraphQLError(e), errorCtx);
       }
