@@ -138,6 +138,42 @@ const jsonContains = (column: Column, columnName: string, value: any): SQL => {
 };
 
 /**
+ * The nodes of a SQLite JSON document as `(path, kind, value)` rows, for a structural
+ * comparison. Integers and reals share one kind so `1` and `1.0` are the same number, as they
+ * are on the other two dialects.
+ */
+const sqliteJsonNodes = (document: unknown): SQL =>
+  sql`select fullkey, case when type in ('integer', 'real') then 'number' else type end, atom from json_tree(${document})`;
+
+/**
+ * Whole-document `eq` / `ne` on a JSON column, comparing documents rather than their text:
+ * - Postgres: as `jsonb` (a plain `json` column has no `=` operator at all)
+ * - MySQL: against `CAST(? AS JSON)`; a bare string parameter would be a JSON string scalar
+ * - SQLite: the two documents' node sets must match both ways, so object key order and
+ *   whitespace do not matter, while array order still does
+ * A SQL NULL column matches neither, as with `=` / `<>` on any other column.
+ */
+const jsonEquality = (column: Column, columnName: string, value: unknown, negated: boolean): SQL => {
+  const serialized = JSON.stringify(value);
+  switch (columnDialect(column)) {
+    case 'pg': {
+      const left = (column as any).columnType === 'PgJson' ? sql`${column}::jsonb` : sql`${column}`;
+      return negated ? sql`${left} <> ${serialized}::jsonb` : sql`${left} = ${serialized}::jsonb`;
+    }
+    case 'mysql':
+      return negated ? sql`${column} <> cast(${serialized} as json)` : sql`${column} = cast(${serialized} as json)`;
+    case 'sqlite': {
+      const equal = sql`(not exists (${sqliteJsonNodes(column)} except ${sqliteJsonNodes(serialized)}) and not exists (${sqliteJsonNodes(serialized)} except ${sqliteJsonNodes(column)}))`;
+      return negated ? sql`(${column} is not null and not ${equal})` : sql`(${column} is not null and ${equal})`;
+    }
+    default:
+      throw drizzleError(`WHERE ${columnName}: JSON equality is not supported for this dialect!`, {
+        code: 'DRIZZLE_INVALID_FILTER',
+      });
+  }
+};
+
+/**
  * Constant predicates, used where an operator's operand list is empty and the answer is
  * therefore known without touching the column. Written as `1 = 0` / `1 = 1` rather than the
  * `FALSE` / `TRUE` keywords so they compile identically on all three dialects. Built fresh
@@ -347,7 +383,9 @@ export const extractFiltersColumn = <TColumn extends Column>(
       continue;
     }
 
-    if (operatorName in singleValueOps) {
+    if ((operatorName === 'eq' || operatorName === 'ne') && isJsonColumn(column)) {
+      variants.push(jsonEquality(column, columnName, operatorValue, operatorName === 'ne'));
+    } else if (operatorName in singleValueOps) {
       const singleValue = remapFromGraphQLCore(operatorValue, column, columnName);
       variants.push(
         foldCase
