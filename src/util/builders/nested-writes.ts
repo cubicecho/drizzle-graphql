@@ -9,7 +9,7 @@
 // foreign key and whether that column is nullable, so the schema never advertises
 // an operation whose every call would be a database error.
 // =============================================================================
-import { and, type Column, eq, getColumns, inArray, is, One, type Table } from 'drizzle-orm';
+import { and, type Column, eq, getColumns, inArray, is, One, type SQL, type Table } from 'drizzle-orm';
 import { GraphQLBoolean, GraphQLInputObjectType, type GraphQLInputType, GraphQLList, GraphQLNonNull } from 'graphql';
 import { capitalize } from '../case-ops/index.ts';
 import { remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
@@ -26,9 +26,11 @@ import {
   applyContextValues,
   type ContextValuesFor,
   extractFilters,
+  isRelationFilterReversed,
   type RelationFilterBase,
   relationColumns,
   relationFilterCtx,
+  relationOwnCondition,
   resolveScope,
   resolveTypeName,
   type ScopeResolver,
@@ -77,6 +79,18 @@ export type NestedRelationPlan = {
    */
   targetKeyColumns: Record<string, Column>;
   /**
+   * The relation's own `where`, compiled against the target: the rows the relation shows.
+   * Every statement that selects rows to attach or detach is narrowed by it, so a write
+   * through the relation reaches only what a read through it returns.
+   */
+  ownCondition?: () => SQL;
+  /**
+   * For a relation whose `where` is inherited from its reverse and so filters the *parent*:
+   * whether the parent row keyed `key` shows the relation at all. A child-side write through
+   * a relation that shows nothing for its parent is refused.
+   */
+  parentShows?: (executor: any, key: any) => Promise<boolean>;
+  /**
    * The relation field's inputs the relation's shape allows (no `create` through a junction,
    * no `disconnect` / `set` on a NOT NULL key), narrowed by {@link gateNestedWritePlans} to
    * the ones whose write the table it lands on has turned on.
@@ -114,6 +128,41 @@ export type NestedOps = Record<string, Record<string, any>>;
 const isOptionalOnInsert = (column: Column): boolean =>
   !column.notNull || !!column.hasDefault || !!(column as any).defaultFn;
 
+/**
+ * The plan fields that carry a relation's own `where` (see {@link relationOwnCondition}).
+ *
+ * A `where` on the target narrows every row selection the write makes, and takes `create`
+ * away: the row it inserts is attached whether or not it satisfies the `where`, so the
+ * relation could come back without it. A `where` inherited from the reverse relation filters
+ * the parent instead, and becomes a per-parent check.
+ */
+const ownWherePlan = (
+  relEntry: TableNamedRelations,
+  parentTable: Table,
+  targetTable: Table,
+  localCol: Column,
+): Pick<NestedRelationPlan, 'ownCondition' | 'parentShows'> => {
+  const condition = () => relationOwnCondition(relEntry, parentTable, targetTable, [localCol], [localCol]);
+  if (!condition()) {
+    return {};
+  }
+  if (!isRelationFilterReversed((relEntry as any).relation ?? relEntry)) {
+    return { ownCondition: () => condition()! };
+  }
+  // The reversed condition reads `localCol in (select localCol from parent where …)`, so
+  // matching it against the one parent row answers whether that row passes the filter.
+  return {
+    parentShows: async (executor, key) =>
+      (
+        await executor
+          .select({ key: localCol })
+          .from(parentTable)
+          .where(and(eq(localCol, key), condition()))
+          .limit(1)
+      ).length > 0,
+  };
+};
+
 /** The property name a column is stored under on its table, matched by identity. */
 const propNameOf = (table: Table, column: Column | undefined): string | undefined => {
   if (!column) {
@@ -144,6 +193,7 @@ const propNameOf = (table: Table, column: Column | undefined): string | undefine
  */
 const buildThroughPlan = (
   relationName: string,
+  relEntry: TableNamedRelations,
   relation: any,
   table: Table,
   targetTableName: string,
@@ -218,6 +268,7 @@ const buildThroughPlan = (
       targetCol,
     },
     targetKeyColumns: { [foreignColPropName]: foreignCol },
+    ...ownWherePlan(relEntry, table, targetTable, localCol),
     allowed: new Set(['connect', 'disconnect', 'set']),
   };
 };
@@ -298,6 +349,7 @@ export const buildNestedWritePlans = (
       if ((relation as any).through) {
         const throughPlan = buildThroughPlan(
           relationName,
+          relEntry,
           relation,
           table,
           targetTableName,
@@ -369,6 +421,12 @@ export const buildNestedWritePlans = (
       );
       targetKeyColumns[foreignColPropName] = foreignCol;
 
+      const ownWhere = ownWherePlan(relEntry, table, targetTable, localCol);
+      const ops: readonly NestedWriteOp[] = !fkColumn.notNull
+        ? isOne
+          ? ['create', 'connect', 'disconnect']
+          : ALL_OPS
+        : ['create', 'connect'];
       tablePlans[relationName] = {
         relationName,
         targetTableName,
@@ -381,12 +439,12 @@ export const buildNestedWritePlans = (
         fkSide,
         canDetach: !fkColumn.notNull,
         targetKeyColumns,
+        ...ownWhere,
         // `set` replaces a to-many's whole set, and `disconnect` / `set` need a key that can
         // be nulled. Whether the input is the update one, and whether `connect` has a filter
-        // to select with, is decided where the input types are built.
-        allowed: new Set<NestedWriteOp>(
-          !fkColumn.notNull ? (isOne ? ['create', 'connect', 'disconnect'] : ALL_OPS) : ['create', 'connect'],
-        ),
+        // to select with, is decided where the input types are built. A `where` on the
+        // target takes `create` away — see ownWherePlan.
+        allowed: new Set<NestedWriteOp>(ownWhere.ownCondition ? ops.filter((op) => op !== 'create') : ops),
       };
     }
 
@@ -996,8 +1054,10 @@ export const createNestedWriteRuntime = (params: {
     }
     // The filter selects rows to attach or detach, so it is a write against the target
     // table and is narrowed by its scope: `connect` cannot reach a row the caller cannot
-    // see, and out-of-scope rows are not detached.
-    return withScope(scope, plan.targetTableName, plan.targetTable, condition)!;
+    // see, and out-of-scope rows are not detached. The relation's own `where` narrows it the
+    // same way: only rows the relation shows are detached, and only rows it would show are
+    // attached.
+    return withScope(scope, plan.targetTableName, plan.targetTable, and(condition, plan.ownCondition?.()))!;
   };
 
   const assertSingleOperation = (plan: NestedRelationPlan, op: Record<string, any>) => {
@@ -1081,8 +1141,25 @@ export const createNestedWriteRuntime = (params: {
     // Replace-the-set first, so a `set` alongside a `connect` reads as "these rows, plus that
     // one". `set: []` unlinks everything and links nothing back, which is how the relation is
     // cleared.
+    //
+    // "Everything" is everything the caller could have attached: links to targets outside the
+    // scope, soft-deleted, or hidden by the relation's own `where` are kept, exactly as
+    // `disconnect` could not have reached them.
     if (supplied(op['set'])) {
-      await steps.run(executor.delete(through.table).where(eq(through.sourceCol, key)), 'set', 'delete');
+      const reachable = withScope(scope, plan.targetTableName, plan.targetTable, plan.ownCondition?.());
+      const unlink = reachable
+        ? and(
+            eq(through.sourceCol, key),
+            inArray(
+              through.targetCol,
+              executor
+                .select({ [plan.foreignColPropName]: plan.foreignCol })
+                .from(plan.targetTable)
+                .where(reachable),
+            ),
+          )
+        : eq(through.sourceCol, key);
+      await steps.run(executor.delete(through.table).where(unlink), 'set', 'delete');
       await link(asArray(op['set']), 'set');
     }
 
@@ -1118,7 +1195,14 @@ export const createNestedWriteRuntime = (params: {
       executor
         .update(plan.targetTable)
         .set({ [plan.foreignColPropName]: null })
-        .where(withScope(scope, plan.targetTableName, plan.targetTable, eq(plan.foreignCol, key))),
+        .where(
+          withScope(
+            scope,
+            plan.targetTableName,
+            plan.targetTable,
+            and(eq(plan.foreignCol, key), plan.ownCondition?.()),
+          ),
+        ),
       op,
       'update',
     );
@@ -1259,6 +1343,13 @@ export const createNestedWriteRuntime = (params: {
           if (key === undefined || key === null) {
             throw drizzleError(
               `Drizzle-GraphQL Error: cannot write through '${relationName}': the ${tableName} row has no '${plan.localColPropName}' value to attach to.`,
+              { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
+            );
+          }
+
+          if (plan.parentShows && !(await plan.parentShows(executor, key))) {
+            throw drizzleError(
+              `Drizzle-GraphQL Error: cannot write through '${relationName}': its \`where\` hides the relation on this ${tableName} row.`,
               { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
             );
           }

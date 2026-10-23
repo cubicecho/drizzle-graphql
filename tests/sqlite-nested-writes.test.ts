@@ -1,5 +1,5 @@
 import { type Client, createClient } from '@libsql/client';
-import { buildRelations, createRelationsHelper, sql } from 'drizzle-orm';
+import { buildRelations, createRelationsHelper, ne, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/libsql';
 import { integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { type GraphQLInputObjectType, type GraphQLSchema, graphql } from 'graphql';
@@ -505,6 +505,9 @@ describe.sequential("SQLite nested inputs follow the target table's features", (
 });
 
 describe.sequential('SQLite nested writes under policies', () => {
+  const runWith = (built: GraphQLSchema, source: string, contextValue: any = {}) =>
+    graphql({ schema: built, source, contextValue });
+
   it('leaves out a relation whose foreign key is a contextValues column', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -521,5 +524,26 @@ describe.sequential('SQLite nested writes under policies', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('keeps out-of-scope links on a many-to-many set', async () => {
+    await db.insert(Posts).values({ title: 'P' });
+    await db.insert(Tags).values([{ name: 'open' }, { name: 'secret' }]);
+    await db.insert(PostsToTags).values([
+      { postId: 1, tagId: 1 },
+      { postId: 1, tagId: 2 },
+    ]);
+    const scoped = buildSchema(db, {
+      features: { nestedWrites: true },
+      scope: { Tags: (_ctx: any, t: any) => ne(t.name, 'secret') },
+    }).schema;
+
+    const result = await runWith(
+      scoped,
+      'mutation { updatePostsSingle(where: { id: { eq: 1 } }, set: { tags: { set: [] } }) { id } }',
+    );
+
+    expect(result.errors).toBeUndefined();
+    expect(await links()).toEqual(['1:2']);
   });
 });
