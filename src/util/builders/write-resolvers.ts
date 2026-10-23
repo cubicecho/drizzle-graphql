@@ -327,7 +327,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
               extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, scope)),
           });
 
-          const runBatch = async (executor: any, { values: rows, plan }: (typeof batches)[number]) => {
+          const batchQuery = (executor: any, { values: rows, plan }: (typeof batches)[number]) => {
             let query = executor.insert(table).values(rows).returning(returning);
             // On conflict the statement updates a row that already exists, so the scope applies
             // to it exactly as it would to `update<Table>`: a conflicting row the caller cannot
@@ -344,18 +344,36 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
                     set: plan.set,
                     setWhere,
                   }) as any);
-            return (await query) as Record<string, any>[];
+            return query;
           };
 
           // Rows that write different columns on conflict go in as separate statements, which
           // have to commit or fail together, as the one statement they replace would have.
           if (batches.length === 1) {
-            return runBatch(target, batches[0]!);
+            return (await batchQuery(target, batches[0]!)) as Record<string, any>[];
           }
-          return target.transaction(async (tx: any) => {
-            const rows: Record<string, any>[] = [];
-            for (const batch of batches) {
-              rows.push(...(await runBatch(tx, batch)));
+          // The callback is not async: a synchronous SQLite driver (better-sqlite3, node:sqlite)
+          // commits the moment it returns, so every statement has to run before then. A SQLite
+          // statement is run with `.all()`, which executes at once on a sync driver; whether the
+          // first one returned a promise tells the two driver families apart, as `updateMany` does.
+          return target.transaction((tx: any) => {
+            const execute = (batch: (typeof batches)[number]) => {
+              const query = batchQuery(tx, batch);
+              return typeof query.all === 'function' ? query.all() : query;
+            };
+            const first = execute(batches[0]!);
+            if (typeof first?.then === 'function') {
+              return (async () => {
+                const rows: Record<string, any>[] = [...(await first)];
+                for (const batch of batches.slice(1)) {
+                  rows.push(...(await execute(batch)));
+                }
+                return rows;
+              })();
+            }
+            const rows: Record<string, any>[] = [...first];
+            for (const batch of batches.slice(1)) {
+              rows.push(...execute(batch));
             }
             return rows;
           });

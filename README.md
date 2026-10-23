@@ -1607,8 +1607,9 @@ mutation {
     out the rest of the row. Listing an unsupplied column in `update` is an error rather than
     a silent no-op
 -   That holds per row: a batch whose rows supply different columns is split into one
-    statement per run of consecutive rows that write the same columns, run in one transaction,
-    so a row that left a column out keeps it. The rows come back in the order they were sent
+    statement per run of consecutive rows that write the same columns, run in one transaction
+    (on a synchronous SQLite driver such as better-sqlite3 too), so a row that left a column out
+    keeps it. The rows come back in the order they were sent
 -   `target` must match one of the table's unique constraints exactly; anything else is
     rejected with the list of valid targets, instead of the database's opaque "no unique or
     exclusion constraint matching" error
