@@ -24,6 +24,7 @@ import {
   generateWriteCount,
   getPrimaryKeyPropNamesFromConfig,
   hardDeleteArg,
+  insertStamps,
   type MutationTxCtx,
   memoizeTableConfig,
   mysqlValuesColumnRef,
@@ -73,7 +74,7 @@ const generateInsertArray = (
     run: async ({ executor, args, context, before, after }) => {
       const input = applyContextValuesAll(
         remapFromGraphQLArrayInput(args.values, table),
-        policies?.contextValues?.(tableName),
+        insertStamps(policies, tableName),
         context,
       );
       if (!input.length) {
@@ -114,7 +115,7 @@ const generateInsertSingle = (
       await before();
       const input = applyContextValues(
         remapFromGraphQLSingleInput(args.values, table),
-        policies?.contextValues?.(tableName),
+        insertStamps(policies, tableName),
         context,
       );
 
@@ -156,7 +157,7 @@ const generateUpsert = (
       },
     },
     run: async ({ executor, args, context, before, after }) => {
-      const contextColumns = policies?.contextValues?.(tableName);
+      const contextColumns = insertStamps(policies, tableName);
       const input = applyContextValuesAll(
         single
           ? [remapFromGraphQLSingleInput(args.values as Record<string, any>, table)]

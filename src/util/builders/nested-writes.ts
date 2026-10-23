@@ -39,6 +39,7 @@ import {
   applyContextValues,
   type ContextValuesFor,
   extractFilters,
+  insertStamps,
   isRelationFilterReversed,
   type RelationFilterBase,
   relationColumns,
@@ -1163,6 +1164,8 @@ export const createNestedWriteRuntime = (params: {
 }): NestedWriteRuntime => {
   const { plans, filterCtx, policies, contextValues } = params;
   const onWrite = policies?.onWrite;
+  /** What an insert into `tableName` stamps — see {@link insertStamps}. */
+  const stampsOf = (tableName: string) => insertStamps({ contextValues, softDelete: policies?.softDelete }, tableName);
 
   /**
    * A `connect` / `disconnect` / `set` operand compiled to SQL. An operand that compiles to
@@ -1260,7 +1263,7 @@ export const createNestedWriteRuntime = (params: {
             rows.push(
               applyContextValues(
                 { [through.sourceColPropName]: key, [through.targetColPropName]: targetKey },
-                through.tableName ? contextValues?.(through.tableName) : undefined,
+                through.tableName ? stampsOf(through.tableName) : undefined,
                 context,
               ),
             );
@@ -1466,7 +1469,7 @@ export const createNestedWriteRuntime = (params: {
           await steps.before();
           const values = applyContextValues(
             remapFromGraphQLSingleInput({ ...op['create'] }, plan.targetTable),
-            contextValues?.(plan.targetTableName),
+            stampsOf(plan.targetTableName),
             context,
           );
           // The hook's RETURNING always includes the join column, which the patch reads.
@@ -1664,7 +1667,7 @@ export const createNestedWriteRuntime = (params: {
             const rows = asArray(op['create']).map((row) =>
               applyContextValues(
                 { ...remapFromGraphQLSingleInput({ ...row }, plan.targetTable), [plan.foreignColPropName]: key },
-                contextValues?.(plan.targetTableName),
+                stampsOf(plan.targetTableName),
                 context,
               ),
             );

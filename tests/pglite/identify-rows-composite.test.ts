@@ -3,7 +3,7 @@ import { buildRelations, sql } from 'drizzle-orm';
 import { integer, pgTable, primaryKey, serial, text } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
 import { graphql } from 'graphql';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildSchema, identifyRows } from '@/index';
 
 // identifyRows must only report `complete` when the filter really pins every key column to a
@@ -18,10 +18,13 @@ const tables = { Posts, Links };
 const relations = buildRelations(tables, {});
 
 let db: any;
-beforeEach(async () => {
+beforeAll(async () => {
   db = (drizzle as any)({ client: new PGlite(), relations });
   await db.execute(sql`create table posts (id serial primary key, title text not null)`);
   await db.execute(sql`create table links (a int not null, b int not null, note text, primary key (a, b))`);
+});
+beforeEach(async () => {
+  await db.execute(sql`truncate posts, links restart identity`);
   await db.execute(sql`insert into posts (title) values ('a'), ('b'), ('c')`);
   await db.execute(sql`insert into links (a, b) values (1, 1), (1, 2), (2, 1)`);
 });

@@ -449,6 +449,32 @@ export const applyContextValues = (
   return values;
 };
 
+/**
+ * The columns every insert into `tableName` stamps, as {@link applyContextValues} hooks: its
+ * `contextValues`, plus a NOT NULL soft-delete marker drizzle declares no default for. That
+ * marker is in no create input — only the delete and restore mutations write it — so without
+ * its restored value ("not deleted") every insert would be a NOT NULL violation. Like a
+ * context value it is server-owned: an upsert's conflict branch never overwrites it.
+ */
+export const insertStamps = (
+  policies: { contextValues?: ContextValuesFor; softDelete?: SoftDeleteFor } | undefined,
+  tableName: string,
+): Record<string, ContextValueHook> | undefined => {
+  const hooks = policies?.contextValues?.(tableName);
+  const marker = policies?.softDelete?.(tableName);
+  if (
+    !marker ||
+    marker.nullable ||
+    marker.column.hasDefault ||
+    (marker.column as any).defaultFn ||
+    hooks?.[marker.columnName]
+  ) {
+    return hooks;
+  }
+  const restored = marker.writeRestored;
+  return { ...hooks, [marker.columnName]: () => restored };
+};
+
 /** {@link applyContextValues} over a batch — every row in an insert gets its own evaluation. */
 export const applyContextValuesAll = (
   rows: Record<string, any>[],

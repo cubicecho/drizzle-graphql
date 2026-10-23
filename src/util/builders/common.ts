@@ -120,6 +120,7 @@ export {
   applyContextValuesAll,
   bindPolicies,
   deletedFilterEnumType,
+  insertStamps,
   junctionPolicy,
   junctionTableName,
   relationDeletedDefault,

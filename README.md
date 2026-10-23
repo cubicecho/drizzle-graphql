@@ -501,6 +501,7 @@ What a declared table gets:
 | `updatePosts`, `updatePostsMany`, a second `deletePosts` | a marked row is simply not matched |
 | nested `connect` / `disconnect` / `set` | a marked row cannot be attached or detached; a many-to-many `set` keeps the links to marked rows |
 | `CreatePostsInput`, `UpdatePostsInput`, nested `create` payloads | the marker column is **removed** — only the mutations write it |
+| every insert — root, upsert, nested `create`, a many-to-many link | a NOT NULL marker drizzle declares no default for is written as `restoredValue`; an upsert's conflict branch never overwrites it |
 
 Every read path also gains a `deleted` argument for the cases the default hides:
 
@@ -515,8 +516,9 @@ Every read path also gains a `deleted` argument for the cases the default hides:
 The marker column stays **readable and filterable** — it is only the write inputs that lose it,
 the same trade `contextValues` makes.
 
-Defaults come from the column's type: `new Date()` for a timestamp, an ISO string for text,
-`Date.now()` for a number, `true` for a boolean. A NOT NULL column has no "absent" state, so
+Defaults come from the column's type: `new Date()` for a timestamp, an ISO string for text (a
+`'string'`-mode date or datetime column gets the column's own text form, as an ordinary write
+of it would), `Date.now()` for a number, `true` for a boolean. A NOT NULL column has no "absent" state, so
 the predicate has to compare against a constant: any NOT NULL column other than a boolean must
 give `deletedValue` (a constant, not a function) and `restoredValue`, or the build throws.
 

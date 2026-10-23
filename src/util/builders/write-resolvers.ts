@@ -33,6 +33,7 @@ import {
   extractFilters,
   extractSelectedColumnsFromTreeSQLFormat,
   hardDeleteArg,
+  insertStamps,
   type LimitPolicyFor,
   type MutationTxCtx,
   mutationSelection,
@@ -172,7 +173,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           ? supplied.map((values) => nested.split(tableName, values))
           : undefined;
         const nestedEntries = entries?.some((entry) => nested!.hasOps(entry.ops)) ? entries : undefined;
-        const contextColumns = policies?.contextValues?.(tableName);
+        const contextColumns = insertStamps(policies, tableName);
         const scope = policies?.scope?.(context);
         const input = nestedEntries
           ? []
@@ -284,7 +285,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           ? supplied.map((values) => nested.split(tableName, values))
           : undefined;
         const nestedEntries = entries?.some((entry) => nested!.hasOps(entry.ops)) ? entries : undefined;
-        const contextColumns = policies?.contextValues?.(tableName);
+        const contextColumns = insertStamps(policies, tableName);
         const scope = policies?.scope?.(context);
         const input = nestedEntries
           ? []
