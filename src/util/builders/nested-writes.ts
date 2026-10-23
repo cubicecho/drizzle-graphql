@@ -643,11 +643,15 @@ export const createNestedWriteTypes = (params: {
 
     const omitted = plan.fkSide === 'child' ? plan.foreignColPropName : undefined;
     // Same rule as the table's own create input: a column the server fills in from context
-    // is not something a nested `create` may supply either.
+    // is not something a nested `create` may supply either, and neither is the soft-delete
+    // marker, which only the delete and restore mutations write.
     const contextColumns = cacheCtx.contextValuesOf?.(plan.targetTableName);
+    const markerColumn = cacheCtx.softDeleteOf?.(plan.targetTableName)?.columnName;
     const fields = Object.fromEntries(
       Object.entries(visibleColumns(plan.targetTable))
-        .filter(([columnName]) => columnName !== omitted && !contextColumns?.[columnName])
+        .filter(
+          ([columnName]) => columnName !== omitted && !contextColumns?.[columnName] && columnName !== markerColumn,
+        )
         .map(([columnName, column]) => [
           columnName,
           drizzleColumnToGraphQLType(column as Column, columnName, plan.targetTableName, false, true, true),

@@ -446,3 +446,45 @@ describe.sequential('a child-side to-one connect', () => {
     expect(await attachedTo1()).toEqual([101]);
   });
 });
+
+describe.sequential('the nested create payload and the soft-delete marker', () => {
+  const Users = pgTable('users', { id: integer('id').primaryKey(), name: text('name').notNull() });
+  const Posts = pgTable('posts', {
+    id: integer('id').primaryKey(),
+    title: text('title').notNull(),
+    authorId: integer('author_id'),
+    deletedAt: timestamp('deleted_at'),
+  });
+  const tables = { Users, Posts };
+  const r = createRelationsHelper(tables);
+  const relations = buildRelations(tables, {
+    Users: { posts: r.many.Posts({ from: r.Users.id, to: r.Posts.authorId }) },
+  });
+  const { state, run, inFields } = fixture(
+    { ...tables, relations },
+    [
+      'CREATE TABLE users (id integer PRIMARY KEY, name text NOT NULL)',
+      'CREATE TABLE posts (id integer PRIMARY KEY, title text NOT NULL, author_id integer, deleted_at timestamp)',
+    ],
+    { features: { nestedWrites: true }, softDelete: { Posts: { column: 'deletedAt' } } },
+  );
+
+  beforeEach(async () => {
+    await state.db.execute(sql`TRUNCATE users, posts`);
+    await state.db.insert(Users).values({ id: 1, name: 'a' });
+  });
+
+  it('leaves the marker out of the payload', () => {
+    expect(inFields('CreatePostsInput')).not.toContain('deletedAt');
+    expect(inFields('UsersPostsNestedCreatePayloadInput')).not.toContain('deletedAt');
+    expect(inFields('UsersPostsNestedCreatePayloadInput')).toContain('title');
+  });
+
+  it('cannot insert an already-deleted row', async () => {
+    const res = await run(
+      'mutation { updateUsersSingle(where: { id: { eq: 1 } }, set: { posts: { create: [{ id: 5, title: "x", deletedAt: "2020-01-01T00:00:00.000Z" }] } }) { id } }',
+    );
+    expect(res.errors).toBeDefined();
+    expect(await state.db.select().from(Posts)).toEqual([]);
+  });
+});
