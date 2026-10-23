@@ -46,6 +46,7 @@ import {
   generateColumnEnum,
   joinKeyOf,
   parentJoinValues,
+  parentKeyChunks,
   parentKeyCondition,
   type RelationAggregateFactory,
   type RelationFilterBase,
@@ -604,39 +605,44 @@ export const createRelationAggregateFactory = (
           // An aggregate over a relation counts the same rows the relation itself returns,
           // so it is narrowed by the target table's scope too.
           const scope = resolveScope(policies, context, filterCtx);
-          const whereCondition = withScope(
-            scope,
-            targetTableName,
-            targetTable,
-            and(
-              parentKeyCondition(groupCols, uniqueKeys),
-              ownCondition,
-              whereArg
-                ? extractFilters(
-                    targetTable,
-                    targetTableName,
-                    whereArg,
-                    relationFilterCtx(filterCtx, targetTableName, scope),
-                  )
-                : undefined,
-            ),
-            deleted ?? defaultDeleted,
-          );
-
           const groupSelection = Object.fromEntries(groupAliases.map((alias, i) => [alias, groupCols[i]!]));
-          const selected = executor.select({ ...groupSelection, ...request.selection }).from(targetTable);
-          const joined = junction ? selected.innerJoin(junction.table, eq(junction.targetCol, foreignCol)) : selected;
-          const rows: any[] = await joined.where(whereCondition).groupBy(...groupCols);
 
-          const byKey = new Map(
-            rows.map((row) => [
-              joinKeyOf(
-                groupAliases.map((alias) => row[alias]),
-                groupCols,
+          // A large batch is read in groups so that no query binds more parent keys than the
+          // dialects accept; each parent's group row comes from the one query its key is in.
+          const byKey = new Map<string, any>();
+          for (const chunk of parentKeyChunks(uniqueKeys, groupCols.length)) {
+            const whereCondition = withScope(
+              scope,
+              targetTableName,
+              targetTable,
+              and(
+                parentKeyCondition(groupCols, chunk),
+                ownCondition,
+                whereArg
+                  ? extractFilters(
+                      targetTable,
+                      targetTableName,
+                      whereArg,
+                      relationFilterCtx(filterCtx, targetTableName, scope),
+                    )
+                  : undefined,
               ),
-              row,
-            ]),
-          );
+              deleted ?? defaultDeleted,
+            );
+
+            const selected = executor.select({ ...groupSelection, ...request.selection }).from(targetTable);
+            const joined = junction ? selected.innerJoin(junction.table, eq(junction.targetCol, foreignCol)) : selected;
+            const rows: any[] = await joined.where(whereCondition).groupBy(...groupCols);
+            for (const row of rows) {
+              byKey.set(
+                joinKeyOf(
+                  groupAliases.map((alias) => row[alias]),
+                  groupCols,
+                ),
+                row,
+              );
+            }
+          }
 
           // A parent with no matching rows produces no group — hand back an empty row so it
           // assembles to count 0 / null aggregates rather than dropping the field.

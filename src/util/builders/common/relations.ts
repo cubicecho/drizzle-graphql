@@ -375,9 +375,45 @@ export const parentJoinValues = (parent: Record<string, any>, pairs: readonly Re
   });
 
 /**
+ * At most this many bound parameters for the parent keys of one batched relation query. SQLite
+ * accepts 32,766 per statement, Postgres and MySQL 65,535; the rest is left to the request's own
+ * filters. A batch with more parents runs as several queries.
+ */
+const MAX_PARENT_KEY_PARAMS = 10_000;
+
+/**
+ * The parent keys of one batch split into the groups each query reads, so that no query binds
+ * more than {@link MAX_PARENT_KEY_PARAMS} key values. Every parent lands in exactly one group, so
+ * a per-parent result — its rows, its window, its count — is the same whichever query made it.
+ */
+export const parentKeyChunks = <K>(keys: readonly K[], width: number): K[][] => {
+  const size = Math.max(1, Math.floor(MAX_PARENT_KEY_PARAMS / Math.max(1, width)));
+  const chunks: K[][] = [];
+  for (let i = 0; i < keys.length; i += size) {
+    chunks.push(keys.slice(i, i + size));
+  }
+  return chunks;
+};
+
+/**
+ * `or` over `conditions` as a balanced tree. A flat `a OR b OR c …` is parsed left-deep, and
+ * SQLite refuses an expression more than 1,000 levels deep; balanced, a batch of thousands of
+ * parents stays a few levels deep.
+ */
+const balancedOr = (conditions: readonly (SQL | undefined)[]): SQL | undefined => {
+  if (conditions.length <= 2) {
+    return or(...conditions);
+  }
+  const middle = Math.ceil(conditions.length / 2);
+  return or(balancedOr(conditions.slice(0, middle)), balancedOr(conditions.slice(middle)));
+};
+
+/**
  * The rows whose `cols` hold one of `keys`: `col IN (…)` for a single join column, and an `OR`
  * of per-parent equalities for several — `(a = 1 AND b = 1) OR (a = 1 AND b = 2)` — which
- * every dialect accepts, unlike a row-value `IN` list.
+ * every dialect accepts, unlike a row-value `IN` list. The `OR` is nested as a balanced tree.
+ * Callers split a large batch with {@link parentKeyChunks} first, which keeps either form within
+ * the dialects' parameter limits.
  */
 export const parentKeyCondition = (cols: readonly Column[], keys: readonly (readonly unknown[])[]): SQL | undefined =>
   cols.length === 1
@@ -385,7 +421,7 @@ export const parentKeyCondition = (cols: readonly Column[], keys: readonly (read
         cols[0]!,
         keys.map((key) => key[0]),
       )
-    : or(...keys.map((key) => and(...cols.map((col, i) => eq(col, key[i])))));
+    : balancedOr(keys.map((key) => and(...cols.map((col, i) => eq(col, key[i])))));
 
 /**
  * The junction table and its two columns for a `.through()` (many-to-many) relation:
