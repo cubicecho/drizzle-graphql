@@ -1556,18 +1556,26 @@ supplies no `orderBy` and the table has no [default ordering](#default-ordering)
 
 -   list queries with `limit` and/or `offset`
 -   `<tableName>Single` queries, which are an implicit `limit 1`
--   to-many relation fields with `limit` and/or `offset` (as a tiebreak appended to any
-    `orderBy` you do supply or [default ordering](#default-ordering) the target has — and under
-    `orderBy: {}` too — so per-parent slices are deterministic and the eager and lazy paths
-    return the same slice)
+-   to-many relation fields with `limit` and/or `offset`
 
-An explicit `orderBy` always takes precedence, composite primary keys are ordered by every
-key column, and an unpaginated list query of a table with no `defaults` entry is left
-unordered so no sort is paid for.
+When the request does supply an `orderBy` (or the table has a default ordering), the primary
+key is appended to it as a tiebreak on those same queries. A non-unique ordering leaves the
+order of tied rows to the database, so without it a tie could straddle a page boundary and
+come back on both pages or neither. On a relation field the tiebreak goes on under
+`orderBy: {}` too, so per-parent slices are deterministic and the eager and lazy paths return
+the same slice — the slice a root list page with the same arguments returns. A
+[`distinct`](#distinct) query is ordered by its `orderBy` plus the primary key whether or not it
+is paginated, on a root list and a relation field alike, and a [cursor](#cursor-pagination)
+page always is.
+
+Composite primary keys are ordered by every key column, and an unpaginated list query of a
+table with no `defaults` entry is left unordered (or ordered only as asked) so no sort is paid
+for.
 
 `offset` works without `limit` on every dialect. SQLite and MySQL only accept `OFFSET` after a
 `LIMIT`, so there an offset-only page is sent with a limit meaning "no limit" (`-1` on SQLite,
-2^53 - 1 on MySQL).
+2^53 - 1 on MySQL). `offset: 0` skips nothing, so it is the same as no `offset`: it sends no
+`OFFSET` and does not by itself make the query a page that needs ordering.
 
 `<Type>OrderBy` offers every column that has a meaningful order. JSON columns (see
 [Filtering inside JSON documents](#filtering-inside-json-documents)) and SQLite

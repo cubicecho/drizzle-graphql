@@ -458,14 +458,19 @@ export const createRelationResolverFactory =
             ).where(whereCondition) as any;
             const orderExprs = cursorEntries
               ? cursorOrderExprs(targetTable, cursorEntries)
-              : orderByArg
-                ? extractOrderBy(
-                    targetTable,
-                    orderByArg,
-                    relationFilterCtx(filterCtx, targetTableName, scope),
-                    whereArg,
-                  )
-                : [];
+              : [
+                  ...(orderByArg
+                    ? extractOrderBy(
+                        targetTable,
+                        orderByArg,
+                        relationFilterCtx(filterCtx, targetTableName, scope),
+                        whereArg,
+                      )
+                    : []),
+                  // The rows a `distinct` pass kept come back in its order — the request's plus
+                  // the primary key — as they do on a root list.
+                  ...(distinct ? primaryKeyOrderExprs(targetTable, targetPkNames) : []),
+                ];
             if (orderExprs.length) {
               q = q.orderBy(...orderExprs);
             }

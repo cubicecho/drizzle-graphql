@@ -177,8 +177,13 @@ export const runRelationalSelect = async (opts: {
           // exactly the ordering the cursor encodes and the keyset predicate compares against.
           (aliasedTable: Table) => cursorOrderExprs(aliasedTable, cursorEntries!)
         : orderBy
-          ? (aliasedTable: Table) =>
-              extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName, scope), where)
+          ? (aliasedTable: Table) => [
+              ...extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName, scope), where),
+              // A page of a non-unique ordering is only stable with a tiebreak: rows that tie
+              // could otherwise land on either side of a page boundary, so pages repeat or skip
+              // them. Same tiebreak a relation page and a cursor page use.
+              ...(needsDefaultOrder && pkNames?.length ? primaryKeyOrderExprs(aliasedTable, pkNames) : []),
+            ]
           : needsDefaultOrder && pkNames?.length
             ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
             : undefined,
