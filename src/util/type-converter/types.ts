@@ -1,4 +1,4 @@
-import type { Column } from 'drizzle-orm';
+import type { Column, Table } from 'drizzle-orm';
 import type {
   GraphQLEnumType,
   GraphQLFieldConfig,
@@ -111,8 +111,11 @@ export type ColumnDescriber = (column: Column, info: ColumnDocInfo) => string | 
  */
 export type ColumnDeprecator = (column: Column, info: ColumnDocInfo) => string | undefined;
 
-/** Supplies the GraphQL `description` for a table's object type. See `BuildSchemaConfig.describeTable`. */
-export type TableDescriber = (tableName: string) => string | undefined;
+/**
+ * Supplies the GraphQL `description` for a table's object type. Receives the Drizzle table
+ * itself as well as its schema key. See `BuildSchemaConfig.describeTable`.
+ */
+export type TableDescriber = (tableName: string, table: Table) => string | undefined;
 
 /**
  * Supplies the GraphQL `description` for a relation field. See
