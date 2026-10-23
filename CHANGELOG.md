@@ -1,3 +1,11 @@
+## [15.1.3](https://github.com/cubicecho/drizzle-graphql/compare/v15.1.2...v15.1.3) (2026-10-23)
+
+### Bug Fixes
+
+* apply the build's row policies in resolveSelection and selectionToWith ([0c92e03](https://github.com/cubicecho/drizzle-graphql/commit/0c92e03ed348b532b164c947d6711881775f1a84))
+* apply the target's scope and soft delete inside relation filters and relation ordering ([d74170e](https://github.com/cubicecho/drizzle-graphql/commit/d74170e6622170145708ab39d10fc27bb16ca5fc))
+* reject a default ordering on an excluded column ([7c1f6b5](https://github.com/cubicecho/drizzle-graphql/commit/7c1f6b542414b4e2bd03f57dcf60e96c0ff4663f))
+
 ## [15.1.2](https://github.com/cubicecho/drizzle-graphql/compare/v15.1.1...v15.1.2) (2026-10-23)
 
 ### Bug Fixes
