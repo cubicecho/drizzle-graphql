@@ -139,6 +139,8 @@ export {
   extractRelationJoinColumns,
   isRelationFilterReversed,
   joinKeyOf,
+  parentJoinValues,
+  parentKeyChunks,
   parentKeyCondition,
   relationColumns,
   relationOwnCondition,

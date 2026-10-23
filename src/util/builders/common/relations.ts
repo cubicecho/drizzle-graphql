@@ -4,6 +4,18 @@
 import type { Relation, SQL, Table } from 'drizzle-orm';
 import { and, Column, eq, getColumns, inArray, is, or, relationsFilterToSQL, sql } from 'drizzle-orm';
 import type { GraphQLFieldResolver, GraphQLObjectType } from 'graphql';
+import {
+  mySqlDateTimeTextToIso,
+  pgTimestampTextToIso,
+  rawColumnValue,
+  remapFromGraphQLCore,
+} from '../../data-mappers/index.ts';
+import { dateToCalendarDate } from '../../scalars/index.ts';
+import {
+  isDateOnlyColumn,
+  isMySqlDateTimeStringColumn,
+  isPgTimestampStringColumn,
+} from '../../type-converter/index.ts';
 import type { TableNamedRelations } from '../types.ts';
 
 /**
@@ -269,17 +281,139 @@ export const extractRelationJoinColumnPairs = (
   return pairs;
 };
 
+/** A decimal written as text, in a form `canonicalDecimal` can normalise. */
+const DECIMAL_TEXT = /^([+-]?)(\d*)(?:\.(\d*))?$/;
+
+/**
+ * Decimal text without the zeros that do not change its value: `1.500` and `01.5` are both
+ * `1.5`, as SQL compares them. Anything else (an exponent, `NaN`) is returned unchanged.
+ */
+const canonicalDecimal = (value: string): string => {
+  const match = DECIMAL_TEXT.exec(value);
+  if (!match || (!match[2] && !match[3])) {
+    return value;
+  }
+  const whole = match[2]!.replace(/^0+(?=\d)/, '') || '0';
+  const fraction = (match[3] ?? '').replace(/0+$/, '');
+  const digits = fraction ? `${whole}.${fraction}` : whole;
+  return match[1] === '-' && digits !== '0' ? `-${digits}` : digits;
+};
+
+/** An ISO instant without trailing zeros in its fraction: `…:00.100Z` and `…:00.1Z` agree. */
+const trimIsoFraction = (iso: string): string => iso.replace(/(\.\d*?)0+Z$/, '$1Z').replace(/\.Z$/, 'Z');
+
+/**
+ * One join value in a form both sides of a relation produce for the same SQL value. The parent's
+ * key and a related row's can arrive in different JS forms — a `Date` and the text of the same
+ * instant, `1.50` and `1.500` from decimals of different scale — and `String()` would tell them
+ * apart (it even drops a `Date`'s milliseconds).
+ */
+const joinValueKey = (value: unknown, column: Column | undefined): string => {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      return String(value);
+    }
+    if (column && isDateOnlyColumn(column)) {
+      return dateToCalendarDate(value) ?? value.toISOString();
+    }
+    return trimIsoFraction(value.toISOString());
+  }
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('hex');
+  }
+  if (typeof value === 'string' && column) {
+    if (isMySqlDateTimeStringColumn(column)) {
+      return trimIsoFraction(mySqlDateTimeTextToIso(value));
+    }
+    if (isPgTimestampStringColumn(column)) {
+      return trimIsoFraction(pgTimestampTextToIso(value));
+    }
+    if (((column as any).dataType ?? '') === 'string numeric') {
+      return canonicalDecimal(value);
+    }
+  }
+  return String(value);
+};
+
 /**
  * A string identifying one combination of join-column values, for grouping a batch's rows by
- * parent. Values are compared by their string form, as a single-column key always has been.
+ * parent. `columns` are the columns the values were read from, in the same order: the parent's
+ * join columns for a parent key, the target's (or the junction's) for a related row. Values the
+ * database compares equal give the same key — see {@link joinValueKey}.
  */
-export const joinKeyOf = (values: readonly unknown[]): string =>
-  values.length === 1 ? String(values[0]) : JSON.stringify(values.map((value) => String(value)));
+export const joinKeyOf = (values: readonly unknown[], columns?: readonly Column[]): string =>
+  values.length === 1
+    ? joinValueKey(values[0], columns?.[0])
+    : JSON.stringify(values.map((value, i) => joinValueKey(value, columns?.[i])));
+
+/**
+ * The parent row's values for the relation's join columns, as the database holds them. The row
+ * a relation field resolves under has been remapped to its GraphQL form — a `Date` is an ISO
+ * string by then, a `bigint` a decimal string — which can neither be bound back through every
+ * column's encoder (SQLite's integer timestamp calls `getTime()` on it) nor be compared with the
+ * related rows' decoded values. The values from before remapping are used when the row kept
+ * them; otherwise the output form is mapped back the way an input value would be.
+ */
+export const parentJoinValues = (parent: Record<string, any>, pairs: readonly RelationJoinColumnPair[]): unknown[] =>
+  pairs.map(({ localColPropName, localCol }) => {
+    const raw = rawColumnValue(parent, localColPropName);
+    if (raw.found) {
+      return raw.value;
+    }
+    const value = parent[localColPropName];
+    if (value == null) {
+      return value;
+    }
+    try {
+      return remapFromGraphQLCore(value, localCol, localColPropName);
+    } catch {
+      return value;
+    }
+  });
+
+/**
+ * At most this many bound parameters for the parent keys of one batched relation query. SQLite
+ * accepts 32,766 per statement, Postgres and MySQL 65,535; the rest is left to the request's own
+ * filters. A batch with more parents runs as several queries.
+ */
+const MAX_PARENT_KEY_PARAMS = 10_000;
+
+/**
+ * The parent keys of one batch split into the groups each query reads, so that no query binds
+ * more than {@link MAX_PARENT_KEY_PARAMS} key values. Every parent lands in exactly one group, so
+ * a per-parent result — its rows, its window, its count — is the same whichever query made it.
+ */
+export const parentKeyChunks = <K>(keys: readonly K[], width: number): K[][] => {
+  const size = Math.max(1, Math.floor(MAX_PARENT_KEY_PARAMS / Math.max(1, width)));
+  const chunks: K[][] = [];
+  for (let i = 0; i < keys.length; i += size) {
+    chunks.push(keys.slice(i, i + size));
+  }
+  return chunks;
+};
+
+/**
+ * `or` over `conditions` as a balanced tree. A flat `a OR b OR c …` is parsed left-deep, and
+ * SQLite refuses an expression more than 1,000 levels deep; balanced, a batch of thousands of
+ * parents stays a few levels deep.
+ */
+const balancedOr = (conditions: readonly (SQL | undefined)[]): SQL | undefined => {
+  if (conditions.length <= 2) {
+    return or(...conditions);
+  }
+  const middle = Math.ceil(conditions.length / 2);
+  return or(balancedOr(conditions.slice(0, middle)), balancedOr(conditions.slice(middle)));
+};
 
 /**
  * The rows whose `cols` hold one of `keys`: `col IN (…)` for a single join column, and an `OR`
  * of per-parent equalities for several — `(a = 1 AND b = 1) OR (a = 1 AND b = 2)` — which
- * every dialect accepts, unlike a row-value `IN` list.
+ * every dialect accepts, unlike a row-value `IN` list. The `OR` is nested as a balanced tree.
+ * Callers split a large batch with {@link parentKeyChunks} first, which keeps either form within
+ * the dialects' parameter limits.
  */
 export const parentKeyCondition = (cols: readonly Column[], keys: readonly (readonly unknown[])[]): SQL | undefined =>
   cols.length === 1
@@ -287,7 +421,7 @@ export const parentKeyCondition = (cols: readonly Column[], keys: readonly (read
         cols[0]!,
         keys.map((key) => key[0]),
       )
-    : or(...keys.map((key) => and(...cols.map((col, i) => eq(col, key[i])))));
+    : balancedOr(keys.map((key) => and(...cols.map((col, i) => eq(col, key[i])))));
 
 /**
  * The junction table and its two columns for a `.through()` (many-to-many) relation:

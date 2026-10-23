@@ -26,7 +26,7 @@ const MYSQL_DATETIME_TEXT = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2}(?:\.\d+)
  * two modes agree on the instant. Anything else (a zero date, a value already carrying an
  * offset) is returned unchanged for the scalar to accept or reject.
  */
-const mySqlDateTimeTextToIso = (value: string): string => {
+export const mySqlDateTimeTextToIso = (value: string): string => {
   const match = MYSQL_DATETIME_TEXT.exec(value);
   return match ? `${match[1]}T${match[2]}Z` : value;
 };
@@ -196,6 +196,39 @@ export const remapToGraphQLCore = (
   return value;
 };
 
+/**
+ * Where a remapped row keeps the values its columns held before remapping, by property name —
+ * only for the columns remapping changed. The output form is not always reversible: a
+ * microsecond timestamp read in `'string'` mode leaves as an ISO string the `DateTime` input
+ * side would cut to milliseconds. A relation field correlating on the row's join columns reads
+ * them from here (see `parentJoinValues`). Non-enumerable, so the row's own keys, JSON form and
+ * equality are unchanged.
+ */
+const RAW_COLUMN_VALUES = Symbol('drizzle-graphql.rawColumnValues');
+
+/**
+ * The value column `key` held in `row` before remapping: `{ found: true, value }` when remapping
+ * changed it, `{ found: false }` when it did not (or the row was never remapped), in which case
+ * `row[key]` is still the column's own value.
+ */
+export const rawColumnValue = (row: Record<string, any>, key: string): { found: boolean; value?: unknown } => {
+  const raw: Record<string, unknown> | undefined = row[RAW_COLUMN_VALUES as any];
+  return raw && key in raw ? { found: true, value: raw[key] } : { found: false };
+};
+
+const keepRawColumnValue = (row: Record<string, any>, key: string, value: unknown) => {
+  let raw: Record<string, unknown> | undefined = row[RAW_COLUMN_VALUES as any];
+  if (!raw) {
+    // No prototype, so `in` sees only the columns kept here.
+    raw = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(row, RAW_COLUMN_VALUES, { value: raw, enumerable: false, configurable: true });
+  }
+  // A row remapped a second time already holds its output form; the first value is the raw one.
+  if (!(key in raw)) {
+    raw[key] = value;
+  }
+};
+
 export const remapToGraphQLSingleOutput = (
   queryOutput: Record<string, any>,
   tableName: string,
@@ -228,7 +261,11 @@ export const remapToGraphQLSingleOutput = (
       continue;
     }
 
-    queryOutput[key] = remapToGraphQLCore(key, value, tableName, column, relationMap);
+    const remapped = remapToGraphQLCore(key, value, tableName, column, relationMap);
+    if (column && remapped !== value) {
+      keepRawColumnValue(queryOutput, key, value);
+    }
+    queryOutput[key] = remapped;
   }
 
   return queryOutput;

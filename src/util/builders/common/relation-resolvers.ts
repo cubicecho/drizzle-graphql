@@ -37,6 +37,8 @@ import {
   extractJunctionColumns,
   extractRelationJoinColumnPairs,
   joinKeyOf,
+  parentJoinValues,
+  parentKeyChunks,
   parentKeyCondition,
   relationOwnCondition,
 } from './relations.ts';
@@ -160,7 +162,8 @@ export const createRelationResolverFactory =
       return undefined;
     }
 
-    const localColPropNames = joinPairs.map((pair) => pair.localColPropName);
+    // The parent's join columns, which a parent key is read from and keyed by.
+    const localCols = joinPairs.map((pair) => pair.localCol);
     // The target column a junction is joined on. A usable `.through()` relation has exactly one
     // pair — a composite junction is `null` below and refused.
     const foreignCol = joinPairs[0]!.foreignCol;
@@ -237,7 +240,7 @@ export const createRelationResolverFactory =
       }
 
       // A null in any join column matches nothing: SQL equality never holds for it.
-      const localValues = localColPropNames.map((name) => parent[name]);
+      const localValues = parentJoinValues(parent, joinPairs);
       if (localValues.some((value) => value == null)) {
         return isOne ? null : [];
       }
@@ -339,139 +342,163 @@ export const createRelationResolverFactory =
         // Loaders are cached per context, so every call batched here shares this request's
         // executor — the transaction on the context, when there is one.
         const executor = resolveExecutor(db, context);
-        const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key), key])).values()];
+        const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key, localCols), key])).values()];
         // Loaders are keyed per context too, so the scope resolved here is this request's.
         const scope = resolveScope(policies, context, filterCtx);
-        let whereCondition = withScope(
-          scope,
-          targetTableName,
-          targetTable,
-          and(
-            parentKeyCondition(groupCols, uniqueKeys),
-            ownCondition,
-            whereArg
-              ? extractFilters(
-                  targetTable,
-                  targetTableName,
-                  whereArg,
-                  relationFilterCtx(filterCtx, targetTableName, scope),
-                )
-              : undefined,
-            cursorValues ? buildCursorCondition(targetTable, cursorEntries!, cursorValues, nullOrdering) : undefined,
-          ),
-          deleted ?? defaultDeleted,
-        );
 
-        if (distinct) {
-          // Partitioned by the foreign key as well as the requested columns, so "one row per
-          // distinct value" means one per parent — `users { posts(distinct: [status]) }` gives
-          // each user one post per status, not one post per status across all users. The pass
-          // runs first and the batch query is then narrowed to the keys it picked, exactly as
-          // the root list does.
-          const keys = await selectDistinctKeys({
-            db: executor,
-            table: targetTable,
-            tableName: targetTableName,
-            distinct,
-            pkNames: targetPkNames,
-            where: whereCondition,
-            orderBy: orderByArg,
-            partitionBy: groupCols,
-            junction: junction
-              ? { table: junction.table, on: eq(junction.targetCol, foreignCol), parentKey: junction.sourceCol }
-              : undefined,
-          });
-          if (!keys.length) {
-            return parentKeys.map(() => (isOne ? null : []));
-          }
-          // Through a junction, a key is kept for one parent and not necessarily another, so the
-          // batch is narrowed to (parent, row) pairs rather than to rows.
-          whereCondition = and(
-            whereCondition,
-            junction
-              ? or(
-                  ...keys.map((key) =>
-                    and(
-                      eq(junction.sourceCol, key[DISTINCT_PARENT]),
-                      primaryKeyRestriction(targetTable, targetPkNames, [key]),
-                    ),
-                  ),
-                )
-              : primaryKeyRestriction(targetTable, targetPkNames, keys),
-          );
-        }
-
-        // A junction relation selects the parent key from the junction under its own alias.
-        const selection = junction
-          ? { ...(columns ?? getColumns(targetTable)), [PARENT_KEY]: junction.sourceCol }
-          : columns;
-
-        let rows: any[];
-        if (limit != null || offset != null) {
-          // Per-parent pagination across the whole batch in one query. Its window ordering is
-          // the request's orderBy plus the primary key, which is the cursor's total order too,
-          // so a cursor page and a limit/offset page agree on row order.
-          rows = await batchedPaginatedRelationQuery(
-            executor,
+        // One query (or, with `distinct`, one pass and one query) over a group of parents,
+        // returning each parent's result by its key. Every parent's rows come from the query
+        // its key is in, so splitting the batch changes nothing a parent sees.
+        const loadChunk = async (chunkKeys: readonly (readonly unknown[])[]): Promise<Map<string, any>> => {
+          let whereCondition = withScope(
+            scope,
+            targetTableName,
             targetTable,
-            foreignCol,
-            groupCols,
-            whereCondition,
-            orderByArg,
-            limit ?? null,
-            offset ?? null,
-            targetPkNames,
-            selection,
-            relationFilterCtx(filterCtx, targetTableName, scope),
-            whereArg,
-            junction,
+            and(
+              parentKeyCondition(groupCols, chunkKeys),
+              ownCondition,
+              whereArg
+                ? extractFilters(
+                    targetTable,
+                    targetTableName,
+                    whereArg,
+                    relationFilterCtx(filterCtx, targetTableName, scope),
+                  )
+                : undefined,
+              cursorValues ? buildCursorCondition(targetTable, cursorEntries!, cursorValues, nullOrdering) : undefined,
+            ),
+            deleted ?? defaultDeleted,
           );
-        } else {
-          // Use plain db.select() so column refs are never aliased — avoids drizzle-orm v1
-          // RQB aliasing requirements that would require referencing via aliasedTable proxy.
-          let q = withJunction(
-            (selection ? executor.select(selection) : executor.select()).from(targetTable),
-            junction,
-            foreignCol,
-          ).where(whereCondition) as any;
-          const orderExprs = cursorEntries
-            ? cursorOrderExprs(targetTable, cursorEntries)
-            : orderByArg
-              ? extractOrderBy(targetTable, orderByArg, relationFilterCtx(filterCtx, targetTableName, scope), whereArg)
-              : [];
-          if (orderExprs.length) {
-            q = q.orderBy(...orderExprs);
-          }
-          rows = await q;
-        }
 
-        // Before remapping, which rewrites dates and bigints into their transport forms.
-        if (cursorEntries) {
-          attachRowCursors(rows, cursorEntries);
-        }
-
-        // Group by parent key before remapping (remapping may delete null fields). A junction
-        // relation's key is a helper column, dropped once it has been read.
-        const keyOf = (row: any) => {
-          const key = joinKeyOf(groupKeys.map((name) => row[name]));
-          if (junction) {
-            delete row[PARENT_KEY];
+          if (distinct) {
+            // Partitioned by the foreign key as well as the requested columns, so "one row per
+            // distinct value" means one per parent — `users { posts(distinct: [status]) }` gives
+            // each user one post per status, not one post per status across all users. The pass
+            // runs first and the batch query is then narrowed to the keys it picked, exactly as
+            // the root list does.
+            const keys = await selectDistinctKeys({
+              db: executor,
+              table: targetTable,
+              tableName: targetTableName,
+              distinct,
+              pkNames: targetPkNames,
+              where: whereCondition,
+              orderBy: orderByArg,
+              partitionBy: groupCols,
+              junction: junction
+                ? { table: junction.table, on: eq(junction.targetCol, foreignCol), parentKey: junction.sourceCol }
+                : undefined,
+            });
+            if (!keys.length) {
+              return new Map();
+            }
+            // Through a junction, a key is kept for one parent and not necessarily another, so the
+            // batch is narrowed to (parent, row) pairs rather than to rows.
+            whereCondition = and(
+              whereCondition,
+              junction
+                ? or(
+                    ...keys.map((key) =>
+                      and(
+                        eq(junction.sourceCol, key[DISTINCT_PARENT]),
+                        primaryKeyRestriction(targetTable, targetPkNames, [key]),
+                      ),
+                    ),
+                  )
+                : primaryKeyRestriction(targetTable, targetPkNames, keys),
+            );
           }
-          return key;
+
+          // A junction relation selects the parent key from the junction under its own alias.
+          const selection = junction
+            ? { ...(columns ?? getColumns(targetTable)), [PARENT_KEY]: junction.sourceCol }
+            : columns;
+
+          let rows: any[];
+          if (limit != null || offset != null) {
+            // Per-parent pagination across the whole batch in one query. Its window ordering is
+            // the request's orderBy plus the primary key, which is the cursor's total order too,
+            // so a cursor page and a limit/offset page agree on row order.
+            rows = await batchedPaginatedRelationQuery(
+              executor,
+              targetTable,
+              foreignCol,
+              groupCols,
+              whereCondition,
+              orderByArg,
+              limit ?? null,
+              offset ?? null,
+              targetPkNames,
+              selection,
+              relationFilterCtx(filterCtx, targetTableName, scope),
+              whereArg,
+              junction,
+            );
+          } else {
+            // Use plain db.select() so column refs are never aliased — avoids drizzle-orm v1
+            // RQB aliasing requirements that would require referencing via aliasedTable proxy.
+            let q = withJunction(
+              (selection ? executor.select(selection) : executor.select()).from(targetTable),
+              junction,
+              foreignCol,
+            ).where(whereCondition) as any;
+            const orderExprs = cursorEntries
+              ? cursorOrderExprs(targetTable, cursorEntries)
+              : orderByArg
+                ? extractOrderBy(
+                    targetTable,
+                    orderByArg,
+                    relationFilterCtx(filterCtx, targetTableName, scope),
+                    whereArg,
+                  )
+                : [];
+            if (orderExprs.length) {
+              q = q.orderBy(...orderExprs);
+            }
+            rows = await q;
+          }
+
+          // Before remapping, which rewrites dates and bigints into their transport forms.
+          if (cursorEntries) {
+            attachRowCursors(rows, cursorEntries);
+          }
+
+          // Group by parent key before remapping (remapping may delete null fields). A junction
+          // relation's key is a helper column, dropped once it has been read.
+          const keyOf = (row: any) => {
+            const key = joinKeyOf(
+              groupKeys.map((name) => row[name]),
+              groupCols,
+            );
+            if (junction) {
+              delete row[PARENT_KEY];
+            }
+            return key;
+          };
+
+          if (isOne) {
+            const byKey = new Map(rows.map((row: any) => [keyOf(row), row]));
+            remapToGraphQLArrayOutput(rows, targetTableName, targetTable);
+            return byKey;
+          }
+
+          const grouped = new Map<string, any[]>(chunkKeys.map((key) => [joinKeyOf(key, localCols), []]));
+          for (const row of rows) {
+            grouped.get(keyOf(row))?.push(row);
+          }
+          remapToGraphQLArrayOutput(rows, targetTableName, targetTable);
+          return grouped;
         };
 
-        if (isOne) {
-          const byKey = new Map(rows.map((row: any) => [keyOf(row), row]));
-          remapToGraphQLArrayOutput(rows, targetTableName, targetTable);
-          return parentKeys.map((key) => byKey.get(joinKeyOf(key)) ?? null);
+        // A large batch is read in groups, so no query binds more parent keys than the
+        // dialects accept. The groups run one after another, on the same executor.
+        const results = new Map<string, any>();
+        for (const chunk of parentKeyChunks(uniqueKeys, groupCols.length)) {
+          for (const [key, value] of await loadChunk(chunk)) {
+            results.set(key, value);
+          }
         }
-
-        const grouped = new Map<string, any[]>(uniqueKeys.map((key) => [joinKeyOf(key), []]));
-        for (const row of rows) {
-          grouped.get(keyOf(row))?.push(row);
-        }
-        remapToGraphQLArrayOutput(rows, targetTableName, targetTable);
-        return parentKeys.map((key) => grouped.get(joinKeyOf(key)) ?? []);
+        return parentKeys.map((key) => results.get(joinKeyOf(key, localCols)) ?? (isOne ? null : []));
       });
 
       return loader.load(localValues);

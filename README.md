@@ -1375,7 +1375,10 @@ can count or summarise related rows without fetching them:
 All parents in a selection are aggregated with a single
 `SELECT <fk>, … WHERE <fk> IN (…) GROUP BY <fk>` per request, so `postsAggregate` on a list of
 users is one extra query, not one per user. Differently-aliased selections with different
-`where` arguments are batched separately.
+`where` arguments are batched separately. A batch whose parent keys would bind more than
+10,000 parameters (10,000 parents on a single-column key, 5,000 on a two-column one) is split
+into several such queries, which keeps it within SQLite's 32,766- and Postgres/MySQL's
+65,535-parameter limits; the batched relation fields split the same way.
 
 ## Distinct
 
@@ -1604,8 +1607,9 @@ mutation {
     out the rest of the row. Listing an unsupplied column in `update` is an error rather than
     a silent no-op
 -   That holds per row: a batch whose rows supply different columns is split into one
-    statement per run of consecutive rows that write the same columns, run in one transaction,
-    so a row that left a column out keeps it. The rows come back in the order they were sent
+    statement per run of consecutive rows that write the same columns, run in one transaction
+    (on a synchronous SQLite driver such as better-sqlite3 too), so a row that left a column out
+    keeps it. The rows come back in the order they were sent
 -   `target` must match one of the table's unique constraints exactly; anything else is
     rejected with the list of valid targets, instead of the database's opaque "no unique or
     exclusion constraint matching" error
@@ -2486,7 +2490,15 @@ Generated schemas resolve nested relations without N+1 query explosions:
     `ROW_NUMBER() OVER (PARTITION BY …)` window function — still one query, not one per
     parent. A relation joined on several columns (`from: [a, b], to: [x, y]`) is batched,
     grouped and partitioned by all of them, matching the parents with
-    `(a = … AND b = …) OR …` instead of `IN (…)`.
+    `(a = … AND b = …) OR …` instead of `IN (…)`, nested as a balanced tree so a batch of
+    thousands of parents stays within SQLite's expression-depth limit. A batch over 10,000 key
+    parameters runs as several queries, each parent read whole by one of them. The parent's join values are bound as the
+    column holds them, not in their GraphQL output form, so a relation joined on a timestamp,
+    `date`, `bigint` or decimal column works on this path and in `<relation>Aggregate` too. A
+    parent row this library remapped keeps its original values for that; a parent your own
+    resolver built in GraphQL form (an ISO string for a timestamp, say) has them mapped back the
+    way an input value would be, which cuts a `'string'`-mode microsecond timestamp to
+    milliseconds — return the row as drizzle read it to keep the full precision.
 
     ```Typescript
     // entities.fieldResolvers is keyed by table name, then relation name
