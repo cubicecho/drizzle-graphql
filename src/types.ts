@@ -1561,6 +1561,9 @@ export type BuildSchemaConfig = {
    *   `drizzleExecutorKey`, the request's auto-transaction, or, for a field that would
    *   otherwise have run unwrapped, a transaction opened for it because the hook is there.
    * - **Throwing rolls the mutation back.** That is the point of the position.
+   * - **SQLite needs an asynchronous driver** (libsql, D1). A synchronous one (better-sqlite3,
+   *   `node:sqlite`) commits before an awaited hook runs, so `buildSchema` throws for `onWrite`
+   *   on one rather than let a throwing hook leave its write behind.
    * - **`rows` are the post-write rows as the database returned them**, before the output
    *   mapper. Empty at the `before` position, and on MySQL, whose mutations return no rows.
    * - **A row holds the columns the client selected**, because `RETURNING` is built from the

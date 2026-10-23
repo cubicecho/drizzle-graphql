@@ -2541,6 +2541,10 @@ The payload:
     not have to know which.
 -   **Throwing rolls the mutation back.** A hook that can only log is what a logging plugin
     already does.
+-   **SQLite needs an asynchronous driver** (libsql, D1). A synchronous one (better-sqlite3,
+    `node:sqlite`) commits before an awaited hook runs, so a throw could not roll anything
+    back; `buildSchema` throws for `onWrite` on one, as it does for `nestedWrites` and
+    `transactions: 'auto'`.
 -   **`rows` is empty** at the `before` position, and on MySQL, whose mutations return no rows.
     The `before` position and `args` still work there.
 -   With `nestedWrites`, the hooks of **every table a nested write reaches** fire too —

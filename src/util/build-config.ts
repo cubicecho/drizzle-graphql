@@ -325,7 +325,9 @@ export const resolveBuildConfig = (
       }
     }
   }
-  const onWrite: WriteHookFor | undefined = writeHooks.size
+  // Only installed when some table actually resolved a hook, so the SQLite preflight can tell
+  // whether a synchronous driver would be asked to roll one back.
+  const onWrite: WriteHookFor | undefined = [...writeHooks.values()].some(Boolean)
     ? (tableName: string) => writeHooks.get(tableName)
     : undefined;
 
