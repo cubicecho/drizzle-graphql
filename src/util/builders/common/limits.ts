@@ -6,6 +6,15 @@ import { columnDialect } from './column-filters.ts';
 import { type DrizzleErrorContext, drizzleError } from './errors.ts';
 
 /**
+ * The `offset` a read actually sends. `offset: 0` skips nothing, so it is dropped here rather
+ * than carried into the SQL: an `OFFSET` with no `LIMIT` is invalid on SQLite and MySQL, and
+ * {@link offsetOnlyLimit} only supplies the stand-in limit for an offset that skips rows. Read
+ * after {@link assertPagingNotNegative}, so a negative offset is still rejected rather than
+ * dropped.
+ */
+export const effectiveOffset = (offset: number | null | undefined): number | undefined => offset || undefined;
+
+/**
  * The `limit` to send with an `offset` the request gave without one. SQLite and MySQL accept
  * `OFFSET` only after a `LIMIT`, so `offset` alone has to carry a limit that means "all of
  * them": SQLite reads `LIMIT -1` that way, and on MySQL it is the largest integer every driver

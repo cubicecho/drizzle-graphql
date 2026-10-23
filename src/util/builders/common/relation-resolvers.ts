@@ -26,7 +26,7 @@ import { type DrizzleErrorContext, drizzleError, toGraphQLError, withErrorContex
 import { resolveExecutor } from './executor.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { LimitPolicyFor } from './limits.ts';
-import { applyLimitPolicy, assertPagingNotNegative, withDefaultOrderBy } from './limits.ts';
+import { applyLimitPolicy, assertPagingNotNegative, effectiveOffset, withDefaultOrderBy } from './limits.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { TablePolicies } from './policies.ts';
 import { junctionPolicy, junctionTableName, relationDeletedDefault, resolveScope, withScope } from './policies.ts';
@@ -250,7 +250,9 @@ export const createRelationResolverFactory =
         return isOne ? null : [];
       }
 
-      const { where: whereArg, limit: requestedLimit, offset, after, deleted } = (args ?? {}) as any;
+      const { where: whereArg, limit: requestedLimit, offset: requestedOffset, after, deleted } = (args ?? {}) as any;
+      // `offset: 0` is the same page as no offset, and batches with it.
+      const offset = effectiveOffset(requestedOffset);
 
       // Everything below is derived from this field alone — its args and its selection — so it is
       // identical for every parent row the batch fetches. Resolvers run once per parent row, so it
@@ -267,7 +269,7 @@ export const createRelationResolverFactory =
             ? (args as any)?.orderBy
             : withDefaultOrderBy(args ?? {}, targetTableName, policies?.defaultOrderBy).orderBy;
           const limit = applyLimitPolicy(requestedLimit, limitPolicy, errorCtx);
-          assertPagingNotNegative({ offset }, errorCtx);
+          assertPagingNotNegative({ offset: requestedOffset }, errorCtx);
           const distinct = ((args ?? {}) as any).distinct?.length ? ((args ?? {}) as any).distinct : undefined;
 
           // ── keyset (cursor) pagination ──

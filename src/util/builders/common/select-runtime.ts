@@ -21,7 +21,7 @@ import { primaryKeyRestriction, selectDistinctKeys } from './distinct.ts';
 import { drizzleError } from './errors.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
-import { assertPagingNotNegative, offsetOnlyLimit } from './limits.ts';
+import { assertPagingNotNegative, effectiveOffset, offsetOnlyLimit } from './limits.ts';
 import type { TypeNameMapper } from './naming.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { DeletedMode, ScopeResolver } from './policies.ts';
@@ -76,7 +76,7 @@ export const runRelationalSelect = async (opts: {
     typeName,
     typeNameMapper,
     parsedInfo,
-    offset,
+    offset: requestedOffset,
     orderBy,
     where,
     single,
@@ -89,7 +89,8 @@ export const runRelationalSelect = async (opts: {
   const distinct = opts.distinct?.length ? opts.distinct : undefined;
   // Every read reaches here — root lists, single reads and `resolveSelection` — so a negative
   // limit or offset is caught once, before any SQL is built from it.
-  assertPagingNotNegative({ limit: opts.limit, offset });
+  assertPagingNotNegative({ limit: opts.limit, offset: requestedOffset });
+  const offset = effectiveOffset(requestedOffset);
 
   // ── keyset (cursor) pagination ──
   // Active when the request passes `after` or selects the `cursor` meta field. The cursor is
