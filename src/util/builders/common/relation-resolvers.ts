@@ -3,7 +3,7 @@
 // IN-clause query.
 
 import type { Column, Table } from 'drizzle-orm';
-import { and, eq, getColumns, gt, lte, or, type SQL, sql } from 'drizzle-orm';
+import { and, eq, getColumns, gt, lte, type SQL, sql } from 'drizzle-orm';
 import { getOrCreateLoader, getOrCreateRequestValue } from '../../batch-loader/index.ts';
 import { remapToGraphQLArrayOutput } from '../../data-mappers/index.ts';
 import { relationFieldExtension } from '../../extensions.ts';
@@ -34,6 +34,7 @@ import type { RelationFilterBase, RelationFilterContext } from './relation-filte
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import type { RelationResolverFactory } from './relations.ts';
 import {
+  balancedOr,
   extractJunctionColumns,
   extractRelationJoinColumnPairs,
   joinKeyOf,
@@ -397,12 +398,13 @@ export const createRelationResolverFactory =
               return new Map();
             }
             // Through a junction, a key is kept for one parent and not necessarily another, so the
-            // batch is narrowed to (parent, row) pairs rather than to rows.
+            // batch is narrowed to (parent, row) pairs rather than to rows — one term per pair,
+            // nested as a balanced tree so a large batch stays within SQLite's expression depth.
             whereCondition = and(
               whereCondition,
               junction
-                ? or(
-                    ...keys.map((key) =>
+                ? balancedOr(
+                    keys.map((key) =>
                       and(
                         eq(junction.sourceCol, key[DISTINCT_PARENT]),
                         primaryKeyRestriction(targetTable, targetPkNames, [key]),

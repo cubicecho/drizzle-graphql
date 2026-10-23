@@ -400,7 +400,7 @@ export const parentKeyChunks = <K>(keys: readonly K[], width: number): K[][] => 
  * SQLite refuses an expression more than 1,000 levels deep; balanced, a batch of thousands of
  * parents stays a few levels deep.
  */
-const balancedOr = (conditions: readonly (SQL | undefined)[]): SQL | undefined => {
+export const balancedOr = (conditions: readonly (SQL | undefined)[]): SQL | undefined => {
   if (conditions.length <= 2) {
     return or(...conditions);
   }
