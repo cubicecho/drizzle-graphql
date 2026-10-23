@@ -357,10 +357,14 @@ export const extractFiltersColumn = <TColumn extends Column>(
     } else if (operatorName in stringValueOps) {
       // Under `insensitive`, `like`/`notLike` compile the same way their `i` counterparts
       // do; `ilike`/`notIlike` are already case-insensitive and are left alone.
-      const insensitivePattern = foldCase && (operatorName === 'like' || operatorName === 'notLike');
+      // MySQL and SQLite have no `ILIKE` keyword, so there `ilike`/`notIlike` go through the
+      // same `lower()` form instead of drizzle's Postgres-only helpers.
+      const insensitivePattern =
+        (foldCase && (operatorName === 'like' || operatorName === 'notLike')) ||
+        ((operatorName === 'ilike' || operatorName === 'notIlike') && columnDialect(column) !== 'pg');
       variants.push(
         insensitivePattern
-          ? insensitiveLike(column, operatorValue as string, operatorName === 'notLike')
+          ? insensitiveLike(column, operatorValue as string, operatorName === 'notLike' || operatorName === 'notIlike')
           : stringValueOps[operatorName]!(column, operatorValue as string),
       );
     } else if (operatorName === 'path' && isJsonColumn(column)) {
