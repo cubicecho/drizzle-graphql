@@ -17,7 +17,6 @@ import {
   inArray,
   is,
   One,
-  or,
   relationsFilterToSQL,
   type SQL,
   sql,
@@ -28,7 +27,7 @@ import { capitalize } from '../case-ops/index.ts';
 import { remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import { drizzleError } from './common/errors.ts';
-import { relationOwnWhere } from './common/relations.ts';
+import { parentKeyChunks, parentKeyCondition, relationOwnWhere } from './common/relations.ts';
 import {
   type NestedWriteOp,
   type ResolvedWriteHooks,
@@ -208,18 +207,26 @@ const ownWherePlan = (
         );
       }
       const keyOf = (row: Record<string, any>) => keyNames.map((name) => keyString(row[name])).join('\u0000');
-      const match = or(...rows.map((row) => and(...keyNames.map((name) => eq(parentColumns[name]!, row[name])))));
-      const shown = new Set(
-        (
-          (await executor
-            .select(parentKeyColumns)
-            .from(parentTable)
-            .where(and(match, relationsFilterToSQL(parentTable, relationOwnWhere(relation) as any)))) as Record<
-            string,
-            any
-          >[]
-        ).map(keyOf),
-      );
+      const keyCols = keyNames.map((name) => parentColumns[name]!);
+      // Chunked, and a composite key ORed as a balanced tree: a plural update can return
+      // thousands of rows, past both the bound-parameter limits and SQLite's expression depth.
+      const shown = new Set<string>();
+      for (const chunk of parentKeyChunks(rows, keyNames.length)) {
+        const match = parentKeyCondition(
+          keyCols,
+          chunk.map((row) => keyNames.map((name) => row[name])),
+        );
+        const found = (await executor
+          .select(parentKeyColumns)
+          .from(parentTable)
+          .where(and(match, relationsFilterToSQL(parentTable, relationOwnWhere(relation) as any)))) as Record<
+          string,
+          any
+        >[];
+        for (const row of found) {
+          shown.add(keyOf(row));
+        }
+      }
       return rows.some((row) => !shown.has(keyOf(row)));
     },
     parentKeyColumns,
@@ -1417,19 +1424,20 @@ export const createNestedWriteRuntime = (params: {
           .map((name) => [name, columns[name]!]),
       );
       const keyOf = (row: Record<string, any>) => pk.map((name) => String(row[name])).join('\u0000');
-      const match =
-        pk.length === 1
-          ? inArray(
-              columns[pk[0]!]!,
-              rows.map((row) => row[pk[0]!]),
-            )
-          : or(...rows.map((row) => and(...pk.map((name) => eq(columns[name]!, row[name])))));
-      const fresh = new Map<string, Record<string, any>>(
-        ((await executor.select(selection).from(plan.targetTable).where(match)) as Record<string, any>[]).map((row) => [
-          keyOf(row),
-          row,
-        ]),
-      );
+      const pkCols = pk.map((name) => columns[name]!);
+      const fresh = new Map<string, Record<string, any>>();
+      for (const chunk of parentKeyChunks(rows, pk.length)) {
+        const match = parentKeyCondition(
+          pkCols,
+          chunk.map((row) => pk.map((name) => row[name])),
+        );
+        for (const row of (await executor.select(selection).from(plan.targetTable).where(match)) as Record<
+          string,
+          any
+        >[]) {
+          fresh.set(keyOf(row), row);
+        }
+      }
       return rows.map((row) => ({ ...row, ...fresh.get(keyOf(row)) }));
     },
 
