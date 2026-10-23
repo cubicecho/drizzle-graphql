@@ -178,22 +178,19 @@ const generateUpsert = (
         serverOwned: Object.keys(contextColumns ?? {}),
       });
 
-      const requestedNothing = args.onConflict?.action === 'NOTHING';
       const runBatch = async (target: any, { values, plan }: (typeof batches)[number]) => {
-        if (plan.action === 'NOTHING' && !requestedNothing) {
-          // An UPDATE left with nothing to write (only the key, or only server-owned columns,
-          // were supplied) keeps the row as it is with a no-op assignment, rather than
-          // becoming INSERT IGNORE — which would also downgrade the insert's own errors to
-          // warnings.
+        if (plan.action === 'NOTHING') {
+          // `action: NOTHING`, or an UPDATE left with nothing to write (only the key, or only
+          // server-owned columns, were supplied), keeps the row as it is with a no-op
+          // assignment. INSERT IGNORE would skip the duplicate too, but it also downgrades
+          // every other error of the insert — a truncated value, a bad date, a foreign-key
+          // violation — to a warning and writes or drops the row regardless.
           const columns = getColumns(table) as Record<string, Column>;
           const keyName = pkNames[0] ?? Object.keys(columns)[0]!;
           await target
             .insert(table)
             .values(values)
             .onDuplicateKeyUpdate({ set: { [keyName]: sql`${sql.identifier(columns[keyName]!.name)}` } });
-        } else if (plan.action === 'NOTHING') {
-          // INSERT IGNORE is the closest MySQL gets to DO NOTHING.
-          await target.insert(table).ignore().values(values);
         } else {
           await target.insert(table).values(values).onDuplicateKeyUpdate({ set: plan.set });
         }

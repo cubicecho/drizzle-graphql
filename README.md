@@ -1781,7 +1781,9 @@ Dialect differences:
     no predicate, so `<Type>OnConflict` there has only `action` and `update`. Because the
     conflict can be on any unique key, the default overwrite leaves out the primary key as well
     — copying a new row's key over the conflicting row's would move it. `action: NOTHING`
-    becomes `INSERT IGNORE`, and the mutations return `MutationReturn` like every other MySQL
+    becomes a no-op `ON DUPLICATE KEY UPDATE <key> = <key>` rather than `INSERT IGNORE`, so
+    only a duplicate key is skipped: a value too long for its column or a foreign-key violation
+    still fails the write. The mutations return `MutationReturn` like every other MySQL
     mutation
 
 The build-wide `conflictDoNothing` option is deprecated in favour of this: it applies to every
