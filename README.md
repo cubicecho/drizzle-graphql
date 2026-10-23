@@ -802,6 +802,10 @@ type Posts {
     declared name to share, so it keeps a per-column type — `UsersTierEnum`
 -   Two different enums that would land on the same GraphQL name (`status` in two Postgres
     schemas) fail the build rather than silently sharing a type
+-   Ordering by an enum column, its `min` / `max`, and cursor pages over it follow the
+    database's own rule. PostgreSQL and MySQL sort an enum by declaration order (`active` before
+    `archived` because it is declared first). SQLite has no enum type — the column is `text`
+    with the values checked by Drizzle — so there it sorts alphabetically
 
 `enumNameMapper` overrides the name. Returning `undefined` keeps the default, so a mapper
 only has to handle the cases it cares about:
@@ -1052,6 +1056,15 @@ by hand. Under `insensitive` the operand stays a literal and stays a bound param
         from the numeric, uuid, boolean, timestamp and enum filters (see
         [Which operators a column gets](#which-operators-a-column-gets))
 
+**On MySQL, plain comparisons may already ignore case.** MySQL compares strings under the
+column's collation, and its default (`utf8mb4_0900_ai_ci`, like every `*_ai_ci` collation) is
+case- **and** accent-insensitive. So without `insensitive`, `eq: "dan"` matches `Dan` and `dän`
+there, and the same holds for `ne`, the ordering comparisons, `inArray`, `orderBy`, `min` /
+`max`, `distinct`, `groupBy` and the `like` / `startsWith` / `endsWith` / `contains` operators.
+PostgreSQL compares exactly. That is the database's configured behaviour, not something this
+library adds: give a column a binary or `*_as_cs` collation (`varchar(…) COLLATE utf8mb4_bin`)
+where it has to compare exactly.
+
 ## Which operators a column gets
 
 A filter input carries the operators that can express a question about that column type, and
@@ -1068,7 +1081,8 @@ no others. The set follows the column's data type, never its name:
 
 The pattern operators are `like` / `notLike` / `ilike` / `notIlike`, the safe
 `startsWith` / `endsWith` / `contains` and their `i`-prefixed forms, plus the `insensitive`
-flag that modifies them.
+flag that modifies them. MySQL and SQLite have no `ILIKE`, so there `ilike` / `notIlike`
+compile to `lower(column) LIKE lower(pattern)`, the same form `insensitive` uses.
 
 An operand of `null` leaves its operator out, as though it had not been sent. `false` is an
 ordinary value: `active: { eq: false }` matches the rows that are false, `ne: false` the rows
@@ -1211,6 +1225,23 @@ each one — Postgres errors outright on a bad `::numeric`, MySQL quietly casts 
 string to `0`, and SQLite's cross-type ordering would otherwise sort every string above every
 number.
 
+SQLite has no boolean type, and its `json_extract` hands a JSON `true` / `false` back as `1` /
+`0`, so its path reads check `json_type` as well: `eq: true` matches only a JSON `true`, never
+the number `1`, a number operand never matches a boolean, and a text read sees `"true"` /
+`"false"`, as PostgreSQL's does.
+
+**Whole-document `eq` / `ne`** compare documents, not their text. Object key order and
+whitespace do not matter; array order does, and so does the difference between `1` and `true`.
+PostgreSQL compares as `jsonb` (so a plain `json` column, which has no `=` of its own, works
+too), MySQL against `CAST(? AS JSON)`, and SQLite by matching the two documents' nodes both ways.
+Like `=` / `<>` on any column, neither matches a row whose column is SQL `NULL`.
+
+**JSON columns cannot be ordered.** A JSON document has no meaningful order — PostgreSQL's
+`json` has none at all, and MySQL's JSON ordering is not one a cursor can resume from — so
+JSON columns are left out of `<Type>OrderBy` (and so out of cursor pagination and every relation
+`orderBy`) and out of `<Type>DistinctColumn`, and naming one in `defaults.<table>.orderBy` fails
+the build. Order by a generated column or a path you extract yourself instead.
+
 Note that `contains` means different things at the two levels, because a path names a scalar:
 on the column it is structural JSON containment (Postgres `@>` / MySQL `JSON_CONTAINS`),
 inside a `path` filter it is substring matching on the extracted value.
@@ -1252,13 +1283,19 @@ following the same naming rules as the other generated queries:
 ```
 
 -   `count` — number of matching rows (`Int!`)
--   `avg` / `sum` — one nullable `Float` field per numeric column
+-   `avg` / `sum` — one nullable `Float` field per numeric column. On MySQL `avg` is computed
+    as a `DOUBLE`, since MySQL's own `AVG` over an integer column is a `DECIMAL` rounded to four
+    places
 -   `min` / `max` — one field per orderable column (numbers, strings, enums, dates, bigints),
-    typed exactly like that column is in the table's own type
+    typed exactly like that column is in the table's own type. PostgreSQL `uuid`, `macaddr`,
+    `macaddr8` and `bit` columns are left out, because PostgreSQL has no `min` / `max` for them,
+    and so is a SQLite `blob({ mode: 'bigint' })` column, whose bytes compare as text (`9` above
+    `10`)
 -   `countNonNull` — `Int!` per column: how many matching rows have a non-null value there.
     Every column qualifies, since `count(col)` is valid whatever the type
 -   `countDistinct` — `Int!` per column: how many distinct non-null values there are. Limited to
-    the same columns as `min` / `max`, because counting distinct values needs an equality operator
+    the columns with an equality operator: the `min` / `max` columns plus the ones listed above
+    that compare but have no `min` / `max`
 
 Columns that have no meaningful ordering — booleans, arrays, JSON, buffers, and geometry —
 are left out of these types, and the `avg` / `sum` / `min` / `max` fields themselves are
@@ -1299,7 +1336,7 @@ columns you group by.
 ```
 
 -   `groupBy` is required and takes one or more values of the table's `<Type>GroupByColumn`
-    enum. It holds the orderable columns plus booleans — anything the database can group on.
+    enum. It holds the `countDistinct` columns plus booleans — anything the database can group on.
     An empty list is an error, and repeated columns are ignored
 -   `group` is a `<Type>GroupKeys!` object with one nullable field per groupable column, typed
     like the table's own column. Columns the query did not group by come back as `null`, which
@@ -1328,6 +1365,9 @@ columns you group by.
     filter per numeric column (the comparison is numeric, so a `max` over a text or date
     column has no `having` entry even though the aggregate type returns it),
     `countNonNull` one per column, and `countDistinct` one per column `countDistinct` exposes
+-   The operand is a `Float` whatever the aggregate's own type, so `count: { gt: 1.5 }` works:
+    on PostgreSQL, where an integer aggregate would otherwise give the parameter its integer
+    type, the aggregate is compared as `numeric`
 -   Every entry in a `having` is ANDed together
 -   A group filter does not need to be in the selection — `having: { count: { gt: 3 } }` works
     whether or not you asked for `count`
@@ -1406,6 +1446,8 @@ enum. Rows sharing the same combination of those columns collapse to one:
     distinct value **per parent** — the window is partitioned by the foreign key as well as
     the requested columns
 -   `distinct` is not on single queries — those return one row either way
+-   JSON columns are not in `<Type>DistinctColumn` (see
+    [Filtering inside JSON documents](#filtering-inside-json-documents))
 
 It runs as an extra `row_number() over (partition by …)` query that picks the surviving
 rows' primary keys, after which the main query is narrowed to them — so it needs the same
@@ -1427,6 +1469,14 @@ supplies no `orderBy` and the table has no [default ordering](#default-ordering)
 An explicit `orderBy` always takes precedence, composite primary keys are ordered by every
 key column, and an unpaginated list query of a table with no `defaults` entry is left
 unordered so no sort is paid for.
+
+`offset` works without `limit` on every dialect. SQLite and MySQL only accept `OFFSET` after a
+`LIMIT`, so there an offset-only page is sent with a limit meaning "no limit" (`-1` on SQLite,
+2^53 - 1 on MySQL).
+
+`<Type>OrderBy` offers every column that has a meaningful order. JSON columns (see
+[Filtering inside JSON documents](#filtering-inside-json-documents)) and SQLite
+`blob({ mode: 'bigint' })` columns, whose bytes sort as text, are left out.
 
 ## Default ordering
 
