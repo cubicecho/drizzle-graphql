@@ -154,7 +154,7 @@ const { schema } = buildSchema(db, {
         nestedWrites: true,       // relation fields on the create/update inputs (off by default)
         fieldUpdateOperations: true, // increment/push operations on the update input (off by default)
         countMutations: true,     // update<Table>Count / delete<Table>Count mutations (off by default)
-        requireWhere: true,       // make `where` non-null on plural update/delete (off by default)
+        requireWhere: true,       // require a `where` on plural update/delete/updateMany (off by default)
         uniqueKeyFilters: true,   // a `where` field per compound unique constraint (off by default)
     },
 })
@@ -2068,7 +2068,9 @@ deliberate rather than accidental:
 The plural mutations still accept a missing `where` (a full-table write) by default. To rule
 that out at the type level, `features: { requireWhere: true }` makes `where` non-null on
 `update<Table>` / `delete<Table>` and rejects a `where` with no filters, exactly like the
-Single variants. It defaults to `false` for backwards compatibility.
+Single variants. It also covers `update<Table>Many`: an entry without a `where`, or with one
+that has no filters, rejects the whole batch with `DRIZZLE_WHERE_REQUIRED` before any entry
+runs. It defaults to `false` for backwards compatibility.
 
 ## Bounding page size
 

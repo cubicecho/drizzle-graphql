@@ -14,7 +14,6 @@ import {
   applyContextValuesAll,
   assertSingleMatch,
   drizzleError,
-  extractFilters,
   generateOnConflictInput,
   generateUpdateManyInput,
   generateWriteCount,
@@ -32,7 +31,6 @@ import {
   stripContextValues,
   type TablesRelationalConfig,
   type WriteOperation,
-  withScope,
   writeResolver,
 } from '../builders/common.ts';
 import { remapFromGraphQLArrayInput, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
@@ -301,6 +299,7 @@ const generateUpdateMany = (
   table: MySqlTable,
   updateManyInput: GraphQLInputObjectType,
   fieldName: string,
+  requireWhere: boolean,
   filterCtx?: RelationFilterBase,
   txCtx?: MutationTxCtx,
   policies?: ResolverPolicies,
@@ -336,12 +335,16 @@ const generateUpdateMany = (
         }
         return {
           set: input,
-          filters: withScope(
+          // Under `requireWhere` every entry must carry a non-empty `where`, as the plural
+          // update must.
+          filters: scopedWhere({
             scope,
             tableName,
             table,
-            where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, scope)) : undefined,
-          ),
+            where,
+            relationCtx: relationFilterCtx(filterCtx, tableName, scope),
+            required: requireWhere,
+          }),
         };
       });
 
@@ -638,6 +641,7 @@ export const generateSchemaData = <
           schema[tableName] as MySqlTable,
           updateManyInput,
           updateManyFieldName,
+          tableFeatures.requireWhere,
           filterCtx,
           mutationTxCtx,
           policies,

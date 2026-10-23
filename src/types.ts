@@ -923,6 +923,10 @@ export type SchemaFeatures = {
    * rejects a `where` that collapses to no filters (e.g. `where: {}`), so a schema can rule
    * out unbounded writes at the type level. Off by default for backwards compatibility.
    *
+   * It covers `update<Table>Many` too: an entry with no `where`, or one that collapses to no
+   * filters, rejects the whole batch with `DRIZZLE_WHERE_REQUIRED` before any entry runs. The
+   * entry input's `where` stays nullable in the schema; the check runs at request time.
+   *
    * The `Single` variants (`update<Table>Single` / `delete<Table>Single`) require a
    * non-empty `where` regardless of this flag.
    *
