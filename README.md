@@ -861,7 +861,10 @@ type Posts {
 -   Ordering by an enum column, its `min` / `max`, and cursor pages over it follow the
     database's own rule. PostgreSQL and MySQL sort an enum by declaration order (`active` before
     `archived` because it is declared first). SQLite has no enum type — the column is `text`
-    with the values checked by Drizzle — so there it sorts alphabetically
+    with the values checked by Drizzle — so there it sorts alphabetically. MySQL's own
+    `MIN()` / `MAX()` compare an ENUM by its label text, so there `min` / `max` aggregate the
+    declaration index (`col + 0`) and map it back to the label, and ordering through a to-one
+    relation sorts the related row's index too
 
 `enumNameMapper` overrides the name. Returning `undefined` keeps the default, so a mapper
 only has to handle the cases it cares about:
@@ -1123,6 +1126,16 @@ PostgreSQL compares exactly. That is the database's configured behaviour, not so
 library adds: give a column a binary or `*_as_cs` collation (`varchar(…) COLLATE utf8mb4_bin`)
 where it has to compare exactly.
 
+Relations joined on such a column follow the same rule: an `items` row whose `code` is `ABC`
+belongs to the `codes` row `abc` wherever the column's collation says they are equal, in the
+relation field, its `<relation>Aggregate` and the batched loader alike. Batched relations
+regroup their rows in JS, so the library folds the keys the way the collation does — case
+for `*_ci`, accents for `*_ai_ci` (and the older `*_ci` collations), trailing spaces for the
+PAD SPACE collations — reading the collation from the drizzle column's `.collate()` when it
+declares one and otherwise from `information_schema` (once per column). The fold covers case,
+accents and padding; a collation's rarer equivalences (`ß` = `ss`, ligatures) are not
+reproduced, so such keys still compare by their folded text.
+
 ### Case sensitivity of the pattern operators on SQLite
 
 `like` / `notLike` and the safe `startsWith` / `endsWith` / `contains` are case-sensitive, as
@@ -1130,6 +1143,16 @@ they are on PostgreSQL: `contains: "App"` matches `Apple` and not `apple`. SQLit
 folds ASCII case, so on SQLite they compile to `GLOB` instead, with `%` / `_` translated to its
 `*` / `?` and every other wildcard in the operand matched literally. The `i`-prefixed operators
 and `insensitive: true` fold case on SQLite as everywhere else.
+
+In a raw `like` / `notLike` / `ilike` / `notIlike` pattern, `\` escapes the character after it
+on all three dialects, as PostgreSQL's and MySQL's `LIKE` do by default: `100\%` matches the
+text `100%`, `a\_b` matches `a_b` only, and `\\` matches one backslash. (Written in a GraphQL
+string literal, each of those backslashes is itself doubled.)
+
+Case folding is the database's own. Both sides of a case-insensitive comparison on MySQL and
+SQLite are lowered by the database's `lower()`, and SQLite's folds only ASCII: there
+`iContains: "école"` does not match `École`, though `iContains: "École"` and
+`iContains: "COLE"` do.
 
 > **Upgrading — SQLite.** These operators used to compile to `LIKE` on SQLite and so matched
 > case-insensitively. Queries that relied on that should use the `i`-prefixed operator or
@@ -1648,7 +1671,8 @@ field, and passing it back as `after` resumes strictly after that row.
     less) or a MySQL `datetime` / `timestamp` with `fsp` above 3 holds more than the
     millisecond JS `Date` that `mode: 'date'` reads it into, so the cursor carries the
     database's own text of the value instead, and rows a microsecond apart are still distinct
-    pages
+    pages. A `date` column's cursor resumes from the calendar day it names, whatever the
+    server's or the connection's timezone
 -   A cursor is opaque by convention only. It is base64url-encoded JSON of the row's
     ordering values, primary key included, so a client can decode it and read those values,
     even for a primary key hidden by [`exclude`](#excluding-tables-and-columns). It is not
@@ -2007,6 +2031,16 @@ Two things follow the database's own semantics rather than being guarded:
     the way the dialect rounds (PostgreSQL truncates toward zero; use a `Float` or `Decimal`
     column if you need the fraction)
 -   `divide: 0` raises the driver's division-by-zero error, surfaced as a `GraphQLError`
+
+The arithmetic itself is exact wherever the column is:
+
+-   On MySQL a `BigInt` or `Decimal` operand is cast to a `DECIMAL` as wide as the operand, so
+    `increment: "1"` on a BIGINT past 2^53, or on a `decimal(30, 10)`, keeps every digit rather
+    than going through MySQL's DOUBLE string-to-number conversion
+-   A SQLite `blob({ mode: 'bigint' })` column stores its value as text in a BLOB. Its
+    operations read that text as a 64-bit integer, compute in SQLite's integer arithmetic and
+    write the result back in the same form; a result outside the 64-bit range raises SQLite's
+    `integer overflow` error, and `divide: 0` a `GraphQLError`, instead of storing a wrong value
 
 ## Row counts instead of rows
 

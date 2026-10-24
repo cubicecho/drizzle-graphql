@@ -9,15 +9,18 @@ import {
   getColumns,
   gt,
   gte,
+  is,
   lt,
   lte,
   max,
   min,
   ne,
+  type SQL,
   sql,
   sum,
   type Table,
 } from 'drizzle-orm';
+import { MySqlEnumColumn, MySqlEnumObjectColumn } from 'drizzle-orm/mysql-core';
 import {
   type GraphQLEnumType,
   GraphQLFloat,
@@ -54,6 +57,7 @@ import {
   parentKeyCondition,
   type RelationAggregateFactory,
   type RelationFilterBase,
+  relatedRowParents,
   relationDeletedDefault,
   relationFilterCtx,
   relationOwnCondition,
@@ -95,6 +99,43 @@ const OP_FNS: Record<AggregateOp, (col: Column) => any> = {
   max,
   countNonNull: count,
   countDistinct,
+};
+
+/** SQLite numeric columns drizzle itself reads as `cast(col as text)`, keeping digits past 2^53. */
+const SQLITE_TEXT_READ_COLUMN_TYPES: ReadonlySet<string> = new Set(['SQLiteNumericBigInt', 'SQLiteNumeric']);
+
+/**
+ * `min` / `max` as the selected aggregate, read back the way the column itself is read:
+ * - A MySQL ENUM: MIN()/MAX() compare an ENUM as its label text, while ORDER BY (and the
+ *   README's promise) follow declaration order. The aggregate runs over `col + 0` — the
+ *   1-based declaration index — and `elt()` maps the winning index back to its label.
+ * - A SQLite `numeric` in bigint or string mode: drizzle reads the column as text so the driver
+ *   never sees an integer past 2^53 (libsql throws on one), so the aggregate is read as text too.
+ *
+ * Only for the selection: `having` compares the raw aggregate as a number.
+ */
+const orderedAggregateOf =
+  (fn: typeof min | typeof max) =>
+  (col: Column): SQL => {
+    const enumValues = (col as any).enumValues as readonly string[] | undefined;
+    if ((is(col, MySqlEnumColumn) || is(col, MySqlEnumObjectColumn)) && enumValues?.length) {
+      const labels = sql.join(
+        enumValues.map((value) => sql`${value}`),
+        sql`, `,
+      );
+      return sql`elt(${fn(sql`${col} + 0` as any)}, ${labels})`.mapWith(col);
+    }
+    if (SQLITE_TEXT_READ_COLUMN_TYPES.has((col as any).columnType)) {
+      return sql`cast(${fn(col)} as text)`.mapWith(col);
+    }
+    return fn(col);
+  };
+
+/** {@link OP_FNS} as the selection reads them: min/max through {@link orderedAggregateOf}. */
+const SELECT_OP_FNS: Record<AggregateOp, (col: Column) => any> = {
+  ...OP_FNS,
+  min: orderedAggregateOf(min),
+  max: orderedAggregateOf(max),
 };
 
 /** Separator for flat select aliases (`avg__price`) — reassembled into nested output by the resolver. */
@@ -406,7 +447,7 @@ const parseAggregateRequest = (
         continue;
       }
       request.ops[op].push(columnName);
-      request.selection[`${op}${SEP}${columnName}`] = OP_FNS[op](column);
+      request.selection[`${op}${SEP}${columnName}`] = SELECT_OP_FNS[op](column);
     }
   }
 
@@ -671,14 +712,13 @@ export const createRelationAggregateFactory = (
             const selected = executor.select({ ...groupSelection, ...request.selection }).from(targetTable);
             const joined = junction ? selected.innerJoin(junction.table, eq(junction.targetCol, foreignCol)) : selected;
             const rows: any[] = await joined.where(whereCondition).groupBy(...groupCols);
+            // A group's label is one spelling of its key; it belongs to every parent the database
+            // matched it to (see relatedRowParents).
+            const parentsOf = await relatedRowParents(executor, chunk, localCols, groupCols);
             for (const row of rows) {
-              byKey.set(
-                joinKeyOf(
-                  groupAliases.map((alias) => row[alias]),
-                  groupCols,
-                ),
-                row,
-              );
+              for (const key of parentsOf(groupAliases.map((alias) => row[alias]))) {
+                byKey.set(key, row);
+              }
             }
           }
 

@@ -2,7 +2,7 @@
 // config, plus the factory signatures the dialect builders implement.
 
 import type { Relation, SQL, Table } from 'drizzle-orm';
-import { and, Column, eq, getColumns, inArray, is, or, relationsFilterToSQL, sql } from 'drizzle-orm';
+import { and, Column, eq, getColumns, getTableName, inArray, is, or, relationsFilterToSQL, sql } from 'drizzle-orm';
 import type { GraphQLFieldResolver, GraphQLObjectType } from 'graphql';
 import {
   mySqlDateTimeTextToIso,
@@ -348,6 +348,119 @@ export const joinKeyOf = (values: readonly unknown[], columns?: readonly Column[
   values.length === 1
     ? joinValueKey(values[0], columns?.[0])
     : JSON.stringify(values.map((value, i) => joinValueKey(value, columns?.[i])));
+
+/** MySQL column types whose comparisons follow a collation. */
+const MYSQL_TEXT_COLUMN_TYPES: ReadonlySet<string> = new Set(['MySqlVarChar', 'MySqlChar', 'MySqlText']);
+
+/**
+ * Text as MySQL compares it under `collation`, as near as JS can tell: equal under the
+ * collation gives an equal fold.
+ * - `*_ci` folds case; `*_ai_*` — and the pre-0900 `*_ci` collations, which are
+ *   accent-insensitive too — fold accents
+ * - `*_cs`, `*_bin` and `binary` keep both
+ * - every collation outside the `*_0900_*` family and `binary` is PAD SPACE, so trailing
+ *   spaces do not count
+ */
+const collationFold = (collation: string): ((text: string) => string) => {
+  const name = collation.toLowerCase();
+  const padSpace = name !== 'binary' && !name.includes('_0900_');
+  const caseInsensitive = name.endsWith('_ci');
+  const accentInsensitive = name.includes('_ai_') || (caseInsensitive && !name.includes('_as_'));
+  return (text) => {
+    let folded = padSpace ? text.replace(/ +$/, '') : text;
+    if (accentInsensitive) {
+      folded = folded.normalize('NFD').replace(/\p{M}/gu, '');
+    }
+    return caseInsensitive ? folded.toLowerCase() : folded;
+  };
+};
+
+/**
+ * The collation each MySQL text column compares under, per column object. A column that
+ * declares one (`.collate()`) answers from the schema; otherwise the database is asked once —
+ * the table or database default it inherited is not something the drizzle schema records.
+ */
+const columnCollations = new WeakMap<Column, Promise<string | undefined>>();
+
+const columnCollation = (executor: any, column: Column): Promise<string | undefined> => {
+  const declared = (column as any).collation as string | undefined;
+  if (declared) {
+    return Promise.resolve(declared);
+  }
+  let collation = columnCollations.get(column);
+  if (!collation) {
+    const table = (column as any).table;
+    const tableName: string = table[Symbol.for('drizzle:OriginalName')] ?? getTableName(table);
+    const schema: string | undefined = table[Symbol.for('drizzle:Schema')];
+    collation = Promise.resolve(
+      executor.execute(
+        sql`select collation_name as collation from information_schema.columns where table_schema = ${schema ?? sql`database()`} and table_name = ${tableName} and column_name = ${column.name}`,
+      ),
+    ).then((result: any) => {
+      // mysql2 resolves `[rows, fields]`; read whichever shape the driver handed back.
+      const rows: any[] = Array.isArray(result?.[0]) ? result[0] : Array.isArray(result) ? result : [];
+      return (rows[0]?.collation ?? rows[0]?.COLLATION_NAME ?? undefined) as string | undefined;
+    });
+    // A failed lookup is not cached, so the next request asks again.
+    collation.catch(() => columnCollations.delete(column));
+    columnCollations.set(column, collation);
+  }
+  return collation;
+};
+
+/**
+ * Matches a batch's related rows to the parents they belong to, by the rule the database used
+ * to fetch them. Resolves to a function from one related row's join values to the
+ * {@link joinKeyOf} keys of the parents (in `parentKeys`) it belongs to.
+ *
+ * For every key but MySQL text that is the exact key — one parent, no lookup. MySQL compares
+ * text under a collation, and its default (`utf8mb4_0900_ai_ci`) is case- and
+ * accent-insensitive, so the batch query fetches a child whose `ABC` key names the parent
+ * `abc`; read back by its exact text, that child would match no parent and be dropped — and in
+ * an aggregate's GROUP BY the whole group would, labelled with whichever spelling MySQL saw
+ * first. So a MySQL text key is matched folded under the collation the batch query compared
+ * by: the related column's (`targetCols`, which the query's `IN` list is compared against),
+ * read from the schema or, failing that, from the database ({@link columnCollation}). A child
+ * then belongs to every parent its key equals under that collation, as in SQL.
+ */
+export const relatedRowParents = async (
+  executor: any,
+  parentKeys: readonly (readonly unknown[])[],
+  localCols: readonly Column[],
+  targetCols: readonly Column[],
+): Promise<(values: readonly unknown[]) => readonly string[]> => {
+  const folds = await Promise.all(
+    targetCols.map(async (column) =>
+      MYSQL_TEXT_COLUMN_TYPES.has((column as any).columnType)
+        ? collationFold((await columnCollation(executor, column)) ?? 'binary')
+        : undefined,
+    ),
+  );
+  if (folds.every((fold) => !fold)) {
+    return (values) => [joinKeyOf(values, targetCols)];
+  }
+
+  const foldedKey = (values: readonly unknown[], columns: readonly Column[]): string =>
+    JSON.stringify(
+      values.map((value, i) => {
+        const fold = folds[i];
+        return fold && typeof value === 'string' ? fold(value) : joinValueKey(value, columns[i]);
+      }),
+    );
+  const seen = new Set<string>();
+  const byFolded = new Map<string, string[]>();
+  for (const key of parentKeys) {
+    const parentKey = joinKeyOf(key, localCols);
+    if (seen.has(parentKey)) {
+      continue;
+    }
+    seen.add(parentKey);
+    const folded = foldedKey(key, localCols);
+    byFolded.set(folded, [...(byFolded.get(folded) ?? []), parentKey]);
+  }
+
+  return (values) => byFolded.get(foldedKey(values, targetCols)) ?? [];
+};
 
 /**
  * The parent row's values for the relation's join columns, as the database holds them. The row

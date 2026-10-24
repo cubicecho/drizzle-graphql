@@ -15,6 +15,7 @@ import {
   type SQL,
   sql,
 } from 'drizzle-orm';
+import { MySqlEnumColumn, MySqlEnumObjectColumn } from 'drizzle-orm/mysql-core';
 import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
 import type { OrderByArgs, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
@@ -195,6 +196,15 @@ const filterOrderExpression = (column: Column, columnName: string, whereArgs: Re
 };
 
 /**
+ * What a correlated ordering subquery selects for a related row's column. MySQL sorts an ENUM
+ * column by its declaration index, but the value a scalar subquery returns is the label's text,
+ * which sorts alphabetically — so a MySQL ENUM selects `col + 0`, the 1-based declaration index,
+ * and orders through the relation as it does on the row itself.
+ */
+const relationSortValue = (column: Column): Column | SQL =>
+  is(column, MySqlEnumColumn) || is(column, MySqlEnumObjectColumn) ? sql`${column} + 0` : column;
+
+/**
  * Flattens one level of an `orderBy` argument into `out`. A column key becomes an entry
  * directly (wrapped in a correlated subquery when reached through a relation chain); a
  * to-one relation key recurses with the chain extended by that hop. Priorities live in one
@@ -228,7 +238,7 @@ const collectOrderEntries = (
         expression: config.matchFilterOrder
           ? filterOrderExpression(column, key, whereArgs)
           : chain
-            ? sql`(select ${column} from ${sql.join(chain.fromParts, sql`, `)} where ${and(...chain.conditions)})`
+            ? sql`(select ${relationSortValue(column)} from ${sql.join(chain.fromParts, sql`, `)} where ${and(...chain.conditions)})`
             : column,
         column,
         direction: config.direction,

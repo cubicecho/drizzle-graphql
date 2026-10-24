@@ -41,6 +41,7 @@ import {
   parentJoinValues,
   parentKeyChunks,
   parentKeyCondition,
+  relatedRowParents,
   relationOwnCondition,
 } from './relations.ts';
 import { extractSelectedColumnsFromTreeSQLFormat } from './selected-columns.ts';
@@ -470,27 +471,33 @@ export const createRelationResolverFactory =
           }
 
           // Group by parent key before remapping (remapping may delete null fields). A junction
-          // relation's key is a helper column, dropped once it has been read.
-          const keyOf = (row: any) => {
-            const key = joinKeyOf(
-              groupKeys.map((name) => row[name]),
-              groupCols,
-            );
+          // relation's key is a helper column, dropped once it has been read. A row's parents
+          // are the ones the database matched it to (see relatedRowParents).
+          const parentsOf = await relatedRowParents(executor, chunkKeys, localCols, groupCols);
+          const keysOf = (row: any) => {
+            const keys = parentsOf(groupKeys.map((name) => row[name]));
             if (junction) {
               delete row[PARENT_KEY];
             }
-            return key;
+            return keys;
           };
 
           if (isOne) {
-            const byKey = new Map(rows.map((row: any) => [keyOf(row), row]));
+            const byKey = new Map<string, any>();
+            for (const row of rows) {
+              for (const key of keysOf(row)) {
+                byKey.set(key, row);
+              }
+            }
             remapToGraphQLArrayOutput(rows, targetTableName, targetTable);
             return byKey;
           }
 
           const grouped = new Map<string, any[]>(chunkKeys.map((key) => [joinKeyOf(key, localCols), []]));
           for (const row of rows) {
-            grouped.get(keyOf(row))?.push(row);
+            for (const key of keysOf(row)) {
+              grouped.get(key)?.push(row);
+            }
           }
           remapToGraphQLArrayOutput(rows, targetTableName, targetTable);
           return grouped;

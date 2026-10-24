@@ -94,10 +94,24 @@ const escapeGlobValue = (value: string): string => value.replace(/[*?[]/g, (char
 /**
  * A caller-written LIKE pattern as the GLOB pattern matching the same strings, for SQLite's
  * case-sensitive `like` / `notLike`: `%` → `*`, `_` → `?`, and GLOB's own wildcards escaped.
- * The raw operators bind no `ESCAPE` clause, so `\` is an ordinary character in both.
+ *
+ * `\` escapes the character after it, as it does in a LIKE pattern on PostgreSQL and MySQL
+ * (both default LIKE's escape character to backslash): `100\%` matches the text `100%`, and
+ * `\\` a single backslash. GLOB has no escape character, so an escaped character is emitted as
+ * a literal — inside a one-character class when it is one of GLOB's own wildcards. A trailing
+ * lone `\` has nothing to escape and matches itself.
  */
 const likePatternToGlob = (pattern: string): string =>
-  pattern.replace(/[%_*?[]/g, (char) => (char === '%' ? '*' : char === '_' ? '?' : `[${char}]`));
+  pattern.replace(/\\([\s\S])|[%_*?[]/g, (match, escaped: string | undefined) => {
+    const char = escaped ?? match;
+    if (escaped === undefined && char === '%') {
+      return '*';
+    }
+    if (escaped === undefined && char === '_') {
+      return '?';
+    }
+    return char === '*' || char === '?' || char === '[' ? `[${char}]` : char;
+  });
 
 /**
  * The safe string operator's predicate. Case-insensitive variants use Postgres's native
@@ -123,22 +137,30 @@ const safeLikeCondition = (
       : sql`${column} like ${pattern} escape ${LIKE_ESCAPE_CHAR}`;
   }
 
+  // The pattern is lowered by the database's own `lower()`, like the column: lowering it in JS
+  // instead would fold characters the database does not (SQLite's `lower()` is ASCII-only), and
+  // `iContains: "École"` would then miss the row holding exactly `École`. The escapes are
+  // ASCII, so lowering the escaped pattern leaves them intact.
   const isPg = (((column as any).columnType ?? '') as string).startsWith('Pg');
   return isPg
     ? sql`${column} ilike ${pattern} escape ${LIKE_ESCAPE_CHAR}`
-    : sql`lower(${column}) like ${pattern.toLowerCase()} escape ${LIKE_ESCAPE_CHAR}`;
+    : sql`lower(${column}) like lower(${pattern}) escape ${LIKE_ESCAPE_CHAR}`;
 };
 
 /**
  * The case-insensitive form of the raw `like` / `notLike` operators, whose operand is a
  * caller-written pattern rather than a literal. Postgres has `ILIKE`; the other two dialects
- * compare `lower()` on both sides, exactly as {@link safeLikeCondition} does.
+ * compare `lower()` on both sides, exactly as {@link safeLikeCondition} does. The `ESCAPE '\'`
+ * gives SQLite the backslash escape PostgreSQL's and MySQL's LIKE already default to, so
+ * `100\%` matches a literal `%` on all three.
  */
 const insensitiveLike = (column: Column, pattern: string, negated: boolean): SQL => {
   if (columnDialect(column) === 'pg') {
     return negated ? notIlike(column, pattern) : ilike(column, pattern);
   }
-  return negated ? sql`lower(${column}) not like lower(${pattern})` : sql`lower(${column}) like lower(${pattern})`;
+  return negated
+    ? sql`lower(${column}) not like lower(${pattern}) escape ${LIKE_ESCAPE_CHAR}`
+    : sql`lower(${column}) like lower(${pattern}) escape ${LIKE_ESCAPE_CHAR}`;
 };
 
 /**
@@ -242,9 +264,23 @@ const sqlTrue = (): SQL => sql`1 = 1`;
  * A MySQL / SQLite JSON path expression for the given key walk. Bound as a query parameter,
  * never spliced into the SQL text; an all-digits key becomes an array index, and quotes and
  * backslashes inside a key are escaped so a key can never end the path segment early.
+ *
+ * The two dialects read a quoted key's escapes differently: MySQL takes `\"`, while SQLite
+ * ends the key at the first `"` whatever precedes it and only then decodes JSON escapes — so
+ * there a quote is written as `\u0022`, which both its parser and JSON decoding read back as `"`.
  */
-const jsonPathString = (path: string[]): string =>
-  `$${path.map((part) => (/^\d+$/.test(part) ? `[${part}]` : `."${part.replace(/(["\\])/g, '\\$1')}"`)).join('')}`;
+const jsonPathString = (path: string[], dialect: 'mysql' | 'sqlite'): string =>
+  `$${path
+    .map((part) => {
+      if (/^\d+$/.test(part)) {
+        return `[${part}]`;
+      }
+      const escaped = part.replace(/(["\\])/g, (char) =>
+        char === '"' && dialect === 'sqlite' ? '\\u0022' : `\\${char}`,
+      );
+      return `."${escaped}"`;
+    })
+    .join('')}`;
 
 /**
  * Matches the text forms a database will accept as a number. Used to guard both numeric casts —
@@ -290,7 +326,7 @@ const jsonPathExprs = (
       };
     }
     case 'mysql': {
-      const extracted = sql`json_extract(${column}, ${jsonPathString(path)})`;
+      const extracted = sql`json_extract(${column}, ${jsonPathString(path, 'mysql')})`;
       const text = sql`(case when json_type(${extracted}) = 'NULL' then null else json_unquote(${extracted}) end)`;
       return {
         text,
@@ -300,10 +336,10 @@ const jsonPathExprs = (
       };
     }
     default: {
-      const extracted = sql`json_extract(${column}, ${jsonPathString(path)})`;
+      const extracted = sql`json_extract(${column}, ${jsonPathString(path, 'sqlite')})`;
       // SQLite has no boolean type: `json_extract` returns a JSON `true` as the integer 1, so
       // each read checks `json_type`, which still tells `true` apart from `1`.
-      const type = sql`json_type(${column}, ${jsonPathString(path)})`;
+      const type = sql`json_type(${column}, ${jsonPathString(path, 'sqlite')})`;
       return {
         text: sql`(case ${type} when 'true' then 'true' when 'false' then 'false' else cast(${extracted} as text) end)`,
         number: sql`(case when ${type} in ('integer', 'real') then ${extracted} end)`,

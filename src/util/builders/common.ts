@@ -146,6 +146,7 @@ export {
   parentJoinValues,
   parentKeyChunks,
   parentKeyCondition,
+  relatedRowParents,
   relationColumns,
   relationOwnCondition,
   unwrapRelationColumn,
