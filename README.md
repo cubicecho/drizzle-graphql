@@ -1661,7 +1661,8 @@ field, and passing it back as `after` resumes strictly after that row.
     less) or a MySQL `datetime` / `timestamp` with `fsp` above 3 holds more than the
     millisecond JS `Date` that `mode: 'date'` reads it into, so the cursor carries the
     database's own text of the value instead, and rows a microsecond apart are still distinct
-    pages
+    pages. A `date` column's cursor resumes from the calendar day it names, whatever the
+    server's or the connection's timezone
 -   A cursor is opaque by convention only. It is base64url-encoded JSON of the row's
     ordering values, primary key included, so a client can decode it and read those values,
     even for a primary key hidden by [`exclude`](#excluding-tables-and-columns). It is not

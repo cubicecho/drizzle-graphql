@@ -6,6 +6,8 @@ import { and, eq, getColumns, gt, is, isNotNull, isNull, lt, or, type SQL, sql }
 import { MySqlDateTime, MySqlEnumColumn, MySqlEnumObjectColumn, MySqlTimestamp } from 'drizzle-orm/mysql-core';
 import { PgTimestamp } from 'drizzle-orm/pg-core';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
+import { dateToCalendarDate } from '../../scalars/index.ts';
+import { isDateOnlyColumn } from '../../type-converter/index.ts';
 import { drizzleError } from './errors.ts';
 import type { OrderNullsOption } from './order-by.ts';
 import { orderByEntries, orderExpressions } from './order-by.ts';
@@ -276,6 +278,17 @@ const strictComparison = (col: Column, direction: 'asc' | 'desc', value: unknown
 };
 
 /**
+ * A decoded cursor value in the form it is bound against its column. A date-only column's
+ * value decodes to a JS `Date` at UTC midnight, and mysql2 renders a bound `Date` in the
+ * process's local timezone — west of UTC `2025-12-31T00:00Z` goes out as `2025-12-30`, the
+ * cursor row still sorts after itself, and every page repeats it. The calendar day the cursor
+ * encodes is bound instead, as the data mappers bind a `Date` filter on the same column: a
+ * `YYYY-MM-DD` string no timezone can shift, which every dialect's date column reads as is.
+ */
+const boundCursorValue = (col: Column, value: unknown): unknown =>
+  value instanceof Date && isDateOnlyColumn(col) ? (dateToCalendarDate(value) ?? value) : value;
+
+/**
  * The keyset predicate selecting rows strictly after the cursor position in the given total
  * order — the expanded lexicographic form
  * `after(k0) OR (k0 = v0 AND after(k1)) OR (k0 = v0 AND k1 = v1 AND after(k2)) …`,
@@ -304,7 +317,7 @@ export const buildCursorCondition = (
       throw drizzleError(`Invalid cursor: unknown column '${column}'.`, { code: 'DRIZZLE_INVALID_CURSOR' });
     }
 
-    const value = values[i];
+    const value = boundCursorValue(col, values[i]);
     const nullsSortLast =
       nulls != null ? nulls === 'last' : (direction === 'asc') === (nullOrdering === 'nulls-largest');
 
