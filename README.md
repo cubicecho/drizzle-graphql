@@ -1868,6 +1868,11 @@ mutation {
     parent row, the parent rows are read back after it
 -   A relation joining on more than one column per side gets no nested-write field: setting
     one key would leave the rest of the join (a tenant column, say) unmatched and unwritten
+-   A one-to-one whose key on the target is also the target's primary key (a `profiles` table
+    keyed by `user_id`) never has that key rewritten by `connect`: moving a row's primary key
+    is not attaching it. `connect` accepts a row that already holds the parent's key, as a
+    no-op, and fails with `DRIZZLE_NESTED_WRITE_INVALID` for any other row. `create` still
+    inserts the related row with the parent's key
 
 ### A relation's own `where`
 

@@ -1161,13 +1161,22 @@ const registerChildSteps = (
   if (plan.isOne && attachedBy && plan.canDetach && op['set'] === undefined) {
     steps.add(attachedBy, 'update');
   }
-  if (op['connect'] !== undefined) {
+  if (op['connect'] !== undefined && !writesTargetKey(plan)) {
     steps.add('connect', 'update');
   }
   if (op['create'] !== undefined) {
     steps.add('create', 'insert');
   }
 };
+
+/**
+ * Whether the key a child-side relation writes on its target is (part of) the target's own
+ * primary key — a one-to-one that shares its primary key (`profiles.user_id`). A `connect`
+ * there would rewrite the primary key of whichever row its filter picked, so it only checks
+ * that the row already holds the parent's key.
+ */
+const writesTargetKey = (plan: NestedRelationPlan): boolean =>
+  !plan.through && plan.fkSide === 'child' && !!plan.targetPrimaryKey?.includes(plan.foreignColPropName);
 
 /** The input that attaches a row to a to-one, which detaches whatever was attached before. */
 const attachingOp = (op: Record<string, any>): NestedWriteOp | undefined =>
@@ -1721,6 +1730,19 @@ export const createNestedWriteRuntime = (params: {
 
           if (op['connect'] !== undefined) {
             for (const filter of asArray(op['connect'])) {
+              if (writesTargetKey(plan)) {
+                const held = await executor
+                  .select({ [plan.foreignColPropName]: plan.foreignCol })
+                  .from(plan.targetTable)
+                  .where(conditionOf(plan, filter, 'connect', scope));
+                if (held.some((row: any) => keyString(row[plan.foreignColPropName]) !== keyString(key))) {
+                  throw drizzleError(
+                    `Drizzle-GraphQL Error: cannot connect through '${relationName}': '${plan.foreignColPropName}' is the primary key of ${plan.targetTableName}, which a connect never rewrites. A row that already holds this ${tableName} row's key is connected as it is.`,
+                    { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
+                  );
+                }
+                continue;
+              }
               await steps.run(
                 executor
                   .update(plan.targetTable)
