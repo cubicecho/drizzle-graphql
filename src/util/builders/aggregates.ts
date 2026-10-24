@@ -57,6 +57,7 @@ import {
   parentKeyCondition,
   type RelationAggregateFactory,
   type RelationFilterBase,
+  relatedRowParents,
   relationDeletedDefault,
   relationFilterCtx,
   relationOwnCondition,
@@ -711,14 +712,13 @@ export const createRelationAggregateFactory = (
             const selected = executor.select({ ...groupSelection, ...request.selection }).from(targetTable);
             const joined = junction ? selected.innerJoin(junction.table, eq(junction.targetCol, foreignCol)) : selected;
             const rows: any[] = await joined.where(whereCondition).groupBy(...groupCols);
+            // A group's label is one spelling of its key; it belongs to every parent the database
+            // matched it to (see relatedRowParents).
+            const parentsOf = await relatedRowParents(executor, chunk, localCols, groupCols);
             for (const row of rows) {
-              byKey.set(
-                joinKeyOf(
-                  groupAliases.map((alias) => row[alias]),
-                  groupCols,
-                ),
-                row,
-              );
+              for (const key of parentsOf(groupAliases.map((alias) => row[alias]))) {
+                byKey.set(key, row);
+              }
             }
           }
 

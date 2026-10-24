@@ -1126,6 +1126,16 @@ PostgreSQL compares exactly. That is the database's configured behaviour, not so
 library adds: give a column a binary or `*_as_cs` collation (`varchar(…) COLLATE utf8mb4_bin`)
 where it has to compare exactly.
 
+Relations joined on such a column follow the same rule: an `items` row whose `code` is `ABC`
+belongs to the `codes` row `abc` wherever the column's collation says they are equal, in the
+relation field, its `<relation>Aggregate` and the batched loader alike. Batched relations
+regroup their rows in JS, so the library folds the keys the way the collation does — case
+for `*_ci`, accents for `*_ai_ci` (and the older `*_ci` collations), trailing spaces for the
+PAD SPACE collations — reading the collation from the drizzle column's `.collate()` when it
+declares one and otherwise from `information_schema` (once per column). The fold covers case,
+accents and padding; a collation's rarer equivalences (`ß` = `ss`, ligatures) are not
+reproduced, so such keys still compare by their folded text.
+
 ### Case sensitivity of the pattern operators on SQLite
 
 `like` / `notLike` and the safe `startsWith` / `endsWith` / `contains` are case-sensitive, as
