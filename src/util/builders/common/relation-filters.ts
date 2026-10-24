@@ -12,14 +12,13 @@ import {
   is,
   not,
   One,
-  or,
   relationsFilterToSQL,
   type SQL,
   sql,
 } from 'drizzle-orm';
 import type { FilterColumnOperatorsCore, Filters, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
-import { extractFiltersColumn } from './filters.ts';
+import { compileBooleanBranches, extractFiltersColumn } from './filters.ts';
 import type { ScopeResolver } from './policies.ts';
 import { isRelationFilterReversed, relationColumns, relationOwnWhere, unwrapRelationColumn } from './relations.ts';
 import type { UniqueKeyMap } from './unique-keys.ts';
@@ -464,37 +463,7 @@ export const extractFilters = <TTable extends Table>(
     }
   }
 
-  if (AND?.length) {
-    for (const variant of AND) {
-      const extracted = extractFilters(table, tableName, variant, relationCtx);
-      if (extracted) {
-        variants.push(extracted);
-      }
-    }
-  }
-
-  if (NOT) {
-    const extracted = extractFilters(table, tableName, NOT, relationCtx);
-    // `not()` is typed `SQL | undefined` from drizzle-orm rc.5 on, `SQL` before it.
-    const negated = extracted ? not(extracted) : undefined;
-    if (negated) {
-      variants.push(negated);
-    }
-  }
-
-  if (OR?.length) {
-    const orVariants = [] as SQL[];
-    for (const variant of OR) {
-      const extracted = extractFilters(table, tableName, variant, relationCtx);
-      if (extracted) {
-        orVariants.push(extracted);
-      }
-    }
-
-    if (orVariants.length) {
-      variants.push(orVariants.length > 1 ? or(...orVariants)! : orVariants[0]!);
-    }
-  }
+  compileBooleanBranches(variants, { AND, NOT, OR }, (branch) => extractFilters(table, tableName, branch, relationCtx));
 
   return variants.length ? (variants.length > 1 ? and(...variants) : variants[0]) : undefined;
 };

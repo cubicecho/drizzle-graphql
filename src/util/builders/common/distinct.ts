@@ -9,12 +9,16 @@ import { primaryKeyOrderExprs } from './keys.ts';
 import { offsetOnlyLimit } from './limits.ts';
 import { orderByEntries, orderExpressions } from './order-by.ts';
 import { balancedOr } from './relations.ts';
+import { subquerySafeSelection } from './selected-columns.ts';
 
 /**
  * Alias the parent key comes back under when the pass runs through a junction table. See
  * `selectDistinctKeys`' `junction` parameter.
  */
 export const DISTINCT_PARENT = '__dgql_distinct_parent';
+
+/** Alias prefix of the ordering columns inside the distinct pass's subquery. */
+const DISTINCT_ORDER = '__dgql_distinct_o';
 
 /**
  * Keeps the first row of each distinct combination of the requested columns, following the
@@ -80,18 +84,35 @@ export const selectDistinctKeys = async (params: {
     sql`, `,
   )})`.as(DISTINCT_RN);
 
+  // The subquery carries only what the outer query reads back by name: the primary key it
+  // returns, the parent key, the row number, and the ordering columns (the request's, then the
+  // primary-key tiebreak). Every one has an explicit alias — drizzle selects a SQLite
+  // `numeric()` column as an unaliased `cast(… as text)`, which the outer query could not find
+  // by name — and the ordering columns are the raw column, so they sort by the stored value
+  // rather than its text.
+  const orderAlias = (index: number) => `${DISTINCT_ORDER}${index}`;
   const selected = db
-    .select({ ...cols, ...(junction ? { [DISTINCT_PARENT]: junction.parentKey } : {}), [DISTINCT_RN]: rowNumber })
+    .select({
+      ...subquerySafeSelection(Object.fromEntries(pkNames.map((name) => [name, cols[name]!]))),
+      ...(junction ? subquerySafeSelection({ [DISTINCT_PARENT]: junction.parentKey }) : {}),
+      ...Object.fromEntries(
+        [...orderEntries.map(([column]) => column), ...pkNames].map((column, index) => [
+          orderAlias(index),
+          sql`${cols[column]!}`.as(orderAlias(index)),
+        ]),
+      ),
+      [DISTINCT_RN]: rowNumber,
+    })
     .from(table);
   const sub = (junction ? selected.innerJoin(junction.table, junction.on) : selected)
     .where(where)
     .as('__dgql_distinct');
 
   const outerOrder = [
-    ...orderEntries.flatMap(([column, direction, nulls]) =>
-      orderExpressions(sub[column], direction, nulls, cols[column]!),
+    ...orderEntries.flatMap(([column, direction, nulls], index) =>
+      orderExpressions(sub[orderAlias(index)], direction, nulls, cols[column]!),
     ),
-    ...pkNames.filter((name) => sub[name]).map((name) => asc(sub[name])),
+    ...pkNames.map((_, index) => asc(sub[orderAlias(orderEntries.length + index)])),
   ];
 
   let query = db

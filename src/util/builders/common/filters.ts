@@ -261,6 +261,62 @@ const sqlFalse = (): SQL => sql`1 = 0`;
 const sqlTrue = (): SQL => sql`1 = 1`;
 
 /**
+ * Compiles the `AND` / `NOT` / `OR` branches of one filter object onto `variants`, the
+ * conditions its sibling keys already produced (all of which are ANDed together).
+ *
+ * A branch that compiles to no condition — `{}`, `{ c: { isNull: false } }`, a relation
+ * `every: {}` — is a filter that restricts nothing, so it matches every row, and each branch
+ * reads it that way:
+ *
+ * - in `AND`, it drops out, as `x AND true` is `x`;
+ * - under `NOT`, it matches no row, as `NOT true` is false;
+ * - in `OR`, it makes the whole group match every row, as `x OR true` is true — so the group
+ *   adds no condition, rather than being narrowed to its other branches.
+ *
+ * An empty `AND` or `OR` list is treated as absent.
+ */
+export const compileBooleanBranches = <TBranch>(
+  variants: SQL[],
+  branches: { AND?: TBranch[] | null; NOT?: TBranch | null; OR?: TBranch[] | null },
+  compile: (branch: TBranch) => SQL | undefined,
+): void => {
+  const { AND, NOT, OR } = branches;
+
+  if (AND?.length) {
+    for (const branch of AND) {
+      const extracted = compile(branch);
+      if (extracted) {
+        variants.push(extracted);
+      }
+    }
+  }
+
+  if (NOT) {
+    const extracted = compile(NOT);
+    // `not()` is typed `SQL | undefined` from drizzle-orm rc.5 on, `SQL` before it.
+    variants.push((extracted ? not(extracted) : undefined) ?? sqlFalse());
+  }
+
+  if (OR?.length) {
+    const orVariants = [] as SQL[];
+    let matchesAll = false;
+    for (const branch of OR) {
+      const extracted = compile(branch);
+      if (!extracted) {
+        // Still compiled the rest: an invalid filter in a later branch is an error either way.
+        matchesAll = true;
+      } else {
+        orVariants.push(extracted);
+      }
+    }
+
+    if (!matchesAll && orVariants.length) {
+      variants.push(orVariants.length > 1 ? or(...orVariants)! : orVariants[0]!);
+    }
+  }
+};
+
+/**
  * A MySQL / SQLite JSON path expression for the given key walk. Bound as a query parameter,
  * never spliced into the SQL text; an all-digits key becomes an array index, and quotes and
  * backslashes inside a key are escaped so a key can never end the path segment early.
@@ -566,37 +622,7 @@ export const extractFiltersColumn = <TColumn extends Column>(
     }
   }
 
-  if (AND?.length) {
-    for (const variant of AND) {
-      const extracted = extractFiltersColumn(column, columnName, variant);
-      if (extracted) {
-        variants.push(extracted);
-      }
-    }
-  }
-
-  if (NOT) {
-    const extracted = extractFiltersColumn(column, columnName, NOT);
-    // `not()` is typed `SQL | undefined` from drizzle-orm rc.5 on, `SQL` before it.
-    const negated = extracted ? not(extracted) : undefined;
-    if (negated) {
-      variants.push(negated);
-    }
-  }
-
-  if (OR?.length) {
-    const orVariants = [] as SQL[];
-    for (const variant of OR) {
-      const extracted = extractFiltersColumn(column, columnName, variant);
-      if (extracted) {
-        orVariants.push(extracted);
-      }
-    }
-
-    if (orVariants.length) {
-      variants.push(orVariants.length > 1 ? or(...orVariants)! : orVariants[0]!);
-    }
-  }
+  compileBooleanBranches(variants, { AND, NOT, OR }, (branch) => extractFiltersColumn(column, columnName, branch));
 
   return variants.length ? (variants.length > 1 ? and(...variants) : variants[0]) : undefined;
 };
