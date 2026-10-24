@@ -22,10 +22,20 @@
 // of variables, defaults, enums, input objects and list/non-null wrapping is not worth
 // re-deriving, and passing `info.variableValues` straight through works under both majors
 // (graphql 16 hands resolvers a plain map, graphql 17 a `{ sources, coerced }` record, and each
-// major's `getArgumentValues` expects its own).
+// major's `getArgumentValues` expects its own). Under 17 a field inside a fragment that declares
+// variables (`experimentalFragmentArguments`) is coerced against that fragment's scope as well,
+// rebuilt by `graphql-variables.ts` since `info` does not carry it.
 
-import type { DirectiveNode, GraphQLResolveInfo, NamedTypeNode, SelectionNode, ValueNode } from 'graphql';
-import { getArgumentValues, Kind } from 'graphql';
+import type { FieldNode, FragmentDefinitionNode, GraphQLResolveInfo, NamedTypeNode, SelectionNode } from 'graphql';
+import { Kind } from 'graphql';
+import type { FragmentVariableScope } from './graphql-variables.ts';
+import {
+  argumentValues,
+  enterFragmentScope,
+  fieldNodeScopes,
+  fragmentArgumentsInUse,
+  isExcludedByDirectives,
+} from './graphql-variables.ts';
 
 /**
  * The selections made against one concrete type, keyed by the *response key* — the field's
@@ -100,54 +110,6 @@ const isCompositeLike = (type: TypeLike | undefined): boolean =>
 const fieldsOf = (type: TypeLike | undefined): Record<string, { type?: TypeLike }> | undefined =>
   typeof type?.getFields === 'function' ? type.getFields() : undefined;
 
-/**
- * The runtime variable values, in the plain-map form the directive check wants. graphql 17
- * wraps them in `{ sources, coerced }`; graphql 16 hands over the map itself.
- */
-const coercedVariables = (info: GraphQLResolveInfo): Record<string, unknown> => {
-  const values = info.variableValues as unknown;
-  if (values && typeof values === 'object' && 'coerced' in (values as Record<string, unknown>)) {
-    return ((values as { coerced?: Record<string, unknown> }).coerced ?? {}) as Record<string, unknown>;
-  }
-  return (values ?? {}) as Record<string, unknown>;
-};
-
-/** The value of a `@skip` / `@include` `if:` argument — a literal or a variable reference. */
-const directiveIfValue = (info: GraphQLResolveInfo, value: ValueNode): unknown => {
-  if (value.kind === Kind.VARIABLE) {
-    return coercedVariables(info)[value.name.value];
-  }
-  if (value.kind === Kind.BOOLEAN) {
-    return value.value;
-  }
-  return undefined;
-};
-
-/**
- * Whether `@skip` / `@include` on this selection exclude it. Applies to fields, fragment
- * spreads and inline fragments alike, which is where graphql puts them.
- */
-const isExcluded = (
-  info: GraphQLResolveInfo,
-  node: { readonly directives?: ReadonlyArray<DirectiveNode> },
-): boolean => {
-  for (const directive of node.directives ?? []) {
-    const directiveName = directive.name.value;
-    if (directiveName !== 'skip' && directiveName !== 'include') {
-      continue;
-    }
-    const ifArgument = directive.arguments?.find((argument) => argument.name.value === 'if');
-    if (!ifArgument) {
-      continue;
-    }
-    const value = directiveIfValue(info, ifArgument.value);
-    if (directiveName === 'skip' ? !!value : !value) {
-      return true;
-    }
-  }
-  return false;
-};
-
 /** The type a fragment's `on Type` condition names, looked up in the executing schema. */
 const typeFromCondition = (info: GraphQLResolveInfo, condition: NamedTypeNode): TypeLike | undefined =>
   info.schema.getType(condition.name.value) as TypeLike | undefined;
@@ -174,6 +136,7 @@ const collectSelections = (
   parentType: TypeLike | undefined,
   deep: boolean,
   activeFragments: Set<string>,
+  scope: FragmentVariableScope | undefined,
 ): FieldsByTypeName => {
   const parentTypeName = parentType?.name;
   if (!parentTypeName) {
@@ -191,7 +154,7 @@ const collectSelections = (
   const parentFields = fieldsOf(parentType);
 
   for (const selection of selections) {
-    if (isExcluded(info, selection)) {
+    if (isExcludedByDirectives(selection, info.variableValues, scope)) {
       continue;
     }
 
@@ -221,17 +184,8 @@ const collectSelections = (
           name,
           alias,
           // Spread out of the null-prototype object graphql returns, so downstream code can
-          // treat it as an ordinary record. The casts are on the installed major's own
-          // signature: graphql 17 brands its field type and takes a `{ sources, coerced }`
-          // variables record where 16 takes a plain map, and `info` carries whichever shape
-          // that major's executor produced.
-          args: {
-            ...getArgumentValues(
-              fieldDef as unknown as Parameters<typeof getArgumentValues>[0],
-              selection,
-              info.variableValues as unknown as Parameters<typeof getArgumentValues>[2],
-            ),
-          },
+          // treat it as an ordinary record.
+          args: { ...argumentValues(fieldDef, selection, info.variableValues, scope) },
           fieldsByTypeName: composite && fieldType.name ? { [fieldType.name]: {} } : {},
         };
         fields[alias] = node;
@@ -248,6 +202,7 @@ const collectSelections = (
           fieldType,
           deep,
           activeFragments,
+          scope,
         );
       }
       continue;
@@ -278,7 +233,18 @@ const collectSelections = (
       try {
         // Spread into the *caller's* level, not a nested one: a fragment contributes its fields
         // to the selection it was spread into, keyed by its own type condition.
-        collectSelections(fragment.selectionSet.selections, info, tree, fragmentType, deep, activeFragments);
+        const fragmentScope = fragmentArgumentsInUse(info.variableValues, info.fragments)
+          ? enterFragmentScope(info.schema, selection, fragment as FragmentDefinitionNode, info.variableValues, scope)
+          : undefined;
+        collectSelections(
+          fragment.selectionSet.selections,
+          info,
+          tree,
+          fragmentType,
+          deep,
+          activeFragments,
+          fragmentScope,
+        );
       } finally {
         activeFragments.delete(fragmentName);
       }
@@ -290,7 +256,7 @@ const collectSelections = (
       if (!isCompositeLike(fragmentType)) {
         continue;
       }
-      collectSelections(selection.selectionSet.selections, info, tree, fragmentType, deep, activeFragments);
+      collectSelections(selection.selectionSet.selections, info, tree, fragmentType, deep, activeFragments, scope);
     }
   }
 
@@ -328,14 +294,28 @@ export const parseResolveInfo = (
     );
   }
 
-  const tree = collectSelections(
-    fieldNodes,
-    info,
-    {},
-    info.parentType as unknown as TypeLike,
-    options.deep ?? true,
-    new Set(),
-  );
+  const parentType = info.parentType as unknown as TypeLike;
+  const deep = options.deep ?? true;
+  // Under graphql 17 with fragment arguments, each of the resolver's own field nodes may sit in
+  // a different fragment scope, so each is collected in its own; the tree merges them by
+  // response key exactly as one call over all of them would.
+  const scoped = fieldNodeScopes(info);
+  const tree: FieldsByTypeName = {};
+  if (scoped) {
+    for (const fieldNode of fieldNodes) {
+      collectSelections(
+        [fieldNode],
+        info,
+        tree,
+        parentType,
+        deep,
+        new Set(),
+        scoped.scopes.get(fieldNode as FieldNode),
+      );
+    }
+  } else {
+    collectSelections(fieldNodes, info, tree, parentType, deep, new Set(), undefined);
+  }
 
   // Every field node handed to one resolver shares one response key under one parent type, so
   // the tree has exactly one entry at each of its two top levels — which is the node wanted.
