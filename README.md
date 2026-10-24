@@ -1131,6 +1131,16 @@ folds ASCII case, so on SQLite they compile to `GLOB` instead, with `%` / `_` tr
 `*` / `?` and every other wildcard in the operand matched literally. The `i`-prefixed operators
 and `insensitive: true` fold case on SQLite as everywhere else.
 
+In a raw `like` / `notLike` / `ilike` / `notIlike` pattern, `\` escapes the character after it
+on all three dialects, as PostgreSQL's and MySQL's `LIKE` do by default: `100\%` matches the
+text `100%`, `a\_b` matches `a_b` only, and `\\` matches one backslash. (Written in a GraphQL
+string literal, each of those backslashes is itself doubled.)
+
+Case folding is the database's own. Both sides of a case-insensitive comparison on MySQL and
+SQLite are lowered by the database's `lower()`, and SQLite's folds only ASCII: there
+`iContains: "école"` does not match `École`, though `iContains: "École"` and
+`iContains: "COLE"` do.
+
 > **Upgrading — SQLite.** These operators used to compile to `LIKE` on SQLite and so matched
 > case-insensitively. Queries that relied on that should use the `i`-prefixed operator or
 > `insensitive: true`.
