@@ -6,6 +6,12 @@
 // - `onConflict: { action: NOTHING }` ran as INSERT IGNORE, which also downgraded truncation
 //   and foreign-key errors to warnings.
 // - `features.requireWhere` let an `update<Table>Many` entry through without a `where`.
+// - `action: NOTHING` ran as `ON DUPLICATE KEY UPDATE pk = pk`, to which drizzle appends every
+//   `$onUpdate` column — so a skipped duplicate still had those columns rewritten.
+// - A scope whose same-table subquery is a drizzle select *builder* was not seen as reading the
+//   table, and still hit error 1093.
+// - A soft-delete marker on a `'string'`-mode datetime / timestamp / date column was stamped as
+//   an ISO instant, which MySQL refuses for those types.
 //
 // The connection is tunnelled through `docker exec` into the container rather than a published
 // port, which is not reachable from every sandbox. Set MYSQL_TEST_CONTAINER to reuse a running
@@ -13,8 +19,8 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { Duplex } from 'node:stream';
-import { buildRelations, createRelationsHelper, sql } from 'drizzle-orm';
-import { int, mysqlTable, text, varchar } from 'drizzle-orm/mysql-core';
+import { buildRelations, createRelationsHelper, eq, inArray, sql } from 'drizzle-orm';
+import { date, datetime, int, mysqlTable, text, timestamp, varchar } from 'drizzle-orm/mysql-core';
 import { drizzle } from 'drizzle-orm/mysql2';
 import { type GraphQLSchema, graphql } from 'graphql';
 import * as mysql from 'mysql2/promise';
@@ -34,7 +40,27 @@ const Items = mysqlTable('items', {
   sku: varchar('sku', { length: 8 }).notNull(),
   orgId: int('org_id').references(() => Orgs.id),
 });
-const tables = { Users, Orgs, Items };
+const Stamped = mysqlTable('stamped', {
+  id: int('id').primaryKey(),
+  sku: varchar('sku', { length: 8 }).notNull(),
+  revision: int('revision')
+    .notNull()
+    .default(0)
+    .$onUpdate(() => 99),
+});
+const Marked = mysqlTable('marked', {
+  id: int('id').primaryKey(),
+  deletedAt: datetime('deleted_at', { mode: 'string' }),
+});
+const MarkedTs = mysqlTable('marked_ts', {
+  id: int('id').primaryKey(),
+  removedAt: timestamp('removed_at', { mode: 'string' }),
+});
+const MarkedDay = mysqlTable('marked_day', {
+  id: int('id').primaryKey(),
+  removedOn: date('removed_on', { mode: 'string' }),
+});
+const tables = { Users, Orgs, Items, Stamped, Marked, MarkedTs, MarkedDay };
 const r = createRelationsHelper(tables);
 const relations = buildRelations(tables, {
   Users: {
@@ -130,6 +156,12 @@ beforeAll(async () => {
   await connection.query(
     'CREATE TABLE items (id int PRIMARY KEY, sku varchar(8) NOT NULL, org_id int, FOREIGN KEY (org_id) REFERENCES orgs (id))',
   );
+  await connection.query(
+    'CREATE TABLE stamped (id int PRIMARY KEY, sku varchar(8) NOT NULL, revision int NOT NULL DEFAULT 0)',
+  );
+  await connection.query('CREATE TABLE marked (id int PRIMARY KEY, deleted_at datetime NULL)');
+  await connection.query('CREATE TABLE marked_ts (id int PRIMARY KEY, removed_at timestamp NULL)');
+  await connection.query('CREATE TABLE marked_day (id int PRIMARY KEY, removed_on date NULL)');
 }, 180_000);
 
 afterAll(async () => {
@@ -232,6 +264,21 @@ describe.sequential('mysql: writes filtered through a self-referencing relation'
     expect(errorsOf(res)).toBeUndefined();
     expect((await users()).map((u) => u.name)).toEqual(['boss', 'scoped', 'other']);
   });
+
+  it('a scope whose same-table subquery is a select builder', async () => {
+    const schema = build({
+      scope: {
+        Users: (_ctx: any, t: any) =>
+          inArray(t.id, db.select({ id: Users.id }).from(Users).where(eq(Users.managerId, 1))),
+      },
+    } as any);
+    const res = await run(
+      schema,
+      'mutation { updateUsers(set: { name: "x" }) { isSuccess } deleteUsers(where: { id: { eq: 9 } }) { isSuccess } }',
+    );
+    expect(errorsOf(res)).toBeUndefined();
+    expect((await users()).map((u) => u.name)).toEqual(['boss', 'x', 'other']);
+  });
 });
 
 describe.sequential('mysql: onConflict action NOTHING', () => {
@@ -269,6 +316,38 @@ describe.sequential('mysql: onConflict action NOTHING', () => {
       'mutation { upsertItemsSingle(values: { id: 9, sku: "X", orgId: 404 }, onConflict: { action: NOTHING }) { isSuccess } }',
     );
     expect(res.errors).toBeDefined();
+  });
+
+  it('leaves the skipped row, and its $onUpdate column, untouched', async () => {
+    await db.execute(sql`DELETE FROM stamped`);
+    await db.execute(sql`INSERT INTO stamped (id, sku, revision) VALUES (1, 'A', 0)`);
+    const res = await run(
+      build({ features: { upsert: true } }),
+      'mutation { upsertStampedSingle(values: { id: 1, sku: "B" }, onConflict: { action: NOTHING }) { isSuccess } }',
+    );
+    expect(errorsOf(res)).toBeUndefined();
+    expect(await db.select().from(Stamped)).toEqual([{ id: 1, sku: 'A', revision: 0 }]);
+  });
+});
+
+describe.sequential("mysql: soft delete with a 'string'-mode date marker", () => {
+  const schema = () =>
+    build({ softDelete: { Marked: 'deletedAt', MarkedTs: 'removedAt', MarkedDay: 'removedOn' } } as any);
+
+  it.each([
+    ['datetime', 'marked', 'Marked'],
+    ['timestamp', 'marked_ts', 'MarkedTs'],
+    ['date', 'marked_day', 'MarkedDay'],
+  ])('marks a row deleted (%s)', async (_kind, sqlName, typeName) => {
+    await db.execute(sql.raw(`DELETE FROM ${sqlName}`));
+    await db.execute(sql.raw(`INSERT INTO ${sqlName} (id) VALUES (1), (2)`));
+    const deleted = await run(schema(), `mutation { delete${typeName}Single(where: { id: { eq: 1 } }) { isSuccess } }`);
+    expect(errorsOf(deleted)).toBeUndefined();
+    const field = typeName.charAt(0).toLowerCase() + typeName.slice(1);
+    const live = await run(schema(), `{ ${field} { id } }`);
+    expect((live.data as any)[field]).toEqual([{ id: 2 }]);
+    const trash = await run(schema(), `{ ${field}(deleted: ONLY) { id } }`);
+    expect((trash.data as any)[field]).toEqual([{ id: 1 }]);
   });
 });
 

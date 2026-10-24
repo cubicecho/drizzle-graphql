@@ -501,6 +501,7 @@ What a declared table gets:
 | `updatePosts`, `updatePostsMany`, a second `deletePosts` | a marked row is simply not matched |
 | nested `connect` / `disconnect` / `set` | a marked row cannot be attached or detached; a many-to-many `set` keeps the links to marked rows |
 | `CreatePostsInput`, `UpdatePostsInput`, nested `create` payloads | the marker column is **removed** — only the mutations write it |
+| every insert — root, upsert, nested `create`, a many-to-many link | a NOT NULL marker drizzle declares no default for is written as `restoredValue`; an upsert's conflict branch never overwrites it |
 
 Every read path also gains a `deleted` argument for the cases the default hides:
 
@@ -515,8 +516,9 @@ Every read path also gains a `deleted` argument for the cases the default hides:
 The marker column stays **readable and filterable** — it is only the write inputs that lose it,
 the same trade `contextValues` makes.
 
-Defaults come from the column's type: `new Date()` for a timestamp, an ISO string for text,
-`Date.now()` for a number, `true` for a boolean. A NOT NULL column has no "absent" state, so
+Defaults come from the column's type: `new Date()` for a timestamp, an ISO string for text (a
+`'string'`-mode date or datetime column gets the column's own text form, as an ordinary write
+of it would), `Date.now()` for a number, `true` for a boolean. A NOT NULL column has no "absent" state, so
 the predicate has to compare against a constant: any NOT NULL column other than a boolean must
 give `deletedValue` (a constant, not a function) and `restoredValue`, or the build throws.
 
@@ -1866,6 +1868,11 @@ mutation {
     parent row, the parent rows are read back after it
 -   A relation joining on more than one column per side gets no nested-write field: setting
     one key would leave the rest of the join (a tenant column, say) unmatched and unwritten
+-   A one-to-one whose key on the target is also the target's primary key (a `profiles` table
+    keyed by `user_id`) never has that key rewritten by `connect`: moving a row's primary key
+    is not attaching it. `connect` accepts a row that already holds the parent's key, as a
+    no-op, and fails with `DRIZZLE_NESTED_WRITE_INVALID` for any other row. `create` still
+    inserts the related row with the parent's key
 
 ### A relation's own `where`
 
@@ -1940,6 +1947,12 @@ mutation {
 -   `connect` links every row its filters match and leaves already-linked rows alone, so
     re-connecting is a no-op rather than a unique-constraint error
 -   `disconnect` deletes only the links, never the rows they pointed at
+-   The junction's own `scope` and [soft delete](#soft-delete) apply to its link rows, as they
+    do when the relation is read (see [junction rows](#junction-rows)): `disconnect` and `set`
+    never unlink a row the request's junction scope hides, and `connect` does not count a
+    hidden or marked link as already linked. On a soft-deleting junction, unlinking marks the
+    link row rather than deleting it, as a delete of that table does, and linking a pair whose
+    row is marked restores it rather than inserting a second one
 -   `set: []` unlinks everything and links nothing back, which is how a many-to-many relation
     is cleared. "Everything" is everything the request could have unlinked: links to rows
     outside the target's `scope`, soft-deleted, or hidden by the relation's own `where` stay
@@ -1947,7 +1960,8 @@ mutation {
     link is what the relation field is for. Create the row with its own mutation, then
     `connect` it
 -   A relation is left out when its junction carries a further `NOT NULL` column with no
-    default — a filter alone could not supply a value for it — and when it is declared as a
+    default — a filter alone could not supply a value for it — unless every insert stamps that
+    column anyway (a `contextValues` column, or a soft-delete marker); and when it is declared as a
     to-one, whose "exactly one" guarantee lives in the junction's constraints rather than in
     the relation
 
@@ -2592,9 +2606,9 @@ onWrite: {
 | `create` | the target | `insert` |
 | `connect` / `disconnect` / `set`, key on the target | the target | `update` (the foreign key moved; nothing is deleted) |
 | `connect` / `disconnect`, key on the parent | — | no target hook: only the parent's row changes, and its own hook sees that |
-| many-to-many `connect` | the junction | `insert` |
-| many-to-many `disconnect` | the junction | `delete` |
-| many-to-many `set` | the junction | `delete` (the old links), then `insert` (the new ones) |
+| many-to-many `connect` | the junction | `restore` (marked links, on a soft-deleting junction), then `insert` |
+| many-to-many `disconnect` | the junction | `delete` (a soft-deleting junction's rows are marked) |
+| many-to-many `set` | the junction | `delete` (the old links), then `restore` and `insert` (the new ones) |
 
 -   **`nested`** is `{ parentTable, relation, op }` — the Drizzle schema key of the table whose
     input carried the relation field, the relation's name, and which of its inputs this is.
@@ -2842,7 +2856,9 @@ It understands `values` (one object or a list), `where` (`eq` for one row, `inAr
 many, an equality on every column of a composite key), and the per-entry `where` inside a
 batch update's `updates`. Check `complete` before treating `rows` as the affected set: it
 is `false` when the arguments do not pin the rows down — an insert whose key the database
-generates, a filter on something other than the primary key, an unbounded update, a
+generates, a filter on something other than the primary key, a key operand that is `null`
+(which filters nothing, so the write reaches every row), a second operator beside a key
+column's `eq`, an unbounded update, a
 table with no primary key at all, or an upsert whose `onConflict` targets another unique key
 or can skip a conflicting row (`action: NOTHING`, a `where`). On MySQL, where an upsert has
 no `target` and conflicts on whichever unique key it hits, `complete` assumes the primary

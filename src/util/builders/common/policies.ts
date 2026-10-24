@@ -4,6 +4,8 @@
 import type { Column, Table } from 'drizzle-orm';
 import { and, eq, extractExtendedColumnType, getColumns, is, isNotNull, isNull, ne, or, SQL } from 'drizzle-orm';
 import { GraphQLEnumType } from 'graphql';
+import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
+import { isDateOnlyColumn, isDateTimeColumn } from '../../type-converter/index.ts';
 import { drizzleError } from './errors.ts';
 import type { DefaultOrderByFor } from './limits.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
@@ -138,7 +140,12 @@ export const resolveSoftDeleteInfo = (
     : constraint === 'date' && baseType === 'object'
       ? () => new Date()
       : baseType === 'string'
-        ? () => new Date().toISOString()
+        ? // A `'string'`-mode date column takes its own text form — MySQL refuses an ISO
+          // instant (`…T…Z`) for a DATETIME, and a DATE wants the calendar day — which is what
+          // an ordinary write of the same column is mapped to.
+          isDateTimeColumn(column) || isDateOnlyColumn(column)
+          ? () => remapFromGraphQLCore(new Date(), column, columnName)
+          : () => new Date().toISOString()
         : baseType === 'number'
           ? () => Date.now()
           : baseType === 'bigint'
@@ -440,6 +447,32 @@ export const applyContextValues = (
     values[columnName] = hook(context);
   }
   return values;
+};
+
+/**
+ * The columns every insert into `tableName` stamps, as {@link applyContextValues} hooks: its
+ * `contextValues`, plus a NOT NULL soft-delete marker drizzle declares no default for. That
+ * marker is in no create input — only the delete and restore mutations write it — so without
+ * its restored value ("not deleted") every insert would be a NOT NULL violation. Like a
+ * context value it is server-owned: an upsert's conflict branch never overwrites it.
+ */
+export const insertStamps = (
+  policies: { contextValues?: ContextValuesFor; softDelete?: SoftDeleteFor } | undefined,
+  tableName: string,
+): Record<string, ContextValueHook> | undefined => {
+  const hooks = policies?.contextValues?.(tableName);
+  const marker = policies?.softDelete?.(tableName);
+  if (
+    !marker ||
+    marker.nullable ||
+    marker.column.hasDefault ||
+    (marker.column as any).defaultFn ||
+    hooks?.[marker.columnName]
+  ) {
+    return hooks;
+  }
+  const restored = marker.writeRestored;
+  return { ...hooks, [marker.columnName]: () => restored };
 };
 
 /** {@link applyContextValues} over a batch — every row in an insert gets its own evaluation. */

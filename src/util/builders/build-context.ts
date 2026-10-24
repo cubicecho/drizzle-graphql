@@ -36,6 +36,7 @@ import {
   extractRelationJoinColumns,
   generateTableTypes,
   getUniqueColumnSets,
+  insertStamps,
   type LimitPolicyFor,
   listFieldComplexity,
   type MutationTxCtx,
@@ -357,6 +358,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
           // A junction is written without being a relation target, so it is named from the
           // whole schema — excluded tables included, which the gate below then refuses.
           (junction) => schemaEntries.find(([, value]) => value === junction)?.[0],
+          (tableName) => insertStamps({ contextValues: contextValuesOf, softDelete: softDeleteOf }, tableName),
         )
       : undefined;
     // A nested write is a write to the target (or junction) table, so it obeys that table's
