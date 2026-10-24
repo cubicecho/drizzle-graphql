@@ -7,6 +7,7 @@ import { and, eq, getColumns, gt, lte, type SQL, sql } from 'drizzle-orm';
 import { getOrCreateLoader, getOrCreateRequestValue } from '../../batch-loader/index.ts';
 import { remapToGraphQLArrayOutput } from '../../data-mappers/index.ts';
 import { relationFieldExtension } from '../../extensions.ts';
+import { requestValueNodes } from '../../graphql-variables.ts';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { parseResolveInfo } from '../../parse-resolve-info.ts';
 import type { TableNamedRelations } from '../types.ts';
@@ -257,7 +258,7 @@ export const createRelationResolverFactory =
       // re-stringifying the loader key N times.
       const { orderByArg, limit, distinct, cursorEntries, cursorValues, columns, loaderKey } = getOrCreateRequestValue(
         context,
-        info?.fieldNodes,
+        requestValueNodes(info),
         `relation:${tableName}::${relationName}`,
         () => {
           // A relation field falls back to the *target* table's default ordering, since that is
