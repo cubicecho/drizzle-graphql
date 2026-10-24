@@ -861,7 +861,10 @@ type Posts {
 -   Ordering by an enum column, its `min` / `max`, and cursor pages over it follow the
     database's own rule. PostgreSQL and MySQL sort an enum by declaration order (`active` before
     `archived` because it is declared first). SQLite has no enum type — the column is `text`
-    with the values checked by Drizzle — so there it sorts alphabetically
+    with the values checked by Drizzle — so there it sorts alphabetically. MySQL's own
+    `MIN()` / `MAX()` compare an ENUM by its label text, so there `min` / `max` aggregate the
+    declaration index (`col + 0`) and map it back to the label, and ordering through a to-one
+    relation sorts the related row's index too
 
 `enumNameMapper` overrides the name. Returning `undefined` keeps the default, so a mapper
 only has to handle the cases it cares about:
