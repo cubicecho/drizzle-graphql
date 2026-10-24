@@ -41,6 +41,7 @@ import {
   extractFilters,
   insertStamps,
   isRelationFilterReversed,
+  junctionPolicy,
   type RelationFilterBase,
   relationColumns,
   relationFilterCtx,
@@ -1027,7 +1028,7 @@ const asArray = (value: any): any[] => (Array.isArray(value) ? value : value ===
 const supplied = (value: any) => value !== undefined && value !== null;
 
 /** The write a nested statement performs on the table it lands on. */
-type NestedOperation = 'insert' | 'update' | 'delete';
+type NestedOperation = 'insert' | 'update' | 'delete' | 'restore';
 
 /**
  * One `onWrite` call for a nested write: every statement one relation-field input runs
@@ -1124,16 +1125,28 @@ type HookSteps = ReturnType<typeof createHookSteps>;
  * `applyChildSide` and `applyThroughOps` exactly: a step registered for an input that runs no
  * statement would fire with no rows, and one missing would miss them.
  */
-const registerChildSteps = (steps: HookSteps, plan: NestedRelationPlan, op: Record<string, any>) => {
+const registerChildSteps = (
+  steps: HookSteps,
+  plan: NestedRelationPlan,
+  op: Record<string, any>,
+  /** The junction soft-deletes, so a link is restored rather than inserted when it can be. */
+  junctionSoftDeletes = false,
+) => {
   if (plan.through) {
     if (supplied(op['set'])) {
       steps.add('set', 'delete');
+      if (junctionSoftDeletes) {
+        steps.add('set', 'restore');
+      }
       steps.add('set', 'insert');
     }
     if (supplied(op['disconnect'])) {
       steps.add('disconnect', 'delete');
     }
     if (supplied(op['connect'])) {
+      if (junctionSoftDeletes) {
+        steps.add('connect', 'restore');
+      }
       steps.add('connect', 'insert');
     }
     return;
@@ -1259,6 +1272,21 @@ export const createNestedWriteRuntime = (params: {
     context: any,
   ) => {
     const through = plan.through!;
+    const junctionName = through.tableName;
+    // The junction's own policy decides which links exist for this request, as it does on every
+    // read path: a link row another tenant's scope owns is not one this request can see,
+    // unlink, or count as already linked, and a soft-deleted link row is a removed link.
+    const live = junctionPolicy(scope, junctionName, through.table);
+    const marker = junctionName ? policies?.softDelete?.(junctionName) : undefined;
+
+    // Unlinking a soft-deleting junction marks the link row, as a delete of that table does.
+    const unlink = (where: SQL) =>
+      marker
+        ? executor
+            .update(through.table)
+            .set({ [marker.columnName]: marker.writeDeleted() })
+            .where(and(where, live))
+        : executor.delete(through.table).where(and(where, live));
 
     const link = async (operands: any[], operation: 'connect' | 'set') => {
       const existing = new Set(
@@ -1266,24 +1294,49 @@ export const createNestedWriteRuntime = (params: {
           await executor
             .select({ [through.targetColPropName]: through.targetCol })
             .from(through.table)
-            .where(eq(through.sourceCol, key))
+            .where(and(eq(through.sourceCol, key), live))
         ).map((row: any) => row[through.targetColPropName]),
       );
-      const rows: Record<string, any>[] = [];
+      const missing: any[] = [];
       for (const filter of operands) {
         for (const targetKey of await selectedTargetKeys(executor, plan, filter, operation, scope)) {
           if (!existing.has(targetKey)) {
             existing.add(targetKey);
-            rows.push(
-              applyContextValues(
-                { [through.sourceColPropName]: key, [through.targetColPropName]: targetKey },
-                through.tableName ? stampsOf(through.tableName) : undefined,
-                context,
-              ),
-            );
+            missing.push(targetKey);
           }
         }
       }
+      if (!missing.length) {
+        return;
+      }
+      // A link this request removed earlier is still there, marked: it is restored rather than
+      // inserted again, which a key on the junction's two columns would refuse.
+      let restored = new Set<any>();
+      if (marker && junctionName) {
+        const step = steps.get(operation, 'restore');
+        const rows = (await executor
+          .update(through.table)
+          .set({ [marker.columnName]: marker.writeRestored })
+          .where(
+            and(
+              eq(through.sourceCol, key),
+              inArray(through.targetCol, missing),
+              scope?.on(junctionName, through.table, 'ONLY'),
+            ),
+          )
+          .returning(step ? step.returning : { [through.targetColPropName]: through.targetCol })) as any[];
+        step?.rows.push(...rows);
+        restored = new Set(rows.map((row) => row[through.targetColPropName]));
+      }
+      const rows = missing
+        .filter((targetKey) => !restored.has(targetKey))
+        .map((targetKey) =>
+          applyContextValues(
+            { [through.sourceColPropName]: key, [through.targetColPropName]: targetKey },
+            junctionName ? stampsOf(junctionName) : undefined,
+            context,
+          ),
+        );
       if (rows.length) {
         await steps.run(executor.insert(through.table).values(rows), operation, 'insert');
       }
@@ -1295,10 +1348,11 @@ export const createNestedWriteRuntime = (params: {
     //
     // "Everything" is everything the caller could have attached: links to targets outside the
     // scope, soft-deleted, or hidden by the relation's own `where` are kept, exactly as
-    // `disconnect` could not have reached them.
+    // `disconnect` could not have reached them — and so are link rows the junction's own
+    // policy hides.
     if (supplied(op['set'])) {
       const reachable = withScope(scope, plan.targetTableName, plan.targetTable, plan.ownCondition?.());
-      const unlink = reachable
+      const linked = reachable
         ? and(
             eq(through.sourceCol, key),
             inArray(
@@ -1308,9 +1362,9 @@ export const createNestedWriteRuntime = (params: {
                 .from(plan.targetTable)
                 .where(reachable),
             ),
-          )
+          )!
         : eq(through.sourceCol, key);
-      await steps.run(executor.delete(through.table).where(unlink), 'set', 'delete');
+      await steps.run(unlink(linked), 'set', 'delete');
       await link(asArray(op['set']), 'set');
     }
 
@@ -1319,9 +1373,7 @@ export const createNestedWriteRuntime = (params: {
         const targetKeys = await selectedTargetKeys(executor, plan, filter, 'disconnect', scope);
         if (targetKeys.length) {
           await steps.run(
-            executor
-              .delete(through.table)
-              .where(and(eq(through.sourceCol, key), inArray(through.targetCol, targetKeys))),
+            unlink(and(eq(through.sourceCol, key), inArray(through.targetCol, targetKeys))!),
             'disconnect',
             'delete',
           );
@@ -1584,7 +1636,12 @@ export const createNestedWriteRuntime = (params: {
         // One hook call per input and operation for the whole batch of parent rows: an update
         // matching several rows writes each one's children, and the hook sees them together.
         const steps = createHookSteps(onWrite, executor, request, tableName, plan);
-        registerChildSteps(steps, plan, op);
+        registerChildSteps(
+          steps,
+          plan,
+          op,
+          !!(plan.through?.tableName && policies?.softDelete?.(plan.through.tableName)),
+        );
         await steps.before();
 
         for (const parentRow of parentRows) {

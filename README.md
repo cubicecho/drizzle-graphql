@@ -1942,6 +1942,12 @@ mutation {
 -   `connect` links every row its filters match and leaves already-linked rows alone, so
     re-connecting is a no-op rather than a unique-constraint error
 -   `disconnect` deletes only the links, never the rows they pointed at
+-   The junction's own `scope` and [soft delete](#soft-delete) apply to its link rows, as they
+    do when the relation is read (see [junction rows](#junction-rows)): `disconnect` and `set`
+    never unlink a row the request's junction scope hides, and `connect` does not count a
+    hidden or marked link as already linked. On a soft-deleting junction, unlinking marks the
+    link row rather than deleting it, as a delete of that table does, and linking a pair whose
+    row is marked restores it rather than inserting a second one
 -   `set: []` unlinks everything and links nothing back, which is how a many-to-many relation
     is cleared. "Everything" is everything the request could have unlinked: links to rows
     outside the target's `scope`, soft-deleted, or hidden by the relation's own `where` stay
@@ -2595,9 +2601,9 @@ onWrite: {
 | `create` | the target | `insert` |
 | `connect` / `disconnect` / `set`, key on the target | the target | `update` (the foreign key moved; nothing is deleted) |
 | `connect` / `disconnect`, key on the parent | — | no target hook: only the parent's row changes, and its own hook sees that |
-| many-to-many `connect` | the junction | `insert` |
-| many-to-many `disconnect` | the junction | `delete` |
-| many-to-many `set` | the junction | `delete` (the old links), then `insert` (the new ones) |
+| many-to-many `connect` | the junction | `restore` (marked links, on a soft-deleting junction), then `insert` |
+| many-to-many `disconnect` | the junction | `delete` (a soft-deleting junction's rows are marked) |
+| many-to-many `set` | the junction | `delete` (the old links), then `restore` and `insert` (the new ones) |
 
 -   **`nested`** is `{ parentTable, relation, op }` — the Drizzle schema key of the table whose
     input carried the relation field, the relation's name, and which of its inputs this is.
