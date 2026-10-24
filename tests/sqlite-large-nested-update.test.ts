@@ -37,7 +37,9 @@ const relations = buildRelations(tables, {
 
 const rootMessage = (e: any): string => {
   let cur = e;
-  while (cur?.originalError ?? cur?.cause) cur = cur.originalError ?? cur.cause;
+  while (cur?.originalError ?? cur?.cause) {
+    cur = cur.originalError ?? cur.cause;
+  }
   return String(cur?.message ?? cur).slice(0, 200);
 };
 
