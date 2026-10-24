@@ -2018,6 +2018,16 @@ Two things follow the database's own semantics rather than being guarded:
     column if you need the fraction)
 -   `divide: 0` raises the driver's division-by-zero error, surfaced as a `GraphQLError`
 
+The arithmetic itself is exact wherever the column is:
+
+-   On MySQL a `BigInt` or `Decimal` operand is cast to a `DECIMAL` as wide as the operand, so
+    `increment: "1"` on a BIGINT past 2^53, or on a `decimal(30, 10)`, keeps every digit rather
+    than going through MySQL's DOUBLE string-to-number conversion
+-   A SQLite `blob({ mode: 'bigint' })` column stores its value as text in a BLOB. Its
+    operations read that text as a 64-bit integer, compute in SQLite's integer arithmetic and
+    write the result back in the same form; a result outside the 64-bit range raises SQLite's
+    `integer overflow` error, and `divide: 0` a `GraphQLError`, instead of storing a wrong value
+
 ## Row counts instead of rows
 
 The plural `update<Table>` / `delete<Table>` mutations always `RETURNING *`, which is wasted

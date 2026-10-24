@@ -11,7 +11,8 @@
  * drizzle's `.set()` accepts side by side.
  */
 import type { Column, SQL, Table } from 'drizzle-orm';
-import { getColumns, sql } from 'drizzle-orm';
+import { getColumns, is, sql } from 'drizzle-orm';
+import { SQLiteBigInt } from 'drizzle-orm/sqlite-core';
 import {
   GraphQLFloat,
   GraphQLInputObjectType,
@@ -29,6 +30,7 @@ import {
   isBufferColumn,
   isFloatTupleColumn,
 } from '../type-converter/index.ts';
+import { columnDialect } from './common/column-filters.ts';
 import { drizzleError } from './common/errors.ts';
 import type { TypeNameResolver } from './common/type-names.ts';
 
@@ -181,6 +183,117 @@ const singleOperation = (value: Record<string, any>, columnName: string): [strin
   );
 };
 
+type ArithmeticOperation = 'increment' | 'decrement' | 'multiply' | 'divide';
+
+const ARITHMETIC_SQL: Record<ArithmeticOperation, string> = {
+  increment: '+',
+  decrement: '-',
+  multiply: '*',
+  divide: '/',
+};
+
+/** Decimal text without an exponent, digit for digit: `1.5e3` → `1500`, `-2E-2` → `-0.02`. */
+const plainDecimalText = (text: string): string => {
+  const match = /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(text);
+  if (!match) {
+    return text;
+  }
+  const [, sign, whole = '', fraction = '', exponent] = match;
+  let digits = `${whole}${fraction}`;
+  let point = whole.length + Number(exponent ?? 0);
+  if (point < 0) {
+    digits = `${'0'.repeat(-point)}${digits}`;
+    point = 0;
+  } else if (point > digits.length) {
+    digits = `${digits}${'0'.repeat(point - digits.length)}`;
+  }
+  const intPart = digits.slice(0, point).replace(/^0+(?=\d)/, '') || '0';
+  const fracPart = digits.slice(point).replace(/0+$/, '');
+  return `${sign === '-' ? '-' : ''}${intPart}${fracPart ? `.${fracPart}` : ''}`;
+};
+
+/** MySQL's widest DECIMAL: 65 digits, at most 30 of them after the point. */
+const MYSQL_DECIMAL_MAX_PRECISION = 65;
+const MYSQL_DECIMAL_MAX_SCALE = 30;
+
+/**
+ * A MySQL BIGINT / DECIMAL operand as an exact DECIMAL just wide enough to hold it.
+ *
+ * Both column types bind their operand as a string, and MySQL evaluates number-plus-string in
+ * DOUBLE — `big + '1'` past 2^53 rounds, and a wide DECIMAL loses everything past ~17 digits.
+ * Cast to a DECIMAL, the operand keeps the arithmetic exact: integer and decimal operands
+ * combine as DECIMAL, and the result is stored back into the column by the column's own rules.
+ * The width comes from the operand rather than the column, so `multiply: "1.5"` on a
+ * `decimal(10, 0)` still multiplies by 1.5.
+ */
+const mysqlExactOperand = (text: string, columnName: string): SQL => {
+  const plain = plainDecimalText(text);
+  const [intPart = '0', fracPart = ''] = plain.replace(/^-/, '').split('.');
+  const scale = Math.min(fracPart.length, MYSQL_DECIMAL_MAX_SCALE);
+  const precision = Math.max(1, intPart.replace(/^0+/, '').length + scale);
+  if (precision > MYSQL_DECIMAL_MAX_PRECISION) {
+    throw drizzleError(
+      `Field '${columnName}': the operand ${text} has more digits than a MySQL DECIMAL holds (${MYSQL_DECIMAL_MAX_PRECISION}).`,
+      { code: 'DRIZZLE_INVALID_UPDATE_OPERATION' },
+    );
+  }
+  // A cast type cannot be a parameter, so the width — two library-computed integers — is
+  // written into the SQL text; the operand itself stays bound.
+  return sql`cast(${plain} as decimal(${sql.raw(String(precision))}, ${sql.raw(String(scale))}))`;
+};
+
+/**
+ * Arithmetic on a SQLite `blob({ mode: 'bigint' })` column, which drizzle stores as the
+ * value's decimal text in a BLOB. A bare `big + 1` makes SQLite read that text as a number and
+ * store an INTEGER back, which the column's decoder cannot read — the row would be unreadable
+ * from then on. Instead the text is read as a 64-bit integer (the column's declared range), the
+ * operation runs in SQLite's exact integer arithmetic, and the result is written back in the
+ * same text-in-a-BLOB form.
+ *
+ * SQLite turns an integer overflow into a REAL, and reads a stored value outside the 64-bit
+ * range clamped; either would write back the wrong number, so both raise SQLite's own
+ * `integer overflow` error instead — `abs()` of the smallest 64-bit integer, the one expression
+ * SQLite raises on rather than converting, reached only in that branch (the `is null` term
+ * keeps it from being evaluated ahead of time as a constant).
+ */
+const sqliteBlobBigIntArithmetic = (
+  column: Column,
+  columnName: string,
+  operation: ArithmeticOperation,
+  operand: unknown,
+): SQL => {
+  const text = String(operand);
+  if (operation === 'divide' && /^[+-]?0+$/.test(text)) {
+    // SQLite answers x / 0 with NULL; PostgreSQL and MySQL raise, and so does this.
+    throw drizzleError(`Field '${columnName}': division by zero.`, { code: 'DRIZZLE_INVALID_UPDATE_OPERATION' });
+  }
+  const current = sql`cast(cast(${column} as text) as integer)`;
+  const result = sql`(${current} ${sql.raw(ARITHMETIC_SQL[operation])} cast(${text} as integer))`;
+  return sql`(case when ${column} is null then null when typeof(${result}) = 'integer' and cast(${current} as text) = cast(${column} as text) then cast(cast(${result} as text) as blob) else abs(-9223372036854775807 - 1 - (${column} is null)) end)`;
+};
+
+/**
+ * `column <op> operand` for the arithmetic operations, built so the arithmetic is exact on
+ * every dialect: see {@link mysqlExactOperand} and {@link sqliteBlobBigIntArithmetic} for the
+ * two column types where the plain form is not.
+ */
+const arithmeticExpression = (
+  column: Column,
+  columnName: string,
+  operation: ArithmeticOperation,
+  operand: unknown,
+): SQL => {
+  const value = remapFromGraphQLCore(operand, column, columnName);
+  if (is(column, SQLiteBigInt)) {
+    return sqliteBlobBigIntArithmetic(column, columnName, operation, value);
+  }
+  const op = sql.raw(ARITHMETIC_SQL[operation]);
+  if (columnDialect(column) === 'mysql' && (typeof value === 'bigint' || typeof value === 'string')) {
+    return sql`${column} ${op} ${mysqlExactOperand(String(value), columnName)}`;
+  }
+  return sql`${column} ${op} ${sql.param(value, column)}`;
+};
+
 /** An update `set` split into values drizzle assigns directly and ones it assigns from SQL. */
 export type SplitUpdateValues = {
   /** Column values still to go through `remapFromGraphQLSingleInput`. */
@@ -230,19 +343,18 @@ export const splitFieldUpdateOperations = (
       continue;
     }
 
-    const param = sql.param(remapFromGraphQLCore(operand, column as Column, columnName), column);
-    expressions[columnName] =
-      operation === 'increment'
-        ? sql`${column} + ${param}`
-        : operation === 'decrement'
-          ? sql`${column} - ${param}`
-          : operation === 'multiply'
-            ? sql`${column} * ${param}`
-            : operation === 'divide'
-              ? sql`${column} / ${param}`
-              : // `push`: array concatenation, which is the only dialect-specific operation
-                // here — and arrays are a PostgreSQL column type to begin with.
-                sql`${column} || ${param}`;
+    if (operation === 'push') {
+      // Array concatenation — and arrays are a PostgreSQL column type to begin with.
+      const param = sql.param(remapFromGraphQLCore(operand, column as Column, columnName), column);
+      expressions[columnName] = sql`${column} || ${param}`;
+      continue;
+    }
+    expressions[columnName] = arithmeticExpression(
+      column as Column,
+      columnName,
+      operation as ArithmeticOperation,
+      operand,
+    );
   }
 
   return { columns, expressions };
