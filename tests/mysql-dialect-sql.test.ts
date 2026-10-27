@@ -1,6 +1,7 @@
 // MySQL reads that used to compile to SQL this dialect rejects or answers differently from
 // PostgreSQL: `ilike`, `offset` without `limit`, whole-document JSON equality, cursor pages over
-// an ENUM, and `avg` rounded to four decimals.
+// an ENUM, and `avg` rounded to four decimals. It also runs the dialect-neutral cursor walk
+// (tests/util/cursor-walk.ts) against MySQL's NULL ordering and `datetime` binding.
 //
 // The connection is tunnelled through `docker exec` into the container rather than a published
 // port, which is not reachable from every sandbox. Set MYSQL_TEST_CONTAINER to reuse a running
@@ -9,12 +10,13 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { Duplex } from 'node:stream';
 import { buildRelations, createRelationsHelper } from 'drizzle-orm';
-import { int, json, mysqlEnum, mysqlTable, primaryKey, text } from 'drizzle-orm/mysql-core';
+import { datetime, int, json, mysqlEnum, mysqlTable, primaryKey, text, varchar } from 'drizzle-orm/mysql-core';
 import { drizzle } from 'drizzle-orm/mysql2';
 import { type GraphQLInputObjectType, graphql } from 'graphql';
 import * as mysql from 'mysql2/promise';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildSchema } from '@/index';
+import { defineCursorWalkTests, WALK_GROUPS, WALK_ITEMS, WALK_PAIRS } from './util/cursor-walk';
 
 const Users = mysqlTable('users', {
   id: int('id').primaryKey(),
@@ -33,9 +35,23 @@ const PostTags = mysqlTable('post_tags', { postId: int('post_id').notNull(), tag
   primaryKey({ columns: [t.postId, t.tagId] }),
 ]);
 
-const tables = { Users, Posts, Tags, PostTags };
+const WalkGroups = mysqlTable('walk_groups', { id: int('id').primaryKey() });
+const WalkItems = mysqlTable('walk_items', {
+  id: int('id').primaryKey(),
+  groupId: int('group_id').notNull(),
+  at: datetime('at').notNull(),
+  rank: int('rank').notNull(),
+  score: int('score'),
+  code: varchar('code', { length: 8 }).notNull(),
+});
+const WalkPairs = mysqlTable('walk_pairs', { a: int('a').notNull(), b: int('b').notNull() }, (t) => [
+  primaryKey({ columns: [t.a, t.b] }),
+]);
+
+const tables = { Users, Posts, Tags, PostTags, WalkGroups, WalkItems, WalkPairs };
 const r = createRelationsHelper(tables);
 const relations = buildRelations(tables, {
+  WalkGroups: { items: r.many.WalkItems({ from: r.WalkGroups.id, to: r.WalkItems.groupId }) },
   Users: { posts: r.many.Posts({ from: r.Users.id, to: r.Posts.authorId }) },
   Posts: {
     tags: r.many.Tags({ from: r.Posts.id.through(r.PostTags.postId), to: r.Tags.id.through(r.PostTags.tagId) }),
@@ -148,6 +164,15 @@ beforeAll(async () => {
     { postId: 1, tagId: 2 },
     { postId: 1, tagId: 3 },
   ]);
+
+  await connection.query('CREATE TABLE walk_groups (id int PRIMARY KEY)');
+  await connection.query(
+    'CREATE TABLE walk_items (id int PRIMARY KEY, group_id int NOT NULL, at datetime NOT NULL, `rank` int NOT NULL, score int, code varchar(8) NOT NULL)',
+  );
+  await connection.query('CREATE TABLE walk_pairs (a int NOT NULL, b int NOT NULL, PRIMARY KEY (a, b))');
+  await db.insert(WalkGroups).values(WALK_GROUPS);
+  await db.insert(WalkItems).values(WALK_ITEMS);
+  await db.insert(WalkPairs).values(WALK_PAIRS);
 
   schema = buildSchema(db).schema;
 });
@@ -270,3 +295,5 @@ describe('mysql: avg is not rounded to four decimals', () => {
     expect(lower.postsGroupBy).toEqual([{ group: { authorId: 1 } }]);
   });
 });
+
+defineCursorWalkTests(run, 'nulls-smallest');

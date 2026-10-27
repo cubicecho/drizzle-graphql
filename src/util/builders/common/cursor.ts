@@ -2,8 +2,14 @@
 // decode pair, and the predicate that resumes a query from one.
 
 import type { Column, Table } from 'drizzle-orm';
-import { and, eq, getColumns, gt, is, isNotNull, isNull, lt, or, type SQL, sql } from 'drizzle-orm';
-import { MySqlDateTime, MySqlEnumColumn, MySqlEnumObjectColumn, MySqlTimestamp } from 'drizzle-orm/mysql-core';
+import { and, bindIfParam, eq, getColumns, gt, is, isNotNull, isNull, lt, or, type SQL, sql } from 'drizzle-orm';
+import {
+  MySqlColumn,
+  MySqlDateTime,
+  MySqlEnumColumn,
+  MySqlEnumObjectColumn,
+  MySqlTimestamp,
+} from 'drizzle-orm/mysql-core';
 import { PgTimestamp } from 'drizzle-orm/pg-core';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { dateToCalendarDate } from '../../scalars/index.ts';
@@ -288,17 +294,79 @@ const strictComparison = (col: Column, direction: 'asc' | 'desc', value: unknown
 const boundCursorValue = (col: Column, value: unknown): unknown =>
   value instanceof Date && isDateOnlyColumn(col) ? (dateToCalendarDate(value) ?? value) : value;
 
+/** One key of a cursor's total order, resolved against the queried table. */
+interface CursorKey {
+  col: Column;
+  direction: 'asc' | 'desc';
+  nulls: OrderNullsOption | null | undefined;
+  value: unknown;
+}
+
+/**
+ * Whether a key's column can never hold NULL in the rows the predicate filters. Every key is a
+ * plain column of the queried table — `orderByEntries` rejects relation and `matchFilterOrder`
+ * entries before a cursor ordering exists — and the batched relation query joins only its
+ * junction, with an inner join, so a NOT NULL column stays non-NULL there too.
+ */
+const isNonNullKey = (key: CursorKey): boolean => key.col.notNull === true;
+
+/**
+ * The keyset predicate as one SQL row-value comparison — `(k0, k1, …) > (v0, v1, …)`, or `<`
+ * for a descending order — when that is exactly the expanded lexicographic form, and
+ * `undefined` otherwise.
+ *
+ * PostgreSQL seeks a composite index on the ordering only for the row-value form: against
+ * `k0 > v0 OR (k0 = v0 AND k1 > v1)` it scans the index from its start and filters out every
+ * row before the cursor. SQLite (3.15+) seeks for both. The two forms agree only when
+ * - every key shares one direction (a row value has a single comparison operator);
+ * - every key is a NOT NULL column and its cursor value non-NULL (a row-value comparison that
+ *   meets a NULL is NULL, not "sorts after");
+ * - the dialect is not MySQL. MySQL compares an ENUM by its label but sorts it by its index
+ *   (see {@link strictComparison}), and its range optimizer does not seek an index for a
+ *   row-value inequality, while it does turn the expanded form into a range scan.
+ * Each element compares under the column's own collation, exactly as the scalar `>` / `=` of
+ * the expanded form does, and binds through the column as `gt` / `eq` do.
+ */
+const rowValueCondition = (keys: CursorKey[]): SQL | undefined => {
+  const direction = keys[0]?.direction;
+  if (
+    keys.length < 2 ||
+    keys.some(
+      (key) =>
+        key.direction !== direction ||
+        !isNonNullKey(key) ||
+        key.value === null ||
+        key.value === undefined ||
+        is(key.col, MySqlColumn),
+    )
+  ) {
+    return undefined;
+  }
+  const columns = sql.join(
+    keys.map((key) => key.col),
+    sql`, `,
+  );
+  const values = sql.join(
+    keys.map((key) => bindIfParam(key.value, key.col)),
+    sql`, `,
+  );
+  return direction === 'asc' ? sql`(${columns}) > (${values})` : sql`(${columns}) < (${values})`;
+};
+
 /**
  * The keyset predicate selecting rows strictly after the cursor position in the given total
- * order — the expanded lexicographic form
+ * order. When every key is a NOT NULL column sorted one way it is a single row-value
+ * comparison (see {@link rowValueCondition}); otherwise the expanded lexicographic form
  * `after(k0) OR (k0 = v0 AND after(k1)) OR (k0 = v0 AND k1 = v1 AND after(k2)) …`,
- * built with and/or/gt/lt/eq rather than SQL row-value syntax, which cannot express mixed
- * asc/desc directions and mishandles NULLs.
+ * built with and/or/gt/lt/eq, since a row value cannot express mixed asc/desc directions or
+ * NULLs.
  *
  * NULL handling follows each key's `nulls: first | last` override when present, and otherwise
  * the dialect's default sort position (see {@link NullOrdering}): where NULLs sort last for a
  * key, "after a non-NULL value" includes the NULL rows and nothing sorts after a NULL one;
- * where NULLs sort first, "after NULL" is every non-NULL row.
+ * where NULLs sort first, "after NULL" is every non-NULL row. A NOT NULL column has no NULL
+ * rows to include, so its `OR col IS NULL` branch — which keeps the database from seeking an
+ * index on the column — is left out.
  * `table` may be the aliased RQB proxy.
  */
 export const buildCursorCondition = (
@@ -308,16 +376,24 @@ export const buildCursorCondition = (
   nullOrdering: NullOrdering,
 ): SQL => {
   const cols = getColumns(table);
-  const disjuncts: SQL[] = [];
-  const equalities: SQL[] = [];
-
-  entries.forEach(([column, direction, nulls], i) => {
+  const keys: CursorKey[] = entries.map(([column, direction, nulls], i) => {
     const col = cols[column];
     if (!col) {
       throw drizzleError(`Invalid cursor: unknown column '${column}'.`, { code: 'DRIZZLE_INVALID_CURSOR' });
     }
+    return { col, direction, nulls, value: boundCursorValue(col, values[i]) };
+  });
 
-    const value = boundCursorValue(col, values[i]);
+  const rowValue = rowValueCondition(keys);
+  if (rowValue) {
+    return rowValue;
+  }
+
+  const disjuncts: SQL[] = [];
+  const equalities: SQL[] = [];
+
+  for (const key of keys) {
+    const { col, direction, nulls, value } = key;
     const nullsSortLast =
       nulls != null ? nulls === 'last' : (direction === 'asc') === (nullOrdering === 'nulls-largest');
 
@@ -327,14 +403,14 @@ export const buildCursorCondition = (
       strictlyAfter = nullsSortLast ? undefined : isNotNull(col);
     } else {
       const comparison = strictComparison(col, direction, value);
-      strictlyAfter = nullsSortLast ? or(comparison, isNull(col)) : comparison;
+      strictlyAfter = nullsSortLast && !isNonNullKey(key) ? or(comparison, isNull(col)) : comparison;
     }
 
     if (strictlyAfter) {
       disjuncts.push(equalities.length ? and(...equalities, strictlyAfter)! : strictlyAfter);
     }
     equalities.push(value === null || value === undefined ? isNull(col) : eq(col, value));
-  });
+  }
 
   if (!disjuncts.length) {
     // Every key's strict term was impossible (e.g. a NULLs-last cursor position of all NULLs) —
