@@ -69,16 +69,10 @@ import {
 } from './aggregates.ts';
 import { registerBuildRuntime } from './common/build-registry.ts';
 import { resetFieldUpdateCaches } from './field-updates.ts';
-import {
-  buildNestedWritePlans,
-  createNestedWriteRuntime,
-  createNestedWriteTypes,
-  dropContextValueRelations,
-  gateNestedWritePlans,
-  type NestedWritePlans,
-  type NestedWriteRuntime,
-  type NestedWriteTypes,
-} from './nested-writes.ts';
+import { dropContextValueRelations, gateNestedWritePlans } from './nested-writes/gating.ts';
+import { createNestedWriteTypes, type NestedWriteTypes } from './nested-writes/input-types.ts';
+import { buildNestedWritePlans, type NestedWritePlans } from './nested-writes/plans.ts';
+import { createNestedWriteRuntime, type NestedWriteRuntime } from './nested-writes/runtime.ts';
 import { createSelectGenerators } from './select.ts';
 import type {
   CreatedResolver,

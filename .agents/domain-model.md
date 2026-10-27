@@ -21,7 +21,7 @@ writes, filters, pagination, aggregates and row policies all compiled to SQL.
 - **Mutation (insert / update / delete / upsert / restore / updateMany / count):** client mutation → `writeResolver` → `runMutation` (pick executor: caller's, request's shared tx, forced tx for hooks, or `db`) → body: validate input (remap, stamp/strip context values, `visibleWhere`, `nested.validate`) → `before` hook → `narrowToSingleMatch` for `Single` → statement with `RETURNING` (PG/SQLite) or plain (MySQL) → `after` hook → strip hook-only columns → `withEagerRelations` re-fetch → remap → rows, `{ isSuccess }` (MySQL) or an `Int` (count).
 - **Nested write:** create/update/upsert input → `nested.split` (columns vs relation ops) → `writeWithNestedOps` / `updateWithNestedOps` opens a transaction → per entry `writeNestedEntry`: `applyParentSide` (create/connect target first, key into parent) → parent write → `checkParentSide` → `applyChildSide` (attach children / junction rows) → `refreshed` → each nested statement fires the target table's hooks with `payload.nested`.
 
-Dependency direction: `index.ts` → `build-config.ts` → `builders/{pg,sqlite,mysql}.ts` → `schema-data.ts` / `build-context.ts` → `write-resolvers.ts`, `select.ts`, `aggregates.ts`, `nested-writes.ts` → `builders/common/*` → `type-converter`, `data-mappers`, `parse-resolve-info`, `batch-loader`; `selection.ts` sits beside `index.ts` and reads the build through `common/build-registry.ts`.
+Dependency direction: `index.ts` → `build-config.ts` → `builders/{pg,sqlite,mysql}.ts` → `schema-data.ts` / `build-context.ts` → `write-resolvers.ts`, `select.ts`, `aggregates.ts`, `nested-writes/*` → `builders/common/*` → `type-converter`, `data-mappers`, `parse-resolve-info`, `batch-loader`; `selection.ts` sits beside `index.ts` and reads the build through `common/build-registry.ts`.
 
 ## Actors
 
@@ -79,7 +79,7 @@ live --delete, client--> marked --restore, client--> live
 live | marked --delete(hard: true), client, opted-in table--> gone
 ```
 
-Nested entry — owner `nested-writes.ts writeNestedEntry`:
+Nested entry — owner `nested-writes/entry.ts writeNestedEntry`:
 ```
 pending --applyParentSide--> parent-keyed --parent write--> written --checkParentSide--> checked --applyChildSide--> attached --refreshed--> done
 parent-keyed --parent write returns no row (savepoint)--> rolled back, entry yields []
@@ -117,8 +117,8 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 | `hard` only purges on a soft-delete table that opted in | `write-resolvers.generateDelete`, `mutation-helpers.generateWriteCount` |
 | `after` cannot combine with `distinct`; cursors need a primary key and a cursor-expressible ordering | `select-runtime.runRelationalSelect` |
 | A stored value a JS Date cannot hold (BC, year past 275760, infinity, zero date) never fails a read: output mapping leaves the invalid Date for the scalar to reject on that field alone, and a PostgreSQL / MySQL `mode: 'date'` ordering column's cursor carries the database's own text | `data-mappers.remapToGraphQLCore`, `cursor.cursorTextForm` / `cursorPreciseExtras` |
-| A nested to-one `connect` matches exactly one row | `nested-writes.createNestedWriteRuntime` (`connectMatchError`) |
-| A to-one relation never has two attached rows through a nested write: a nullable key detaches the old row, a NOT NULL one refuses the attach | `nested-writes.createNestedWriteRuntime` (`detachAll`, `assertNothingElseAttached`) |
+| A nested to-one `connect` matches exactly one row | `nested-writes/runtime.ts createNestedWriteRuntime` (`connectMatchError`) |
+| A to-one relation never has two attached rows through a nested write: a nullable key detaches the old row, a NOT NULL one refuses the attach | `nested-writes/runtime.ts createNestedWriteRuntime` (`detachAll`, `assertNothingElseAttached`) |
 | Nested writes are rejected on MySQL; nested writes, `transactions: 'auto'` and `onWrite` are rejected on a sync SQLite driver | `mysql.ts` / `sqlite.ts` `preflight` |
 | Two enum columns mapped to one name must have the same values | `type-converter.generateEnumCached` |
 | An error the library did not raise reaches the client as `Internal server error` (unless `onError` says otherwise) | `errors.defaultErrorMapper` via `errors.applyErrorMapper` |
@@ -211,9 +211,9 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 
 ### Nested writes
 
-- **Nested write (nested op):** Writing related rows through a relation field of a create/update/upsert input. Owner: `nested-writes.ts`; ops `create`, `connect`, `disconnect`, `set` (`NestedWriteOp`).
-- **Nested plan:** Build-time decision of which ops a relation offers and which side holds the key. Owner: `buildNestedWritePlans`, `gateNestedWritePlans`; `NestedRelationPlan`, `fkSide` (`child` / `parent`).
-- **Parent side / child side:** Ops that must run before the parent row (key lives on parent) versus after it (key lives on the child). Owner: `NestedWriteRuntime.applyParentSide`, `applyChildSide`.
+- **Nested write (nested op):** Writing related rows through a relation field of a create/update/upsert input. Owner: the `builders/nested-writes/` folder (`plans`, `gating`, `input-types`, `ops`, `hook-steps`, `runtime`, `entry`); ops `create`, `connect`, `disconnect`, `set` (`NestedWriteOp`).
+- **Nested plan:** Build-time decision of which ops a relation offers and which side holds the key. Owner: `nested-writes/plans.ts buildNestedWritePlans`, `nested-writes/gating.ts gateNestedWritePlans` / `dropContextValueRelations`; `NestedRelationPlan`, `fkSide` (`child` / `parent`).
+- **Parent side / child side:** Ops that must run before the parent row (key lives on parent) versus after it (key lives on the child). Owner: `nested-writes/runtime.ts NestedWriteRuntime.applyParentSide`, `applyChildSide`; their `onWrite` calls are `nested-writes/hook-steps.ts`.
 
 ### Policies & hooks
 

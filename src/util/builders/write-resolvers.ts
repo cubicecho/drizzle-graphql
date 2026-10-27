@@ -56,13 +56,9 @@ import {
   writeResolver,
 } from './common.ts';
 import { remapUpdateInput } from './field-updates.ts';
-import {
-  mergedOps,
-  type NestedOps,
-  type NestedWriteRuntime,
-  updateWithNestedOps,
-  writeWithNestedOps,
-} from './nested-writes.ts';
+import { updateWithNestedOps, writeWithNestedOps } from './nested-writes/entry.ts';
+import { mergedOps, type NestedOps } from './nested-writes/ops.ts';
+import type { NestedWriteRuntime } from './nested-writes/runtime.ts';
 import type { CreatedResolver, Filters, TableNamedRelations } from './types.ts';
 
 /** Every database handle these resolvers can run on. `runMutation` takes `any`, so this is purely a call-site guard. */

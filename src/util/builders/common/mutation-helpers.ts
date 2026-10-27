@@ -11,7 +11,7 @@ import { parseResolveInfo } from '../../parse-resolve-info.ts';
 import { remapUpdateInput } from '../field-updates.ts';
 // Type-only: the nested-write module imports this one at runtime, so the dependency has to
 // stay one-directional. The implementation is injected by the dialect builder.
-import type { NestedWriteRuntime } from '../nested-writes.ts';
+import type { NestedWriteRuntime } from '../nested-writes/runtime.ts';
 import type { CreatedResolver, Filters, ProcessedTableSelectArgs, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
 import { MATCHES_EVERY_ROW } from './filters.ts';

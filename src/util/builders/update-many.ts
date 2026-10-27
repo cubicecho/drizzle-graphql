@@ -23,7 +23,9 @@ import {
 } from '../builders/common.ts';
 import { remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
 import { remapUpdateInput } from './field-updates.ts';
-import { mergedOps, type NestedWriteRequest, type NestedWriteRuntime, writeNestedEntry } from './nested-writes.ts';
+import { writeNestedEntry } from './nested-writes/entry.ts';
+import { mergedOps, type NestedWriteRequest } from './nested-writes/ops.ts';
+import type { NestedWriteRuntime } from './nested-writes/runtime.ts';
 import type { UpdateManyGenerator, UpdateManyOptions } from './schema-data.ts';
 import type { CreatedResolver, Filters } from './types.ts';
 import type { WriteBuildOptions } from './write-resolvers.ts';
