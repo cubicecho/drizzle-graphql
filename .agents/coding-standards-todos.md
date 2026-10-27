@@ -50,7 +50,7 @@ session scratchpad (`repro/`, `reads-rev/repros/`, `filters-review/src/`,
 | B23 | Bug (question) | Run the `before` hook at the same point (before or after input validation) on every write path | A rejected write fires the hook on all paths or on none | — | done |
 | D1 | Docs | Fix docs that disagree with code: feature defaults, `updateMany` slots, "already committed", stale AGENTS.md lines | Docs match code | B1, B3 | done |
 | D2 | Docs | Document the `every` + NULL caveat in the README if B11 keeps the behaviour | Users are told | B11 | declined (B11 was fixed instead) |
-| B24 | Bug · low value | Stop remapping write args in place (hooks see remapped args; a shared variable is remapped twice) (unverified) | Hooks see what the docs promise | — | open (confirmed: hooks see converted args; a variable shared by two fields fails the second) |
+| B24 | Bug · low value | Stop remapping write args in place (hooks see remapped args; a shared variable is remapped twice) (unverified) | Hooks see what the docs promise | — | done |
 | B25 | Bug · low value | Add `PgSparseVector` to the no-min/max column list (unverified: no pgvector in PGlite) | No SQL error from `min(sparsevec)` | — | done |
 | B26 | Bug · low value | Gate the junction restore UPDATE on the junction's `update` feature | Feature switch honoured | — | done |
 | B27 | Bug · low value | Match nested `refreshed` rows by `keyString`, not `String()` (unverified) | Timestamp keys under 1s apart stay distinct | — | done |
@@ -67,8 +67,8 @@ Follow-ups found while fixing:
 |---|---|---|---|---|---|
 | B30 | Bug | Close the `…Single` race on MySQL and sync SQLite | B3 holds on every dialect | — | done (in B3) |
 | B32 | Bug | Check a decoded cursor value fits its column's type (B21 checks only that it is well formed) | Cleaner `DRIZZLE_INVALID_CURSOR` | — | open |
-| B34 | Bug (question) | Root `restore` mutations are generated for every soft-deleting table, ignoring feature flags (unverified) | Feature switches honoured | — | open |
-| B33 | Bug (question) | Postgres array *inputs* still require non-null elements (`[T!]`); B16 relaxed only outputs | Your call | — | waiting on decision |
+| B34 | Bug (question) | Root `restore` mutations are generated for every soft-deleting table, ignoring feature flags (unverified) | Feature switches honoured | — | done (breaking) |
+| B33 | Bug (question) | Postgres array *inputs* still require non-null elements (`[T!]`); B16 relaxed only outputs | Your call | — | declined (inputs stay `[T!]`) |
 
 ## Model changes
 
