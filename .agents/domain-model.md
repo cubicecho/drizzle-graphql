@@ -115,6 +115,7 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 | `hard` only purges on a soft-delete table that opted in | `write-resolvers.generateDelete`, `mutation-helpers.generateWriteCount` |
 | `after` cannot combine with `distinct`; cursors need a primary key and a cursor-expressible ordering | `select-runtime.runRelationalSelect` |
 | A nested to-one `connect` matches exactly one row | `nested-writes.createNestedWriteRuntime` (`connectMatchError`) |
+| A to-one relation never has two attached rows through a nested write: a nullable key detaches the old row, a NOT NULL one refuses the attach | `nested-writes.createNestedWriteRuntime` (`detachAll`, `assertNothingElseAttached`) |
 | Nested writes are rejected on MySQL; nested writes, `transactions: 'auto'` and `onWrite` are rejected on a sync SQLite driver | `mysql.ts` / `sqlite.ts` `preflight` |
 | Two enum columns mapped to one name must have the same values | `type-converter.generateEnumCached` |
 | An error the library did not raise reaches the client as `Internal server error` (unless `onError` says otherwise) | `errors.defaultErrorMapper` via `errors.applyErrorMapper` |

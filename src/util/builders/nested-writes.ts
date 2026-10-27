@@ -1566,6 +1566,45 @@ export const createNestedWriteRuntime = (params: {
   };
 
   /**
+   * Refuses a to-one attach whose key cannot be detached while any of the parents keyed `keys`
+   * already holds a row other than the one being connected — one read per chunk of parents.
+   * "Attached" is what `detachAll` would reach: the target's scope and the relation's `where`.
+   * Connecting the row already attached is a no-op, and taking a row from another parent is not
+   * refused: only the parents being written are checked.
+   */
+  const assertNothingElseAttached = async (
+    executor: any,
+    plan: NestedRelationPlan,
+    keys: any[],
+    scope: ScopeResolver | undefined,
+    operation: NestedWriteOp,
+    connected: SQL | undefined,
+  ) => {
+    // A filter that compares NULL is neither true nor false; such a row is not the connected one.
+    const notConnected = connected ? sql`not coalesce((${connected}), false)` : undefined;
+    for (const chunk of parentKeyChunks(keys, 1)) {
+      const held = await executor
+        .select({ [plan.foreignColPropName]: plan.foreignCol })
+        .from(plan.targetTable)
+        .where(
+          withScope(
+            scope,
+            plan.targetTableName,
+            plan.targetTable,
+            and(inArray(plan.foreignCol, chunk), plan.ownCondition?.(), notConnected),
+          ),
+        )
+        .limit(1);
+      if (held.length) {
+        throw drizzleError(
+          `Drizzle-GraphQL Error: cannot ${operation} through '${plan.relationName}': the parent already has a ${plan.targetTableName} row attached, and '${plan.foreignColPropName}' is NOT NULL, so that row cannot be detached. Delete it or move it to another parent first, or make '${plan.foreignColPropName}' nullable so attaching a new row detaches the old one.`,
+          { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
+        );
+      }
+    }
+  };
+
+  /**
    * A child-side foreign-key relation's inputs, applied to every parent row of the write.
    *
    * Each input runs over the whole batch before the next starts — `set`, then `disconnect`, then
@@ -1651,10 +1690,16 @@ export const createNestedWriteRuntime = (params: {
     }
 
     // A to-one relation holds one row, so attaching a new one detaches whatever was there —
-    // otherwise both rows point at this parent and the relation is ambiguous.
+    // otherwise both rows point at this parent and the relation is ambiguous. A NOT NULL key
+    // cannot be detached, so the attach is refused instead while another row holds it.
     const attachedBy = attachingOp(op);
-    if (plan.isOne && attachedBy && plan.canDetach && !supplied(op['set'])) {
-      await detachAll(executor, plan, distinctKeys, scope, steps, attachedBy);
+    if (plan.isOne && attachedBy && !supplied(op['set'])) {
+      if (plan.canDetach) {
+        await detachAll(executor, plan, distinctKeys, scope, steps, attachedBy);
+      } else if (!(attachedBy === 'connect' && writesTargetKey(plan))) {
+        const connected = attachedBy === 'connect' ? connectConditions[0] : undefined;
+        await assertNothingElseAttached(executor, plan, distinctKeys, scope, attachedBy, connected);
+      }
     }
 
     if (supplied(op['connect'])) {

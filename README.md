@@ -1907,7 +1907,11 @@ mutation {
 -   A to-one relation takes one operation at a time (`connect` **or** `disconnect` **or**
     `create`), and attaching to it detaches whatever was there
 -   `disconnect` and `set` only exist where the foreign key is nullable; there is no way to
-    detach a row whose key is `NOT NULL`
+    detach a row whose key is `NOT NULL`. So on a to-one whose `NOT NULL` key lives on the
+    target, `connect` and `create` fail with `DRIZZLE_NESTED_WRITE_INVALID`, changing nothing,
+    while a different row is attached: delete that row or move it to another parent first.
+    Connecting the row already attached is a no-op, and connecting a row another parent holds
+    moves it, as long as this parent has none
 -   A column the relation fills in becomes nullable on the create input — with
     `author: { create: … }` available, `authorId` is one of two ways to supply it
 -   Nesting is one level deep: the row a nested `create` inserts takes columns only, and the
