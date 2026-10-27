@@ -245,7 +245,9 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             selectionCtx: { tableName, relationMap: namedRelations, tables },
           })
         : undefined;
-      const restoreGenerated = softDeleteInfo
+      // A restore is an UPDATE of the marker, so it follows the table's `update` switch.
+      const offersRestore = !!softDeleteInfo && tableFeatures.update;
+      const restoreGenerated = offersRestore
         ? generateDelete(writeBuild, {
             tableName,
             table: schema[tableName] as Table,
@@ -258,7 +260,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             selectionCtx: { tableName, relationMap: namedRelations, tables },
           })
         : undefined;
-      const restoreSingleGenerated = softDeleteInfo
+      const restoreSingleGenerated = offersRestore
         ? generateDelete(writeBuild, {
             tableName,
             table: schema[tableName] as Table,

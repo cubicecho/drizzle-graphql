@@ -784,7 +784,12 @@ export type SchemaFeatures = {
   distinct?: FeatureSwitch;
   /** `create<Table>` / `create<Table>Single` mutations. @default true */
   insert?: FeatureSwitch;
-  /** `update<Table>` / `update<Table>Single` mutations. @default true */
+  /**
+   * `update<Table>` / `update<Table>Single` mutations, and on a soft-deleting table
+   * `restore<Table>` / `restore<Table>Single`, since a restore is an update of the marker.
+   *
+   * @default true
+   */
   update?: FeatureSwitch;
   /**
    * `update<Table>Many` mutations — batch update with a per-entry `set` and `where`,
@@ -1523,7 +1528,8 @@ export type BuildSchemaConfig = {
    * - `delete<Table>` and `delete<Table>Single` issue an `UPDATE` of the marker column
    *   instead of a `DELETE`, and return the rows as they now stand.
    * - `restore<Table>` and `restore<Table>Single` are generated alongside them, matching only
-   *   marked rows and writing the restored value. The prefix is configurable through
+   *   marked rows and writing the restored value — where the table's `update` feature is on,
+   *   since a restore is an update of the marker. The prefix is configurable through
    *   {@link BuildSchemaConfig.prefixes}.
    * - Every generated read hides marked rows: list and single queries, aggregates, `groupBy`,
    *   relation fields on both the eager and the batched path, and relation aggregates. Each

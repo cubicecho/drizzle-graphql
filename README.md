@@ -147,7 +147,7 @@ const { schema } = buildSchema(db, {
         relationAggregates: false, // <relation>Aggregate fields on object types
         distinct: false,          // the `distinct` argument on list queries
         insert: false,            // create<Table> / create<Table>Single mutations
-        update: false,            // update<Table> / update<Table>Single mutations
+        update: false,            // update<Table> / update<Table>Single mutations (and restore<Table>)
         updateMany: false,        // update<Table>Many batch mutation (needs `update`)
         delete: false,            // delete<Table> / delete<Table>Single mutations
         upsert: true,             // upsert<Table> / upsert<Table>Single mutations (off by default)
@@ -169,9 +169,11 @@ const { schema } = buildSchema(db, {
     turns the group-by queries off with it
 -   Turning off `insert` or `update` also drops the input type that only that mutation
     used (`Create<Type>Input` / `Update<Type>Input`)
+-   A soft-deleting table's `restore` mutations follow `update`, since a restore is an
+    `UPDATE` of the marker column: turning `update` off drops them, while `delete` keeps
+    soft-deleting
 -   Turning off every mutation feature omits the `Mutation` type entirely, the same as
-    `mutations: false` — unless a table has `softDelete`, whose `restore` mutations are
-    generated regardless
+    `mutations: false`
 -   List and single queries are always generated, so `Query` is never empty
 
 ### Per-table operations
@@ -492,7 +494,7 @@ What a declared table gets:
 | Path | Effect |
 | --- | --- |
 | `deletePosts`, `deletePostsSingle` | UPDATE that writes the marker; returns the rows as they now stand — or a real DELETE under [`hard: true`](#purging-a-row), where the table opted in |
-| `restorePosts`, `restorePostsSingle` | the inverse — matches **only** marked rows and clears the marker |
+| `restorePosts`, `restorePostsSingle` | the inverse — matches **only** marked rows and clears the marker; generated only where the table's `update` feature is on |
 | `posts`, `postsSingle`, cursor pages | marked rows are not returned |
 | `postsAggregate`, `postsGroupBy` | counted over unmarked rows only |
 | `user.posts`, `user.postsAggregate` | hidden on both the batched and the eager (`with:`) path |

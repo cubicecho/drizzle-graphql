@@ -220,7 +220,7 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 - **Context value (server-owned column):** A column the server fills from the request context, absent from inputs. Owner: `policies.ts applyContextValues`, `stripContextValues`; `ContextValuesFor`.
 - **Soft delete (marker column):** Delete by marking a column; reads hide marked rows. Owner: `policies.ts resolveSoftDeleteInfo`, `softDeletePredicate`; `SoftDeleteInfo`.
 - **Deleted view (deleted: EXCLUDE / INCLUDE / ONLY):** Which marked rows a read returns. Owner: `DeletedMode`, enum `DeletedFilter`; `relationDeletedDefault` uses `SoftDeleteColumn.scope` (`'root'`/`'all'`).
-- **Restore:** Un-marks soft-deleted rows. Owner: `generateDelete({ restore: true })`; prefix `restore`.
+- **Restore:** Un-marks soft-deleted rows. Owner: `generateDelete({ restore: true })`; prefix `restore`. An UPDATE of the marker, so it is offered only where the table's `update` feature is on (the root mutations, and a nested link through a soft-deleting junction).
 - **Hard delete (hard):** A real `DELETE` on a soft-delete table that opted in. Owner: `hardDeleteArg`.
 - **Policies:** The bundle of scope, context values, soft delete, hooks and default order for a build. Owner: `policies.ts TablePolicies` (unbound) and `ResolverPolicies` (scope bound per context) — two shapes of one concept, see `bindPolicies`.
 - **Write hook (onWrite, before / after):** Consumer code run around a write on the same executor. Owner: `common/write-hooks.ts normalizeWriteHooks`, `runWriteHook`; `WriteHookPayload`, hook `columns`.

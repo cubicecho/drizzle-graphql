@@ -744,7 +744,9 @@ export const generateSchemaData = <
           policies,
         )
       : undefined;
-    const restoreGenerated = softDeleteInfo
+    // A restore is an UPDATE of the marker, so it follows the table's `update` switch.
+    const offersRestore = !!softDeleteInfo && tableFeatures.update;
+    const restoreGenerated = offersRestore
       ? generateDelete(
           db,
           tableName,
@@ -759,7 +761,7 @@ export const generateSchemaData = <
           true,
         )
       : undefined;
-    const restoreSingleGenerated = softDeleteInfo
+    const restoreSingleGenerated = offersRestore
       ? generateDelete(
           db,
           tableName,
