@@ -13,7 +13,14 @@
 // (COMMIT) and the first failure rejects it (ROLLBACK).
 // =============================================================================
 
-import { type GraphQLError, getArgumentValues } from 'graphql';
+import type { GraphQLError } from 'graphql';
+import type { FragmentVariableScope } from '../../graphql-variables.ts';
+import {
+  argumentValues,
+  enterFragmentScope,
+  fragmentArgumentsInUse,
+  isExcludedByDirectives,
+} from '../../graphql-variables.ts';
 import { drizzleError } from './errors.ts';
 import { drizzleExecutorKey, resolveExecutor } from './executor.ts';
 
@@ -63,27 +70,16 @@ type SharedTxState = {
 
 type RequestTxState = { kind: 'passthrough' } | SharedTxState;
 
-const includedByDirectives = (node: { directives?: readonly any[] }, variables: any): boolean => {
-  for (const directive of node.directives ?? []) {
-    const name = directive.name.value;
-    if (name !== 'skip' && name !== 'include') {
-      continue;
-    }
-    const ifArg = directive.arguments?.find((arg: any) => arg.name.value === 'if');
-    let value: unknown;
-    if (ifArg?.value.kind === 'BooleanValue') {
-      value = ifArg.value.value;
-    } else if (ifArg?.value.kind === 'Variable') {
-      value = variables?.[ifArg.value.name.value];
-    }
-    if (name === 'skip' && value === true) {
-      return false;
-    }
-    if (name === 'include' && value !== true) {
-      return false;
-    }
-  }
-  return true;
+/** What the root-mutation walk reads off `info`, fixed for the whole walk. */
+type RootMutationWalk = {
+  schema: any;
+  fragments: any;
+  /** `info.variableValues` as the executing major shaped it — see `graphql-variables.ts`. */
+  variableValues: unknown;
+  known: ReadonlySet<string>;
+  keys: Set<string>;
+  visitedFragments: Set<string>;
+  argumentsCoerce: (field: any, scope: FragmentVariableScope | undefined) => boolean;
 };
 
 /**
@@ -93,18 +89,18 @@ const includedByDirectives = (node: { directives?: readonly any[] }, variables: 
  * still one resolver call. Returns `false` when the document selects a root mutation field
  * this build did not generate — its completion cannot be tracked, so the caller must not
  * open a transaction it might never be able to close.
+ *
+ * Variables are read through `graphql-variables.ts`, so a `@skip(if: $v)` sees the coerced
+ * value under graphql 17's `{ sources, coerced }` record as well as 16's plain map, and a
+ * `$v` declared by a fragment (17's fragment arguments) reads the spread's value.
  */
 const collectRootMutationKeys = (
   selectionSet: any,
-  fragments: any,
-  variables: any,
-  known: ReadonlySet<string>,
-  keys: Set<string>,
-  visitedFragments: Set<string>,
-  argumentsCoerce: (field: any) => boolean,
+  walk: RootMutationWalk,
+  scope: FragmentVariableScope | undefined,
 ): boolean => {
   for (const selection of selectionSet.selections) {
-    if (!includedByDirectives(selection, variables)) {
+    if (isExcludedByDirectives(selection, walk.variableValues, scope)) {
       continue;
     }
     if (selection.kind === 'Field') {
@@ -112,51 +108,41 @@ const collectRootMutationKeys = (
       if (name === '__typename') {
         continue;
       }
-      if (!known.has(name)) {
+      if (!walk.known.has(name)) {
         return false;
       }
       // A field whose arguments fail to coerce is answered with an error by the executor
       // without its resolver ever running. Counting it would leave the transaction waiting
       // for a completion that never comes — until the timeout rolls back writes the
       // response already reported as done.
-      if (argumentsCoerce(selection)) {
-        keys.add(selection.alias?.value ?? name);
+      if (walk.argumentsCoerce(selection, scope)) {
+        walk.keys.add(selection.alias?.value ?? name);
       }
     } else if (selection.kind === 'InlineFragment') {
-      if (
-        !collectRootMutationKeys(
-          selection.selectionSet,
-          fragments,
-          variables,
-          known,
-          keys,
-          visitedFragments,
-          argumentsCoerce,
-        )
-      ) {
+      if (!collectRootMutationKeys(selection.selectionSet, walk, scope)) {
         return false;
       }
     } else if (selection.kind === 'FragmentSpread') {
       const fragmentName = selection.name.value;
-      if (visitedFragments.has(fragmentName)) {
+      if (walk.visitedFragments.has(fragmentName)) {
         continue;
       }
-      visitedFragments.add(fragmentName);
-      const fragment = fragments?.[fragmentName];
+      walk.visitedFragments.add(fragmentName);
+      const fragment = walk.fragments?.[fragmentName];
       if (!fragment) {
         return false;
       }
-      if (
-        !collectRootMutationKeys(
-          fragment.selectionSet,
-          fragments,
-          variables,
-          known,
-          keys,
-          visitedFragments,
-          argumentsCoerce,
-        )
-      ) {
+      let fragmentScope: FragmentVariableScope | undefined;
+      if (fragmentArgumentsInUse(walk.variableValues, walk.fragments)) {
+        try {
+          fragmentScope = enterFragmentScope(walk.schema, selection, fragment, walk.variableValues, scope);
+        } catch {
+          // A spread whose arguments fail to coerce: the executor errors on the fields under
+          // it without running their resolvers, so none of them can be counted.
+          continue;
+        }
+      }
+      if (!collectRootMutationKeys(fragment.selectionSet, walk, fragmentScope)) {
         return false;
       }
     }
@@ -364,25 +350,29 @@ export const runMutation = async <T>(
     const mutationFields = info.schema.getMutationType()?.getFields() ?? {};
     const allKnown = collectRootMutationKeys(
       info.operation.selectionSet,
-      info.fragments,
-      info.variableValues,
-      txCtx.fieldNames,
-      keys,
-      new Set(),
-      (node) => {
-        const fieldDef = mutationFields[node.name.value];
-        if (!fieldDef) {
-          return false;
-        }
-        try {
-          // Passed through untouched, as in `parse-resolve-info.ts`: each graphql major's
-          // `getArgumentValues` takes the variable shape its own resolvers are handed.
-          getArgumentValues(fieldDef as any, node, info.variableValues as any);
-          return true;
-        } catch {
-          return false;
-        }
+      {
+        schema: info.schema,
+        fragments: info.fragments,
+        variableValues: info.variableValues,
+        known: txCtx.fieldNames,
+        keys,
+        visitedFragments: new Set(),
+        argumentsCoerce: (node, scope) => {
+          const fieldDef = mutationFields[node.name.value];
+          if (!fieldDef) {
+            return false;
+          }
+          try {
+            // Passed through untouched, as in `parse-resolve-info.ts`: each graphql major's
+            // `getArgumentValues` takes the variable shape its own resolvers are handed.
+            argumentValues(fieldDef, node, info.variableValues, scope);
+            return true;
+          } catch {
+            return false;
+          }
+        },
       },
+      undefined,
     );
     state =
       !allKnown || keys.size <= 1 ? { kind: 'passthrough' } : openSharedTx(db, context, txCtx, stateKey, keys.size);

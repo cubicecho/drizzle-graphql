@@ -33,6 +33,7 @@ import {
 import { getOrCreateLoader, getOrCreateRequestValue } from '../batch-loader/index.ts';
 import { capitalize } from '../case-ops/index.ts';
 import { remapToGraphQLCore } from '../data-mappers/index.ts';
+import { requestValueNodes } from '../graphql-variables.ts';
 import type { ResolveTree } from '../parse-resolve-info.ts';
 import { parseResolveInfo } from '../parse-resolve-info.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
@@ -649,7 +650,7 @@ export const createRelationAggregateFactory = (
         // request and reused by every sibling the batch serves.
         const { request, loaderKey } = getOrCreateRequestValue(
           context,
-          info?.fieldNodes,
+          requestValueNodes(info),
           `aggregate:${tableName}::${relationName}`,
           () => {
             const request = parseAggregateRequest(info, target);
