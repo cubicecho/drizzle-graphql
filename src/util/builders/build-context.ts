@@ -396,7 +396,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       ? createNestedWriteRuntime({
           plans: nestedPlans,
           filterCtx,
-          policies: tablePolicies,
+          policies,
           contextValues: contextValuesOf,
         })
       : undefined;
@@ -405,7 +405,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     // handed `undefined` below, so `generateTableTypes` emits no `${relation}Aggregate` fields
     // on its object type.
     const relationAggregateFactory: RelationAggregateFactory | undefined = anyTable('relationAggregates')
-      ? createRelationAggregateFactory(db, tables, cacheCtx, typeNameMapper, filterCtx, tablePolicies)
+      ? createRelationAggregateFactory(db, tables, cacheCtx, typeNameMapper, filterCtx, policies)
       : undefined;
 
     const gqlSchemaTypes = Object.fromEntries(
@@ -475,7 +475,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     tableTypes: GeneratedTableTypes<WithReturning>,
     drizzleMeta: TableFieldExtensionFactory,
   ) => {
-    const { db, tables, cacheCtx, filterCtx, eagerRelations, policies, tablePolicies, limits, typeNameMapper } = ctx;
+    const { db, tables, cacheCtx, filterCtx, eagerRelations, policies, limits, typeNameMapper } = ctx;
     const { complexity } = ctx.options;
     const table = tables[tableName] as Table;
     const tableFeatures = ctx.featureOf(tableName);
@@ -527,7 +527,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
           aggregateFieldName,
           tableFilters,
           filterCtx,
-          tablePolicies,
+          policies,
           cacheCtx.resolveName,
         )
       : undefined;
@@ -551,7 +551,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
             groupByEnum,
             havingInput,
             filterCtx,
-            tablePolicies,
+            policies,
             cacheCtx.resolveName,
           )
         : undefined;

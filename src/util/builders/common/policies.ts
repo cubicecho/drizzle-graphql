@@ -275,7 +275,7 @@ export type RowVisibility = {
  * machinery with a single check and an unconfigured build generates exactly the SQL it did
  * before.
  */
-export const bindRowVisibility = (
+const bindRowVisibility = (
   policies: TablePolicies | undefined,
   context: any,
   filterCtx?: RelationFilterBase,
@@ -412,7 +412,10 @@ export type ResolverPolicies = {
   defaultOrderBy?: DefaultOrderByFor;
 };
 
-/** Binds a build's {@link TablePolicies} to its relation context, once, at schema-build time. */
+/**
+ * Binds a build's {@link TablePolicies} to its relation context, once, at schema-build time.
+ * The only place policies are bound: every resolver reads them through the result.
+ */
 export const bindPolicies = (
   policies: TablePolicies | undefined,
   filterCtx: RelationFilterBase | undefined,

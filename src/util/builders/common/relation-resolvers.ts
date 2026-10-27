@@ -32,7 +32,7 @@ import { applyLimitPolicy, assertPagingNotNegative, effectiveOffset, withDefault
 import { extractOrderBy } from './order-by.ts';
 import type { TablePolicies } from './policies.ts';
 import {
-  bindRowVisibility,
+  bindPolicies,
   junctionPolicy,
   junctionTableName,
   relationDeletedDefault,
@@ -162,6 +162,8 @@ export const createRelationResolverFactory =
     policies?: TablePolicies,
   ): RelationResolverFactory =>
   ({ tableName, relationName, relEntry, isOne }) => {
+    // Bound the way the generated resolvers' policies are: a consumer passes them unbound.
+    const visibilityOf = bindPolicies(policies, filterCtx)?.visibility;
     const parentTable = tables[tableName];
     const targetTableName = relEntry.targetTableName;
     const targetTable = tables[targetTableName];
@@ -365,7 +367,7 @@ export const createRelationResolverFactory =
         const executor = resolveExecutor(db, context);
         const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key, localCols), key])).values()];
         // Loaders are keyed per execution too, so the scope resolved here is this request's.
-        const visibility = bindRowVisibility(policies, context, filterCtx);
+        const visibility = visibilityOf?.(context);
 
         // One query over a group of parents, returning each parent's result by its key. Every
         // parent's rows come from the query its key is in, so splitting the batch changes

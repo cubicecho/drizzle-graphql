@@ -41,7 +41,6 @@ import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type { ConvertedColumn } from '../type-converter/types.ts';
 import { columnDialect } from './common/column-filters.ts';
 import {
-  bindRowVisibility,
   columnDocs,
   type DeletedMode,
   type DrizzleErrorContext,
@@ -60,6 +59,7 @@ import {
   parentKeyCondition,
   type RelationAggregateFactory,
   type RelationFilterBase,
+  type ResolverPolicies,
   relatedRowParents,
   relationDeletedDefault,
   relationFilterCtx,
@@ -67,7 +67,6 @@ import {
   resolveExecutor,
   resolveTypeName,
   sharedType,
-  type TablePolicies,
   type TypeCacheCtx,
   type TypeNameMapper,
   type TypeNameResolver,
@@ -516,7 +515,7 @@ export const generateAggregate = (
   fieldName: string,
   filterArgs: GraphQLInputObjectType,
   filterCtx?: RelationFilterBase,
-  policies?: TablePolicies,
+  policies?: ResolverPolicies,
   resolveName?: TypeNameResolver,
 ): CreatedResolver => {
   const target = aggregateTarget(table, tableName, typeName, resolveName);
@@ -537,7 +536,7 @@ export const generateAggregate = (
         }
 
         let query = resolveExecutor(db, context).select(request.selection).from(table);
-        const visibility = bindRowVisibility(policies, context, filterCtx);
+        const visibility = policies?.visibility?.(context);
         const where = withRowVisibility(
           visibility,
           tableName,
@@ -580,7 +579,7 @@ export const createRelationAggregateFactory = (
   cacheCtx: TypeCacheCtx,
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
-  policies?: TablePolicies,
+  policies?: ResolverPolicies,
 ): RelationAggregateFactory => {
   // The factory can be asked for the same relation more than once in a build; warn once.
   const warned = new Set<string>();
@@ -686,7 +685,7 @@ export const createRelationAggregateFactory = (
           const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key, localCols), key])).values()];
           // An aggregate over a relation counts the same rows the relation itself returns,
           // so it is narrowed by the target table's scope too.
-          const visibility = bindRowVisibility(policies, context, filterCtx);
+          const visibility = policies?.visibility?.(context);
           const groupSelection = Object.fromEntries(groupAliases.map((alias, i) => [alias, groupCols[i]!]));
 
           // A large batch is read in groups so that no query binds more parent keys than the
@@ -978,7 +977,7 @@ export const generateGroupBy = (
   groupByEnum: GraphQLEnumType,
   havingInput: GraphQLInputObjectType,
   filterCtx?: RelationFilterBase,
-  policies?: TablePolicies,
+  policies?: ResolverPolicies,
   resolveName?: TypeNameResolver,
 ): CreatedResolver => {
   const target = aggregateTarget(table, tableName, typeName, resolveName);
@@ -1031,7 +1030,7 @@ export const generateGroupBy = (
         };
 
         let query = resolveExecutor(db, context).select(selection).from(table);
-        const visibility = bindRowVisibility(policies, context, filterCtx);
+        const visibility = policies?.visibility?.(context);
         const where = withRowVisibility(
           visibility,
           tableName,

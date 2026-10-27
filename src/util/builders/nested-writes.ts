@@ -37,19 +37,18 @@ import {
 } from './common/write-hooks.ts';
 import {
   applyContextValues,
-  bindRowVisibility,
   type ContextValuesFor,
   extractFilters,
   insertStamps,
   isRelationFilterReversed,
   junctionPolicy,
   type RelationFilterBase,
+  type ResolverPolicies,
   type RowVisibility,
   relationColumns,
   relationFilterCtx,
   relationOwnCondition,
   resolveTypeName,
-  type TablePolicies,
   type TypeCacheCtx,
   type TypeNameMapper,
   unwrapRelationColumn,
@@ -1113,7 +1112,7 @@ type HookStep = {
  * did before hooks reached nested writes — no RETURNING clause is added.
  */
 const createHookSteps = (
-  onWrite: TablePolicies['onWrite'],
+  onWrite: ResolverPolicies['onWrite'],
   executor: any,
   request: NestedWriteRequest | undefined,
   parentTable: string,
@@ -1255,7 +1254,7 @@ const selfTargetingPlan = (
 export const createNestedWriteRuntime = (params: {
   plans: NestedWritePlans;
   filterCtx: RelationFilterBase | undefined;
-  policies?: TablePolicies;
+  policies?: ResolverPolicies;
   contextValues?: ContextValuesFor;
 }): NestedWriteRuntime => {
   const { plans, filterCtx, policies, contextValues } = params;
@@ -1792,7 +1791,7 @@ export const createNestedWriteRuntime = (params: {
       if (!tablePlans) {
         return;
       }
-      const visibility = bindRowVisibility(policies, request?.context, filterCtx);
+      const visibility = policies?.visibility?.(request?.context);
       for (const [relationName, op] of Object.entries(ops)) {
         const plan = tablePlans[relationName];
         if (!plan) {
@@ -1886,7 +1885,7 @@ export const createNestedWriteRuntime = (params: {
         return result;
       }
       const context = request?.context;
-      const visibility = bindRowVisibility(policies, context, filterCtx);
+      const visibility = policies?.visibility?.(context);
 
       for (const [relationName, op] of Object.entries(ops)) {
         const plan = tablePlans[relationName];
@@ -2028,7 +2027,7 @@ export const createNestedWriteRuntime = (params: {
         return;
       }
       const context = request?.context;
-      const visibility = bindRowVisibility(policies, context, filterCtx);
+      const visibility = policies?.visibility?.(context);
 
       for (const [relationName, op] of Object.entries(ops)) {
         const plan = tablePlans[relationName];

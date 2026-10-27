@@ -120,7 +120,6 @@ export {
   applyContextValues,
   applyContextValuesAll,
   bindPolicies,
-  bindRowVisibility,
   deletedFilterEnumType,
   insertStamps,
   junctionPolicy,
