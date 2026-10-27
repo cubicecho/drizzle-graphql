@@ -1,23 +1,6 @@
-// =============================================================================
-// LOCAL MODIFICATION — diverges from upstream drizzle-graphql
-//
-// 1. generateColumnFilterValues() rewritten to produce generic shared filter
-//    types (IdFilter, StringFilter, IntFilter, FloatFilter, BigIntFilter,
-//    DecimalFilter, DateTimeFilter, BooleanFilter, per-enum, per-array) instead
-//    of one type per (table, column) pair. The filter is picked by column data
-//    type, not name.
-//
-// 2. Type naming:
-//    - Select types: ${capitalize(tableName)} (e.g. Users)
-//    - Relation fields: reference the target table's type directly (e.g. posts: [Posts!]!)
-//    - Mutation return: same type as select (${capitalize(tableName)})
-//    - Insert input: ${capitalize(insertPrefix)}${toTypeName(tableName)}Input (e.g. CreateUsersInput)
-//    - Update input: ${capitalize(updatePrefix)}${toTypeName(tableName)}Input (e.g. UpdateUsersInput)
-// =============================================================================
-
-// The implementation lives in focused modules under ./common/; this file is the barrel
-// that keeps `from './common.ts'` working for every dialect builder. It re-exports exactly
-// the names this module exported before the split, and nothing more.
+// Re-exports the shared builder helpers in ./common/, so the builders import them from one
+// path. Unlike upstream drizzle-graphql, column filters are shared per scalar type
+// (`StringFilter`, `IntFilter`, …) rather than generated per column; see common/column-filters.ts.
 
 export { deletedArg, selectArrayArgs, selectSingleArgs } from './common/args.ts';
 export { generateColumnEnum, generateDistinctEnum } from './common/column-enums.ts';

@@ -16,8 +16,8 @@ import { tableTypeExtension } from '../../extensions.ts';
 import { drizzleColumnToGraphQLType } from '../../type-converter/index.ts';
 import type { ConvertedRelationColumnWithArgs } from '../../type-converter/types.ts';
 import { fieldUpdateInputType } from '../field-updates.ts';
-// Type-only: the nested-write module imports this one at runtime, so the dependency has to
-// stay one-directional. The implementation is injected by the dialect builder.
+// Type-only: nested-writes imports this module at runtime through common.ts, so its input
+// types arrive as a `generateTableTypes` parameter from `prepareBuild` instead.
 import type { NestedWriteTypes } from '../nested-writes/input-types.ts';
 import type { GeneratedTableTypes, GeneratedTableTypesOutputs, SelectData, TableNamedRelations } from '../types.ts';
 import { deletedArg } from './args.ts';
