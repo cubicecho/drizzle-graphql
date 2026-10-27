@@ -99,7 +99,7 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 | Inserts stamp every `contextValues` column (and a NOT NULL soft-delete marker's restored value) | `policies.insertStamps`, `policies.applyContextValues` |
 | Updates never write a `contextValues` column | `policies.stripContextValues` |
 | A `Single` update/delete is refused before writing if its `where` matches more than one row | `mutation-helpers.assertSingleMatch` |
-| `Single` writes and `requireWhere` writes need a non-empty compiled filter | `mutation-helpers.extractRequiredFilters` |
+| `Single` writes and `requireWhere` writes refuse a `where` that matches every row (`{}`, `notInArray: []`, `NOT: { inArray: [] }`) | `mutation-helpers.extractRequiredFilters` (`DRIZZLE_WHERE_REQUIRED`) |
 | An update must write a column or carry nested ops | `write-resolvers.generateUpdate`, `update-many.createUpdateManyGenerator`, `mysql.ts` update |
 | A field-update input carries exactly one operation | `field-updates.remapUpdateInput` |
 | A limit above `maxLimit` is rejected (or clamped when `clampToMax`); a negative limit/offset is rejected | `limits.applyLimitPolicy`, `limits.assertPagingNotNegative` |
@@ -122,7 +122,6 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 ### Claimed but not enforced (findings)
 
 - `DRIZZLE_MULTI_ROW_MATCH` is documented as "so nothing was written" (`src/util/builders/common/errors.ts:13`), but the post-write re-check throws after the update/delete already ran (`src/util/builders/write-resolvers.ts:517-518`, `:628-629`); it is only undone when a transaction happens to be open.
-- `DRIZZLE_WHERE_REQUIRED` claims to catch a `where` "matching every row" (`errors.ts:15`); the code only rejects a filter that compiles to nothing (`mutation-helpers.ts:207`).
 - `BuildSchemaConfig.features` says every flag defaults to `true` except `upsert` and `nestedWrites` (`src/types.ts:1280`); five more are off (`src/util/features.ts` `featureDefaults`, and `types.ts:764` says so).
 - `updateMany`'s result is described as "aligned with the input, one slot per entry" (`schema-data.ts:352`), yet a multi-row entry contributes several slots (`update-many.ts` output loop), so slots no longer map to entries.
 - The eager re-fetch says "the write has already committed" (`common/select-runtime.ts:353`); under a hook-forced, nested or shared transaction it has not.
@@ -165,6 +164,7 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 ### Filters & ordering
 
 - **Filter (where, Filters input):** The `where` argument: column operators, `AND`/`OR`/`NOT`, relation keys. Owner: `common/relation-filters.ts extractFilters`, `common/filters.ts`; also `tableFilters`, `filterArgs`.
+- **Matches every row:** A filter that restricts nothing, such as `{}`, `notInArray: []` or `NOT: { inArray: [] }`, so a read adds no condition for it and a write that requires a `where` rejects it. Owner: `common/filters.ts MATCHES_EVERY_ROW` (`CompiledFilter`), folded by `compileBooleanBranches` and `allOf`.
 - **Operator filter (`StringFilter`, …):** The per-scalar set of operators a column gets. Owner: `common/column-filters.ts`.
 - **Relation filter (some / none / every):** Filtering rows by their related rows. Owner: `common/relation-filters.ts`; `RelationFilterBase`, `filterCtx`.
 - **Unique-key filter:** One `where` field per compound unique constraint. Owner: `common/unique-keys.ts buildUniqueKeyMap`.

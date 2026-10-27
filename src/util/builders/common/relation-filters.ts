@@ -18,7 +18,7 @@ import {
 } from 'drizzle-orm';
 import type { FilterColumnOperatorsCore, Filters, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
-import { compileBooleanBranches, extractFiltersColumn } from './filters.ts';
+import { allOf, type CompiledFilter, compileBooleanBranches, extractFiltersColumn } from './filters.ts';
 import type { ScopeResolver } from './policies.ts';
 import { isRelationFilterReversed, relationColumns, relationOwnWhere, unwrapRelationColumn } from './relations.ts';
 import type { UniqueKeyMap } from './unique-keys.ts';
@@ -418,7 +418,7 @@ export const extractFilters = <TTable extends Table>(
   tableName: string,
   filters: Filters<TTable>,
   relationCtx?: RelationFilterContext,
-): SQL | undefined => {
+): CompiledFilter => {
   // Boolean branches compose with sibling fields: siblings and the AND list are ANDed
   // together, NOT negates its whole branch, and the OR group is ANDed with the rest —
   // `{ a: …, OR: [{ b: … }, { c: … }] }` reads as `a AND (b OR c)`. Every branch is the
@@ -465,7 +465,7 @@ export const extractFilters = <TTable extends Table>(
 
   compileBooleanBranches(variants, { AND, NOT, OR }, (branch) => extractFilters(table, tableName, branch, relationCtx));
 
-  return variants.length ? (variants.length > 1 ? and(...variants) : variants[0]) : undefined;
+  return allOf(variants);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

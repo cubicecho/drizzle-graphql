@@ -14,6 +14,7 @@ import { remapUpdateInput } from '../field-updates.ts';
 import type { NestedWriteRuntime } from '../nested-writes.ts';
 import type { CreatedResolver, Filters, ProcessedTableSelectArgs, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
+import { MATCHES_EVERY_ROW } from './filters.ts';
 import { withPrimaryKeyColumns } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import type { TypeNameMapper } from './naming.ts';
@@ -200,8 +201,8 @@ export const generateUpdateManyInput = (params: {
 
 /**
  * Extracts a `where` argument that a mutation refuses to run without: missing, or present
- * but matching every row (e.g. `where: {}` or filters that all collapse to nothing), both
- * throw instead of becoming an unbounded write. Used by the `Single` write variants always
+ * but compiling to "matches every row" (`where: {}`, `notInArray: []`, `NOT: { inArray: [] }`),
+ * both throw instead of becoming an unbounded write. Used by the `Single` write variants always
  * and by the plural update/delete mutations when `features.requireWhere` is on.
  */
 export const extractRequiredFilters = <TTable extends Table>(
@@ -210,10 +211,10 @@ export const extractRequiredFilters = <TTable extends Table>(
   where: Filters<TTable> | undefined,
   relationCtx?: RelationFilterContext,
 ): SQL => {
-  const filters = where ? extractFilters(table, tableName, where, relationCtx) : undefined;
-  if (!filters) {
+  const filters = where ? extractFilters(table, tableName, where, relationCtx) : MATCHES_EVERY_ROW;
+  if (filters === MATCHES_EVERY_ROW) {
     throw drizzleError(
-      "A 'where' argument with at least one filter is required — this mutation does not run unbounded.",
+      "A 'where' argument with at least one filter is required — this mutation does not run unbounded. A filter that matches every row, such as `{}` or `notInArray: []`, counts as none.",
       { code: 'DRIZZLE_WHERE_REQUIRED' },
     );
   }

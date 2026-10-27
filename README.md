@@ -1182,8 +1182,8 @@ ordinary value: `active: { eq: false }` matches the rows that are false, `ne: fa
 that are true, and `has: false` the arrays holding a `false`. Only the flag operators —
 `isNull`, `isNotNull` and `isEmpty` — read `false` as "add no condition".
 
-A filter that adds no condition — `{}`, `{ name: { isNull: false } }`, a relation's
-`every: {}` — restricts nothing, so it matches every row, and the boolean branches `AND` /
+A filter that adds no condition — `{}`, `{ name: { isNull: false } }`, `{ id: { notInArray: [] } }`,
+`NOT: { id: { inArray: [] } }`, a relation's `every: {}` — restricts nothing, so it matches every row, and the boolean branches `AND` /
 `OR` / `NOT` read it that way, at table and column level alike:
 
 -   in `AND`, it drops out: `AND: [X, {}]` is `X`
@@ -2188,7 +2188,8 @@ deliberate rather than accidental:
 
 The plural mutations still accept a missing `where` (a full-table write) by default. To rule
 that out at the type level, `features: { requireWhere: true }` makes `where` non-null on
-`update<Table>` / `delete<Table>` and rejects a `where` with no filters, exactly like the
+`update<Table>` / `delete<Table>` and rejects a `where` with no filters (or only filters that
+match every row, such as `notInArray: []`), exactly like the
 Single variants. It also covers `update<Table>Many`: an entry without a `where`, or with one
 that has no filters, rejects the whole batch with `DRIZZLE_WHERE_REQUIRED` before any entry
 runs. It defaults to `false` for backwards compatibility.

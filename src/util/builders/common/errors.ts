@@ -12,7 +12,7 @@ import type { DrizzleFieldOperation } from '../../extensions.ts';
 export type DrizzleErrorCode =
   /** A `Single` write's `where` matched more than one row, so nothing was written. */
   | 'DRIZZLE_MULTI_ROW_MATCH'
-  /** A write that refuses to run unbounded was given no `where`, or one matching every row. */
+  /** A write that refuses to run unbounded was given no `where`, or one that restricts nothing (`{}`, `notInArray: []`). */
   | 'DRIZZLE_WHERE_REQUIRED'
   /** The requested `limit` is above the maximum the field's limit policy allows. */
   | 'DRIZZLE_LIMIT_EXCEEDED'

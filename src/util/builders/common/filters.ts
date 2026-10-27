@@ -252,33 +252,66 @@ const jsonEquality = (column: Column, columnName: string, value: unknown, negate
 };
 
 /**
- * Constant predicates, used where an operator's operand list is empty and the answer is
- * therefore known without touching the column. Written as `1 = 0` / `1 = 1` rather than the
- * `FALSE` / `TRUE` keywords so they compile identically on all three dialects. Built fresh
- * per call because a `SQL` object is spliced into whatever query consumes it.
+ * A compiled filter. `undefined` is the **matches every row** result ({@link MATCHES_EVERY_ROW}):
+ * the filter restricts nothing, so a read adds no condition and a write that requires a `where`
+ * refuses it. It is never spelled as an always-true SQL predicate, which would hide it.
  */
-const sqlFalse = (): SQL => sql`1 = 0`;
-const sqlTrue = (): SQL => sql`1 = 1`;
+export type CompiledFilter = SQL | undefined;
+
+/** The compiled filter that restricts nothing — see {@link CompiledFilter}. */
+export const MATCHES_EVERY_ROW = undefined;
+
+/** Every predicate built by {@link matchesNoRow}, so the boolean groups can fold it. */
+const noRowPredicates = new WeakSet<SQL>();
+
+/**
+ * The constant "no row matches" predicate, for an operator whose operand list is empty
+ * (`inArray: []`). Written as `1 = 0` rather than `FALSE` so it compiles on all three dialects,
+ * and remembered so `NOT` of it can become {@link MATCHES_EVERY_ROW}. Built fresh per call
+ * because a `SQL` object is spliced into whatever query consumes it.
+ */
+const matchesNoRow = (): SQL => {
+  const predicate = sql`1 = 0`;
+  noRowPredicates.add(predicate);
+  return predicate;
+};
+
+const isMatchesNoRow = (filter: CompiledFilter): boolean => filter !== undefined && noRowPredicates.has(filter);
+
+/**
+ * ANDs the conditions of one filter object together. A "no row matches" condition decides the
+ * whole conjunction (`x AND false` is false even when `x` is NULL), so it is kept recognisable
+ * rather than buried in an `and(...)`.
+ */
+export const allOf = (variants: SQL[]): CompiledFilter => {
+  if (variants.some(isMatchesNoRow)) {
+    return matchesNoRow();
+  }
+  return variants.length > 1 ? and(...variants) : variants[0];
+};
 
 /**
  * Compiles the `AND` / `NOT` / `OR` branches of one filter object onto `variants`, the
- * conditions its sibling keys already produced (all of which are ANDed together).
+ * conditions its sibling keys already produced (all of which are ANDed together, see
+ * {@link allOf}).
  *
- * A branch that compiles to no condition — `{}`, `{ c: { isNull: false } }`, a relation
- * `every: {}` — is a filter that restricts nothing, so it matches every row, and each branch
- * reads it that way:
+ * A branch that compiles to {@link MATCHES_EVERY_ROW} — `{}`, `{ c: { isNull: false } }`,
+ * `{ c: { notInArray: [] } }`, a relation `every: {}` — restricts nothing, and each branch reads
+ * it that way:
  *
  * - in `AND`, it drops out, as `x AND true` is `x`;
  * - under `NOT`, it matches no row, as `NOT true` is false;
  * - in `OR`, it makes the whole group match every row, as `x OR true` is true — so the group
  *   adds no condition, rather than being narrowed to its other branches.
  *
- * An empty `AND` or `OR` list is treated as absent.
+ * A branch that matches no row is the mirror image: `NOT` of it matches every row, and in `OR`
+ * it drops out (an `OR` of nothing but such branches matches no row). An empty `AND` or `OR`
+ * list is treated as absent.
  */
 export const compileBooleanBranches = <TBranch>(
   variants: SQL[],
   branches: { AND?: TBranch[] | null; NOT?: TBranch | null; OR?: TBranch[] | null },
-  compile: (branch: TBranch) => SQL | undefined,
+  compile: (branch: TBranch) => CompiledFilter,
 ): void => {
   const { AND, NOT, OR } = branches;
 
@@ -293,8 +326,12 @@ export const compileBooleanBranches = <TBranch>(
 
   if (NOT) {
     const extracted = compile(NOT);
-    // `not()` is typed `SQL | undefined` from drizzle-orm rc.5 on, `SQL` before it.
-    variants.push((extracted ? not(extracted) : undefined) ?? sqlFalse());
+    if (extracted === MATCHES_EVERY_ROW) {
+      variants.push(matchesNoRow());
+    } else if (!isMatchesNoRow(extracted)) {
+      // `not()` is typed `SQL | undefined` from drizzle-orm rc.5 on, `SQL` before it.
+      variants.push(not(extracted) ?? matchesNoRow());
+    }
   }
 
   if (OR?.length) {
@@ -302,16 +339,16 @@ export const compileBooleanBranches = <TBranch>(
     let matchesAll = false;
     for (const branch of OR) {
       const extracted = compile(branch);
-      if (!extracted) {
+      if (extracted === MATCHES_EVERY_ROW) {
         // Still compiled the rest: an invalid filter in a later branch is an error either way.
         matchesAll = true;
-      } else {
+      } else if (!isMatchesNoRow(extracted)) {
         orVariants.push(extracted);
       }
     }
 
-    if (!matchesAll && orVariants.length) {
-      variants.push(orVariants.length > 1 ? or(...orVariants)! : orVariants[0]!);
+    if (!matchesAll) {
+      variants.push(orVariants.length ? (orVariants.length > 1 ? or(...orVariants)! : orVariants[0]!) : matchesNoRow());
     }
   }
 };
@@ -510,7 +547,7 @@ export const extractFiltersColumn = <TColumn extends Column>(
   column: TColumn,
   columnName: string,
   operators: FilterColumnOperators<TColumn>,
-): SQL | undefined => {
+): CompiledFilter => {
   // Boolean branches compose with sibling operators: siblings and the AND list are ANDed
   // together, NOT negates its whole branch, and the OR group is ANDed with the rest.
   const { OR, AND, NOT, insensitive, ...restOperators } = operators;
@@ -579,10 +616,12 @@ export const extractFiltersColumn = <TColumn extends Column>(
       variants.push(safeLikeCondition(column, operatorValue as string, op, op.insensitive || foldCase));
     } else if (operatorName in arrayValueOps) {
       // An empty candidate list is a well-formed question with a known answer — nothing is
-      // `IN ()`, everything is `NOT IN ()` — so it resolves to a constant predicate rather
-      // than an error. SQL has no empty-list literal, hence the constant rather than `IN ()`.
+      // `IN ()`, everything is `NOT IN ()` — so it resolves to "no row" or "every row" rather
+      // than an error. SQL has no empty-list literal, hence no `IN ()`.
       if (!(operatorValue as any[]).length) {
-        variants.push(operatorName === 'inArray' ? sqlFalse() : sqlTrue());
+        if (operatorName === 'inArray') {
+          variants.push(matchesNoRow());
+        }
         continue;
       }
       const arrayValue = (operatorValue as any[]).map((val) => remapFromGraphQLCore(val, column, columnName));
@@ -600,7 +639,9 @@ export const extractFiltersColumn = <TColumn extends Column>(
       // Same reasoning as inArray/notInArray: overlapping with no elements is never true,
       // and every array contains all zero of them.
       if (!(operatorValue as any[]).length) {
-        variants.push(operatorName === 'hasSome' ? sqlFalse() : sqlTrue());
+        if (operatorName === 'hasSome') {
+          variants.push(matchesNoRow());
+        }
         continue;
       }
       variants.push(
@@ -624,5 +665,5 @@ export const extractFiltersColumn = <TColumn extends Column>(
 
   compileBooleanBranches(variants, { AND, NOT, OR }, (branch) => extractFiltersColumn(column, columnName, branch));
 
-  return variants.length ? (variants.length > 1 ? and(...variants) : variants[0]) : undefined;
+  return allOf(variants);
 };
