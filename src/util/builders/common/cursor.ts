@@ -18,7 +18,7 @@ import { isDateOnlyColumn } from '../../type-converter/index.ts';
 import { drizzleError } from './errors.ts';
 import { comparableOperand } from './filters.ts';
 import type { OrderNullsOption } from './order-by.ts';
-import { orderByEntries, orderExpressions } from './order-by.ts';
+import { isRelationOrderEntry, orderByEntries, orderExpressions } from './order-by.ts';
 
 /** Name of the field on generated select types that exposes a row's opaque pagination cursor. */
 export const CURSOR_FIELD_NAME = 'cursor';
@@ -53,8 +53,7 @@ export type CursorOrderEntry = [string, 'asc' | 'desc', (OrderNullsOption | null
  * still applies.
  */
 export const orderByHasRelationEntry = (orderBy: Record<string, any> | undefined): boolean =>
-  !!orderBy &&
-  Object.values(orderBy).some((config) => config && typeof config === 'object' && config.direction === undefined);
+  !!orderBy && Object.values(orderBy).some(isRelationOrderEntry);
 
 /**
  * Why the given `orderBy` cannot back a cursor, as the message to raise — or `undefined`

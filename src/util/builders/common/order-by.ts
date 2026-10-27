@@ -27,6 +27,14 @@ import { isFilterableRelation, isRelationFilterReversed, relationOwnWhere } from
 export type OrderNullsOption = 'first' | 'last';
 
 /**
+ * Whether one `orderBy` entry orders through a to-one relation: the target table's own OrderBy
+ * object rather than a column's `{ direction, … }`. Told apart by `direction` being a string —
+ * not by it being absent, since a target with a column named `direction` puts an object there.
+ */
+export const isRelationOrderEntry = (config: unknown): boolean =>
+  !!config && typeof config === 'object' && typeof (config as { direction?: unknown }).direction !== 'string';
+
+/**
  * Column name / direction / nulls triples from an `orderBy` argument, highest priority
  * first. Split out of `extractOrderBy` so the same ordering can be rebuilt against a
  * subquery's fields, where there is no `Table` to read columns from. Because there is no
@@ -44,7 +52,7 @@ export const orderByEntries = (
     .filter(([, config]) => config)
     .sort((a, b) => (b[1]?.priority ?? 0) - (a[1]?.priority ?? 0))
     .map(([column, config]) => {
-      if (typeof config === 'object' && config.direction === undefined) {
+      if (isRelationOrderEntry(config)) {
         throw drizzleError(`ORDER BY ${column}: ordering through a relation is not supported in this query`, {
           code: 'DRIZZLE_INVALID_ORDER_BY',
         });
