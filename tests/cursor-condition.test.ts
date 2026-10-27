@@ -142,11 +142,19 @@ describe('keyset predicate shape', () => {
       predicate(
         'sqlite',
         [
-          ['created', 'asc'],
+          ['score', 'asc'],
           ['id', 'asc'],
         ],
         [null, 5],
       ).sql,
-    ).toBe('"t"."created" is not null or "t"."created" is null and "t"."id" > ?');
+    ).toBe('"t"."score" is not null or "t"."score" is null and "t"."id" > ?');
+  });
+
+  it('refuses a NULL cursor value for a NOT NULL column, which no row holds', () => {
+    const entries: CursorOrderEntry[] = [
+      ['created', 'asc'],
+      ['id', 'asc'],
+    ];
+    expect(() => predicate('sqlite', entries, [null, 5])).toThrow(/value for 'created'/);
   });
 });

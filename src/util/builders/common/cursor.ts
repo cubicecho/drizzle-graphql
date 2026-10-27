@@ -2,7 +2,21 @@
 // decode pair, and the predicate that resumes a query from one.
 
 import type { Column, Table } from 'drizzle-orm';
-import { and, bindIfParam, eq, getColumns, gt, is, isNotNull, isNull, lt, or, type SQL, sql } from 'drizzle-orm';
+import {
+  and,
+  bindIfParam,
+  eq,
+  extractExtendedColumnType,
+  getColumns,
+  gt,
+  is,
+  isNotNull,
+  isNull,
+  lt,
+  or,
+  type SQL,
+  sql,
+} from 'drizzle-orm';
 import {
   MySqlColumn,
   MySqlDateTime,
@@ -158,24 +172,48 @@ export const cursorPreciseSelection = (table: Table, entries: CursorOrderEntry[]
   );
 
 /**
- * Serializes one ordering-tuple value into a JSON-safe shape. Dates, bigints and non-finite
- * numbers don't survive JSON.stringify losslessly (bigint throws, Date turns into an untagged
- * string, `NaN` / `±Infinity` into `null`), so they are tagged; decimals already arrive from the
+ * What a cursor value is in the JS form the driver read it in — the form decoding restores.
+ * Encoding tags a value by its kind and a decoded value is checked against its column by its
+ * kind, so the two sides classify values by this one rule.
+ */
+type CursorValueKind = 'null' | 'boolean' | 'number' | 'string' | 'bigint' | 'date';
+
+/** `typeof` results, and drizzle column data types, that name a cursor value kind directly. */
+const SCALAR_CURSOR_KINDS: Readonly<Partial<Record<string, CursorValueKind>>> = {
+  boolean: 'boolean',
+  number: 'number',
+  string: 'string',
+  bigint: 'bigint',
+};
+
+/** A value's {@link CursorValueKind}, or `undefined` for anything else (an object, an array). */
+const cursorValueKind = (value: unknown): CursorValueKind | undefined => {
+  if (value === null || value === undefined) {
+    return 'null';
+  }
+  if (value instanceof Date) {
+    return 'date';
+  }
+  return SCALAR_CURSOR_KINDS[typeof value];
+};
+
+/**
+ * How each kind JSON.stringify cannot carry losslessly is tagged: bigint throws, a Date turns
+ * into an untagged string, and `NaN` / `±Infinity` into `null`. Decimals already arrive from the
  * driver as strings, which are lossless as-is.
  */
+const CURSOR_VALUE_ENCODERS: Readonly<Partial<Record<CursorValueKind, (value: any) => unknown>>> = {
+  date: (value: Date) => ({ $type: 'date', value: value.toISOString() }),
+  bigint: (value: bigint) => ({ $type: 'bigint', value: value.toString() }),
+  // `String` spells them `NaN` / `Infinity` / `-Infinity`, which `Number` reads back.
+  number: (value: number) => (Number.isFinite(value) ? value : { $type: 'float', value: String(value) }),
+};
+
+/** Serializes one ordering-tuple value into a JSON-safe shape (see {@link CURSOR_VALUE_ENCODERS}). */
 const encodeCursorValue = (value: any): any => {
-  if (value instanceof Date) {
-    return { $type: 'date', value: value.toISOString() };
-  }
-  if (typeof value === 'bigint') {
-    return { $type: 'bigint', value: value.toString() };
-  }
-  const isNonFiniteNumber = typeof value === 'number' && !Number.isFinite(value);
-  if (isNonFiniteNumber) {
-    // `String` spells them `NaN` / `Infinity` / `-Infinity`, which `Number` reads back.
-    return { $type: 'float', value: String(value) };
-  }
-  return value;
+  const kind = cursorValueKind(value);
+  const encode = kind && CURSOR_VALUE_ENCODERS[kind];
+  return encode ? encode(value) : value;
 };
 
 /** The text forms a `bigint`-tagged cursor value may take. */
@@ -345,6 +383,118 @@ const boundCursorValue = (col: Column, value: unknown): unknown => {
   return value;
 };
 
+/** Number constraints whose columns hold whole numbers only. */
+const INTEGER_CONSTRAINTS: ReadonlySet<string> = new Set([
+  'int8',
+  'int16',
+  'int24',
+  'int32',
+  'int53',
+  'uint8',
+  'uint16',
+  'uint24',
+  'uint32',
+  'uint53',
+  'year',
+]);
+
+/**
+ * Every text {@link cursorPreciseExtras} can select: PostgreSQL's `::text` of a `timestamp` /
+ * `timestamptz` (ISO DateStyle — years of four or more digits, any fraction, an offset of
+ * `±HH`, `±HH:MM` or local mean time's `±HH:MM:SS`, and a trailing ` BC`) and MySQL's
+ * `cast(… as char)` of a `datetime` / `timestamp`, which is the same shape without the offset.
+ */
+const TIMESTAMP_TEXT =
+  /^(?<year>\d{4,6})-(?<month>\d{2})-(?<day>\d{2}) (?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?:\.\d+)?(?:[+-]\d{2}(?::\d{2}){0,2})?(?<bc> BC)?$/;
+/** Timestamp texts that name no instant but that the database stores: PostgreSQL's infinities, MySQL's zero date. */
+const NON_INSTANT_TIMESTAMP_TEXT = /^(-?infinity|0000-00-00 00:00:00(\.0+)?)$/;
+/** PostgreSQL's timestamp range: 4713 BC to 294276 AD. */
+const MAX_AD_YEAR = 294276;
+const MAX_BC_YEAR = 4714;
+/** The values each field of {@link TIMESTAMP_TEXT} can print, inclusive; PostgreSQL prints `24:00:00` and leap second 60. */
+const TIMESTAMP_FIELD_RANGES: Readonly<Record<string, readonly [number, number]>> = {
+  month: [1, 12],
+  day: [1, 31],
+  hour: [0, 24],
+  minute: [0, 59],
+  second: [0, 60],
+};
+
+/**
+ * Whether a string is timestamp text as {@link cursorPreciseExtras} selects it — any form the
+ * databases print, with each field in range. Day-of-month overflow (Feb 31) is left to the
+ * database, which refuses it; it never prints one.
+ */
+const isTimestampText = (text: string): boolean => {
+  if (NON_INSTANT_TIMESTAMP_TEXT.test(text)) {
+    return true;
+  }
+  const fields = TIMESTAMP_TEXT.exec(text)?.groups;
+  if (!fields) {
+    return false;
+  }
+  const year = Number(fields['year']);
+  const maxYear = fields['bc'] ? MAX_BC_YEAR : MAX_AD_YEAR;
+  const fieldsInRange = Object.entries(TIMESTAMP_FIELD_RANGES).every(([field, [min, max]]) => {
+    const value = Number(fields[field]);
+    return value >= min && value <= max;
+  });
+  return fieldsInRange && year >= 1 && year <= maxYear;
+};
+
+/**
+ * The kind a column's values read into, from drizzle's data type — or `undefined` when no
+ * cursor value kind describes them (JSON, buffers, custom types, arrays), and none is checked.
+ */
+const columnCursorKind = (col: Column): CursorValueKind | undefined => {
+  if ((col as any).dimensions) {
+    return undefined;
+  }
+  const { type, constraint } = extractExtendedColumnType(col);
+  if (type === 'object') {
+    return constraint === 'date' ? 'date' : undefined;
+  }
+  return SCALAR_CURSOR_KINDS[type];
+};
+
+/**
+ * Whether a decoded cursor value is one its column's rows can produce: NULL only for a nullable
+ * column, otherwise the column's kind — or, for a column a JS Date would truncate, its timestamp
+ * text. SQLite stores any number in an integer column, so only other dialects require a whole one.
+ */
+const cursorValueFits = (col: Column, value: unknown): boolean => {
+  const kind = cursorValueKind(value);
+  if (kind === 'null') {
+    return col.notNull !== true;
+  }
+  const expected = columnCursorKind(col);
+  if (expected === undefined) {
+    return true;
+  }
+  if (kind === 'string' && outgrowsJsDate(col)) {
+    return isTimestampText(value as string);
+  }
+  if (kind !== expected) {
+    return false;
+  }
+  const holdsWholeNumbers =
+    INTEGER_CONSTRAINTS.has(extractExtendedColumnType(col).constraint ?? '') && !is(col, SQLiteColumn);
+  return kind !== 'number' || !holdsWholeNumbers || Number.isInteger(value);
+};
+
+/**
+ * Refuses a cursor value its column cannot hold. A forged one would otherwise fail in drizzle's
+ * encoder or the database (an internal error), or compare under the wrong type.
+ */
+const assertCursorValueFits = (col: Column, column: string, value: unknown): void => {
+  if (!cursorValueFits(col, value)) {
+    throw drizzleError(
+      `Invalid cursor: its value for '${column}' is not one that column holds. Pass a cursor returned by a previous page.`,
+      { code: 'DRIZZLE_INVALID_CURSOR' },
+    );
+  }
+};
+
 /** One key of a cursor's total order, resolved against the queried table. */
 interface CursorKey {
   col: Column;
@@ -432,6 +582,7 @@ export const buildCursorCondition = (
     if (!col) {
       throw drizzleError(`Invalid cursor: unknown column '${column}'.`, { code: 'DRIZZLE_INVALID_CURSOR' });
     }
+    assertCursorValueFits(col, column, values[i]);
     return { col, direction, nulls, value: boundCursorValue(col, values[i]) };
   });
 
