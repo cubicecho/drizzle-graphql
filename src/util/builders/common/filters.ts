@@ -432,29 +432,36 @@ const jsonPathString = (path: string[], dialect: 'mysql' | 'sqlite'): string =>
     .join('')}`;
 
 /**
- * Matches the text forms a database will accept as a number. Used to guard both numeric casts —
- * Postgres has no TRY_CAST and errors outright on a bad `::numeric`, while MySQL quietly casts
- * a non-numeric string to 0; neither is what a non-matching row should do.
+ * The names each dialect's JSON type function gives a JSON number and a JSON boolean. A
+ * `NUMBER` or `BOOLEAN` read only sees a value of that JSON type, so the string `"3"` never
+ * equals 3 and `"true"` never equals true, on any dialect.
  */
-const NUMERIC_TEXT_PATTERN = '^\\s*-?(\\d+\\.?\\d*|\\.\\d+)([eE][-+]?\\d+)?\\s*$';
+const JSON_VALUE_TYPE_NAMES: Record<'pg' | 'mysql' | 'sqlite', { number: string[]; boolean: string[] }> = {
+  pg: { number: ['number'], boolean: ['boolean'] },
+  mysql: { number: ['INTEGER', 'UNSIGNED INTEGER', 'DOUBLE', 'DECIMAL'], boolean: ['BOOLEAN'] },
+  sqlite: { number: ['integer', 'real'], boolean: ['true', 'false'] },
+};
+
+/** `type in ('a', 'b')`, with the fixed type names written as string literals. */
+const typeIsOneOf = (type: SQL, names: string[]): SQL =>
+  sql`${type} in (${sql.raw(names.map((name) => `'${name}'`).join(', '))})`;
 
 /**
  * The value at a JSON path, as the expressions a comparison can be built on: read as text,
- * read as a number, and read as the dialect spells a boolean. Each dialect extracts
- * differently, and each needs its own guard so a value of the wrong shape answers "no match"
- * rather than erroring or comparing by some unrelated rule:
+ * read as a number, and read as the dialect spells a boolean. The number and boolean reads
+ * check the value's JSON type first (see {@link JSON_VALUE_TYPE_NAMES}) and are NULL for any
+ * other type, so a value of the wrong shape answers "no match" rather than erroring or being
+ * converted:
  *
- * - **Postgres** — `#>>` with a bound `text[]` path, which works on `json` and `jsonb` alike.
- *   `::numeric` on a non-numeric string is a hard error, so the numeric read is guarded by a
- *   pattern test.
+ * - **Postgres** — `#>>` with a bound `text[]` path, which works on `json` and `jsonb` alike;
+ *   the type comes from `json_typeof` / `jsonb_typeof` on `#>`, whichever the column is.
  * - **MySQL** — `JSON_UNQUOTE(JSON_EXTRACT(col, ?))`, so a JSON string arrives without its
  *   quotes. Unquoting a JSON *null* would otherwise yield the string `'null'`, so it is mapped
- *   back to SQL NULL first. `CAST` quietly turns a non-numeric string into 0, hence the same
- *   pattern guard.
+ *   back to SQL NULL first. The type comes from `JSON_TYPE`.
  * - **SQLite** — `json_extract` returns the value in SQLite's own type, so the reads cast
  *   explicitly: without that, SQLite's cross-type ordering puts every string above every
- *   number and `'admin' > 0` would be true. A JSON boolean comes back as 1 / 0, so every read
- *   also checks `json_type` to keep booleans and numbers apart.
+ *   number and `'admin' > 0` would be true. A JSON boolean comes back as 1 / 0, and
+ *   `json_type` still tells `true` apart from `1`.
  */
 const jsonPathExprs = (
   column: Column,
@@ -467,32 +474,36 @@ const jsonPathExprs = (
         sql`, `,
       )}]::text[]`;
       const text = sql`(${column} #>> ${pathArray})`;
+      const typeOf = (column as any).columnType === 'PgJson' ? sql.raw('json_typeof') : sql.raw('jsonb_typeof');
+      const type = sql`${typeOf}(${column} #> ${pathArray})`;
+      const names = JSON_VALUE_TYPE_NAMES.pg;
       return {
         text,
-        number: sql`(case when ${text} ~ ${NUMERIC_TEXT_PATTERN} then ${text}::numeric end)`,
-        boolean: text,
+        number: sql`(case when ${typeIsOneOf(type, names.number)} then ${text}::numeric end)`,
+        boolean: sql`(case when ${typeIsOneOf(type, names.boolean)} then ${text} end)`,
         encodeBoolean: (value) => String(value),
       };
     }
     case 'mysql': {
       const extracted = sql`json_extract(${column}, ${jsonPathString(path, 'mysql')})`;
-      const text = sql`(case when json_type(${extracted}) = 'NULL' then null else json_unquote(${extracted}) end)`;
+      const type = sql`json_type(${extracted})`;
+      const text = sql`(case when ${type} = 'NULL' then null else json_unquote(${extracted}) end)`;
+      const names = JSON_VALUE_TYPE_NAMES.mysql;
       return {
         text,
-        number: sql`(case when ${text} regexp ${NUMERIC_TEXT_PATTERN} then cast(${text} as decimal(65, 30)) end)`,
-        boolean: text,
+        number: sql`(case when ${typeIsOneOf(type, names.number)} then cast(${text} as decimal(65, 30)) end)`,
+        boolean: sql`(case when ${typeIsOneOf(type, names.boolean)} then ${text} end)`,
         encodeBoolean: (value) => String(value),
       };
     }
     default: {
       const extracted = sql`json_extract(${column}, ${jsonPathString(path, 'sqlite')})`;
-      // SQLite has no boolean type: `json_extract` returns a JSON `true` as the integer 1, so
-      // each read checks `json_type`, which still tells `true` apart from `1`.
       const type = sql`json_type(${column}, ${jsonPathString(path, 'sqlite')})`;
+      const names = JSON_VALUE_TYPE_NAMES.sqlite;
       return {
         text: sql`(case ${type} when 'true' then 'true' when 'false' then 'false' else cast(${extracted} as text) end)`,
-        number: sql`(case when ${type} in ('integer', 'real') then ${extracted} end)`,
-        boolean: sql`(case when ${type} in ('true', 'false') then ${extracted} end)`,
+        number: sql`(case when ${typeIsOneOf(type, names.number)} then ${extracted} end)`,
+        boolean: sql`(case when ${typeIsOneOf(type, names.boolean)} then ${extracted} end)`,
         encodeBoolean: (value) => (value ? 1 : 0),
       };
     }

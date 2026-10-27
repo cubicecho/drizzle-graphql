@@ -1,6 +1,7 @@
 // Filter results that SQL's three-valued logic used to get wrong. `every` was compiled as "no
 // related row where NOT inner", and `NOT (NULL = 'x')` is NULL, so a related row whose compared
-// column is NULL never counted as failing. Siblings: tests/pglite/filter-semantics.test.ts,
+// column is NULL never counted as failing. A JSON `path` read `as: NUMBER` / `BOOLEAN` matched
+// a string holding the number or boolean on PostgreSQL and MySQL; it now needs that JSON type. Siblings: tests/pglite/filter-semantics.test.ts,
 // tests/mysql-filter-semantics.test.ts.
 import { type Client, createClient } from '@libsql/client';
 import { buildRelations, createRelationsHelper, sql } from 'drizzle-orm';
@@ -9,6 +10,7 @@ import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { type GraphQLSchema, graphql } from 'graphql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildSchema } from '@/index';
+import { JSON_DOCS, JSON_PATH_CASES } from './util/filter-semantics';
 
 const Items = sqliteTable('items', { id: integer('id').primaryKey(), name: text('name') });
 const Posts = sqliteTable('posts', {
@@ -21,7 +23,8 @@ const Comments = sqliteTable('comments', {
   postId: integer('post_id'),
   body: text('body'),
 });
-const tables = { Items, Posts, Comments };
+const Docs = sqliteTable('docs', { id: integer('id').primaryKey(), meta: text('meta', { mode: 'json' }) });
+const tables = { Items, Posts, Comments, Docs };
 const r = createRelationsHelper(tables);
 const relations = buildRelations(tables, {
   Items: { posts: r.many.Posts({ from: r.Items.id, to: r.Posts.itemId }) },
@@ -66,6 +69,8 @@ beforeAll(async () => {
     { id: 2, postId: 2, body: null },
     { id: 3, postId: 6, body: 'ok' },
   ]);
+  await db.run(sql`CREATE TABLE docs (id integer primary key, meta text)`);
+  await db.insert(Docs).values(JSON_DOCS);
   schema = buildSchema(db).schema;
 });
 afterAll(() => client.close());
@@ -93,5 +98,14 @@ describe('every: a related row whose compared column is NULL fails', () => {
   it('a to-one filter does not match a NULL target column', async () => {
     expect(await ids('posts', '{ item: { name: { ne: "n" } } }')).toEqual([]);
     expect(await ids('posts', '{ item: { name: { isNull: true } } }')).toEqual([1, 2]);
+  });
+});
+
+describe('JSON path as: NUMBER / BOOLEAN needs that JSON type', () => {
+  const cases = (['meta'] as const).flatMap((column) =>
+    JSON_PATH_CASES.map(([filter, expected]) => [column, filter, expected] as const),
+  );
+  it.each(cases)('%s path %s', async (column, filter, expected) => {
+    expect(await ids('docs', `{ ${column}: { path: ${filter} } }`)).toEqual(expected);
   });
 });

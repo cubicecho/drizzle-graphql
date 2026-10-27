@@ -1,11 +1,12 @@
 // PostgreSQL sibling of tests/sqlite-filter-semantics.test.ts.
 import { PGlite } from '@electric-sql/pglite';
 import { buildRelations, createRelationsHelper, sql } from 'drizzle-orm';
-import { integer, pgTable, text } from 'drizzle-orm/pg-core';
+import { integer, json, jsonb, pgTable, text } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
 import { type GraphQLSchema, graphql } from 'graphql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildSchema } from '@/index';
+import { JSON_DOCS, JSON_PATH_CASES } from '../util/filter-semantics';
 
 const Items = pgTable('items', { id: integer('id').primaryKey(), name: text('name') });
 const Posts = pgTable('posts', { id: integer('id').primaryKey(), itemId: integer('item_id'), title: text('title') });
@@ -14,7 +15,8 @@ const Comments = pgTable('comments', {
   postId: integer('post_id'),
   body: text('body'),
 });
-const tables = { Items, Posts, Comments };
+const Docs = pgTable('docs', { id: integer('id').primaryKey(), meta: jsonb('meta'), metaJson: json('meta_json') });
+const tables = { Items, Posts, Comments, Docs };
 const r = createRelationsHelper(tables);
 const relations = buildRelations(tables, {
   Items: { posts: r.many.Posts({ from: r.Items.id, to: r.Posts.itemId }) },
@@ -60,6 +62,8 @@ beforeAll(async () => {
     { id: 2, postId: 2, body: null },
     { id: 3, postId: 6, body: 'ok' },
   ]);
+  await db.execute(sql`CREATE TABLE docs (id integer primary key, meta jsonb, meta_json json)`);
+  await db.insert(Docs).values(JSON_DOCS.map((doc) => ({ ...doc, metaJson: doc.meta })));
   schema = buildSchema(db).schema;
 });
 afterAll(async () => {
@@ -89,5 +93,14 @@ describe('every: a related row whose compared column is NULL fails', () => {
   it('a to-one filter does not match a NULL target column', async () => {
     expect(await ids('posts', '{ item: { name: { ne: "n" } } }')).toEqual([]);
     expect(await ids('posts', '{ item: { name: { isNull: true } } }')).toEqual([1, 2]);
+  });
+});
+
+describe('JSON path as: NUMBER / BOOLEAN needs that JSON type', () => {
+  const cases = (['meta', 'metaJson'] as const).flatMap((column) =>
+    JSON_PATH_CASES.map(([filter, expected]) => [column, filter, expected] as const),
+  );
+  it.each(cases)('%s path %s', async (column, filter, expected) => {
+    expect(await ids('docs', `{ ${column}: { path: ${filter} } }`)).toEqual(expected);
   });
 });

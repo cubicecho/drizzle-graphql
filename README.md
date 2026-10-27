@@ -1349,16 +1349,20 @@ against a `String` variable, say:
 }
 ```
 
-A value of the wrong shape never matches rather than failing the query: `gt: 0` against a
-document whose path holds `"admin"` returns no rows on every dialect. That takes a guard on
-each one — Postgres errors outright on a bad `::numeric`, MySQL quietly casts a non-numeric
-string to `0`, and SQLite's cross-type ordering would otherwise sort every string above every
-number.
+A number or boolean read only sees a value of that JSON type, and a value of any other type
+never matches rather than failing the query, on every dialect:
 
-SQLite has no boolean type, and its `json_extract` hands a JSON `true` / `false` back as `1` /
-`0`, so its path reads check `json_type` as well: `eq: true` matches only a JSON `true`, never
-the number `1`, a number operand never matches a boolean, and a text read sees `"true"` /
-`"false"`, as PostgreSQL's does.
+-   `as: NUMBER` (or a number operand) matches a JSON number only. The string `"3"` does not
+    equal `3`, and `gt: 0` against `"admin"` returns no rows
+-   `as: BOOLEAN` (or a boolean operand) matches a JSON `true` / `false` only, never the string
+    `"true"` or the number `1`
+-   `as: TEXT` (or a string operand) reads any scalar as its text, so `eq: "3"` matches both the
+    number `3` and the string `"3"`, and `eq: "true"` matches a JSON `true`
+
+The type comes from `jsonb_typeof` / `json_typeof` on PostgreSQL, `JSON_TYPE` on MySQL and
+`json_type` on SQLite. Each read also keeps its own dialect from comparing by some unrelated
+rule: SQLite's cross-type ordering would otherwise sort every string above every number, and
+its `json_extract` hands a JSON boolean back as `1` / `0`.
 
 **Whole-document `eq` / `ne`** compare documents, not their text. Object key order and
 whitespace do not matter; array order does, and so does the difference between `1` and `true`.

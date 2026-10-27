@@ -7,17 +7,19 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { Duplex } from 'node:stream';
 import { buildRelations, createRelationsHelper } from 'drizzle-orm';
-import { int, mysqlTable, text } from 'drizzle-orm/mysql-core';
+import { int, json, mysqlTable, text } from 'drizzle-orm/mysql-core';
 import { drizzle } from 'drizzle-orm/mysql2';
 import { type GraphQLSchema, graphql } from 'graphql';
 import * as mysql from 'mysql2/promise';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildSchema } from '@/index';
+import { JSON_DOCS, JSON_PATH_CASES } from './util/filter-semantics';
 
 const Items = mysqlTable('items', { id: int('id').primaryKey(), name: text('name') });
 const Posts = mysqlTable('posts', { id: int('id').primaryKey(), itemId: int('item_id'), title: text('title') });
 const Comments = mysqlTable('comments', { id: int('id').primaryKey(), postId: int('post_id'), body: text('body') });
-const tables = { Items, Posts, Comments };
+const Docs = mysqlTable('docs', { id: int('id').primaryKey(), meta: json('meta') });
+const tables = { Items, Posts, Comments, Docs };
 const r = createRelationsHelper(tables);
 const relations = buildRelations(tables, {
   Items: { posts: r.many.Posts({ from: r.Items.id, to: r.Posts.itemId }) },
@@ -122,6 +124,8 @@ beforeAll(async () => {
     { id: 2, postId: 2, body: null },
     { id: 3, postId: 6, body: 'ok' },
   ]);
+  await connection.query('CREATE TABLE docs (id int PRIMARY KEY, meta json)');
+  await db.insert(Docs).values(JSON_DOCS);
   schema = buildSchema(db).schema;
 }, 180_000);
 
@@ -155,5 +159,14 @@ describe('every: a related row whose compared column is NULL fails', () => {
   it('a to-one filter does not match a NULL target column', async () => {
     expect(await ids('posts', '{ item: { name: { ne: "n" } } }')).toEqual([]);
     expect(await ids('posts', '{ item: { name: { isNull: true } } }')).toEqual([1, 2]);
+  });
+});
+
+describe('JSON path as: NUMBER / BOOLEAN needs that JSON type', () => {
+  const cases = (['meta'] as const).flatMap((column) =>
+    JSON_PATH_CASES.map(([filter, expected]) => [column, filter, expected] as const),
+  );
+  it.each(cases)('%s path %s', async (column, filter, expected) => {
+    expect(await ids('docs', `{ ${column}: { path: ${filter} } }`)).toEqual(expected);
   });
 });
