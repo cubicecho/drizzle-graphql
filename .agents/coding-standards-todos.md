@@ -54,7 +54,7 @@ session scratchpad (`repro/`, `reads-rev/repros/`, `filters-review/src/`,
 | B25 | Bug · low value | Add `PgSparseVector` to the no-min/max column list (unverified: no pgvector in PGlite) | No SQL error from `min(sparsevec)` | — | done |
 | B26 | Bug · low value | Gate the junction restore UPDATE on the junction's `update` feature | Feature switch honoured | — | done |
 | B27 | Bug · low value | Match nested `refreshed` rows by `keyString`, not `String()` (unverified) | Timestamp keys under 1s apart stay distinct | — | done |
-| B28 | Bug · low value | `resolveSelection` fallback: derive null ordering from the dialect (unverified) | Correct cursors in the multi-build fallback | — | deferred |
+| B28 | Bug · low value | `resolveSelection` fallback: derive null ordering from the dialect (unverified) | Correct cursors in the multi-build fallback | — | done |
 | B29 | Bug · low value | `matchFilterOrder` + `insensitive` ranks case-insensitive matches as "not in list" (unverified) | Correct order | — | done |
 
 Status is `open`, `approved`, `declined`, `waiting on decision` or `done`.
@@ -66,8 +66,9 @@ Follow-ups found while fixing:
 | ID | Kind | What it does | Buys | Needs | Status |
 |---|---|---|---|---|---|
 | B30 | Bug | Close the `…Single` race on MySQL and sync SQLite | B3 holds on every dialect | — | done (in B3) |
-| B32 | Bug | Check a decoded cursor value fits its column's type (B21 checks only that it is well formed) | Cleaner `DRIZZLE_INVALID_CURSOR` | — | open |
+| B32 | Bug | Check a decoded cursor value fits its column's type (B21 checks only that it is well formed) | Cleaner `DRIZZLE_INVALID_CURSOR` | — | done |
 | B34 | Bug (question) | Root `restore` mutations are generated for every soft-deleting table, ignoring feature flags (unverified) | Feature switches honoured | — | done (breaking) |
+| B35 | Bug | A `mode: 'date'` timestamp outside JS Date's range (BC, year > 275760) makes the whole read throw `RangeError: Invalid time value`, even when the column is not selected (it is fetched for ordering) | Such rows can be listed | — | open |
 | B33 | Bug (question) | Postgres array *inputs* still require non-null elements (`[T!]`); B16 relaxed only outputs | Your call | — | declined (inputs stay `[T!]`) |
 
 ## Model changes
