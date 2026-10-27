@@ -235,7 +235,7 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 - **Dialect adapter:** What a dialect supplies to the shared build: table class, table config, PK lookup, null ordering, whether writes return rows, preflight. Owner: `build-context.ts SchemaBuildAdapter`, `schema-data.ts DialectSchemaAdapter`.
 - **Null ordering:** Whether the database sorts NULLs first or last, which cursors must match. Owner: `cursor.ts NullOrdering`.
 - **Preflight:** Build-time refusal of options a dialect/driver cannot honour. Owner: `SchemaBuildAdapter.preflight` in `mysql.ts`, `sqlite.ts`.
-- **Sync driver:** A SQLite driver whose transaction commits when its callback returns. Owner: implicit — `db.resultKind === 'sync'` in `sqlite.ts`, plus `.then` probes in `sqlite.ts` and `write-resolvers.ts`.
+- **Sync driver:** A SQLite driver (better-sqlite3, node:sqlite) whose transaction commits when its callback returns. Owner: `common/sync-driver.ts`: `isSyncDriver(db)` reads the handle (`sqlite.ts` preflight); `runInOrder` runs statements from a non-async transaction callback and tells the families apart by the first result (`sqlite.ts` updateMany batch, `write-resolvers.ts` multi-batch upsert).
 
 ### Internals
 

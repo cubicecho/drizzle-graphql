@@ -12,6 +12,7 @@ import {
   memoizeTableConfig,
   type TablesRelationalConfig,
 } from '../builders/common.ts';
+import { isSyncDriver, runInOrder } from './common/sync-driver.ts';
 import { writeNestedEntry } from './nested-writes.ts';
 import { createSchemaDataGenerator } from './schema-data.ts';
 import type { SchemaGeneratorOptions } from './types.ts';
@@ -25,10 +26,9 @@ export const sqlitePrimaryKeyPropNames = (table: SQLiteTable): string[] =>
   getPrimaryKeyPropNamesFromConfig(table, sqliteTableConfig);
 
 /**
- * SQLite's batch runner. A synchronous driver (better-sqlite3) commits the moment its
- * transaction callback returns, so that callback must not be async — an awaited statement
- * would run after the COMMIT. The driver kind is probed from the first statement's result
- * rather than declared, so the same resolver serves both driver families.
+ * SQLite's batch runner. A sync driver commits the moment its transaction callback returns, so
+ * that callback must not be async: {@link runInOrder} runs the entries and tells the driver
+ * families apart from the first statement's result, so one resolver serves both.
  */
 const runSqliteUpdateManyBatch: UpdateManyBatchRunner = ({
   executor,
@@ -84,22 +84,7 @@ const runSqliteUpdateManyBatch: UpdateManyBatchRunner = ({
       })();
     }
 
-    const first = runEntry(tx, entries[0]!);
-    if (typeof (first as any)?.then === 'function') {
-      // Async driver: await sequentially so the entries apply in input order.
-      return (async () => {
-        const results: Record<string, any>[][] = [await first];
-        for (let i = 1; i < entries.length; i++) {
-          results.push(await runEntry(tx, entries[i]!));
-        }
-        return results;
-      })();
-    }
-    const results: Record<string, any>[][] = [first];
-    for (let i = 1; i < entries.length; i++) {
-      results.push(runEntry(tx, entries[i]!));
-    }
-    return results;
+    return runInOrder(entries, (entry): Record<string, any>[] => runEntry(tx, entry));
   });
 };
 
@@ -117,19 +102,19 @@ const sqliteSchemaData = createSchemaDataGenerator({
   // returns, so it can neither interleave awaited statements inside one transaction nor hold
   // one open across resolver calls — which is what all three of these features require.
   preflight: (db, options) => {
-    if (options.features.nestedWrites && (db as any).resultKind === 'sync') {
+    if (options.features.nestedWrites && isSyncDriver(db)) {
       throw new Error(
         'Drizzle-GraphQL Error: features.nestedWrites requires an asynchronous SQLite driver (e.g. libsql). Synchronous drivers cannot run the multi-statement transaction a nested write needs.',
       );
     }
-    if (options.transactions && (db as any).resultKind === 'sync') {
+    if (options.transactions && isSyncDriver(db)) {
       throw new Error(
         "Drizzle-GraphQL Error: transactions: 'auto' requires an asynchronous SQLite driver (e.g. libsql). Synchronous drivers cannot hold a transaction open across resolvers.",
       );
     }
     // A hook may be async, and it has to run inside the mutation's transaction so a throw can
     // roll the write back. A synchronous driver would commit before the awaited hook ran.
-    if (options.policies?.onWrite && (db as any).resultKind === 'sync') {
+    if (options.policies?.onWrite && isSyncDriver(db)) {
       throw new Error(
         'Drizzle-GraphQL Error: onWrite requires an asynchronous SQLite driver (e.g. libsql). Synchronous drivers commit before an awaited hook runs, so a throwing hook could not roll the mutation back.',
       );

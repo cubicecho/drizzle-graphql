@@ -22,6 +22,7 @@ import {
 } from '../data-mappers/index.ts';
 import type { ResolveTree } from '../parse-resolve-info.ts';
 import { parseResolveInfo } from '../parse-resolve-info.ts';
+import { runInOrder } from './common/sync-driver.ts';
 import {
   applyConflictPlan,
   applyContextValues,
@@ -368,30 +369,16 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           if (batches.length === 1) {
             return (await batchQuery(target, batches[0]!)) as Record<string, any>[];
           }
-          // The callback is not async: a synchronous SQLite driver (better-sqlite3, node:sqlite)
-          // commits the moment it returns, so every statement has to run before then. A SQLite
-          // statement is run with `.all()`, which executes at once on a sync driver; whether the
-          // first one returned a promise tells the two driver families apart, as `updateMany` does.
+          // The callback is not async, so a sync driver runs every statement before it commits
+          // (see `runInOrder`). A SQLite statement is run with `.all()`, which executes at once on
+          // a sync driver.
           return target.transaction((tx: any) => {
-            const execute = (batch: (typeof batches)[number]) => {
+            const execute = (batch: (typeof batches)[number]): Record<string, any>[] => {
               const query = batchQuery(tx, batch);
               return typeof query.all === 'function' ? query.all() : query;
             };
-            const first = execute(batches[0]!);
-            if (typeof first?.then === 'function') {
-              return (async () => {
-                const rows: Record<string, any>[] = [...(await first)];
-                for (const batch of batches.slice(1)) {
-                  rows.push(...(await execute(batch)));
-                }
-                return rows;
-              })();
-            }
-            const rows: Record<string, any>[] = [...first];
-            for (const batch of batches.slice(1)) {
-              rows.push(...execute(batch));
-            }
-            return rows;
+            const perBatch = runInOrder(batches, execute);
+            return perBatch instanceof Promise ? perBatch.then((results) => results.flat()) : perBatch.flat();
           });
         };
 
