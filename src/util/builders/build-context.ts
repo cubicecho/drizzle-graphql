@@ -73,7 +73,7 @@ import { dropContextValueRelations, gateNestedWritePlans } from './nested-writes
 import { createNestedWriteTypes, type NestedWriteTypes } from './nested-writes/input-types.ts';
 import { buildNestedWritePlans, type NestedWritePlans } from './nested-writes/plans.ts';
 import { createNestedWriteRuntime, type NestedWriteRuntime } from './nested-writes/runtime.ts';
-import { createSelectGenerators } from './select.ts';
+import { createSelectGenerators, type ReadBuildOptions } from './select.ts';
 import type {
   CreatedResolver,
   GeneratedTableTypes,
@@ -511,37 +511,30 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     const { selectSingleOutput, selectArrOutput } = tableTypes.outputs;
     const { typeName, listFieldName, singleFieldName, aggregateFieldName, groupByFieldName } = names;
 
-    const selectArrGenerated = generateSelectArray(
+    const readBuild: ReadBuildOptions = {
       db,
-      tableName,
       tables,
       eagerRelations,
-      tableOrder,
-      tableFilters,
-      listFieldName,
-      typeName,
-      typeNameMapper,
-      filterCtx,
-      tableFeatures.distinct,
-      limits,
-      policies,
-      cacheCtx.resolveName,
-    );
-    const selectSingleGenerated = generateSelectSingle(
-      db,
-      tableName,
-      tables,
-      eagerRelations,
-      tableOrder,
-      tableFilters,
-      singleFieldName,
-      typeName,
       typeNameMapper,
       filterCtx,
       limits,
       policies,
-      cacheCtx.resolveName,
-    );
+      resolveName: cacheCtx.resolveName,
+    };
+    const selectArrGenerated = generateSelectArray(readBuild, {
+      tableName,
+      orderArgs: tableOrder,
+      filterArgs: tableFilters,
+      fieldName: listFieldName,
+      typeName,
+      distinct: tableFeatures.distinct,
+    });
+    const selectSingleGenerated = generateSelectSingle(readBuild, {
+      tableName,
+      orderArgs: tableOrder,
+      filterArgs: tableFilters,
+      fieldName: singleFieldName,
+    });
 
     const aggregateType = tableFeatures.aggregates
       ? generateAggregateTypes(table, tableName, typeName, cacheCtx)
