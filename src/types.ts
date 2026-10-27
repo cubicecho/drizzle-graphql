@@ -1181,19 +1181,18 @@ export type BuildSchemaConfig = {
    *
    * Expects a non-negative integer or `undefined`.
    *
-   * `undefined` (default) — no limit; all relations are generated recursively
-   * until a cycle is detected.
+   * `undefined` (default) — no limit; every table's relation fields are
+   * generated.
    *
    * `0` — no relation fields are generated on any type. Useful for a flat,
    * columns-only schema.
    *
-   * `N > 0` — each table's own direct relations are still generated (every
-   * table's root type is processed at depth 0, which is always < N). The
-   * depth limit controls how deep the generation RECURSES when traversing
-   * related types; because all types share a single instance via the type
-   * cache, setting N > 0 currently behaves the same as `undefined` for the
-   * final schema shape. The principal useful values are `0` (no relations)
-   * and `undefined` (unlimited).
+   * `N > 0` — the same schema as `undefined`. Each table's type is generated
+   * once, with its direct relation fields pointing at the related tables' own
+   * types, so every depth of the relation graph is already reachable and there
+   * is nothing deeper to bound. The useful values are `0` (no relations) and
+   * `undefined` (unlimited). It does not limit how deep a client can nest a
+   * query — bound that at the edge.
    */
   relationsDepthLimit?: number;
   /**
