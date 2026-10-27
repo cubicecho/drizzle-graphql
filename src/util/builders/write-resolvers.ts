@@ -44,14 +44,14 @@ import {
   relationFilterCtx,
   resolveConflictPlan,
   type SelectionCtx,
-  scopedWhere,
   stripContextValues,
   type TypeNameMapper,
   type TypeNameResolver,
   type UniqueTarget,
+  visibleWhere,
   type WriteOperation,
   withEagerRelations,
-  withScope,
+  withRowVisibility,
   writeResolver,
 } from './common.ts';
 import { remapUpdateInput } from './field-updates.ts';
@@ -183,7 +183,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           nested!.validate(tableName, entry.ops, { context, args, info });
         }
         const contextColumns = insertStamps(policies, tableName);
-        const scope = policies?.scope?.(context);
+        const visibility = policies?.visibility?.(context);
         const input = nestedEntries
           ? []
           : applyContextValuesAll(
@@ -203,7 +203,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           table,
           pkNames,
           limits,
-          scope,
+          visibility,
           defaultOrderBy: policies?.defaultOrderBy,
         });
 
@@ -300,7 +300,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           nested!.validate(tableName, entry.ops, { context, args, info });
         }
         const contextColumns = insertStamps(policies, tableName);
-        const scope = policies?.scope?.(context);
+        const visibility = policies?.visibility?.(context);
         const input = nestedEntries
           ? []
           : applyContextValuesAll(
@@ -320,7 +320,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           table,
           pkNames,
           limits,
-          scope,
+          visibility,
           defaultOrderBy: policies?.defaultOrderBy,
         });
 
@@ -342,7 +342,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             withTarget: true,
             serverOwned: Object.keys(contextColumns ?? {}),
             buildWhere: (where) =>
-              extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, scope)),
+              extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, visibility)),
           });
         // A plain upsert's plan depends on its arguments alone, so a bad `onConflict` is refused
         // before the hook runs.
@@ -355,7 +355,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             // On conflict the statement updates a row that already exists, so the scope applies
             // to it exactly as it would to `update<Table>`: a conflicting row the caller cannot
             // see is left alone rather than taken over.
-            const setWhere = withScope(scope, tableName, table, plan.setWhere);
+            const setWhere = withRowVisibility(visibility, tableName, table, plan.setWhere);
             // A parent-side key the nested operations set is written as an update writes it.
             const guarded = ops && nested ? { ...plan, set: nested.guardConflictSet(tableName, ops, plan.set) } : plan;
             return applyConflictPlan(query, table, guarded, setWhere);
@@ -448,7 +448,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
       args: queryArgs,
       run: async ({ executor, args, context, info, before, after, returning: withHookReturning, output }) => {
         const { where, set } = args;
-        const scope = policies?.scope?.(context);
+        const visibility = policies?.visibility?.(context);
 
         const { columns, hasRelations, withParams } = mutationSelection(info, {
           relationMap,
@@ -461,7 +461,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           table,
           pkNames,
           limits,
-          scope,
+          visibility,
           defaultOrderBy: policies?.defaultOrderBy,
         });
 
@@ -482,10 +482,10 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           nested!.validate(tableName, nestedOps, { context, args, info });
         }
 
-        const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
+        const relationCtx = relationFilterCtx(filterCtx, tableName, visibility);
         // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
-        const matched = scopedWhere({
-          scope,
+        const matched = visibleWhere({
+          visibility,
           tableName,
           table,
           where,
@@ -590,7 +590,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         // `canHardDelete` decides whether the argument exists; this decides what it does,
         // so a stitched-in `hard: true` on a table that never opted in stays a soft delete.
         const hard = canHardDelete && args.hard === true;
-        const scope = policies?.scope?.(context);
+        const visibility = policies?.visibility?.(context);
 
         const parsedInfo = parseResolveInfo(info, {
           deep: true,
@@ -602,13 +602,13 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           selectionCtx,
         );
 
-        const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
+        const relationCtx = relationFilterCtx(filterCtx, tableName, visibility);
         // Same rule as update: the scope is ANDed on last, so a delete can only ever reach
         // rows inside it — an out-of-scope row is not matched rather than being refused.
         // A soft-deleting table adds the marker predicate the same way: `delete` only sees
         // rows that are not already marked, `restore` only sees the ones that are.
-        const matched = scopedWhere({
-          scope,
+        const matched = visibleWhere({
+          visibility,
           tableName,
           table,
           where,

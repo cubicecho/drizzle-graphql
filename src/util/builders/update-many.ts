@@ -16,8 +16,8 @@ import {
   drizzleError,
   mutationSelection,
   relationFilterCtx,
-  scopedWhere,
   stripContextValues,
+  visibleWhere,
   withEagerRelations,
   writeResolver,
 } from '../builders/common.ts';
@@ -155,7 +155,7 @@ export const createUpdateManyGenerator = (
         if (!updates.length) {
           throw drizzleError('No updates were provided!', { code: 'DRIZZLE_NO_VALUES' });
         }
-        const scope = policies?.scope?.(context);
+        const visibility = policies?.visibility?.(context);
         const contextColumns = policies?.contextValues?.(tableName);
 
         const { columns, hasRelations, withParams } = mutationSelection(info, {
@@ -169,7 +169,7 @@ export const createUpdateManyGenerator = (
           table,
           pkNames,
           limits,
-          scope,
+          visibility,
           defaultOrderBy: policies?.defaultOrderBy,
         });
 
@@ -194,12 +194,12 @@ export const createUpdateManyGenerator = (
             ops,
             // Under `requireWhere` every entry must carry a non-empty `where`, as the plural
             // update must.
-            filters: scopedWhere({
-              scope,
+            filters: visibleWhere({
+              visibility,
               tableName,
               table,
               where,
-              relationCtx: relationFilterCtx(filterCtx, tableName, scope),
+              relationCtx: relationFilterCtx(filterCtx, tableName, visibility),
               required: requireWhere,
             }),
           };

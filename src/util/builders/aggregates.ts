@@ -41,6 +41,7 @@ import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type { ConvertedColumn } from '../type-converter/types.ts';
 import { columnDialect } from './common/column-filters.ts';
 import {
+  bindRowVisibility,
   columnDocs,
   type DeletedMode,
   type DrizzleErrorContext,
@@ -64,7 +65,6 @@ import {
   relationFilterCtx,
   relationOwnCondition,
   resolveExecutor,
-  resolveScope,
   resolveTypeName,
   sharedType,
   type TablePolicies,
@@ -75,7 +75,7 @@ import {
   visibleColumns,
   warnUnresolvedJoin,
   withErrorContext,
-  withScope,
+  withRowVisibility,
 } from './common.ts';
 import type { CreatedResolver, Filters } from './types.ts';
 
@@ -537,13 +537,13 @@ export const generateAggregate = (
         }
 
         let query = resolveExecutor(db, context).select(request.selection).from(table);
-        const scope = resolveScope(policies, context, filterCtx);
-        const where = withScope(
-          scope,
+        const visibility = bindRowVisibility(policies, context, filterCtx);
+        const where = withRowVisibility(
+          visibility,
           tableName,
           table,
           args.where
-            ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName, scope))
+            ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName, visibility))
             : undefined,
           args.deleted,
         );
@@ -686,27 +686,27 @@ export const createRelationAggregateFactory = (
           const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key, localCols), key])).values()];
           // An aggregate over a relation counts the same rows the relation itself returns,
           // so it is narrowed by the target table's scope too.
-          const scope = resolveScope(policies, context, filterCtx);
+          const visibility = bindRowVisibility(policies, context, filterCtx);
           const groupSelection = Object.fromEntries(groupAliases.map((alias, i) => [alias, groupCols[i]!]));
 
           // A large batch is read in groups so that no query binds more parent keys than the
           // dialects accept; each parent's group row comes from the one query its key is in.
           const byKey = new Map<string, any>();
           for (const chunk of parentKeyChunks(uniqueKeys, groupCols.length)) {
-            const whereCondition = withScope(
-              scope,
+            const whereCondition = withRowVisibility(
+              visibility,
               targetTableName,
               targetTable,
               and(
                 parentKeyCondition(groupCols, chunk),
                 ownCondition,
-                junction ? junctionPolicy(scope, junctionName, junction.table) : undefined,
+                junction ? junctionPolicy(visibility, junctionName, junction.table) : undefined,
                 whereArg
                   ? extractFilters(
                       targetTable,
                       targetTableName,
                       whereArg,
-                      relationFilterCtx(filterCtx, targetTableName, scope),
+                      relationFilterCtx(filterCtx, targetTableName, visibility),
                     )
                   : undefined,
               ),
@@ -1031,13 +1031,13 @@ export const generateGroupBy = (
         };
 
         let query = resolveExecutor(db, context).select(selection).from(table);
-        const scope = resolveScope(policies, context, filterCtx);
-        const where = withScope(
-          scope,
+        const visibility = bindRowVisibility(policies, context, filterCtx);
+        const where = withRowVisibility(
+          visibility,
           tableName,
           table,
           args.where
-            ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName, scope))
+            ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName, visibility))
             : undefined,
           args.deleted,
         );

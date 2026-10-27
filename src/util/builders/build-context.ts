@@ -725,7 +725,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
         db: ctx.db,
         filterCtx: ctx.filterCtx,
         policies: ctx.policies,
-        scoped: !!ctx.tablePolicies?.scope,
+        hasRowScope: !!ctx.tablePolicies?.scope,
         limits: ctx.limits,
         nullOrdering: adapter.nullOrdering,
       },

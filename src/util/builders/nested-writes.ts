@@ -37,25 +37,25 @@ import {
 } from './common/write-hooks.ts';
 import {
   applyContextValues,
+  bindRowVisibility,
   type ContextValuesFor,
   extractFilters,
   insertStamps,
   isRelationFilterReversed,
   junctionPolicy,
   type RelationFilterBase,
+  type RowVisibility,
   relationColumns,
   relationFilterCtx,
   relationOwnCondition,
-  resolveScope,
   resolveTypeName,
-  type ScopeResolver,
   type TablePolicies,
   type TypeCacheCtx,
   type TypeNameMapper,
   unwrapRelationColumn,
   visibleColumns,
   warnUnresolvedJoin,
-  withScope,
+  withRowVisibility,
 } from './common.ts';
 import type { TableFeatures, TableNamedRelations } from './types.ts';
 
@@ -1271,13 +1271,13 @@ export const createNestedWriteRuntime = (params: {
     plan: NestedRelationPlan,
     filter: Record<string, any>,
     operation: string,
-    scope: ScopeResolver | undefined,
+    visibility: RowVisibility | undefined,
   ) => {
     const condition = extractFilters(
       plan.targetTable,
       plan.targetTableName,
       filter,
-      relationFilterCtx(filterCtx, plan.targetTableName, scope),
+      relationFilterCtx(filterCtx, plan.targetTableName, visibility),
     );
     if (!condition) {
       throw drizzleError(
@@ -1290,7 +1290,12 @@ export const createNestedWriteRuntime = (params: {
     // see, and out-of-scope rows are not detached. The relation's own `where` narrows it the
     // same way: only rows the relation shows are detached, and only rows it would show are
     // attached.
-    return withScope(scope, plan.targetTableName, plan.targetTable, and(condition, plan.ownCondition?.()))!;
+    return withRowVisibility(
+      visibility,
+      plan.targetTableName,
+      plan.targetTable,
+      and(condition, plan.ownCondition?.()),
+    )!;
   };
 
   const assertSingleOperation = (plan: NestedRelationPlan, op: Record<string, any>) => {
@@ -1309,14 +1314,14 @@ export const createNestedWriteRuntime = (params: {
     plan: NestedRelationPlan,
     filter: Record<string, any>,
     operation: string,
-    scope: ScopeResolver | undefined,
+    visibility: RowVisibility | undefined,
   ): Promise<any[]> => {
     // Only the key the junction stores is read back, so the projection asks for that column
     // alone — a wide target row is never dragged across the wire to pick one value off it.
     const rows = await executor
       .select({ [plan.foreignColPropName]: plan.foreignCol })
       .from(plan.targetTable)
-      .where(conditionOf(plan, filter, operation, scope));
+      .where(conditionOf(plan, filter, operation, visibility));
     return rows
       .map((row: any) => row[plan.foreignColPropName])
       .filter((value: any) => value !== undefined && value !== null);
@@ -1332,12 +1337,12 @@ export const createNestedWriteRuntime = (params: {
     plan: NestedRelationPlan,
     operands: any[],
     operation: string,
-    scope: ScopeResolver | undefined,
+    visibility: RowVisibility | undefined,
   ): Promise<any[]> => {
     const seen = new Set<string>();
     const targets: any[] = [];
     for (const filter of operands) {
-      for (const targetKey of await selectedTargetKeys(executor, plan, filter, operation, scope)) {
+      for (const targetKey of await selectedTargetKeys(executor, plan, filter, operation, visibility)) {
         if (!seen.has(keyString(targetKey))) {
           seen.add(keyString(targetKey));
           targets.push(targetKey);
@@ -1366,7 +1371,7 @@ export const createNestedWriteRuntime = (params: {
     plan: NestedRelationPlan,
     keys: any[],
     op: Record<string, any>,
-    scope: ScopeResolver | undefined,
+    visibility: RowVisibility | undefined,
     steps: HookSteps,
     context: any,
   ) => {
@@ -1375,7 +1380,7 @@ export const createNestedWriteRuntime = (params: {
     // The junction's own policy decides which links exist for this request, as it does on every
     // read path: a link row another tenant's scope owns is not one this request can see,
     // unlink, or count as already linked, and a soft-deleted link row is a removed link.
-    const live = junctionPolicy(scope, junctionName, through.table);
+    const live = junctionPolicy(visibility, junctionName, through.table);
     const marker = junctionName ? policies?.softDelete?.(junctionName) : undefined;
     const junctionWidth = Object.keys(getColumns(through.table)).length;
     const pairKey = (source: unknown, target: unknown) => `${keyString(source)}\u0000${keyString(target)}`;
@@ -1390,7 +1395,7 @@ export const createNestedWriteRuntime = (params: {
         : executor.delete(through.table).where(and(where, live));
 
     const link = async (operands: any[], operation: 'connect' | 'set') => {
-      const targets = await selectedTargetKeysOf(executor, plan, operands, operation, scope);
+      const targets = await selectedTargetKeysOf(executor, plan, operands, operation, visibility);
       if (!targets.length) {
         return;
       }
@@ -1438,7 +1443,7 @@ export const createNestedWriteRuntime = (params: {
                     and(inArray(through.sourceCol, group.sources), inArray(through.targetCol, group.targets)),
                   ),
                 ),
-                scope?.on(junctionName, through.table, 'ONLY'),
+                visibility?.on(junctionName, through.table, 'ONLY'),
               ),
             )
             .returning(
@@ -1480,7 +1485,7 @@ export const createNestedWriteRuntime = (params: {
     // `disconnect` could not have reached them — and so are link rows the junction's own
     // policy hides.
     if (supplied(op['set'])) {
-      const reachable = withScope(scope, plan.targetTableName, plan.targetTable, plan.ownCondition?.());
+      const reachable = withRowVisibility(visibility, plan.targetTableName, plan.targetTable, plan.ownCondition?.());
       for (const chunk of parentKeyChunks(keys, 1)) {
         const linked = reachable
           ? and(
@@ -1500,7 +1505,7 @@ export const createNestedWriteRuntime = (params: {
     }
 
     if (supplied(op['disconnect'])) {
-      const targets = await selectedTargetKeysOf(executor, plan, asArray(op['disconnect']), 'disconnect', scope);
+      const targets = await selectedTargetKeysOf(executor, plan, asArray(op['disconnect']), 'disconnect', visibility);
       if (targets.length) {
         for (const chunk of parentKeyChunks(keys, 1 + targets.length)) {
           await steps.run(
@@ -1559,7 +1564,7 @@ export const createNestedWriteRuntime = (params: {
     executor: any,
     plan: NestedRelationPlan,
     keys: any[],
-    scope: ScopeResolver | undefined,
+    visibility: RowVisibility | undefined,
     steps: HookSteps,
     op: NestedWriteOp,
   ) => {
@@ -1569,8 +1574,8 @@ export const createNestedWriteRuntime = (params: {
           .update(plan.targetTable)
           .set({ [plan.foreignColPropName]: null })
           .where(
-            withScope(
-              scope,
+            withRowVisibility(
+              visibility,
               plan.targetTableName,
               plan.targetTable,
               and(inArray(plan.foreignCol, chunk), plan.ownCondition?.()),
@@ -1593,7 +1598,7 @@ export const createNestedWriteRuntime = (params: {
     executor: any,
     plan: NestedRelationPlan,
     keys: any[],
-    scope: ScopeResolver | undefined,
+    visibility: RowVisibility | undefined,
     operation: NestedWriteOp,
     connected: SQL | undefined,
   ) => {
@@ -1604,8 +1609,8 @@ export const createNestedWriteRuntime = (params: {
         .select({ [plan.foreignColPropName]: plan.foreignCol })
         .from(plan.targetTable)
         .where(
-          withScope(
-            scope,
+          withRowVisibility(
+            visibility,
             plan.targetTableName,
             plan.targetTable,
             and(inArray(plan.foreignCol, chunk), plan.ownCondition?.(), notConnected),
@@ -1639,7 +1644,7 @@ export const createNestedWriteRuntime = (params: {
     keys: any[],
     distinctKeys: any[],
     op: Record<string, any>,
-    scope: ScopeResolver | undefined,
+    visibility: RowVisibility | undefined,
     steps: HookSteps,
     context: any,
     tableName: string,
@@ -1663,19 +1668,19 @@ export const createNestedWriteRuntime = (params: {
     // Replace-the-set first, so a `set` alongside a `create` reads as "these rows, plus this
     // new one" rather than dropping the row it just inserted.
     if (supplied(op['set'])) {
-      const conditions = asArray(op['set']).map((filter) => conditionOf(plan, filter, 'set', scope));
-      await detachAll(executor, plan, distinctKeys, scope, steps, 'set');
+      const conditions = asArray(op['set']).map((filter) => conditionOf(plan, filter, 'set', visibility));
+      await detachAll(executor, plan, distinctKeys, visibility, steps, 'set');
       await attach(conditions, 'set');
     }
 
     if (supplied(op['disconnect'])) {
       if (plan.isOne) {
         if (op['disconnect'] === true) {
-          await detachAll(executor, plan, distinctKeys, scope, steps, 'disconnect');
+          await detachAll(executor, plan, distinctKeys, visibility, steps, 'disconnect');
         }
       } else {
         for (const filter of asArray(op['disconnect'])) {
-          const condition = conditionOf(plan, filter, 'disconnect', scope);
+          const condition = conditionOf(plan, filter, 'disconnect', visibility);
           for (const chunk of parentKeyChunks(distinctKeys, 1)) {
             await steps.run(
               executor
@@ -1691,7 +1696,7 @@ export const createNestedWriteRuntime = (params: {
     }
 
     const connectConditions = supplied(op['connect'])
-      ? asArray(op['connect']).map((filter) => conditionOf(plan, filter, 'connect', scope))
+      ? asArray(op['connect']).map((filter) => conditionOf(plan, filter, 'connect', visibility))
       : [];
 
     // A to-one `connect` attaches a single row, so its filter has to match exactly one —
@@ -1712,10 +1717,10 @@ export const createNestedWriteRuntime = (params: {
     const attachedBy = attachingOp(op);
     if (plan.isOne && attachedBy && !supplied(op['set'])) {
       if (plan.canDetach) {
-        await detachAll(executor, plan, distinctKeys, scope, steps, attachedBy);
+        await detachAll(executor, plan, distinctKeys, visibility, steps, attachedBy);
       } else if (!(attachedBy === 'connect' && writesTargetKey(plan))) {
         const connected = attachedBy === 'connect' ? connectConditions[0] : undefined;
-        await assertNothingElseAttached(executor, plan, distinctKeys, scope, attachedBy, connected);
+        await assertNothingElseAttached(executor, plan, distinctKeys, visibility, attachedBy, connected);
       }
     }
 
@@ -1787,7 +1792,7 @@ export const createNestedWriteRuntime = (params: {
       if (!tablePlans) {
         return;
       }
-      const scope = resolveScope(policies, request?.context, filterCtx);
+      const visibility = bindRowVisibility(policies, request?.context, filterCtx);
       for (const [relationName, op] of Object.entries(ops)) {
         const plan = tablePlans[relationName];
         if (!plan) {
@@ -1801,7 +1806,7 @@ export const createNestedWriteRuntime = (params: {
           for (const filter of asArray(op[operation])) {
             const isFilter = typeof filter === 'object';
             if (isFilter) {
-              conditionOf(plan, filter, operation, scope);
+              conditionOf(plan, filter, operation, visibility);
             }
           }
         }
@@ -1881,7 +1886,7 @@ export const createNestedWriteRuntime = (params: {
         return result;
       }
       const context = request?.context;
-      const scope = resolveScope(policies, context, filterCtx);
+      const visibility = bindRowVisibility(policies, context, filterCtx);
 
       for (const [relationName, op] of Object.entries(ops)) {
         const plan = tablePlans[relationName];
@@ -1924,7 +1929,7 @@ export const createNestedWriteRuntime = (params: {
           const rows = await executor
             .select({ [plan.foreignColPropName]: plan.foreignCol })
             .from(plan.targetTable)
-            .where(conditionOf(plan, op['connect'], 'connect', scope));
+            .where(conditionOf(plan, op['connect'], 'connect', visibility));
           if (rows.length !== 1) {
             throw connectMatchError(relationName, rows.length);
           }
@@ -2023,7 +2028,7 @@ export const createNestedWriteRuntime = (params: {
         return;
       }
       const context = request?.context;
-      const scope = resolveScope(policies, context, filterCtx);
+      const visibility = bindRowVisibility(policies, context, filterCtx);
 
       for (const [relationName, op] of Object.entries(ops)) {
         const plan = tablePlans[relationName];
@@ -2070,9 +2075,9 @@ export const createNestedWriteRuntime = (params: {
           }
 
           if (plan.through) {
-            await applyThroughOps(executor, plan, distinctKeys, op, scope, steps, context);
+            await applyThroughOps(executor, plan, distinctKeys, op, visibility, steps, context);
           } else {
-            await applyForeignKeyOps(executor, plan, keys, distinctKeys, op, scope, steps, context, tableName);
+            await applyForeignKeyOps(executor, plan, keys, distinctKeys, op, visibility, steps, context, tableName);
           }
         }
 

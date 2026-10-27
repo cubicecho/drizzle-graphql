@@ -5,7 +5,7 @@ import { SQLiteAsyncDatabase, getTableConfig as sqliteTableConfig } from 'drizzl
 import { type GraphQLResolveInfo, getNamedType } from 'graphql';
 import type { AnyDrizzleDB } from '../types.ts';
 import { type BuildRuntime, runtimeForDb, runtimeForType } from './builders/common/build-registry.ts';
-import type { DeletedMode, ScopeResolver } from './builders/common/policies.ts';
+import type { DeletedMode, RowVisibility } from './builders/common/policies.ts';
 import {
   applyLimitPolicy,
   attachTargetPrimaryKeys,
@@ -216,20 +216,20 @@ const runtimeFor = (
  * with `scope` hooks cannot be read without that context: the hooks would be called with
  * nothing, and running the read unscoped is the leak the option exists to prevent.
  */
-const scopeFor = (
+const visibilityFor = (
   runtime: BuildRuntime | undefined,
   options: SelectionOptions,
   helper: string,
-): ScopeResolver | undefined => {
-  if (!runtime?.policies?.scope) {
+): RowVisibility | undefined => {
+  if (!runtime?.policies?.visibility) {
     return undefined;
   }
-  if (runtime.scoped && !('context' in options)) {
+  if (runtime.hasRowScope && !('context' in options)) {
     throw new Error(
       `Drizzle-GraphQL Error: the schema this selection belongs to configures \`scope\`, so ${helper} needs the request context to apply it. Pass the resolver's context as the \`context\` option.`,
     );
   }
-  return runtime.policies.scope(options.context);
+  return runtime.policies.visibility(options.context);
 };
 
 /**
@@ -291,7 +291,7 @@ export const selectionToWith = (
     filterCtx: runtime?.filterCtx ?? filterCtx,
     resolveName,
     // The nested relations get the same policies the generated `with:` clause applies.
-    scope: scopeFor(runtime, options, 'selectionToWith'),
+    visibility: visibilityFor(runtime, options, 'selectionToWith'),
     limits: runtime?.limits,
     defaultOrderBy: runtime?.policies?.defaultOrderBy,
   });
@@ -382,7 +382,7 @@ export const resolveSelection = async (
   // default ordering on the root list and on every relation.
   const typeName = resolveObjectTypeName(tableName, typeNameMapper, resolveName);
   const runtime = runtimeFor(info, db, typeName, 'resolveSelection');
-  const scope = scopeFor(runtime, options, 'resolveSelection');
+  const visibility = visibilityFor(runtime, options, 'resolveSelection');
   const defaultOrderBy = runtime?.policies?.defaultOrderBy;
 
   return runRelationalSelect({
@@ -404,7 +404,7 @@ export const resolveSelection = async (
     filterCtx: runtime?.filterCtx ?? filterCtx,
     pkNames: primaryKeyOf(tableName),
     db: source,
-    scope,
+    visibility,
     deleted,
     limits: runtime?.limits,
     defaultOrderBy,

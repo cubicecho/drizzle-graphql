@@ -18,7 +18,7 @@ writes, filters, pagination, aggregates and row policies all compiled to SQL.
 - **Single-row read:** `usersSingle(where, orderBy, offset)` → same path with `single: true` → `findFirst` (PK order by default, no limit policy, no cursor) → `remapToGraphQLSingleOutput` or `null`.
 - **Relation field read:** parent row → relation resolver → eager value on the parent? return it : `getOrCreateRequestValue` (args → loader key, per execution) → `getOrCreateLoader` (per execution + key) → next microtask: one `IN`/OR query per chunk, windowed when paginated, scoped + soft-delete filtered → group by parent key → remap.
 - **Aggregate read:** `usersAggregate(where, deleted)` / `usersGroupBy(by, having, …)` / `postsAggregate` on a parent → `parseAggregateRequest` → `select(aggregates).from(table)` with filters + scope (grouped / batched by FK for relation aggregates) → `assembleAggregateRow`.
-- **Mutation (insert / update / delete / upsert / restore / updateMany / count):** client mutation → `writeResolver` → `runMutation` (pick executor: caller's, request's shared tx, forced tx for hooks, or `db`) → body: validate input (remap, stamp/strip context values, `scopedWhere`, `nested.validate`) → `before` hook → `narrowToSingleMatch` for `Single` → statement with `RETURNING` (PG/SQLite) or plain (MySQL) → `after` hook → strip hook-only columns → `withEagerRelations` re-fetch → remap → rows, `{ isSuccess }` (MySQL) or an `Int` (count).
+- **Mutation (insert / update / delete / upsert / restore / updateMany / count):** client mutation → `writeResolver` → `runMutation` (pick executor: caller's, request's shared tx, forced tx for hooks, or `db`) → body: validate input (remap, stamp/strip context values, `visibleWhere`, `nested.validate`) → `before` hook → `narrowToSingleMatch` for `Single` → statement with `RETURNING` (PG/SQLite) or plain (MySQL) → `after` hook → strip hook-only columns → `withEagerRelations` re-fetch → remap → rows, `{ isSuccess }` (MySQL) or an `Int` (count).
 - **Nested write:** create/update/upsert input → `nested.split` (columns vs relation ops) → `writeWithNestedOps` / `updateWithNestedOps` opens a transaction → per entry `writeNestedEntry`: `applyParentSide` (create/connect target first, key into parent) → parent write → `checkParentSide` → `applyChildSide` (attach children / junction rows) → `refreshed` → each nested statement fires the target table's hooks with `payload.nested`.
 
 Dependency direction: `index.ts` → `build-config.ts` → `builders/{pg,sqlite,mysql}.ts` → `schema-data.ts` / `build-context.ts` → `write-resolvers.ts`, `select.ts`, `aggregates.ts`, `nested-writes.ts` → `builders/common/*` → `type-converter`, `data-mappers`, `parse-resolve-info`, `batch-loader`; `selection.ts` sits beside `index.ts` and reads the build through `common/build-registry.ts`.
@@ -94,9 +94,9 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 
 | Invariant | Enforced by |
 |---|---|
-| A table's scope and soft-delete predicate are ANDed after the client's `where`, so a client can only narrow them | `policies.withScope`, `mutation-helpers.scopedWhere`, `select-runtime.runRelationalSelect` |
-| Soft-delete predicate comes before the scope predicate in the SQL | `policies.resolveScope` (`on`) |
-| A scope hook returns SQL, a filter object or nothing | `policies.resolveScope` (`DRIZZLE_INVALID_SCOPE`) |
+| A table's scope and soft-delete predicate are ANDed after the client's `where`, so a client can only narrow them | `policies.withRowVisibility`, `mutation-helpers.visibleWhere`, `select-runtime.runRelationalSelect` |
+| Soft-delete predicate comes before the scope predicate in the SQL | `policies.bindRowVisibility` (`on`) |
+| A scope hook returns SQL, a filter object or nothing | `policies.bindRowVisibility` (`DRIZZLE_INVALID_SCOPE`) |
 | Inserts stamp every `contextValues` column (and a NOT NULL soft-delete marker's restored value) | `policies.insertStamps`, `policies.applyContextValues` |
 | Updates never write a `contextValues` column | `policies.stripContextValues` |
 | Generated and identity-ALWAYS columns never appear in a write input | `writable-columns.isWritableColumn` |
@@ -217,13 +217,14 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 
 ### Policies & hooks
 
-- **Row scope (scope):** A per-table, per-request predicate every read and write is confined to. Owner: config `ScopeFor`; compiled by `policies.resolveScope`. Homonym: `ScopeResolver` bundles scope *and* soft delete, and `SoftDeleteColumn.scope` means something else (see below).
+- **Row scope (scope):** A per-table, per-request predicate every read and write is confined to. Owner: config `ScopeFor` (`TablePolicies.scope`); compiled into the row visibility by `policies.bindRowVisibility`. `SoftDeleteColumn.scope` is a different thing, the soft delete's reach (see Deleted view).
+- **Row visibility:** Which rows of each table one request can see: its row scope and its soft-delete view together, bound to the request's context. Owner: `policies.ts RowVisibility` (`has`, `on`, `relationDefault`), from `ResolverPolicies.visibility(context)`; applied by `withRowVisibility`, `visibleWhere`; code variables `visibility`. `RelationFilterContext.visibility` carries it into relation filters.
 - **Context value (server-owned column):** A column the server fills from the request context, absent from inputs. Owner: `policies.ts applyContextValues`, `stripContextValues`; `ContextValuesFor`.
 - **Soft delete (marker column):** Delete by marking a column; reads hide marked rows. Owner: `policies.ts resolveSoftDeleteInfo`, `softDeletePredicate`; `SoftDeleteInfo`.
-- **Deleted view (deleted: EXCLUDE / INCLUDE / ONLY):** Which marked rows a read returns. Owner: `DeletedMode`, enum `DeletedFilter`; `relationDeletedDefault` uses `SoftDeleteColumn.scope` (`'root'`/`'all'`).
+- **Deleted view (deleted: EXCLUDE / INCLUDE / ONLY):** Which marked rows a read returns. Owner: `DeletedMode`, enum `DeletedFilter`; `relationDeletedDefault` uses the soft delete's reach, config `SoftDeleteColumn.scope` (`'root'`/`'all'`), read internally as `SoftDeleteInfo.hiddenIn`.
 - **Restore:** Un-marks soft-deleted rows. Owner: `generateDelete({ restore: true })`; prefix `restore`. An UPDATE of the marker, so it is offered only where the table's `update` feature is on (the root mutations, and a nested link through a soft-deleting junction).
 - **Hard delete (hard):** A real `DELETE` on a soft-delete table that opted in. Owner: `hardDeleteArg`.
-- **Policies:** The bundle of scope, context values, soft delete, hooks and default order for a build. Owner: `policies.ts TablePolicies` (unbound) and `ResolverPolicies` (scope bound per context) — two shapes of one concept, see `bindPolicies`.
+- **Policies:** The bundle of scope, context values, soft delete, hooks and default order for a build. Owner: `policies.ts TablePolicies` (unbound) and `ResolverPolicies` (scope and soft delete bound into `visibility(context)`) — two shapes of one concept, see `bindPolicies`.
 - **Write hook (onWrite, before / after):** Consumer code run around a write on the same executor. Owner: `common/write-hooks.ts normalizeWriteHooks`, `runWriteHook`; `WriteHookPayload`, hook `columns`.
 - **Auto transaction (transactions: 'auto'):** One transaction for a document with several mutation fields. Owner: `transactions.ts runMutation`; `MutationTxCtx`, shared tx.
 - **Error mapping (onError):** What a thrown error becomes before the client sees it. Owner: `common/errors.ts applyErrorMapper`, `defaultErrorMapper`, `drizzleError`; `DrizzleErrorCode`.

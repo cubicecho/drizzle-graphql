@@ -25,8 +25,8 @@ import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import { assertPagingNotNegative, effectiveOffset, offsetOnlyLimit } from './limits.ts';
 import type { TypeNameMapper } from './naming.ts';
 import { extractOrderBy } from './order-by.ts';
-import type { DeletedMode, ScopeResolver } from './policies.ts';
-import { withScope } from './policies.ts';
+import type { DeletedMode, RowVisibility } from './policies.ts';
+import { withRowVisibility } from './policies.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractRelationsParams } from './relation-params.ts';
@@ -62,7 +62,7 @@ export const runRelationalSelect = async (opts: {
   after?: string;
   nullOrdering: NullOrdering;
   limits?: LimitPolicyFor;
-  scope?: ScopeResolver;
+  visibility?: RowVisibility;
   defaultOrderBy?: DefaultOrderByFor;
   deleted?: DeletedMode;
   /** The build's type-naming rule, so a relation's target type is looked up under its real name. */
@@ -84,7 +84,7 @@ export const runRelationalSelect = async (opts: {
     filterCtx,
     pkNames,
     after,
-    scope,
+    visibility,
     deleted,
   } = opts;
   const distinct = opts.distinct?.length ? opts.distinct : undefined;
@@ -140,11 +140,13 @@ export const runRelationalSelect = async (opts: {
           tableName,
           distinct,
           pkNames: pkNames ?? [],
-          where: withScope(
-            scope,
+          where: withRowVisibility(
+            visibility,
             tableName,
             table,
-            where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, scope)) : undefined,
+            where
+              ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, visibility))
+              : undefined,
             deleted,
           ),
           orderBy,
@@ -169,7 +171,7 @@ export const runRelationalSelect = async (opts: {
     orderBy: distinctRows
       ? (aliasedTable: Table) => [
           ...(orderBy
-            ? extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName, scope), where)
+            ? extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName, visibility), where)
             : []),
           ...primaryKeyOrderExprs(aliasedTable, pkNames!),
         ]
@@ -179,7 +181,7 @@ export const runRelationalSelect = async (opts: {
           (aliasedTable: Table) => cursorOrderExprs(aliasedTable, cursorEntries!)
         : orderBy
           ? (aliasedTable: Table) => [
-              ...extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName, scope), where),
+              ...extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName, visibility), where),
               // A page of a non-unique ordering is only stable with a tiebreak: rows that tie
               // could otherwise land on either side of a page boundary, so pages repeat or skip
               // them. Same tiebreak a relation page and a cursor page use.
@@ -189,18 +191,23 @@ export const runRelationalSelect = async (opts: {
             ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
             : undefined,
     where: distinctRows
-      ? // The distinct pass runs inside the scope, so the rows it keeps are in it.
+      ? // The distinct pass runs inside the row policies, so the rows it keeps are in it.
         { RAW: distinctRows }
-      : where || cursorValues || scope?.has(tableName, deleted)
+      : where || cursorValues || visibility?.has(tableName, deleted)
         ? {
             RAW: (aliasedTable: Table) =>
-              withScope(
-                scope,
+              withRowVisibility(
+                visibility,
                 tableName,
                 aliasedTable,
                 and(
                   where
-                    ? extractFilters(aliasedTable, tableName, where, relationFilterCtx(filterCtx, tableName, scope))
+                    ? extractFilters(
+                        aliasedTable,
+                        tableName,
+                        where,
+                        relationFilterCtx(filterCtx, tableName, visibility),
+                      )
                     : undefined,
                   cursorValues
                     ? buildCursorCondition(aliasedTable, cursorEntries!, cursorValues, opts.nullOrdering)
@@ -215,7 +222,7 @@ export const runRelationalSelect = async (opts: {
           typeNameMapper,
           filterCtx,
           limits: opts.limits,
-          scope,
+          visibility,
           defaultOrderBy: opts.defaultOrderBy,
           resolveName: opts.resolveName,
         })

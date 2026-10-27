@@ -152,7 +152,7 @@ export const createSelectGenerators = (
             defaultOrderBy: policies?.defaultOrderBy,
             pkNames,
             db: executor,
-            scope: policies?.scope?.(context),
+            visibility: policies?.visibility?.(context),
             nullOrdering,
           });
         } catch (e) {
@@ -215,7 +215,7 @@ export const createSelectGenerators = (
             defaultOrderBy: policies?.defaultOrderBy,
             pkNames,
             db: executor,
-            scope: policies?.scope?.(context),
+            visibility: policies?.visibility?.(context),
             nullOrdering,
           });
         } catch (e) {

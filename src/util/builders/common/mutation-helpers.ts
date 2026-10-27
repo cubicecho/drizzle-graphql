@@ -19,8 +19,8 @@ import { withPrimaryKeyColumns } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import type { TypeNameMapper } from './naming.ts';
 import { resolveObjectTypeName } from './naming.ts';
-import type { DeletedMode, ResolverPolicies, ScopeResolver } from './policies.ts';
-import { stripContextValues, withScope } from './policies.ts';
+import type { DeletedMode, ResolverPolicies, RowVisibility } from './policies.ts';
+import { stripContextValues, withRowVisibility } from './policies.ts';
 import type { RelationFilterBase, RelationFilterContext } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractRelationsParams } from './relation-params.ts';
@@ -67,7 +67,7 @@ export interface PrepareMutationRelationColumnsParams {
   pkNames: readonly string[];
   parsedInfo: ResolveTree;
   limits?: LimitPolicyFor;
-  scope?: ScopeResolver;
+  visibility?: RowVisibility;
   defaultOrderBy?: DefaultOrderByFor;
   /** The build's type-naming rule — the selection tree is keyed by the name it produced. */
   resolveName?: TypeNameResolver;
@@ -87,7 +87,7 @@ export const prepareMutationRelationColumns = (
         typeNameMapper,
         filterCtx,
         limits: params.limits,
-        scope: params.scope,
+        visibility: params.visibility,
         defaultOrderBy: params.defaultOrderBy,
         resolveName,
       })
@@ -129,8 +129,8 @@ export const mutationSelection = (
  * `deleted` states which soft-delete mode the match reads at, for the writes that need one:
  * `restore` sees only marked rows, a hard delete has to see them too.
  */
-export const scopedWhere = <TTable extends Table>(params: {
-  scope: ScopeResolver | undefined;
+export const visibleWhere = <TTable extends Table>(params: {
+  visibility: RowVisibility | undefined;
   tableName: string;
   table: TTable;
   where: Filters<TTable> | undefined;
@@ -139,9 +139,9 @@ export const scopedWhere = <TTable extends Table>(params: {
   required?: boolean;
   deleted?: DeletedMode;
 }): SQL | undefined => {
-  const { scope, tableName, table, where, relationCtx, required, deleted } = params;
-  return withScope(
-    scope,
+  const { visibility, tableName, table, where, relationCtx, required, deleted } = params;
+  return withRowVisibility(
+    visibility,
     tableName,
     table,
     required
@@ -390,7 +390,7 @@ export const generateWriteCount = ({
       // `canHardDelete` decides whether the argument exists; this decides what it does, so a
       // stitched-in `hard: true` on a table that never opted in stays a soft delete.
       const hard = canHardDelete && args.hard === true;
-      const scope = policies?.scope?.(context);
+      const visibility = policies?.visibility?.(context);
 
       let query: any;
       if (kind === 'delete') {
@@ -423,12 +423,12 @@ export const generateWriteCount = ({
 
       // The scope — and on a soft-deleting table the not-yet-marked predicate — is ANDed on
       // last, so a caller's `where` can only narrow what the write reaches.
-      const filters = scopedWhere({
-        scope,
+      const filters = visibleWhere({
+        visibility,
         tableName,
         table,
         where,
-        relationCtx: relationFilterCtx(filterCtx, tableName, scope),
+        relationCtx: relationFilterCtx(filterCtx, tableName, visibility),
         required: requireWhere,
         // A hard delete reads at INCLUDE, so it reaches the rows that are already marked.
         deleted: hard ? 'INCLUDE' : undefined,

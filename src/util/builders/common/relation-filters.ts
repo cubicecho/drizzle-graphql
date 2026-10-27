@@ -18,7 +18,7 @@ import {
 import type { FilterColumnOperatorsCore, Filters, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
 import { allOf, type CompiledFilter, compileBooleanBranches, extractFiltersColumn, isNotTrue } from './filters.ts';
-import type { ScopeResolver } from './policies.ts';
+import type { RowVisibility } from './policies.ts';
 import { isRelationFilterReversed, relationColumns, relationOwnWhere, unwrapRelationColumn } from './relations.ts';
 import type { UniqueKeyMap } from './unique-keys.ts';
 import { extractUniqueKeyFilter } from './unique-keys.ts';
@@ -53,7 +53,7 @@ export interface RelationFilterContext {
    * could match, and a sort could rank by, a row the relation hides. Absent for a scope's own
    * filter object, which is the server's predicate and is compiled unscoped.
    */
-  scope?: ScopeResolver;
+  visibility?: RowVisibility;
 }
 
 /**
@@ -95,7 +95,7 @@ const aliasCounters = new WeakMap<RelationFilterBase, { n: number }>();
 export const relationFilterCtx = (
   base: RelationFilterBase | undefined,
   tableKey: string,
-  scope?: ScopeResolver,
+  visibility?: RowVisibility,
 ): RelationFilterContext | undefined => {
   if (!base) {
     return undefined;
@@ -120,7 +120,7 @@ export const relationFilterCtx = (
 
   // The request's policies are per request, so they ride on a copy rather than the cached
   // context. The copy shares the cached alias counter.
-  return scope ? { ...ctx, scope } : ctx;
+  return visibility ? { ...ctx, visibility } : ctx;
 };
 
 /**
@@ -134,12 +134,12 @@ export const relationTargetPolicy = (
   targetTableName: string,
   aliasedTarget: Table,
 ): SQL | undefined => {
-  const scope = ctx.scope;
-  if (!scope) {
+  const visibility = ctx.visibility;
+  if (!visibility) {
     return undefined;
   }
-  const mode = scope.relationDefault(targetTableName, is(relation, One) && (relation as any).optional === false);
-  return scope.has(targetTableName, mode) ? scope.on(targetTableName, aliasedTarget, mode) : undefined;
+  const mode = visibility.relationDefault(targetTableName, is(relation, One) && (relation as any).optional === false);
+  return visibility.has(targetTableName, mode) ? visibility.on(targetTableName, aliasedTarget, mode) : undefined;
 };
 
 /** The three ways a to-many relation can be required to match, plus the to-one shorthand. */
@@ -316,11 +316,11 @@ const buildRelationExists = (
     const aliasedThrough = aliasedTable(throughTable, `dgql_rel_${aliases.n++}`);
     // A junction with its own policies (a soft-deleted membership, a scoped link row) only
     // links the rows it keeps.
-    const throughTableName = ctx.scope
+    const throughTableName = ctx.visibility
       ? Object.keys(ctx.tables).find((name) => ctx.tables[name] === throughTable)
       : undefined;
-    if (throughTableName && ctx.scope!.has(throughTableName)) {
-      junctionPolicy = ctx.scope!.on(throughTableName, aliasedThrough);
+    if (throughTableName && ctx.visibility!.has(throughTableName)) {
+      junctionPolicy = ctx.visibility!.on(throughTableName, aliasedThrough);
     }
     const { correlation, junctionJoin } = buildThroughJoinConditions(
       parentTable,

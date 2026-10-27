@@ -19,8 +19,8 @@ import {
 import type { TypeNameMapper } from './naming.ts';
 import { resolveObjectTypeName } from './naming.ts';
 import { extractOrderBy } from './order-by.ts';
-import type { DeletedMode, ScopeResolver } from './policies.ts';
-import { hasJunctionPolicy, junctionTableName, withScope } from './policies.ts';
+import type { DeletedMode, RowVisibility } from './policies.ts';
+import { hasJunctionPolicy, junctionTableName, withRowVisibility } from './policies.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractJunctionColumns } from './relations.ts';
@@ -38,7 +38,7 @@ export interface RelationParamsOptions {
   typeNameMapper?: TypeNameMapper;
   filterCtx?: RelationFilterBase;
   limits?: LimitPolicyFor;
-  scope?: ScopeResolver;
+  visibility?: RowVisibility;
   defaultOrderBy?: DefaultOrderByFor;
   resolveName?: TypeNameResolver;
 }
@@ -51,7 +51,7 @@ export const extractRelationsParams = (
   typeName: string,
   options: RelationParamsOptions = {},
 ): Record<string, Partial<ProcessedTableSelectArgs>> | undefined => {
-  const { typeNameMapper, filterCtx, limits, scope, defaultOrderBy, resolveName } = options;
+  const { typeNameMapper, filterCtx, limits, visibility, defaultOrderBy, resolveName } = options;
   if (!info) {
     return undefined;
   }
@@ -135,7 +135,7 @@ export const extractRelationsParams = (
     // junction itself — still one query per relation. A junction the loader cannot express
     // (several columns on a side) would read every link, so it is refused instead.
     const junctionName = junctionTableName(tables, relEntry);
-    if (hasJunctionPolicy(scope, junctionName)) {
+    if (hasJunctionPolicy(visibility, junctionName)) {
       if (!extractJunctionColumns(relEntry)) {
         throw drizzleError(
           `Relation '${tableName}.${relName}' goes through '${junctionName}', which has a scope or soft delete, over a composite key. Its links can only be filtered when the junction joins on one column per side.`,
@@ -188,7 +188,7 @@ export const extractRelationsParams = (
     // required to-one relation, and a table declared `scope: 'root'`, both read INCLUDE.
     const relDeleted =
       ((relationArgs as any)?.deleted as DeletedMode | undefined) ??
-      scope?.relationDefault(
+      visibility?.relationDefault(
         targetTableName,
         is(relEntry.relation, One) && (relEntry.relation as any).optional === false,
       );
@@ -196,11 +196,11 @@ export const extractRelationsParams = (
     // resolver, so the target's scope has to be applied here as well — otherwise selecting a
     // relation would be the way around it.
     thisRecord.where =
-      relWhere || scope?.has(targetTableName, relDeleted)
+      relWhere || visibility?.has(targetTableName, relDeleted)
         ? {
             RAW: (aliasedTable: Table) =>
-              withScope(
-                scope,
+              withRowVisibility(
+                visibility,
                 targetTableName,
                 aliasedTable,
                 relWhere
@@ -208,7 +208,7 @@ export const extractRelationsParams = (
                       aliasedTable,
                       relName,
                       relWhere,
-                      relationFilterCtx(filterCtx, targetTableName, scope),
+                      relationFilterCtx(filterCtx, targetTableName, visibility),
                     )
                   : undefined,
                 relDeleted,
@@ -232,7 +232,7 @@ export const extractRelationsParams = (
               ? extractOrderBy(
                   aliasedTable,
                   requestOrder,
-                  relationFilterCtx(filterCtx, targetTableName, scope),
+                  relationFilterCtx(filterCtx, targetTableName, visibility),
                   relWhere,
                 )
               : []),

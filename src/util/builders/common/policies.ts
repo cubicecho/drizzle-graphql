@@ -61,10 +61,10 @@ export type SoftDeleteInfo = {
   marker?: any;
   /**
    * Which reads hide marked rows by default — `'all'` (the table's own fields and every
-   * relation pointing at it) or `'root'` (its own fields only). See
-   * {@link relationDeletedDefault}.
+   * relation pointing at it) or `'root'` (its own fields only). The config's
+   * `softDelete.scope`; see {@link relationDeletedDefault}.
    */
-  scope: 'root' | 'all';
+  hiddenIn: 'root' | 'all';
   /**
    * Whether the delete mutations take a `hard` argument that issues a real `DELETE`. Off
    * unless the table opts in, so the generated schema says which tables can be purged.
@@ -185,10 +185,10 @@ export const resolveSoftDeleteInfo = (
     );
   }
 
-  const scope = config.scope ?? 'all';
-  if (scope !== 'root' && scope !== 'all') {
+  const hiddenIn = config.scope ?? 'all';
+  if (hiddenIn !== 'root' && hiddenIn !== 'all') {
     throw new Error(
-      `Drizzle-GraphQL Error: config.softDelete.${tableName}.scope must be 'root' or 'all', not ${JSON.stringify(scope)}.`,
+      `Drizzle-GraphQL Error: config.softDelete.${tableName}.scope must be 'root' or 'all', not ${JSON.stringify(hiddenIn)}.`,
     );
   }
 
@@ -199,7 +199,7 @@ export const resolveSoftDeleteInfo = (
     );
   }
 
-  return { columnName, column, nullable, writeDeleted, writeRestored, marker, scope, hardDelete };
+  return { columnName, column, nullable, writeDeleted, writeRestored, marker, hiddenIn, hardDelete };
 };
 
 /**
@@ -227,7 +227,7 @@ export const relationDeletedDefault = (
   if (!info) {
     return undefined;
   }
-  return info.scope === 'root' || requiredToOne ? 'INCLUDE' : 'EXCLUDE';
+  return info.hiddenIn === 'root' || requiredToOne ? 'INCLUDE' : 'EXCLUDE';
 };
 
 /**
@@ -253,12 +253,12 @@ export const softDeletePredicate = (info: SoftDeleteInfo, table: Table, mode: De
 };
 
 /**
- * The row policies of one request, bound to its context: the table's scope and its
- * soft-delete convention, which both narrow the same `where`. `has` answers "does this table
- * restrict anything at all", cheaply and without evaluating a hook; `on` compiles the
- * predicate against a given table.
+ * Which rows of each table one request can see: the table's row scope and its soft-delete
+ * view, bound to the request's context, which both narrow the same `where`. `has` answers
+ * "does this table restrict anything at all", cheaply and without evaluating a hook; `on`
+ * compiles the predicate against a given table.
  */
-export type ScopeResolver = {
+export type RowVisibility = {
   has: (tableName: string, mode?: DeletedMode) => boolean;
   on: (tableName: string, table: Table, mode?: DeletedMode) => SQL | undefined;
   /**
@@ -270,30 +270,31 @@ export type ScopeResolver = {
 };
 
 /**
- * Binds the configured row policies to one request's GraphQL context. Returns `undefined`
+ * Binds a table's scope and soft delete to one request's GraphQL context. Returns `undefined`
  * when neither a scope nor a soft-delete column is configured, so every call site skips the
  * machinery with a single check and an unconfigured build generates exactly the SQL it did
  * before.
  */
-export const resolveScope = (
+export const bindRowVisibility = (
   policies: TablePolicies | undefined,
   context: any,
   filterCtx?: RelationFilterBase,
-): ScopeResolver | undefined => {
-  const scopes = policies?.scope;
+): RowVisibility | undefined => {
+  const scopeOf = policies?.scope;
   const softDelete = policies?.softDelete;
-  if (!scopes && !softDelete) {
+  if (!scopeOf && !softDelete) {
     return undefined;
   }
   return {
-    has: (tableName, mode) => !!scopes?.(tableName) || (!!softDelete?.(tableName) && (mode ?? 'EXCLUDE') !== 'INCLUDE'),
+    has: (tableName, mode) =>
+      !!scopeOf?.(tableName) || (!!softDelete?.(tableName) && (mode ?? 'EXCLUDE') !== 'INCLUDE'),
     relationDefault: (tableName, requiredToOne) => relationDeletedDefault(softDelete, tableName, requiredToOne),
     on: (tableName, table, mode) => {
       // Order is fixed: the soft-delete predicate first, the scope after it, both ANDed. They
       // commute, but a fixed order keeps the generated SQL stable between requests.
       const marked = softDelete?.(tableName);
       const deleted = marked ? softDeletePredicate(marked, table, mode ?? 'EXCLUDE') : undefined;
-      const hook = scopes?.(tableName);
+      const hook = scopeOf?.(tableName);
       if (!hook) {
         return deleted;
       }
@@ -323,14 +324,14 @@ export const resolveScope = (
  * them, never widen them. `mode` is the read's `deleted` argument, and defaults to hiding
  * marked rows; a write passes nothing and so never touches one.
  */
-export const withScope = (
-  scope: ScopeResolver | undefined,
+export const withRowVisibility = (
+  visibility: RowVisibility | undefined,
   tableName: string,
   table: Table,
   condition: SQL | undefined,
   mode?: DeletedMode,
 ): SQL | undefined => {
-  const predicate = scope?.on(tableName, table, mode);
+  const predicate = visibility?.on(tableName, table, mode);
   return predicate ? and(condition, predicate) : condition;
 };
 
@@ -348,8 +349,8 @@ export const junctionTableName = (tables: Record<string, Table>, relEntry: unkno
  * Whether a `.through()` relation's junction restricts which links exist for this request —
  * a `scope` on the junction table, or a soft delete it declares.
  */
-export const hasJunctionPolicy = (scope: ScopeResolver | undefined, junctionName: string | undefined): boolean =>
-  !!junctionName && !!scope?.has(junctionName, 'EXCLUDE');
+export const hasJunctionPolicy = (visibility: RowVisibility | undefined, junctionName: string | undefined): boolean =>
+  !!junctionName && !!visibility?.has(junctionName, 'EXCLUDE');
 
 /**
  * The junction's own row policy, compiled against the junction table as the query names it.
@@ -363,10 +364,11 @@ export const hasJunctionPolicy = (scope: ScopeResolver | undefined, junctionName
  * field of its own on the relation that `'root'` could keep rendering.
  */
 export const junctionPolicy = (
-  scope: ScopeResolver | undefined,
+  visibility: RowVisibility | undefined,
   junctionName: string | undefined,
   table: Table,
-): SQL | undefined => (hasJunctionPolicy(scope, junctionName) ? scope!.on(junctionName!, table, 'EXCLUDE') : undefined);
+): SQL | undefined =>
+  hasJunctionPolicy(visibility, junctionName) ? visibility!.on(junctionName!, table, 'EXCLUDE') : undefined;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Context-derived column values
@@ -398,12 +400,12 @@ export type TablePolicies = {
 };
 
 /**
- * {@link TablePolicies} with the scope already bound to the build's relation context, which
- * is what a dialect generator is handed: `scope(context)` is all a resolver needs to compile
- * a predicate, and it stays `undefined` when nothing is scoped.
+ * {@link TablePolicies} with the scope and soft delete already bound to the build's relation
+ * context, which is what a dialect generator is handed: `visibility(context)` is all a
+ * resolver needs to compile a predicate, and it stays `undefined` when neither is configured.
  */
 export type ResolverPolicies = {
-  scope?: (context: any) => ScopeResolver | undefined;
+  visibility?: (context: any) => RowVisibility | undefined;
   contextValues?: ContextValuesFor;
   softDelete?: SoftDeleteFor;
   onWrite?: WriteHookFor;
@@ -417,9 +419,9 @@ export const bindPolicies = (
 ): ResolverPolicies | undefined =>
   policies?.scope || policies?.contextValues || policies?.softDelete || policies?.onWrite || policies?.defaultOrderBy
     ? {
-        scope:
+        visibility:
           policies.scope || policies.softDelete
-            ? (context: any) => resolveScope(policies, context, filterCtx)
+            ? (context: any) => bindRowVisibility(policies, context, filterCtx)
             : undefined,
         contextValues: policies.contextValues,
         softDelete: policies.softDelete,

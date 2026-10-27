@@ -98,7 +98,7 @@ export {
   narrowToSingleMatch,
   prepareMutationRelationColumns,
   rowsAffected,
-  scopedWhere,
+  visibleWhere,
   withEagerRelations,
 } from './common/mutation-helpers.ts';
 export type { TypeNameMapper } from './common/naming.ts';
@@ -110,8 +110,8 @@ export type {
   ContextValuesFor,
   DeletedMode,
   ResolverPolicies,
+  RowVisibility,
   ScopeFor,
-  ScopeResolver,
   SoftDeleteFor,
   SoftDeleteInfo,
   TablePolicies,
@@ -120,16 +120,16 @@ export {
   applyContextValues,
   applyContextValuesAll,
   bindPolicies,
+  bindRowVisibility,
   deletedFilterEnumType,
   insertStamps,
   junctionPolicy,
   junctionTableName,
   relationDeletedDefault,
-  resolveScope,
   resolveSoftDeleteInfo,
   softDeletePredicate,
   stripContextValues,
-  withScope,
+  withRowVisibility,
 } from './common/policies.ts';
 export type { RelationFilterBase, RelationFilterContext } from './common/relation-filters.ts';
 export { extractFilters, relationFilterCtx } from './common/relation-filters.ts';

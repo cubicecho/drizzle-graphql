@@ -34,9 +34,9 @@ import {
   type ResolverPolicies,
   relationFilterCtx,
   resolveConflictPlan,
-  scopedWhere,
   stripContextValues,
   type TablesRelationalConfig,
+  visibleWhere,
   type WriteOperation,
   writeResolver,
 } from '../builders/common.ts';
@@ -257,7 +257,7 @@ const generateUpdate = (
     },
     run: async ({ executor, args, context, before, after }) => {
       const { where, set } = args;
-      const scope = policies?.scope?.(context);
+      const visibility = policies?.visibility?.(context);
 
       // A context-derived column is the server's to set, so an update never reassigns
       // one — that is what stops a row being handed to another owner.
@@ -266,10 +266,10 @@ const generateUpdate = (
         throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
       }
 
-      const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
+      const relationCtx = relationFilterCtx(filterCtx, tableName, visibility);
       // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
-      const matched = scopedWhere({
-        scope,
+      const matched = visibleWhere({
+        visibility,
         tableName,
         table,
         where,
@@ -334,7 +334,7 @@ const generateUpdateMany = (
       if (!updates.length) {
         throw drizzleError('No updates were provided!', { code: 'DRIZZLE_NO_VALUES' });
       }
-      const scope = policies?.scope?.(context);
+      const visibility = policies?.visibility?.(context);
       const contextColumns = policies?.contextValues?.(tableName);
 
       // Remap and validate every entry before the hook and the transaction, so a malformed
@@ -348,12 +348,12 @@ const generateUpdateMany = (
           set: input,
           // Under `requireWhere` every entry must carry a non-empty `where`, as the plural
           // update must.
-          filters: scopedWhere({
-            scope,
+          filters: visibleWhere({
+            visibility,
             tableName,
             table,
             where,
-            relationCtx: relationFilterCtx(filterCtx, tableName, scope),
+            relationCtx: relationFilterCtx(filterCtx, tableName, visibility),
             required: requireWhere,
           }),
         };
@@ -424,15 +424,15 @@ const generateDelete = (
       // `canHardDelete` decides whether the argument exists; this decides what it does,
       // so a stitched-in `hard: true` on a table that never opted in stays a soft delete.
       const hard = canHardDelete && args.hard === true;
-      const scope = policies?.scope?.(context);
+      const visibility = policies?.visibility?.(context);
 
-      const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
+      const relationCtx = relationFilterCtx(filterCtx, tableName, visibility);
       // Same rule as update: the scope is ANDed on last, so a delete can only ever reach
       // rows inside it — an out-of-scope row is not matched rather than being refused.
       // A soft-deleting table adds the marker predicate the same way: `delete` only sees
       // rows that are not already marked, `restore` only sees the ones that are.
-      const matched = scopedWhere({
-        scope,
+      const matched = visibleWhere({
+        visibility,
         tableName,
         table,
         where,
