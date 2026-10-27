@@ -85,9 +85,9 @@ pending --applyParentSide--> parent-keyed --parent write--> written --checkParen
 parent-keyed --parent write returns no row (savepoint)--> rolled back, entry yields []
 ```
 
-Per-build registries — owner `build-context.ts prepareBuild`:
+Per-build registries — owner `build-context.ts installBuildRegistries`, called once by `prepareBuild`:
 ```
-(previous build's state) --registerScalarOverrides / registerEnumConfig / registerColumnExclusions / resetAggregateColumnCache--> this build's state --next buildSchema--> overwritten
+(previous build's state) --registerScalarOverrides / installSqliteBlobJsonDecoders / registerEnumConfig / registerColumnExclusions / resetAggregateColumnCache / resetFieldUpdateCaches--> this build's state --next buildSchema--> overwritten (per table/column object for scalar overrides, exclusions, blob decoders; whole for the rest)
 ```
 
 ## Invariants
@@ -240,8 +240,8 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 ### Internals
 
 - **Build context:** Everything a build accumulates before its root fields exist. Owner: `build-context.ts SchemaBuildContext`.
-- **Type cache:** Per-build caches so each generated type is built once. Owner: `common/type-cache.ts TypeCacheCtx`; plus module-level caches (`sharedType`, `field-updates.ts` `kindCache`/`inputCache`, `table-inputs.ts orderMap`).
-- **Per-build registry:** Module-global state reset at the start of each build (scalar overrides, enums, exclusions, aggregate column sets). Owner: `registerScalarOverrides`, `registerEnumConfig`, `registerColumnExclusions`, `resetAggregateColumnCache`.
+- **Type cache:** Per-build caches so each generated type is built once. Owner: `common/type-cache.ts TypeCacheCtx`; plus module-level caches: `field-updates.ts` `kindCache`/`inputCache` and `aggregates.ts aggregateColumnSetsCache` (per-build registries), and `type-names.ts sharedType` / `table-inputs.ts orderMap`, which outlive builds on purpose, keyed by resolved name and by the `InnerOrder` instance so builds that agree share and builds that differ do not.
+- **Per-build registry:** Module-global state each build installs before generating anything (scalar overrides, SQLite blob decoders, enums, exclusions, aggregate column sets, field-update kinds and inputs). Request-time remapping reads the scalar overrides and field-update kinds, so between two live schemas over the same tables the most recent build wins there. Owner: `build-context.ts installBuildRegistries` (the one reset point), over `registerScalarOverrides`, `installSqliteBlobJsonDecoders`, `registerEnumConfig`, `registerColumnExclusions`, `resetAggregateColumnCache`, `resetFieldUpdateCaches`.
 - **Build registry:** Maps generated types and db handles back to the build that made them, for the selection helpers. Owner: `common/build-registry.ts registerBuildRuntime`, `runtimeForType`, `runtimeForDb`.
 - **Execution:** One run of a GraphQL document (one `execute()` call); per-request state — the request cache, batch loaders and auto-transaction — belongs to it, not to the context object. Owner: `src/util/execution.ts executionKey` (`info.variableValues`, which graphql builds once per execution).
 - **Request cache:** Per-execution memo of a field's derived values. Owner: `batch-loader/index.ts getOrCreateRequestValue`.

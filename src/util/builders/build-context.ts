@@ -204,6 +204,22 @@ export type TableBuild<WithReturning extends boolean = boolean> = {
 };
 
 /**
+ * Installs this build's module-level state, in order, replacing what the previous build left.
+ * Scalar overrides, column exclusions and the SQLite blob decoders are kept per table or column
+ * object, so a second build changes only the tables it shares with the first; the enum registry
+ * and the aggregate and field-update caches are replaced whole. Request-time remapping reads the
+ * scalar overrides and field-update kinds, so there the most recent build wins.
+ */
+const installBuildRegistries = (tables: Record<string, Table>, options: SchemaGeneratorOptions): void => {
+  registerScalarOverrides(tables, options);
+  installSqliteBlobJsonDecoders(tables);
+  registerEnumConfig(options);
+  registerColumnExclusions(tables, options.exclude);
+  resetAggregateColumnCache();
+  resetFieldUpdateCaches();
+};
+
+/**
  * Binds a dialect and returns the shared halves of its build.
  *
  * Called once per dialect module at import time, so the select generators — which close over
@@ -248,23 +264,8 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       );
     }
 
-    // Resolve scalar overrides into the type-converter's registry before any type generation —
-    // every subsequent column→GraphQL type decision and runtime value remap consults it.
-    registerScalarOverrides(tables, options);
-    // SQLite blob columns read NULL wrongly inside nested relations unless given a JSON-path
-    // decoder (see `installSqliteBlobJsonDecoders`).
-    installSqliteBlobJsonDecoders(tables);
-    // Same lifecycle: the enum registry is per-build, so a second build never reuses the first
-    // build's enum types (and with them its naming decisions).
-    registerEnumConfig(options);
-    // And the same for column exclusions: a per-build registry read by every site that decides
-    // what the schema contains, reset here so a rebuild never inherits the previous build's.
-    registerColumnExclusions(tables, options.exclude);
-    // Column classifications for the aggregates are cached across the tables of one build, and
-    // hold that build's types and exclusions — so they are dropped here for the same reason.
-    resetAggregateColumnCache();
-    // Which columns take a `…FieldUpdate` input depends on this build's scalar overrides.
-    resetFieldUpdateCaches();
+    // Before any type generation: every column→GraphQL type decision reads these.
+    installBuildRegistries(tables, options);
 
     // Each relation entry carries its target's primary key before pruning and type generation,
     // which share the entry objects, so paginated relations default to a deterministic order.

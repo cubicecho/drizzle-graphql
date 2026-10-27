@@ -517,7 +517,7 @@ const normalizeScalarOverride = (
 
 /**
  * Resolves the scalar-override config against every column of the given tables and stores
- * the result in the override registry. Called once per schema build, before any types are
+ * the result in the override registry. Called by `installBuildRegistries`, before any types are
  * generated — and always, even with no config, so a rebuild clears overrides left behind
  * by a previous build against the same table objects.
  *

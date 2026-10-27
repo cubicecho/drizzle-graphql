@@ -189,7 +189,7 @@ interface AggregateColumnSets {
  */
 let aggregateColumnSetsCache = new WeakMap<Table, Map<string, AggregateColumnSets>>();
 
-/** Drops the classifications cached for the previous build. Called once per `generateSchemaData`. */
+/** Drops the classifications cached for the previous build. Called by `installBuildRegistries`. */
 export const resetAggregateColumnCache = (): void => {
   aggregateColumnSetsCache = new WeakMap();
 };

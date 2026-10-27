@@ -95,7 +95,7 @@ export const fieldUpdateKind = (column: Column, columnName: string, tableName: s
 /** `${Scalar}FieldUpdate` / `${Scalar}ListFieldUpdate`, shared by every column of that type. */
 let inputCache = new Map<string, GraphQLInputObjectType>();
 
-/** Drops the kinds and inputs cached for the previous build. Called once per build. */
+/** Drops the kinds and inputs cached for the previous build. Called by `installBuildRegistries`. */
 export const resetFieldUpdateCaches = (): void => {
   kindCache = new WeakMap();
   inputCache = new Map();
