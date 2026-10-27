@@ -13,6 +13,7 @@ import {
 import { dateToCalendarDate } from '../../scalars/index.ts';
 import {
   isDateOnlyColumn,
+  isDecimalStringColumn,
   isMySqlDateTimeStringColumn,
   isPgTimestampStringColumn,
 } from '../../type-converter/index.ts';
@@ -331,7 +332,7 @@ const joinValueKey = (value: unknown, column: Column | undefined): string => {
     if (isPgTimestampStringColumn(column)) {
       return trimIsoFraction(pgTimestampTextToIso(value));
     }
-    if (((column as any).dataType ?? '') === 'string numeric') {
+    if (isDecimalStringColumn(column)) {
       return canonicalDecimal(value);
     }
   }

@@ -23,7 +23,12 @@ import {
   GraphQLJSON,
   GraphQLUUID,
 } from '../../scalars/index.ts';
-import { drizzleColumnToGraphQLType, getColumnScalarOverride, isDateTimeColumn } from '../../type-converter/index.ts';
+import {
+  drizzleColumnToGraphQLType,
+  getColumnScalarOverride,
+  isDateTimeColumn,
+  isDecimalStringColumn,
+} from '../../type-converter/index.ts';
 import type { ConvertedColumn, NullableConvertedColumnType } from '../../type-converter/types.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
 import { sharedType, type TypeNameResolver } from './type-names.ts';
@@ -415,7 +420,7 @@ export const generateColumnFilterValues = (
   const customOverrideFilter = inputOverride !== undefined && !BUILTIN_FILTER_SCALARS.has(inputOverride);
   const underlying = extractExtendedColumnType(column);
   const omitStringOps = customOverrideFilter
-    ? underlying.type !== 'string' || underlying.constraint === 'numeric'
+    ? underlying.type !== 'string' || isDecimalStringColumn(column)
     : isEnum || FILTERS_WITHOUT_STRING_OPS.has(genericName);
   const omitOrderingOps = !customOverrideFilter && (isEnum || FILTERS_WITHOUT_ORDERING_OPS.has(genericName));
 

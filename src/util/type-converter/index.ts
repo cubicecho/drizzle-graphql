@@ -55,6 +55,9 @@ const smallIntegerConstraints = new Set<string>([
   'year',
 ]);
 
+/** drizzle's `string` constraints of a numeric / decimal column in string mode; MySQL unsigned is `unumeric`. */
+const decimalStringConstraints = new Set<string>(['numeric', 'unumeric']);
+
 /** drizzle's `string` constraints of a bigint column in string mode (PG and MySQL). */
 const bigIntStringConstraints = new Set<string>(['int64', 'uint64']);
 
@@ -320,6 +323,15 @@ export const isDateTimeColumn = (column: Column): boolean =>
   isSQLiteTimestampColumn(column);
 
 /**
+ * Whether the column is a numeric / decimal in string mode (PG, MySQL signed or unsigned,
+ * SQLite): transported as text, but a number.
+ */
+export const isDecimalStringColumn = (column: Column): boolean => {
+  const { type, constraint } = extractExtendedColumnType(column);
+  return type === 'string' && constraint !== undefined && decimalStringConstraints.has(constraint);
+};
+
+/**
  * Whether the column holds raw bytes: Postgres `bytea` and SQLite `blob({ mode: 'buffer' })`,
  * both `object buffer` in drizzle v1. Their values are `[Int!]` lists of the bytes.
  */
@@ -413,7 +425,7 @@ const columnBaseToGraphQLCore = (
       // strings, but they are numbers — give them the named Decimal scalar so the SDL says
       // so and non-numeric input is rejected. Array-typed numeric columns (dimensions > 0)
       // keep their existing mapping.
-      if (constraint === 'numeric' && !(column as any).dimensions) {
+      if (isDecimalStringColumn(column) && !(column as any).dimensions) {
         return { type: GraphQLDecimalString, typeLabel: 'Decimal' };
       }
 

@@ -662,7 +662,7 @@ generated SDL says what a field actually holds instead of falling back to `Strin
 | `timestamp` / `datetime` (either `mode`)    | `DateTime`   | an ISO-8601 string                   |
 | SQLite `integer({ mode: 'timestamp' })` / `'timestamp_ms'` | `DateTime` | an ISO-8601 string       |
 | `date` (either `mode`)                      | `Date`       | a `YYYY-MM-DD` string                |
-| `numeric` / `decimal`                       | `Decimal`    | a decimal string                     |
+| `numeric` / `decimal` (MySQL: signed or `unsigned`) | `Decimal` | a decimal string               |
 
 ```graphql
 mutation {
