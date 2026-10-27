@@ -16,7 +16,7 @@ writes, filters, pagination, aggregates and row policies all compiled to SQL.
 - **Schema build:** drizzle db + `BuildSchemaConfig` → `buildSchema` (table map from `db._.relations`) → `resolveBuildConfig` (validate, resolve features/limits/defaults/policies/hooks) → dialect dispatch (`generatePG` / `generateMySQL` / `generateSQLite`) → `createSchemaBuilder.prepareBuild` (drop excluded tables, reset per-build registries, relation graph, unique keys, filter context, bound policies, type cache, preflight, nested-write plans, per-table types) → `forEachTable` (read fields + dialect's mutation half → `defineRootField`) → `finalizeBuild` (relation field resolvers, transaction roster, build registry) → `applyErrorMapper` → `new GraphQLSchema` → `{ schema, entities }`.
 - **List read:** client `users(where, orderBy, limit, offset, after, distinct, deleted)` → select resolver → `withDefaultOrderBy` → `parseResolveInfo` → `resolveQueryExecutor` → `applyLimitPolicy` → `runRelationalSelect` (cursor entries, distinct subquery, filters + scope, `with:` from `extractRelationsParams`) → `db.query[table].findMany` → `attachRowCursors` → `remapToGraphQLArrayOutput`.
 - **Single-row read:** `usersSingle(where, orderBy, offset)` → same path with `single: true` → `findFirst` (PK order by default, no limit policy, no cursor) → `remapToGraphQLSingleOutput` or `null`.
-- **Relation field read:** parent row → relation resolver → eager value on the parent? return it : `getOrCreateRequestValue` (args → loader key) → `getOrCreateLoader` (per context + key) → next microtask: one `IN`/OR query per chunk, windowed when paginated, scoped + soft-delete filtered → group by parent key → remap.
+- **Relation field read:** parent row → relation resolver → eager value on the parent? return it : `getOrCreateRequestValue` (args → loader key, per execution) → `getOrCreateLoader` (per execution + key) → next microtask: one `IN`/OR query per chunk, windowed when paginated, scoped + soft-delete filtered → group by parent key → remap.
 - **Aggregate read:** `usersAggregate(where, deleted)` / `usersGroupBy(by, having, …)` / `postsAggregate` on a parent → `parseAggregateRequest` → `select(aggregates).from(table)` with filters + scope (grouped / batched by FK for relation aggregates) → `assembleAggregateRow`.
 - **Mutation (insert / update / delete / upsert / restore / updateMany / count):** client mutation → `writeResolver` → `runMutation` (pick executor: caller's, request's shared tx, forced tx for hooks, or `db`) → body: validate input → `before` hook → remap input, stamp/strip context values → `scopedWhere` (+ `assertSingleMatch` for `Single`) → statement with `RETURNING` (PG/SQLite) or plain (MySQL) → `after` hook → strip hook-only columns → `withEagerRelations` re-fetch → remap → rows, `{ isSuccess }` (MySQL) or an `Int` (count).
 - **Nested write:** create/update/upsert input → `nested.split` (columns vs relation ops) → `writeWithNestedOps` / `updateWithNestedOps` opens a transaction → per entry `writeNestedEntry`: `applyParentSide` (create/connect target first, key into parent) → parent write → `checkParentSide` → `applyChildSide` (attach children / junction rows) → `refreshed` → each nested statement fires the target table's hooks with `payload.nested`.
@@ -29,7 +29,7 @@ Dependency direction: `index.ts` → `build-config.ts` → `builders/{pg,sqlite,
 |---|---|---|---|
 | App author (consumer) | The developer calling `buildSchema` once at startup | `BuildSchemaConfig`, the Drizzle schema + relations, `entities` | Which tables/columns exist (`exclude`), which operations exist (`features`, `mutations`), names (`prefixes`, `suffixes`, `typeNameMapper`, `derivedTypeNameMapper`, `typeNamePrefix/Suffix`, enum mappers), scalars (`scalars`, `mapColumnType`), page bounds (`limits`), default order (`defaults`), cost hints (`complexity`), eager loading, transactions mode, error mapping (`onError`), deprecated `conflictDoNothing` |
 | GraphQL client | Whoever sends a document at request time | Generated queries and mutations | Rows only within the scope and soft-delete view; filter/order/page/cursor/distinct/deleted args; nested ops where offered; `hard` delete where opted in; never context-value or soft-delete marker columns |
-| Host server | Executes the schema (yoga, apollo, …) | GraphQL `context` object per request | Which executor runs (`drizzleExecutorKey`), the per-request state keyed on the context |
+| Host server | Executes the schema (yoga, apollo, …) | GraphQL `context` object per request (may be reused; per-request state is keyed on the execution) | Which executor runs (`drizzleExecutorKey`) |
 | Row policies | Consumer functions run per request | `scope`, `contextValues`, `softDelete` (function form at build) | Which rows a read/write reaches; values stamped on insert |
 | Write hooks | Consumer `onWrite` functions | `before` / `after` inside the mutation's executor | Anything via `tx`; can veto by throwing (rolls back when in a transaction) |
 | Schema hooks | Consumer `describe*`, `deprecateColumn`, `enumNameMapper`, `enumValueNameMapper`, `mapColumnType`, `derivedTypeNameMapper` | Called at build time | Descriptions, deprecations, type and enum names, column scalars |
@@ -47,22 +47,23 @@ hooked --withEagerRelations re-fetch, library--> enriched --remap--> answered
 any state --throw--> failed --toGraphQLError + onError mapper--> error response (rolled back only if a tx was open)
 ```
 
-Auto-transaction per request (`transactions: 'auto'`) — owner `transactions.ts runMutation / openSharedTx / runOnSharedTx`:
+Auto-transaction per execution (`transactions: 'auto'`) — owner `transactions.ts runMutation / openSharedTx / runOnSharedTx`; state keyed by `executionKey`:
 ```
-(no state) --first mutation resolver, ≤1 known root field or unknown field--> passthrough (kept on context for the request)
+(no state) --first mutation resolver, ≤1 known root field or unknown field--> passthrough (kept for this execution)
 (no state) --first mutation resolver, ≥2 known root fields--> open (tx stashed on context[drizzleExecutorKey], timer armed)
 open --field completes, completed < expected--> open (timer re-armed)
 open --last field completes--> committed (state deleted, executor key removed)
 open --field throws | inactivity timeout--> aborted --later fields--> fail fast DRIZZLE_TRANSACTION_ABORTED
-aborted --rollback settles--> rolled back (state kept on context so stragglers keep failing)
+aborted --rollback settles--> rolled back (state kept for this execution so its stragglers keep failing)
 ```
+The next execution starts with no state, even on a reused context object or a cached document.
 
 Batch loader — owner `batch-loader/index.ts BatchLoader`, created by `getOrCreateLoader`:
 ```
 idle --load(key), resolver--> queued --microtask--> dispatching --batchFn resolves--> idle (all callers resolved)
 dispatching --batchFn throws--> idle (all callers rejected)
 ```
-Loaders live on the context under a private symbol for the whole request; there is no result cache, only batching. `getOrCreateRequestValue` memoizes per-field derived values (args → loader key) keyed by the field's AST nodes for the same request.
+Loaders live in a weak map keyed by the execution (`executionKey`) for its whole length; there is no result cache, only batching. `getOrCreateRequestValue` memoizes per-field derived values (args → loader key) keyed by the execution, then the field's AST nodes, so a reused context or cached document never serves one execution another's args.
 
 Cursor — owner `common/cursor.ts`:
 ```
@@ -125,7 +126,7 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 - `BuildSchemaConfig.features` says every flag defaults to `true` except `upsert` and `nestedWrites` (`src/types.ts:1280`); five more are off (`src/util/features.ts` `featureDefaults`, and `types.ts:764` says so).
 - `updateMany`'s result is described as "aligned with the input, one slot per entry" (`schema-data.ts:352`), yet a multi-row entry contributes several slots (`update-many.ts` output loop), so slots no longer map to entries.
 - The eager re-fetch says "the write has already committed" (`common/select-runtime.ts:353`); under a hook-forced, nested or shared transaction it has not.
-- `transactions: 'auto'` requires a fresh context object per request (`types.ts:1356`); nothing checks it, and a reused context keeps its `passthrough` state forever (`transactions.ts:379`, never deleted).
+- `transactions: 'auto'` says two executions must not share one context object at the same time (`types.ts` `transactions`); nothing checks it, and the second would find the first's transaction under `drizzleExecutorKey` and run on it.
 - AGENTS.md's dispatch snippet names `MySqlDatabase` / `BaseSQLiteDatabase` (`AGENTS.md:309-310`) and calls `common.ts` "shared helpers (extractFilters, extractOrderBy)" (`AGENTS.md:18`); the code dispatches on `MySqlAsyncDatabase` first and PG/SQLite share `schema-data.ts` + `build-context.ts`.
 - `WriteHookFor` takes the operation (`common/write-hooks.ts` `WriteHookFor`), but the resolved lookup ignores it (`build-config.ts:330-331`): hooks are per table, not per operation.
 
@@ -239,8 +240,9 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 - **Type cache:** Per-build caches so each generated type is built once. Owner: `common/type-cache.ts TypeCacheCtx`; plus module-level caches (`sharedType`, `field-updates.ts` `kindCache`/`inputCache`, `table-inputs.ts orderMap`).
 - **Per-build registry:** Module-global state reset at the start of each build (scalar overrides, enums, exclusions, aggregate column sets). Owner: `registerScalarOverrides`, `registerEnumConfig`, `registerColumnExclusions`, `resetAggregateColumnCache`.
 - **Build registry:** Maps generated types and db handles back to the build that made them, for the selection helpers. Owner: `common/build-registry.ts registerBuildRuntime`, `runtimeForType`, `runtimeForDb`.
-- **Request cache:** Per-request memo of a field's derived values. Owner: `batch-loader/index.ts getOrCreateRequestValue`.
-- **Batch loader:** Per-request batching of sibling relation loads. Owner: `batch-loader/index.ts getOrCreateLoader`.
+- **Execution:** One run of a GraphQL document (one `execute()` call); per-request state — the request cache, batch loaders and auto-transaction — belongs to it, not to the context object. Owner: `src/util/execution.ts executionKey` (`info.variableValues`, which graphql builds once per execution).
+- **Request cache:** Per-execution memo of a field's derived values. Owner: `batch-loader/index.ts getOrCreateRequestValue`.
+- **Batch loader:** Per-execution batching of sibling relation loads. Owner: `batch-loader/index.ts getOrCreateLoader`.
 - **Mutation registration:** A dialect's generated mutation plus its return type and identity, registered by the shared loop. Owner: `build-context.ts MutationRegistration`.
 - **Variables reader:** Reads variables and fragment arguments the same way under graphql 16 and 17. Owner: `src/util/graphql-variables.ts`.
 

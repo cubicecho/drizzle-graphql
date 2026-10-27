@@ -2516,8 +2516,10 @@ are untouched.
 -   The driver must support `db.transaction()` — `neon-http` does not. For SQLite only an
     asynchronous driver can hold a transaction open across resolvers, and `buildSchema`
     throws for a synchronous one rather than failing at request time
--   The GraphQL context value must be a fresh object per request (every mainstream server
-    does this) — it keys the per-request transaction state
+-   The transaction state belongs to one execution, so a reused context object, a cached
+    document or no context at all never carries it into the next request. Two executions must
+    not share one context object at the same time: the open transaction is published on it
+    (under `drizzleExecutorKey`) for the reads nested under the mutations
 -   `timeoutMs` (default `30000`) rolls back an abandoned transaction, e.g. when the host
     server stopped calling resolvers because of a non-null completion error, instead of
     leaking the connection. It must be a positive integer up to `2147483647` (the longest

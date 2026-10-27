@@ -7,13 +7,14 @@
 // the request as a whole. So the FIRST mutation resolver of a request inspects
 // `info.operation`: when the document selects more than one root mutation
 // field, it opens `db.transaction()` once, parks the transaction on a
-// per-request state object (WeakMap keyed by the context object), and every
-// later mutation resolver of the same request runs on that transaction. The
+// per-request state object (WeakMap keyed by the execution, see `executionKey`),
+// and every later mutation resolver of the same request runs on that transaction. The
 // transaction callback awaits a latch; the last field to complete resolves it
 // (COMMIT) and the first failure rejects it (ROLLBACK).
 // =============================================================================
 
 import type { GraphQLError } from 'graphql';
+import { executionKey } from '../../execution.ts';
 import type { FragmentVariableScope } from '../../graphql-variables.ts';
 import {
   argumentValues,
@@ -255,8 +256,8 @@ const openSharedTx = (
     if (canStash) {
       delete context[drizzleExecutorKey];
     }
-    // A committed state left in the map would poison a reused context object; an aborted
-    // one must stay so late-arriving fields of THIS request keep failing fast.
+    // An aborted state stays so late-arriving fields of THIS execution keep failing fast. It is
+    // keyed by the execution, so the next one starts without it.
     if (!state.aborted) {
       txCtx.states.delete(stateKey);
     }
@@ -334,16 +335,18 @@ export const runMutation = async <T>(
   const contextIsObject = context !== null && (typeof context === 'object' || typeof context === 'function');
   // Check our own request state FIRST: once the shared transaction is stashed on the
   // context it is indistinguishable from a caller-supplied one, but its completion still
-  // has to be accounted here.
-  const stateKey: object = contextIsObject ? context : info.operation;
-  let state = txCtx?.states.get(stateKey);
+  // has to be accounted here. The state belongs to this execution, never to the context or
+  // the document, which a host may reuse across requests.
+  const stateKey = executionKey(context, info);
+  let state = stateKey ? txCtx?.states.get(stateKey) : undefined;
 
   if (!state) {
     if (contextIsObject && context[drizzleExecutorKey]) {
       // The caller already runs this request on its own transaction/executor — use it as-is.
       return body(context[drizzleExecutorKey]);
     }
-    if (!txCtx || info.operation.operation !== 'mutation') {
+    // Without an execution to key on, no later field could find a shared transaction.
+    if (!txCtx || !stateKey || info.operation.operation !== 'mutation') {
       return forceTx ? db.transaction((tx: any) => body(tx)) : body(db);
     }
     const keys = new Set<string>();
