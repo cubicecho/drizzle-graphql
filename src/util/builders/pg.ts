@@ -2,6 +2,7 @@ import type { Table } from 'drizzle-orm';
 import { type PgAsyncDatabase, PgTable, getTableConfig as pgTableConfig } from 'drizzle-orm/pg-core';
 import type { GeneratedEntities } from '../../types.ts';
 import {
+  DIALECT_NULL_ORDERING,
   getPrimaryKeyPropNamesFromConfig,
   memoizeTableConfig,
   type TablesRelationalConfig,
@@ -23,7 +24,7 @@ const pgSchemaData = createSchemaDataGenerator({
   getTableConfig,
   primaryKeyPropNames: pgPrimaryKeyPropNames,
   // PostgreSQL sorts NULLs as the largest values (last in ASC).
-  nullOrdering: 'nulls-largest',
+  nullOrdering: DIALECT_NULL_ORDERING.pg,
   // Writes come back with their rows, so the table types carry the `${Table}Item` outputs.
   returnsRows: true,
   generateUpdateMany,

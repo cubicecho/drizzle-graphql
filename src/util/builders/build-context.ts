@@ -28,7 +28,6 @@ import {
   attachTargetPrimaryKeys,
   bindPolicies,
   buildNamedRelations,
-  buildUniqueKeyMap,
   computeResolverFieldNames,
   createMutationTxCtx,
   createRelationResolverFactory,
@@ -52,8 +51,8 @@ import {
   type TablesRelationalConfig,
   type TypeCacheCtx,
   type TypeNameMapper,
+  tableUniqueKeyMap,
   type UniqueKeyMap,
-  visibleColumns,
 } from '../builders/common.ts';
 import { installSqliteBlobJsonDecoders } from '../data-mappers/index.ts';
 import { type DrizzleMutationMeta, type TableFieldExtensionFactory, tableFieldExtensions } from '../extensions.ts';
@@ -295,8 +294,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       }
       // Whatever the filter input already offers under a name keeps it — columns are added
       // first, then relations, and a key field last.
-      const taken = new Set([...Object.keys(visibleColumns(table)), ...Object.keys(namedRelations[tableName] ?? {})]);
-      const map = buildUniqueKeyMap(uniqueColumnSets(table), taken);
+      const map = tableUniqueKeyMap(table, Object.keys(namedRelations[tableName] ?? {}), uniqueColumnSets(table));
       if (Object.keys(map).length) {
         uniqueKeys[tableName] = map;
       }

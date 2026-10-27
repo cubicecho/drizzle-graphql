@@ -60,7 +60,7 @@ export const runRelationalSelect = async (opts: {
   db?: any;
   distinct?: string[];
   after?: string;
-  nullOrdering?: NullOrdering;
+  nullOrdering: NullOrdering;
   limits?: LimitPolicyFor;
   scope?: ScopeResolver;
   defaultOrderBy?: DefaultOrderByFor;
@@ -203,12 +203,7 @@ export const runRelationalSelect = async (opts: {
                     ? extractFilters(aliasedTable, tableName, where, relationFilterCtx(filterCtx, tableName, scope))
                     : undefined,
                   cursorValues
-                    ? buildCursorCondition(
-                        aliasedTable,
-                        cursorEntries!,
-                        cursorValues,
-                        opts.nullOrdering ?? 'nulls-smallest',
-                      )
+                    ? buildCursorCondition(aliasedTable, cursorEntries!, cursorValues, opts.nullOrdering)
                     : undefined,
                 ),
                 deleted,

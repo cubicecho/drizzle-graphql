@@ -216,6 +216,7 @@ export const createSelectGenerators = (
             pkNames,
             db: executor,
             scope: policies?.scope?.(context),
+            nullOrdering,
           });
         } catch (e) {
           throw withErrorContext(toGraphQLError(e), errorCtx);

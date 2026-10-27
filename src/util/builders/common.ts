@@ -37,6 +37,7 @@ export {
   CURSOR_FIELD_NAME,
   cursorOrderExprs,
   cursorOrderingEntries,
+  DIALECT_NULL_ORDERING,
   decodeCursor,
   encodeCursor,
   isCursorFieldSelected,
@@ -174,7 +175,7 @@ export type {
   TypeNameResolver,
 } from './common/type-names.ts';
 export { resolveGeneratedTypeNames, sharedType } from './common/type-names.ts';
-export { buildUniqueKeyMap, type UniqueKeyMap, uniqueKeyFieldName } from './common/unique-keys.ts';
+export { tableUniqueKeyMap, type UniqueKeyMap, uniqueKeyFieldName } from './common/unique-keys.ts';
 export type {
   NestedWriteOp,
   NestedWriteOrigin,

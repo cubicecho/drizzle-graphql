@@ -52,6 +52,13 @@ const ROW_CURSOR_PROP = '__drizzle_graphql_cursor';
  */
 export type NullOrdering = 'nulls-largest' | 'nulls-smallest';
 
+/** Each dialect's {@link NullOrdering}, declared once for its schema builder and the selection helpers. */
+export const DIALECT_NULL_ORDERING = {
+  pg: 'nulls-largest',
+  mysql: 'nulls-smallest',
+  sqlite: 'nulls-smallest',
+} as const satisfies Record<string, NullOrdering>;
+
 /**
  * One key of the total order a cursor is defined over: column property name + direction,
  * plus the request's `nulls: first | last` override when it carries one (absent/null means

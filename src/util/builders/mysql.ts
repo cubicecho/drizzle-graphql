@@ -17,6 +17,7 @@ import type { GeneratedEntities } from '../../types.ts';
 import {
   applyContextValues,
   applyContextValuesAll,
+  DIALECT_NULL_ORDERING,
   drizzleError,
   generateOnConflictInput,
   generateUpdateManyInput,
@@ -535,7 +536,7 @@ const { prepareBuild, forEachTable, finalizeBuild } = createSchemaBuilder({
   tableClass: MySqlTable,
   getTableConfig,
   primaryKeyPropNames: mysqlPrimaryKeyPropNames,
-  nullOrdering: 'nulls-smallest',
+  nullOrdering: DIALECT_NULL_ORDERING.mysql,
   returnsRows: false,
   // A nested write reads the key of the row it just wrote back out of the statement that
   // wrote it, which MySQL has no RETURNING clause for.
