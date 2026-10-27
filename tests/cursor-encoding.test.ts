@@ -39,4 +39,20 @@ describe('cursor encoding', () => {
 
     expect(() => decodeCursor(cursor, [['id', 'asc']])).toThrow(/different ordering/);
   });
+
+  it.each([
+    ['an invalid date', { $type: 'date', value: 'nope' }],
+    ['an unparseable bigint', { $type: 'bigint', value: '1.5' }],
+    ['a finite float tag', { $type: 'float', value: '1.5' }],
+    ['an unknown tag', { $type: 'regex', value: 'x' }],
+    ['a tag without text', { $type: 'date', value: 1 }],
+    ['an untagged object', { a: 1 }],
+    ['an array', [1, 2]],
+  ])('rejects %s as DRIZZLE_INVALID_CURSOR', (_name, value) => {
+    const cursor = Buffer.from(JSON.stringify({ o: [['id', 'asc']], v: [value] }), 'utf8').toString('base64url');
+
+    expect(() => decodeCursor(cursor, [['id', 'asc']])).toThrow(
+      expect.objectContaining({ extensions: expect.objectContaining({ code: 'DRIZZLE_INVALID_CURSOR' }) }),
+    );
+  });
 });

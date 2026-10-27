@@ -178,19 +178,46 @@ const encodeCursorValue = (value: any): any => {
   return value;
 };
 
-const decodeCursorValue = (value: any): any => {
-  if (value && typeof value === 'object' && typeof value.$type === 'string') {
-    if (value.$type === 'date') {
-      return new Date(value.value);
-    }
-    if (value.$type === 'bigint') {
-      return BigInt(value.value);
-    }
-    if (value.$type === 'float') {
-      return Number(value.value);
-    }
+/** The text forms a `bigint`-tagged cursor value may take. */
+const BIGINT_TEXT = /^-?\d+$/;
+/** The text forms a `float`-tagged cursor value may take: what `String` makes of a non-finite number. */
+const NON_FINITE_TEXTS: ReadonlySet<string> = new Set(['NaN', 'Infinity', '-Infinity']);
+
+const invalidCursorValue = () =>
+  drizzleError('Invalid cursor: it holds a value no page issues. Pass a cursor returned by a previous page.', {
+    code: 'DRIZZLE_INVALID_CURSOR',
+  });
+
+/**
+ * Reverses {@link encodeCursorValue}, refusing anything it never produces: a cursor is client
+ * input, and a forged value would otherwise bind as an invalid date (a silently empty page) or
+ * fail in the driver (an internal error).
+ */
+const decodeCursorValue = (value: unknown): unknown => {
+  const isPlainScalar =
+    value === null || typeof value === 'string' || typeof value === 'boolean' || Number.isFinite(value);
+  if (isPlainScalar) {
+    return value;
   }
-  return value;
+  const { $type: type, value: text } = (value ?? {}) as { $type?: unknown; value?: unknown };
+  const isTagged = typeof value === 'object' && !Array.isArray(value) && typeof text === 'string';
+  if (!isTagged) {
+    throw invalidCursorValue();
+  }
+  if (type === 'date') {
+    const date = new Date(text);
+    if (Number.isNaN(date.getTime())) {
+      throw invalidCursorValue();
+    }
+    return date;
+  }
+  if (type === 'bigint' && BIGINT_TEXT.test(text)) {
+    return BigInt(text);
+  }
+  if (type === 'float' && NON_FINITE_TEXTS.has(text)) {
+    return Number(text);
+  }
+  throw invalidCursorValue();
 };
 
 /**
