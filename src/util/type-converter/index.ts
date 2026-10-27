@@ -55,6 +55,9 @@ const smallIntegerConstraints = new Set<string>([
   'year',
 ]);
 
+/** drizzle's `string` constraints of a bigint column in string mode (PG and MySQL). */
+const bigIntStringConstraints = new Set<string>(['int64', 'uint64']);
+
 /** A GraphQL `Name` that is also allowed as an enum value — the spec reserves the three literals. */
 const validEnumValueName = (name: string): boolean =>
   /^[_a-zA-Z][_a-zA-Z0-9]*$/.test(name) && name !== 'true' && name !== 'false' && name !== 'null';
@@ -412,6 +415,12 @@ const columnBaseToGraphQLCore = (
       // keep their existing mapping.
       if (constraint === 'numeric' && !(column as any).dimensions) {
         return { type: GraphQLDecimalString, typeLabel: 'Decimal' };
+      }
+
+      // `bigint({ mode: 'string' })` is a 64-bit integer transported as text, so it gets the
+      // same `BigInt` scalar (and number filters) as the other bigint modes.
+      if (constraint !== undefined && bigIntStringConstraints.has(constraint)) {
+        return { type: GraphQLBigIntString, typeLabel: 'BigInt' };
       }
 
       if (isDateTimeColumn(column)) {

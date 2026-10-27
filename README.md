@@ -657,7 +657,7 @@ generated SDL says what a field actually holds instead of falling back to `Strin
 | Drizzle column                             | GraphQL type | Transported as                       |
 | ------------------------------------------ | ------------ | ------------------------------------ |
 | `json` / `jsonb` (and `mode: 'json'`)       | `JSON`       | the parsed value                     |
-| `bigint` (and `mode: 'bigint'`)             | `BigInt`     | a decimal string                     |
+| `bigint` (`mode: 'bigint'` or `'string'`)   | `BigInt`     | a decimal string                     |
 | `uuid`                                      | `UUID`       | a validated UUID string              |
 | `timestamp` / `datetime` (either `mode`)    | `DateTime`   | an ISO-8601 string                   |
 | SQLite `integer({ mode: 'timestamp' })` / `'timestamp_ms'` | `DateTime` | an ISO-8601 string       |
@@ -678,7 +678,8 @@ mutation {
     variable rather than a string of JSON
 -   **`BigInt`** is always a decimal string in both directions, so values past
     `Number.MAX_SAFE_INTEGER` survive the round-trip. Integer literals are accepted on input;
-    floats and non-numeric strings are rejected
+    floats and non-numeric strings are rejected. Filters on it are `BigIntFilter` (number
+    operators, no `like`)
 -   **`UUID`** validates the format on the way in, including inside `where` filters
 -   **`Decimal`** is a decimal string in both directions, so the precision the column declares
     is not lost to a JS float. Non-numeric and non-finite input is rejected
@@ -738,6 +739,11 @@ Some columns map to built-in GraphQL types rather than a custom scalar:
 > the values themselves are unchanged. `integer({ mode: 'boolean' })` and the timestamp modes are
 > not affected. A SQLite `blob({ mode: 'buffer' })` column, which used to be `JSON` and could
 > not be written, is now `[Int!]`.
+
+> **Upgrading — `bigint({ mode: 'string' })`.** A Postgres or MySQL bigint in string mode used
+> to be `String` with a `StringFilter`, whose `like` / `ilike` failed in the database. It is now
+> `BigInt` in every position, with `BigIntFilter` and `BigIntFieldUpdate`, like the other bigint
+> modes. The values are the same decimal strings; variables typed `String` become `BigInt`.
 
 > **Upgrading — MySQL unsigned `int` and `serial`.** `int({ unsigned: true })` (up to 2^32 - 1)
 > and `serial()` (`BIGINT UNSIGNED`) used to be `Int`, so a value past 2^31 - 1 failed to read or
