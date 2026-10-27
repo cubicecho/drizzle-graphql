@@ -44,7 +44,7 @@ export {
   orderByHasRelationEntry,
   rowCursorResolver,
 } from './common/cursor.ts';
-export { primaryKeyRestriction, selectDistinctKeys } from './common/distinct.ts';
+export { distinctRowsCondition } from './common/distinct.ts';
 export { columnDocs } from './common/docs.ts';
 export {
   applyErrorMapper,

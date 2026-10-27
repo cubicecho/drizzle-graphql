@@ -1,47 +1,49 @@
-// `distinctOn` for the dialects with no native support: the window-function key query the
-// resolver runs first, and the primary-key restriction it feeds into the real select.
+// `distinct` for the relational query builder, which has no support for it: a window-function
+// pass over the table, embedded in the read as the condition selecting the rows it keeps.
 
 import type { Column, Table } from 'drizzle-orm';
-import { and, asc, eq, getColumns, inArray, type SQL, sql } from 'drizzle-orm';
+import { asc, eq, getColumns, type SQL, sql } from 'drizzle-orm';
 import { DISTINCT_RN } from './column-enums.ts';
 import { drizzleError } from './errors.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import { offsetOnlyLimit } from './limits.ts';
 import { orderByEntries, orderExpressions } from './order-by.ts';
-import { balancedOr } from './relations.ts';
-import { subquerySafeSelection } from './selected-columns.ts';
-
-/**
- * Alias the parent key comes back under when the pass runs through a junction table. See
- * `selectDistinctKeys`' `junction` parameter.
- */
-export const DISTINCT_PARENT = '__dgql_distinct_parent';
 
 /** Alias prefix of the ordering columns inside the distinct pass's subquery. */
 const DISTINCT_ORDER = '__dgql_distinct_o';
 
+/** Alias of the parent key inside the distinct pass's subquery, when it runs through a junction. */
+const DISTINCT_PARENT = '__dgql_distinct_parent';
+
 /**
- * Keeps the first row of each distinct combination of the requested columns, following the
- * query's own ordering, then applies `limit`/`offset` to what survives — and returns the
- * surviving rows' primary key values in that order.
+ * Condition matching the rows `distinct` keeps: the first row of each distinct combination of
+ * the requested columns, following the query's own ordering, with `limit`/`offset` applied to
+ * what survives. It is a subquery of the read it narrows — `pk in (select … from (<pass>) where
+ * rn = 1 …)` — so the read stays one statement and binds no list of keys, however many rows
+ * survive. (It used to return the keys to JS and bind them back as an `IN (…)` list, which past
+ * the dialects' parameter limits failed or, on PGlite, silently matched nothing.)
  *
- * The relational query builder has no `distinct` support, so this runs as its own
- * `row_number() over (partition by … order by …)` pass and the main query is narrowed to the
- * keys it returns. `orderExprs` is the full ordering (the request's `orderBy` plus the primary
- * key tiebreak); the caller applies the same ordering to the main query, so the two agree.
+ * The pass is a `row_number() over (partition by … order by …)` window over `table`, filtered
+ * by `where`. Its ordering is the request's `orderBy` plus the primary-key tiebreak; the caller
+ * applies the same ordering to the read itself, so the two agree on which rows come first.
+ *
+ * `target` is the table the condition is written against — the RQB's aliased proxy on a root
+ * list, the table itself on a relation batch. The pass reads `table` inside a derived table, so
+ * its references never resolve to the outer query's.
  *
  * `partitionBy` prepends extra columns to the window's partition. A to-many relation field
  * uses it to pass the foreign key, which makes the pass distinct *within each parent* rather
  * than across the whole batch — the same meaning `distinct` has on a root list.
  *
  * `junction` is for a many-to-many relation: the target is joined to the junction `on` the
- * given condition, and each returned key also carries the parent it was kept for, under
- * {@link DISTINCT_PARENT}. A target row linked to several parents can be kept for one and
- * dropped for another, so a key alone cannot narrow such a batch.
+ * given condition, and the condition matches (parent, row) pairs rather than rows — a target
+ * row linked to several parents can be kept for one and dropped for another. `parentKey` is the
+ * junction column the outer query joins too, so it names the pair's parent on both sides.
  */
-export const selectDistinctKeys = async (params: {
+export const distinctRowsCondition = (params: {
   db: any;
   table: Table;
+  target: Table;
   tableName: string;
   distinct: string[];
   pkNames: readonly string[];
@@ -51,8 +53,9 @@ export const selectDistinctKeys = async (params: {
   offset?: number;
   partitionBy?: Column[];
   junction?: { table: Table; on: SQL; parentKey: Column };
-}): Promise<Record<string, any>[]> => {
-  const { db, table, tableName, distinct, pkNames, where, orderBy, limit, offset, partitionBy, junction } = params;
+}): SQL => {
+  const { db, table, target, tableName, distinct, pkNames, where, orderBy, limit, offset, partitionBy, junction } =
+    params;
   const cols = getColumns(table);
 
   if (!pkNames.length) {
@@ -71,7 +74,7 @@ export const selectDistinctKeys = async (params: {
 
   const orderEntries = orderBy ? orderByEntries(orderBy) : [];
   // Both orderings must agree, so build each from the same entries — once against the table
-  // (inside the window) and once against the subquery's fields (for the outer row order).
+  // (inside the window) and once against the subquery's fields (for the page's row order).
   const windowOrder = [
     ...orderEntries.flatMap(([column, direction, nulls]) =>
       orderExpressions(cols[column]!, direction, nulls, cols[column]!),
@@ -84,22 +87,18 @@ export const selectDistinctKeys = async (params: {
     sql`, `,
   )})`.as(DISTINCT_RN);
 
-  // The subquery carries only what the outer query reads back by name: the primary key it
-  // returns, the parent key, the row number, and the ordering columns (the request's, then the
-  // primary-key tiebreak). Every one has an explicit alias — drizzle selects a SQLite
-  // `numeric()` column as an unaliased `cast(… as text)`, which the outer query could not find
-  // by name — and the ordering columns are the raw column, so they sort by the stored value
-  // rather than its text.
+  // The subquery carries only what is read back from it by name: the parent key, the row
+  // number, and the ordering columns — the request's, then the primary key, which is both the
+  // tiebreak and the key the condition matches on. Each is the raw column under an explicit
+  // alias: drizzle selects a SQLite `numeric()` column as an unaliased `cast(… as text)`, which
+  // could not be found by name, and the raw column sorts and compares by its stored value.
   const orderAlias = (index: number) => `${DISTINCT_ORDER}${index}`;
+  const orderColumns = [...orderEntries.map(([column]) => column), ...pkNames];
   const selected = db
     .select({
-      ...subquerySafeSelection(Object.fromEntries(pkNames.map((name) => [name, cols[name]!]))),
-      ...(junction ? subquerySafeSelection({ [DISTINCT_PARENT]: junction.parentKey }) : {}),
+      ...(junction ? { [DISTINCT_PARENT]: sql`${junction.parentKey}`.as(DISTINCT_PARENT) } : {}),
       ...Object.fromEntries(
-        [...orderEntries.map(([column]) => column), ...pkNames].map((column, index) => [
-          orderAlias(index),
-          sql`${cols[column]!}`.as(orderAlias(index)),
-        ]),
+        orderColumns.map((column, index) => [orderAlias(index), sql`${cols[column]!}`.as(orderAlias(index))]),
       ),
       [DISTINCT_RN]: rowNumber,
     })
@@ -108,50 +107,42 @@ export const selectDistinctKeys = async (params: {
     .where(where)
     .as('__dgql_distinct');
 
-  const outerOrder = [
-    ...orderEntries.flatMap(([column, direction, nulls], index) =>
-      orderExpressions(sub[orderAlias(index)], direction, nulls, cols[column]!),
-    ),
-    ...pkNames.map((_, index) => asc(sub[orderAlias(orderEntries.length + index)])),
+  const keyFields = [
+    ...(junction ? [sub[DISTINCT_PARENT]] : []),
+    ...pkNames.map((_, index) => sub[orderAlias(orderEntries.length + index)]),
   ];
-
-  let query = db
-    .select({
-      ...Object.fromEntries(pkNames.map((name) => [name, sub[name]])),
-      ...(junction ? { [DISTINCT_PARENT]: sub[DISTINCT_PARENT] } : {}),
-    })
+  const keyName = (index: number) => `${DISTINCT_ORDER}k${index}`;
+  let kept = db
+    .select(Object.fromEntries(keyFields.map((field, index) => [keyName(index), field])))
     .from(sub)
-    .where(eq(sub[DISTINCT_RN], 1))
-    .orderBy(...outerOrder);
+    .where(eq(sub[DISTINCT_RN], 1));
 
-  if (offset) {
-    query = query.offset(offset);
-  }
+  // Without a page to cut, which rows survive does not depend on their order, and the read
+  // orders them itself.
   const effectiveLimit = offsetOnlyLimit(table, limit, offset);
-  if (effectiveLimit != null) {
-    // The select builders drop a negative limit, so SQLite's `-1` goes in as a bound value.
-    query = query.limit(effectiveLimit < 0 ? sql`${effectiveLimit}` : effectiveLimit);
-  }
-
-  return await query;
-};
-
-/**
- * Condition matching exactly the rows identified by `keys` — an `IN (…)` for a single-column
- * primary key, an `OR` of per-row equality for a composite one — nested as a balanced tree, so
- * thousands of keys stay within SQLite's expression-depth limit. `table` may be the aliased RQB
- * proxy.
- */
-export const primaryKeyRestriction = (table: Table, pkNames: readonly string[], keys: Record<string, any>[]): SQL => {
-  const cols = getColumns(table);
-
-  if (pkNames.length === 1) {
-    const name = pkNames[0]!;
-    return inArray(
-      cols[name]!,
-      keys.map((key) => key[name]),
+  if (offset || effectiveLimit != null) {
+    kept = kept.orderBy(
+      ...orderEntries.flatMap(([column, direction, nulls], index) =>
+        orderExpressions(sub[orderAlias(index)], direction, nulls, cols[column]!),
+      ),
+      ...pkNames.map((_, index) => asc(sub[orderAlias(orderEntries.length + index)])),
     );
+    if (offset) {
+      kept = kept.offset(offset);
+    }
+    if (effectiveLimit != null) {
+      // The select builders drop a negative limit, so SQLite's `-1` goes in as a bound value.
+      kept = kept.limit(effectiveLimit < 0 ? sql`${effectiveLimit}` : effectiveLimit);
+    }
+    // MySQL refuses a `LIMIT` inside an `IN` subquery, but not inside a derived table one reads.
+    const page = kept.as('__dgql_distinct_page');
+    kept = db
+      .select(Object.fromEntries(keyFields.map((_, index) => [keyName(index), page[keyName(index)]])))
+      .from(page);
   }
 
-  return balancedOr(keys.map((key) => and(...pkNames.map((name) => eq(cols[name]!, key[name])))))!;
+  const targetCols = getColumns(target);
+  const lhs = [...(junction ? [junction.parentKey] : []), ...pkNames.map((name) => targetCols[name]!)];
+  // A row-value `IN` over a subquery for a composite key — every dialect here accepts it.
+  return lhs.length === 1 ? sql`${lhs[0]} in ${kept}` : sql`(${sql.join(lhs, sql`, `)}) in ${kept}`;
 };

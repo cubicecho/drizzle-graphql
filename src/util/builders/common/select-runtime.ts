@@ -17,7 +17,7 @@ import {
   isCursorFieldSelected,
   orderByCursorObstacle,
 } from './cursor.ts';
-import { primaryKeyRestriction, selectDistinctKeys } from './distinct.ts';
+import { distinctRowsCondition } from './distinct.ts';
 import { drizzleError } from './errors.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
@@ -127,33 +127,33 @@ export const runRelationalSelect = async (opts: {
   // narrowed to a subset, mirroring the relation-level default in extractRelationsParams.
   const needsDefaultOrder = single || offset != null || opts.limit != null;
 
-  // `distinct` runs as its own pass — the relational query builder cannot express it — and
-  // the main query is then narrowed to the primary keys it picked, with the same ordering
-  // and without re-applying limit/offset.
-  let distinctKeys: Record<string, any>[] | undefined;
-  if (distinct) {
-    distinctKeys = await selectDistinctKeys({
-      db: opts.db,
-      table,
-      tableName,
-      distinct,
-      pkNames: pkNames ?? [],
-      where: withScope(
-        scope,
-        tableName,
-        table,
-        where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, scope)) : undefined,
-        deleted,
-      ),
-      orderBy,
-      limit: single ? 1 : opts.limit,
-      offset,
-    });
-
-    if (!distinctKeys.length) {
-      return single ? undefined : [];
-    }
-  }
+  // `distinct` is a window pass the relational query builder cannot express, so the main query
+  // is narrowed to the rows it keeps by a subquery — one statement, with the same ordering and
+  // without re-applying limit/offset, which the pass has already cut its page with.
+  const distinctRows = distinct
+    ? (aliasedTable: Table) =>
+        distinctRowsCondition({
+          db: opts.db,
+          table,
+          target: aliasedTable,
+          tableName,
+          distinct,
+          pkNames: pkNames ?? [],
+          where: withScope(
+            scope,
+            tableName,
+            table,
+            where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, scope)) : undefined,
+            deleted,
+          ),
+          orderBy,
+          limit: single ? 1 : opts.limit,
+          offset,
+        })
+    : undefined;
+  // Raised here rather than when the query builder calls back, so a table with no primary key
+  // or an unknown column fails before any SQL runs, as it always has.
+  distinctRows?.(table);
 
   const params: any = {
     columns: extractSelectedColumnsFromTree(parsedInfo.fieldsByTypeName[typeName]!, table, {
@@ -162,10 +162,10 @@ export const runRelationalSelect = async (opts: {
       tables,
       allRelations: filterCtx?.relationMap,
     }),
-    offset: distinctKeys ? undefined : offset,
+    offset: distinctRows ? undefined : offset,
     // drizzle-orm v1 RQB calls orderBy/where with the aliased table proxy — use it
     // directly so column refs match the CTE alias.
-    orderBy: distinctKeys
+    orderBy: distinctRows
       ? (aliasedTable: Table) => [
           ...(orderBy
             ? extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName, scope), where)
@@ -187,9 +187,9 @@ export const runRelationalSelect = async (opts: {
           : needsDefaultOrder && pkNames?.length
             ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
             : undefined,
-    where: distinctKeys
-      ? // The distinct pass already ran inside the scope, so the keys it picked are in it.
-        { RAW: (aliasedTable: Table) => primaryKeyRestriction(aliasedTable, pkNames!, distinctKeys!) }
+    where: distinctRows
+      ? // The distinct pass runs inside the scope, so the rows it keeps are in it.
+        { RAW: distinctRows }
       : where || cursorValues || scope?.has(tableName, deleted)
         ? {
             RAW: (aliasedTable: Table) =>
@@ -251,7 +251,7 @@ export const runRelationalSelect = async (opts: {
     }
   }
 
-  params.limit = distinctKeys ? undefined : offsetOnlyLimit(table, opts.limit, offset);
+  params.limit = distinctRows ? undefined : offsetOnlyLimit(table, opts.limit, offset);
   const result = await queryBase.findMany(omitUndefinedKeys(params));
   if (cursorEntries && cursorSelected) {
     // On the raw rows, before remapping rewrites dates/bigints into transport forms.
