@@ -2,7 +2,8 @@
 // asked for, and eager-loading relations onto the rows a mutation returns.
 
 import type { Table } from 'drizzle-orm';
-import { and, inArray, type SQL, sql } from 'drizzle-orm';
+import { and, inArray, is, type SQL, sql } from 'drizzle-orm';
+import { PgAsyncTransaction } from 'drizzle-orm/pg-core';
 import { remapToGraphQLArrayOutput, remapToGraphQLSingleOutput } from '../../data-mappers/index.ts';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import type { ProcessedTableSelectArgs, TableNamedRelations } from '../types.ts';
@@ -342,18 +343,21 @@ export const eagerLoadMutationRelations = async (
     };
   }
 
+  const refetchConfig = { columns: pkColumns, where: { RAW: whereRaw }, with: withParams };
+  // A failed statement aborts a whole Postgres transaction, so there the re-fetch runs in a
+  // savepoint: its failure is rolled back alone and the write can still commit. Other
+  // dialects only undo the failed statement, so they need no savepoint.
+  const abortsEnclosingTransaction = is(db, PgAsyncTransaction);
   let enriched: any[];
   try {
-    enriched = await queryBase.findMany({
-      columns: pkColumns,
-      where: { RAW: whereRaw },
-      with: withParams,
-    });
+    enriched = abortsEnclosingTransaction
+      ? await db.transaction((savepoint: any) => (savepoint.query?.[tableName] ?? queryBase).findMany(refetchConfig))
+      : await queryBase.findMany(refetchConfig);
   } catch (err) {
-    // The write has already committed; a re-fetch failure (e.g. an RQB-incompatible
-    // column or relation) must not turn a successful mutation into an error. Fall back
-    // to the raw rows — relations then resolve lazily via the batch loader — but surface
-    // the cause so a genuine misconfiguration isn't silently hidden.
+    // The write itself succeeded (and, in a transaction, can still commit); a re-fetch
+    // failure (e.g. an RQB-incompatible column or relation) must not turn it into an error.
+    // Fall back to the raw rows — relations then resolve lazily via the batch loader — but
+    // surface the cause so a genuine misconfiguration isn't silently hidden.
     console.warn(
       `[drizzle-graphql] eager-loading relations for a "${tableName}" mutation failed; ` +
         'falling back to lazy resolution.',
