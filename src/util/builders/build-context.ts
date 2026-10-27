@@ -70,6 +70,7 @@ import {
   resetAggregateColumnCache,
 } from './aggregates.ts';
 import { registerBuildRuntime } from './common/build-registry.ts';
+import { resetFieldUpdateCaches } from './field-updates.ts';
 import {
   buildNestedWritePlans,
   createNestedWriteRuntime,
@@ -264,6 +265,8 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     // Column classifications for the aggregates are cached across the tables of one build, and
     // hold that build's types and exclusions — so they are dropped here for the same reason.
     resetAggregateColumnCache();
+    // Which columns take a `…FieldUpdate` input depends on this build's scalar overrides.
+    resetFieldUpdateCaches();
 
     // Flatten drizzle-orm v1 TablesRelationalConfig into the canonical shape
     // used throughout common.ts: Record<tableName, Record<relName, TableNamedRelations>>
