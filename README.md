@@ -2707,6 +2707,11 @@ The payload:
     not have to know which.
 -   **Throwing rolls the mutation back.** A hook that can only log is what a logging plugin
     already does.
+-   **`before` runs once the arguments have passed.** A request its arguments alone make
+    invalid — no values, a missing or match-everything `where`, an unknown column, a bad field
+    update operation, nested input or `onConflict` — is refused without calling it, on every
+    write. Checks that read the database (a `Single` write's one-row match, a nested
+    `connect`'s match) run after it, since the hook may write first.
 -   **SQLite needs an asynchronous driver** (libsql, D1). A synchronous one (better-sqlite3,
     `node:sqlite`) commits before an awaited hook runs, so a throw could not roll anything
     back; `buildSchema` throws for `onWrite` on one, as it does for `nestedWrites` and

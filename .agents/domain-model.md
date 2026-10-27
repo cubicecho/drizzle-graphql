@@ -18,7 +18,7 @@ writes, filters, pagination, aggregates and row policies all compiled to SQL.
 - **Single-row read:** `usersSingle(where, orderBy, offset)` → same path with `single: true` → `findFirst` (PK order by default, no limit policy, no cursor) → `remapToGraphQLSingleOutput` or `null`.
 - **Relation field read:** parent row → relation resolver → eager value on the parent? return it : `getOrCreateRequestValue` (args → loader key, per execution) → `getOrCreateLoader` (per execution + key) → next microtask: one `IN`/OR query per chunk, windowed when paginated, scoped + soft-delete filtered → group by parent key → remap.
 - **Aggregate read:** `usersAggregate(where, deleted)` / `usersGroupBy(by, having, …)` / `postsAggregate` on a parent → `parseAggregateRequest` → `select(aggregates).from(table)` with filters + scope (grouped / batched by FK for relation aggregates) → `assembleAggregateRow`.
-- **Mutation (insert / update / delete / upsert / restore / updateMany / count):** client mutation → `writeResolver` → `runMutation` (pick executor: caller's, request's shared tx, forced tx for hooks, or `db`) → body: validate input → `before` hook → remap input, stamp/strip context values → `scopedWhere` (+ `assertSingleMatch` for `Single`) → statement with `RETURNING` (PG/SQLite) or plain (MySQL) → `after` hook → strip hook-only columns → `withEagerRelations` re-fetch → remap → rows, `{ isSuccess }` (MySQL) or an `Int` (count).
+- **Mutation (insert / update / delete / upsert / restore / updateMany / count):** client mutation → `writeResolver` → `runMutation` (pick executor: caller's, request's shared tx, forced tx for hooks, or `db`) → body: validate input (remap, stamp/strip context values, `scopedWhere`, `nested.validate`) → `before` hook → `narrowToSingleMatch` for `Single` → statement with `RETURNING` (PG/SQLite) or plain (MySQL) → `after` hook → strip hook-only columns → `withEagerRelations` re-fetch → remap → rows, `{ isSuccess }` (MySQL) or an `Int` (count).
 - **Nested write:** create/update/upsert input → `nested.split` (columns vs relation ops) → `writeWithNestedOps` / `updateWithNestedOps` opens a transaction → per entry `writeNestedEntry`: `applyParentSide` (create/connect target first, key into parent) → parent write → `checkParentSide` → `applyChildSide` (attach children / junction rows) → `refreshed` → each nested statement fires the target table's hooks with `payload.nested`.
 
 Dependency direction: `index.ts` → `build-config.ts` → `builders/{pg,sqlite,mysql}.ts` → `schema-data.ts` / `build-context.ts` → `write-resolvers.ts`, `select.ts`, `aggregates.ts`, `nested-writes.ts` → `builders/common/*` → `type-converter`, `data-mappers`, `parse-resolve-info`, `batch-loader`; `selection.ts` sits beside `index.ts` and reads the build through `common/build-registry.ts`.
@@ -40,9 +40,10 @@ Dependency direction: `index.ts` → `build-config.ts` → `builders/{pg,sqlite,
 Write request — owner `common/write-scaffold.ts writeResolver` + `common/transactions.ts runMutation`:
 ```
 received --runMutation, library--> executor chosen (caller tx | shared tx | forced tx when hooked | db)
-executor chosen --body validates input, library--> validated        (MySQL insert/update; PG/SQLite insert/upsert/updateMany)
-executor chosen --before hook, consumer--> pre-hooked --validate--> validated   (PG/SQLite update, MySQL insertSingle/delete/updateMany)
-validated --statement, library--> written --after hook, consumer--> hooked
+executor chosen --body checks the args alone (values, where, columns, field ops, nested ops, onConflict), library--> validated
+validated --before hook, consumer--> pre-hooked   (every path; a request refused above never reaches it)
+pre-hooked --DB checks (Single match, nested connect/hidden rows), library--> statement ready
+statement ready --statement, library--> written --after hook, consumer--> hooked
 hooked --withEagerRelations re-fetch, library--> enriched --remap--> answered
 any state --throw--> failed --toGraphQLError + onError mapper--> error response (rolled back only if a tx was open)
 ```
@@ -110,6 +111,7 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 | A default ordering never uses an excluded or unorderable column | `build-config.resolveBuildConfig` |
 | Excluded tables generate nothing and no relation points at them | `build-context.prepareBuild` |
 | A field with an `onWrite` hook runs in a transaction | `write-scaffold.writeResolver` → `transactions.runMutation(forceTx)` |
+| A write its arguments alone make invalid is refused before its `before` hook runs; checks that read the database run after it | every write body (`write-resolvers`, `update-many`, `mysql`, `mutation-helpers.generateWriteCount`), `nested.validate` |
 | A caller-supplied executor is used as-is; the library never nests its own shared tx in it | `transactions.runMutation` |
 | After a failure in the shared tx, later mutation fields do not run | `transactions.runOnSharedTx` |
 | `hard` only purges on a soft-delete table that opted in | `write-resolvers.generateDelete`, `mutation-helpers.generateWriteCount` |

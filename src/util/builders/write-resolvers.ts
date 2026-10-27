@@ -27,6 +27,7 @@ import {
   applyContextValues,
   applyContextValuesAll,
   applyObjectTypeName,
+  type ConflictBatch,
   drizzleError,
   excludedColumnRef,
   extractFilters,
@@ -171,7 +172,6 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         if (!supplied.length) {
           throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
         }
-        await before();
 
         // Split each row's relation fields off its columns. Only when something is actually
         // nested does the write leave the single multi-row statement below.
@@ -179,6 +179,9 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           ? supplied.map((values) => nested.split(tableName, values))
           : undefined;
         const nestedEntries = entries?.some((entry) => nested!.hasOps(entry.ops)) ? entries : undefined;
+        for (const entry of nestedEntries ?? []) {
+          nested!.validate(tableName, entry.ops, { context, args, info });
+        }
         const contextColumns = insertStamps(policies, tableName);
         const scope = policies?.scope?.(context);
         const input = nestedEntries
@@ -207,6 +210,9 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         const returning = withHookReturning(
           nestedEntries ? nested!.withJoinColumns(tableName, mergedOps(nestedEntries), { ...columns }, table) : columns,
         );
+
+        // Everything above checks the arguments; the hook runs once they have passed.
+        await before();
 
         const runInsert = async (target: any, values: Record<string, any>[]) => {
           let query = target.insert(table).values(values).returning(returning);
@@ -285,12 +291,14 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         if (!supplied.length) {
           throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
         }
-        await before();
 
         const entries = nested?.enabled(tableName)
           ? supplied.map((values) => nested.split(tableName, values))
           : undefined;
         const nestedEntries = entries?.some((entry) => nested!.hasOps(entry.ops)) ? entries : undefined;
+        for (const entry of nestedEntries ?? []) {
+          nested!.validate(tableName, entry.ops, { context, args, info });
+        }
         const contextColumns = insertStamps(policies, tableName);
         const scope = policies?.scope?.(context);
         const input = nestedEntries
@@ -323,8 +331,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         // The conflict plan reads the columns the write actually supplies, so a nested write
         // — whose rows go in one at a time, each already carrying whatever its parent-side
         // operations produced — resolves its plan per row rather than once for the batch.
-        const runUpsert = async (target: any, values: Record<string, any>[], ops?: NestedOps) => {
-          const batches = resolveConflictPlan({
+        const conflictBatches = (values: Record<string, any>[]) =>
+          resolveConflictPlan({
             table,
             values,
             onConflict: args.onConflict,
@@ -336,7 +344,12 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             buildWhere: (where) =>
               extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, scope)),
           });
+        // A plain upsert's plan depends on its arguments alone, so a bad `onConflict` is refused
+        // before the hook runs.
+        const plainBatches = nestedEntries ? undefined : conflictBatches(input);
+        await before();
 
+        const runUpsert = async (target: any, batches: ConflictBatch[], ops?: NestedOps) => {
           const batchQuery = (executor: any, { values: rows, plan }: (typeof batches)[number]) => {
             const query = executor.insert(table).values(rows).returning(returning);
             // On conflict the statement updates a row that already exists, so the scope applies
@@ -388,10 +401,10 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
               entries: nestedEntries,
               remapValues: (values) =>
                 applyContextValues(remapFromGraphQLSingleInput(values, table), contextColumns, context),
-              write: (tx, values, ops) => runUpsert(tx, [values], ops),
+              write: (tx, values, ops) => runUpsert(tx, conflictBatches([values]), ops),
               request: { context, args, info },
             })
-          : await runUpsert(executor, input);
+          : await runUpsert(executor, plainBatches!);
 
         await after(written);
         const result = output(written);
@@ -436,7 +449,6 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
       run: async ({ executor, args, context, info, before, after, returning: withHookReturning, output }) => {
         const { where, set } = args;
         const scope = policies?.scope?.(context);
-        await before();
 
         const { columns, hasRelations, withParams } = mutationSelection(info, {
           relationMap,
@@ -466,6 +478,9 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         if (!Object.keys(input).length && !nestedOps) {
           throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
         }
+        if (nestedOps) {
+          nested!.validate(tableName, nestedOps, { context, args, info });
+        }
 
         const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
         // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
@@ -477,6 +492,9 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           relationCtx,
           required: single || requireWhere,
         });
+        // The arguments have passed; the single-match check reads the database, which the
+        // hook may write first.
+        await before();
         const filters = single ? await narrowToSingleMatch(executor, table, matched!, pkNames) : matched;
 
         const returning = withHookReturning(
@@ -573,7 +591,6 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         // so a stitched-in `hard: true` on a table that never opted in stays a soft delete.
         const hard = canHardDelete && args.hard === true;
         const scope = policies?.scope?.(context);
-        await before();
 
         const parsedInfo = parseResolveInfo(info, {
           deep: true,
@@ -601,6 +618,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           // ones already marked, which the default EXCLUDE could not reach at all.
           deleted: restore ? 'ONLY' : hard ? 'INCLUDE' : undefined,
         });
+        await before();
         const filters = single ? await narrowToSingleMatch(executor, table, matched!, pkNames) : matched;
 
         let query =

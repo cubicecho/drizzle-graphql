@@ -391,7 +391,6 @@ export const generateWriteCount = ({
       // stitched-in `hard: true` on a table that never opted in stays a soft delete.
       const hard = canHardDelete && args.hard === true;
       const scope = policies?.scope?.(context);
-      await before();
 
       let query: any;
       if (kind === 'delete') {
@@ -437,6 +436,8 @@ export const generateWriteCount = ({
       if (filters) {
         query = query.where(writeFilter ? writeFilter(filters) : filters);
       }
+      // Every check above reads only the arguments, so a rejected request never reaches the hook.
+      await before();
 
       if (!readsRows) {
         const result = await query;

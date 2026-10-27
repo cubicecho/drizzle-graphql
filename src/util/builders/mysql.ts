@@ -112,12 +112,12 @@ const generateInsertSingle = (
       },
     },
     run: async ({ executor, args, context, before, after }) => {
-      await before();
       const input = applyContextValues(
         remapFromGraphQLSingleInput(args.values, table),
         insertStamps(policies, tableName),
         context,
       );
+      await before();
 
       await executor.insert(table).values(input);
 
@@ -168,7 +168,6 @@ const generateUpsert = (
       if (!input.length) {
         throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
       }
-      await before();
 
       // MySQL's ON DUPLICATE KEY UPDATE fires on whichever unique key was violated, so
       // there is no target to resolve and no predicate to attach. That is also why the
@@ -183,6 +182,7 @@ const generateUpsert = (
         withTarget: false,
         serverOwned: Object.keys(contextColumns ?? {}),
       });
+      await before();
 
       const runBatch = async (target: any, { values, plan }: (typeof batches)[number]) => {
         if (plan.action === 'NOTHING') {
@@ -264,7 +264,6 @@ const generateUpdate = (
       if (!Object.keys(input).length) {
         throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
       }
-      await before();
 
       const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
       // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
@@ -276,6 +275,9 @@ const generateUpdate = (
         relationCtx,
         required: single || requireWhere,
       });
+      // The arguments have passed; the single-match check reads the database, which the hook
+      // may write first.
+      await before();
 
       const filters = single
         ? await narrowToSingleMatch(executor, table, matched!, mysqlPrimaryKeyPropNames(table))
@@ -331,11 +333,10 @@ const generateUpdateMany = (
       if (!updates.length) {
         throw drizzleError('No updates were provided!', { code: 'DRIZZLE_NO_VALUES' });
       }
-      await before();
       const scope = policies?.scope?.(context);
       const contextColumns = policies?.contextValues?.(tableName);
 
-      // Remap and validate every entry before the transaction opens, so a malformed
+      // Remap and validate every entry before the hook and the transaction, so a malformed
       // entry rejects the request instead of rolling back mid-batch.
       const entries = updates.map(({ where, set }) => {
         const input = stripContextValues(remapUpdateInput(set, table, tableName), contextColumns);
@@ -356,6 +357,7 @@ const generateUpdateMany = (
           }),
         };
       });
+      await before();
 
       // On a caller-supplied transaction — or the shared multi-mutation transaction
       // opened by `runMutation` — this opens a savepoint, so the batch stays atomic
@@ -417,7 +419,6 @@ const generateDelete = (
       ...(canHardDelete ? { hard: hardDeleteArg } : {}),
     },
     run: async ({ executor, args, context, before, after }) => {
-      await before();
       const { where } = args;
       // `canHardDelete` decides whether the argument exists; this decides what it does,
       // so a stitched-in `hard: true` on a table that never opted in stays a soft delete.
@@ -440,6 +441,7 @@ const generateDelete = (
         // ones already marked, which the default EXCLUDE could not reach at all.
         deleted: restore ? 'ONLY' : hard ? 'INCLUDE' : undefined,
       });
+      await before();
 
       const filters = single
         ? await narrowToSingleMatch(executor, table, matched!, mysqlPrimaryKeyPropNames(table))

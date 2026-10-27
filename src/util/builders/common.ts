@@ -21,7 +21,7 @@
 
 export { deletedArg, selectArrayArgs, selectSingleArgs } from './common/args.ts';
 export { generateColumnEnum, generateDistinctEnum } from './common/column-enums.ts';
-export type { ConflictPlan, OnConflictArg } from './common/conflict.ts';
+export type { ConflictBatch, ConflictPlan, OnConflictArg } from './common/conflict.ts';
 export {
   applyConflictPlan,
   conflictActionEnumType,

@@ -1578,6 +1578,10 @@ export type BuildSchemaConfig = {
    *   `drizzleExecutorKey`, the request's auto-transaction, or, for a field that would
    *   otherwise have run unwrapped, a transaction opened for it because the hook is there.
    * - **Throwing rolls the mutation back.** That is the point of the position.
+   * - **`before` runs once the arguments have passed.** A request its arguments alone make
+   *   invalid (no values, a missing or match-everything `where`, an unknown column, a bad
+   *   field update, nested input or `onConflict`) is refused without calling it, on every
+   *   write. Checks that read the database (a `Single` write's one-row match) run after it.
    * - **SQLite needs an asynchronous driver** (libsql, D1). A synchronous one (better-sqlite3,
    *   `node:sqlite`) commits before an awaited hook runs, so `buildSchema` throws for `onWrite`
    *   on one rather than let a throwing hook leave its write behind.

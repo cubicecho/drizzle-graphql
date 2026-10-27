@@ -985,6 +985,12 @@ export type NestedWriteRuntime = {
   /** Whether a split produced anything to do. */
   hasOps: (ops: NestedOps) => boolean;
   /**
+   * Throws for operations the request's arguments alone make invalid: two inputs on a to-one,
+   * or an operand that matches every row. Reads nothing, so a resolver runs it before the
+   * `before` hook; the runtime repeats the same checks as it writes.
+   */
+  validate: (tableName: string, ops: NestedOps, request?: NestedWriteRequest) => void;
+  /**
    * Adds the join columns the child-side operations will need to a RETURNING column map, so
    * the parent rows come back with the key their children are attached by.
    */
@@ -1069,6 +1075,9 @@ const connectMatchError = (relationName: string, matched: number) =>
 const asArray = (value: any): any[] => (Array.isArray(value) ? value : supplied(value) ? [value] : []);
 
 const supplied = (value: any) => value !== undefined && value !== null;
+
+/** The nested inputs whose operands are filters selecting target rows. */
+const FILTER_OPERATIONS = ['connect', 'disconnect', 'set'] as const;
 
 /**
  * A relation's operations without the ones given as `null`. Every operation is a nullable
@@ -1772,6 +1781,32 @@ export const createNestedWriteRuntime = (params: {
     },
 
     hasOps: (ops) => Object.keys(ops).length > 0,
+
+    validate: (tableName, ops, request) => {
+      const tablePlans = plans[tableName];
+      if (!tablePlans) {
+        return;
+      }
+      const scope = resolveScope(policies, request?.context, filterCtx);
+      for (const [relationName, op] of Object.entries(ops)) {
+        const plan = tablePlans[relationName];
+        if (!plan) {
+          continue;
+        }
+        if (plan.isOne) {
+          assertSingleOperation(plan, op);
+        }
+        // A to-one `disconnect` is `true`, not a filter; every object operand is compiled.
+        for (const operation of FILTER_OPERATIONS) {
+          for (const filter of asArray(op[operation])) {
+            const isFilter = typeof filter === 'object';
+            if (isFilter) {
+              conditionOf(plan, filter, operation, scope);
+            }
+          }
+        }
+      }
+    },
 
     withJoinColumns: (tableName, ops, columns, table) => {
       const tablePlans = plans[tableName];
