@@ -19,7 +19,7 @@ import {
   cursorOrderingEntries,
   cursorPreciseSelection,
   decodeCursor,
-  orderByHasRelationEntry,
+  orderByCursorObstacle,
   selectsCursorField,
 } from './cursor.ts';
 import { distinctRowsCondition } from './distinct.ts';
@@ -289,14 +289,13 @@ export const createRelationResolverFactory =
             if (after != null && distinct) {
               throw drizzleError("'after' cannot be combined with 'distinct'.", { code: 'DRIZZLE_INVALID_CURSOR' });
             }
-            if (orderByHasRelationEntry(orderByArg)) {
+            const cursorObstacle = orderByCursorObstacle(orderByArg);
+            if (cursorObstacle) {
               if (after != null) {
-                throw drizzleError(
-                  "'after' cannot be combined with an orderBy that orders through a relation — a related row's value cannot be encoded into a cursor.",
-                  { code: 'DRIZZLE_INVALID_CURSOR' },
-                );
+                throw drizzleError(cursorObstacle, { code: 'DRIZZLE_INVALID_CURSOR' });
               }
-              // `cursor` was selected under a relation ordering — the field resolves to null.
+              // `cursor` was selected under an ordering a cursor cannot express — the field
+              // resolves to null and the ordering itself still applies.
             } else if (!targetPkNames.length) {
               if (after != null) {
                 throw drizzleError(
