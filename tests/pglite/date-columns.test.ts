@@ -85,7 +85,7 @@ describe.sequential('date column schema shape', () => {
   }
 
   it('types a date array column as a list of Date', () => {
-    expect(objectFieldType(entities.types['Entries'], 'daysDate')).toBe('[Date!]');
+    expect(objectFieldType(entities.types['Entries'], 'daysDate')).toBe('[Date]');
     expect(inputFieldType('CreateEntriesInput', 'daysDate')).toBe('[Date!]');
   });
 

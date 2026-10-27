@@ -61,13 +61,14 @@ afterAll(async () => {
 });
 
 describe.sequential('string-array schema shape', () => {
-  it('types a text().array() column as [String!] on the object type', () => {
-    expect(fieldTypeName('Docs', 'tags')).toBe('[String!]');
+  // A Postgres array can hold NULL elements, so the output elements are nullable.
+  it('types a text().array() column as [String] on the object type', () => {
+    expect(fieldTypeName('Docs', 'tags')).toBe('[String]');
   });
 
-  it('keeps numeric array columns typed as [Int!] / [Float!]', () => {
-    expect(fieldTypeName('Docs', 'counts')).toBe('[Int!]');
-    expect(fieldTypeName('Docs', 'scores')).toBe('[Float!]');
+  it('types numeric array columns as [Int] / [Float]', () => {
+    expect(fieldTypeName('Docs', 'counts')).toBe('[Int]');
+    expect(fieldTypeName('Docs', 'scores')).toBe('[Float]');
   });
 
   it('types the column as [String!] on the create and update inputs', () => {

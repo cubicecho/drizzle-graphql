@@ -375,10 +375,13 @@ const columnToGraphQLCore = (
     const inner = columnBaseToGraphQLCore(column, columnName, tableName, isInput);
     const innerLabel = inner.typeLabel ?? (inner.type as GraphQLScalarType).name;
 
+    // A Postgres array may hold NULL elements at any depth, so output elements are nullable.
+    // Inputs keep non-null elements: a write or filter operand has no use for a null element.
     let type: ConvertedColumn<boolean>['type'] = inner.type;
     let typeLabel = innerLabel;
     for (let i = 0; i < dimensions; i++) {
-      type = new GraphQLList(new GraphQLNonNull(type as GraphQLScalarType));
+      const element = type as GraphQLScalarType;
+      type = isInput ? new GraphQLList(new GraphQLNonNull(element)) : new GraphQLList(element);
       typeLabel = `Array<${typeLabel}>`;
     }
 

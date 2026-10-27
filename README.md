@@ -728,7 +728,9 @@ Some columns map to built-in GraphQL types rather than a custom scalar:
     rejected
 -   An **array column** (`bigint().array()`, `timestamp().array()`, …) is a list of its element
     type, and each element is converted as a single value would be, in writes and in the `has` /
-    `hasSome` / `hasEvery` operands alike
+    `hasSome` / `hasEvery` operands alike. On output the elements are nullable at every depth
+    (`integer().array()` reads as `[Int]`), since a Postgres array can hold `NULL` elements; inputs
+    and filter operands keep non-null elements (`[Int!]`)
 
 > **Upgrading — SQLite `integer()` columns.** A SQLite `integer()` column in number mode (the
 > default) used to be `Int`, and reading a value past 2^31 failed with "Int cannot represent
@@ -739,6 +741,11 @@ Some columns map to built-in GraphQL types rather than a custom scalar:
 > the values themselves are unchanged. `integer({ mode: 'boolean' })` and the timestamp modes are
 > not affected. A SQLite `blob({ mode: 'buffer' })` column, which used to be `JSON` and could
 > not be written, is now `[Int!]`.
+
+> **Upgrading — Postgres array elements.** An `.array()` column's object field used to declare
+> non-null elements (`[Int!]`), so reading `{1,NULL,3}` errored the field. Its output type is
+> now `[Int]` (`[[Int]]` for two dimensions); inputs and filters are unchanged. Client code
+> generated from the schema sees the element type become nullable.
 
 > **Upgrading — `bigint({ mode: 'string' })`.** A Postgres or MySQL bigint in string mode used
 > to be `String` with a `StringFilter`, whose `like` / `ilike` failed in the database. It is now
