@@ -31,7 +31,7 @@ Dependency direction: `index.ts` → `build-config.ts` → `builders/{pg,sqlite,
 | GraphQL client | Whoever sends a document at request time | Generated queries and mutations | Rows only within the scope and soft-delete view; filter/order/page/cursor/distinct/deleted args; nested ops where offered; `hard` delete where opted in; never context-value or soft-delete marker columns |
 | Host server | Executes the schema (yoga, apollo, …) | GraphQL `context` object per request (may be reused; per-request state is keyed on the execution) | Which executor runs (`drizzleExecutorKey`) |
 | Row policies | Consumer functions run per request | `scope`, `contextValues`, `softDelete` (function form at build) | Which rows a read/write reaches; values stamped on insert |
-| Write hooks | Consumer `onWrite` functions | `before` / `after` inside the mutation's executor | Anything via `tx`; can veto by throwing (rolls back when in a transaction) |
+| Write hooks | Consumer `onWrite` functions, per table (or every table) and optionally per operation | `before` / `after` inside the mutation's executor, for the operations they are registered for | Anything via `tx`; can veto by throwing (rolls back when in a transaction) |
 | Schema hooks | Consumer `describe*`, `deprecateColumn`, `enumNameMapper`, `enumValueNameMapper`, `mapColumnType`, `derivedTypeNameMapper` | Called at build time | Descriptions, deprecations, type and enum names, column scalars |
 | Overriding resolver | Consumer code over generated types | `entities`, `fieldResolvers`, `resolveSelection`, `selectionToWith`, `extensions.drizzle` | Its own reads, reusing the build's policies via the build registry |
 
@@ -108,6 +108,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 | Two generated root fields never share a name | `root-fields.defineRootField` |
 | List and single suffixes differ unless a `typeNameMapper` is set | `build-config.resolveBuildConfig` |
 | Every table/column name in `exclude`, `scope`, `contextValues`, `softDelete`, `defaults`, `onWrite` exists | `build-config.resolveBuildConfig` |
+| Every key of an `onWrite` registration is a position or an operation, operation keys do not nest, and a `restore` key needs a soft-deleting table | `write-hooks.resolveTableWriteHooks`, `build-config.resolveBuildConfig` |
 | A default ordering never uses an excluded or unorderable column | `build-config.resolveBuildConfig` |
 | Excluded tables generate nothing and no relation points at them | `build-context.prepareBuild` |
 | A field with an `onWrite` hook runs in a transaction | `write-scaffold.writeResolver` → `transactions.runMutation(forceTx)` |
@@ -128,7 +129,6 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 
 - `DRIZZLE_MULTI_ROW_MATCH` means nothing was written (`common/errors.ts`). On a table without a primary key the write cannot be narrowed to the row checked, so a row arriving between the check and the write is still written (`mutation-helpers.narrowToSingleMatch`). Tracked in #230.
 - `transactions: 'auto'` says two executions must not share one context object at the same time (`types.ts` `transactions`); nothing checks it, and the second would find the first's transaction under `drizzleExecutorKey` and run on it. Tracked in #231.
-- `WriteHookFor` takes the operation (`common/write-hooks.ts` `WriteHookFor`), but the resolved lookup ignores it (`build-config.ts:330-331`): hooks are per table, not per operation.
 
 ## Glossary
 
@@ -225,7 +225,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 - **Restore:** Un-marks soft-deleted rows. Owner: `generateDelete({ restore: true })`; prefix `restore`. An UPDATE of the marker, so it is offered only where the table's `update` feature is on (the root mutations, and a nested link through a soft-deleting junction).
 - **Hard delete (hard):** A real `DELETE` on a soft-delete table that opted in. Owner: `hardDeleteArg`.
 - **Policies:** The bundle of scope, context values, soft delete, hooks and default order for a build. Owner: `policies.ts TablePolicies` (as resolved from the config, and as `createRelationResolverFactory` takes them) and `ResolverPolicies` (scope and soft delete bound into `visibility(context)`). `bindPolicies` is the one place the first becomes the second; every resolver, aggregate and nested write reads the bound shape.
-- **Write hook (onWrite, before / after):** Consumer code run around a write on the same executor. Owner: `common/write-hooks.ts normalizeWriteHooks`, `runWriteHook`; `WriteHookPayload`, hook `columns`.
+- **Write hook (onWrite, before / after):** Consumer code run around a write on the same executor, looked up by table and operation (`WriteHookFor`). A registration holds positions for every operation and operation keys (`WriteOperation`) for one; where both cover an operation both run, the every-operation hook first, and `after` rows carry the union of their `columns`. Count mutations look up `update` / `delete`, a nested statement the operation it performs on the table it writes. Owner: `common/write-hooks.ts resolveTableWriteHooks`, `isEveryTableWriteHooks`, `runWriteHook`; `TableWriteHooks`, `WriteHooksByOperation`, `WriteHookPayload`, hook `columns`.
 - **Auto transaction (transactions: 'auto'):** One transaction for a document with several mutation fields. Owner: `transactions.ts runMutation`; `MutationTxCtx`, shared tx.
 - **Error mapping (onError):** What a thrown error becomes before the client sees it. Owner: `common/errors.ts applyErrorMapper`, `defaultErrorMapper`, `drizzleError`; `DrizzleErrorCode`.
 

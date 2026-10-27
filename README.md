@@ -2654,6 +2654,52 @@ Registering a bare function (or a positions object) at the top level applies it 
 anything else is read as a table map keyed by the **Drizzle schema key**, and a name that
 matches nothing throws at build time.
 
+### Hooks per operation
+
+A registration can also hold **operation keys** — `insert`, `update`, `updateMany`, `upsert`,
+`delete`, `restore` — each taking the same shape as a table does (a bare `after` function, or
+`{ before, after, columns }`), for that operation only:
+
+```Typescript
+onWrite: {
+    posts: {
+        after: audit,                                       // every operation
+        delete: { before: refuseIfPublished },              // deletes only
+        update: { after: stampUpdatedBy, columns: ['id'] }, // updates only
+    },
+    // Top level, operation keys alone: every table, deletes only.
+    // onWrite: { delete: auditDelete },
+}
+```
+
+-   **Both levels run.** Positions beside the operation keys (`after: audit` above) still apply
+    to every operation. Where both cover an operation, the every-operation hook runs first and
+    the operation's own second, at each position — so a delete above runs `refuseIfPublished`
+    before the statement and `audit` after it, and an update runs `audit` then
+    `stampUpdatedBy`. Hooks are side effects, not
+    settings, so a narrower key adds to the shared one rather than replacing it: an audit hook
+    cannot be switched off for one operation by accident.
+-   **`payload.operation`** is always the operation that ran, so it equals the key a hook was
+    registered under. The [count mutations](#row-counts-instead-of-rows) run the `update` /
+    `delete` keys; a [nested write](#nested-writes-and-hooks) runs the key for the operation
+    its statement performs on the table it writes (`insert` for a nested `create`, `update`
+    for a key moved on the target, `insert` / `delete` / `restore` on a junction).
+-   **`columns` belongs to the `after` beside it.** An operation's `columns` needs that
+    operation's `after`; a table-level `columns` needs the table-level `after`. Both are added
+    to the operation's `RETURNING`, so each `after` that runs is handed the union.
+-   **The top level** reads an object of operation keys alone as the every-table form
+    (`{ delete: auditDelete }`), and positions with operation keys likewise (`{ after: audit,
+    delete: { before: guard } }`). If any key names a table, it stays a table map, so a table
+    whose schema key happens to be `update` still means that table. An every-table form cannot
+    also name a table: register per table instead.
+-   **An operation with no hook has none.** It runs as an unhooked write, and is not forced into
+    a transaction for a hook that only covers other operations.
+-   **The build fails** for a key that is neither a position nor an operation, an operation key
+    nested inside another, an operation value that is not a function or positions object,
+    `columns` without an `after` beside it, an unknown column, and a `restore` key on a table
+    that does not [soft-delete](#soft-delete) (it has no restore to hook). The every-table form
+    skips `restore` on tables that cannot restore.
+
 ### Which columns `rows` holds
 
 The statement's `RETURNING` list is built from the client's selection, so by default a row
