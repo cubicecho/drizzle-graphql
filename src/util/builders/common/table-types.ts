@@ -92,7 +92,7 @@ const objectTypeShell = (
 const generateSelectFields = (
   tables: Record<string, Table>,
   tableName: string,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
+  namedRelations: Record<string, Record<string, TableNamedRelations>>,
   relationsDepthLimit: number | undefined,
   cacheCtx: TypeCacheCtx,
   typeNameMapper: TypeNameMapper | undefined,
@@ -100,8 +100,8 @@ const generateSelectFields = (
   relationAggregateFactory?: RelationAggregateFactory,
 ): SelectData<true> => {
   const table = tables[tableName]!;
-  const order = generateTableOrderTypeCached(table, tableName, typeNameMapper, cacheCtx, relationMap, tables);
-  const filters = generateTableFilterTypeCached(table, tableName, cacheCtx, typeNameMapper, relationMap, tables);
+  const order = generateTableOrderTypeCached(table, tableName, typeNameMapper, cacheCtx, namedRelations, tables);
+  const filters = generateTableFilterTypeCached(table, tableName, cacheCtx, typeNameMapper, namedRelations, tables);
   const tableFields = generateTableSelectTypeFieldsCached(table, tableName, cacheCtx);
 
   // relationsDepthLimit: 0 → no relation fields on any type (a flat, columns-only schema).
@@ -120,7 +120,7 @@ const generateSelectFields = (
   objectTypeShell(tables, tableName, cacheCtx, typeNameMapper);
   const container = cacheCtx.relationFieldContainers.get(tableName)!;
 
-  const relationsForTable = relationMap[tableName];
+  const relationsForTable = namedRelations[tableName];
   const relationEntries: [string, TableNamedRelations][] = relationsForTable ? Object.entries(relationsForTable) : [];
   const rawRelationFields: [string, ConvertedRelationColumnWithArgs][] = [];
 
@@ -136,12 +136,12 @@ const generateSelectFields = (
       targetTableName,
       cacheCtx,
       typeNameMapper,
-      relationMap,
+      namedRelations,
       tables,
     );
     const targetOrder = isOne
       ? undefined
-      : generateTableOrderTypeCached(targetTable, targetTableName, typeNameMapper, cacheCtx, relationMap, tables);
+      : generateTableOrderTypeCached(targetTable, targetTableName, typeNameMapper, cacheCtx, namedRelations, tables);
 
     // The target table's own type, shared by every relation field that points at it.
     const relType = objectTypeShell(tables, targetTableName, cacheCtx, typeNameMapper);
@@ -260,7 +260,7 @@ const generateSelectFields = (
 export const generateTableTypes = <WithReturning extends boolean>(
   tableName: string,
   tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
+  namedRelations: Record<string, Record<string, TableNamedRelations>>,
   withReturning: WithReturning,
   relationsDepthLimit: number | undefined,
   cacheCtx: TypeCacheCtx,
@@ -275,7 +275,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   const { tableFields, relationFields, filters, order } = generateSelectFields(
     tables,
     tableName,
-    relationMap,
+    namedRelations,
     relationsDepthLimit,
     cacheCtx,
     typeNameMapper,

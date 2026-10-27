@@ -81,7 +81,7 @@ export interface WriteBuildOptions {
   db: WriteDatabase;
   /** Every table in the build — the relation columns a selection can reach live here. */
   tables: Record<string, Table>;
-  relationMap: Record<string, Record<string, TableNamedRelations>>;
+  eagerRelations: Record<string, Record<string, TableNamedRelations>>;
   typeNameMapper?: TypeNameMapper;
   filterCtx?: RelationFilterBase;
   txCtx?: MutationTxCtx;
@@ -146,7 +146,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
    * one-element list.
    */
   const generateInsert = (build: WriteBuildOptions, opts: InsertOptions): CreatedResolver => {
-    const { db, tables, relationMap, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } = build;
+    const { db, tables, eagerRelations, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } =
+      build;
     const { tableName, table, baseType, fieldName, typeName, single, conflictDoNothing = false } = opts;
     const queryArgs: GraphQLFieldConfigArgumentMap = {
       values: {
@@ -193,7 +194,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             );
 
         const { columns, hasRelations, withParams } = mutationSelection(info, {
-          relationMap,
+          eagerRelations,
           filterCtx,
           tables,
           tableName,
@@ -250,8 +251,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         const enriched = await withEagerRelations(executor, tableName, result, pkNames, withParams, hasRelations);
 
         return single
-          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
-          : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
+          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, eagerRelations)
+          : remapToGraphQLArrayOutput(enriched, tableName, table, eagerRelations);
       },
     });
   };
@@ -263,7 +264,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
    * Shares the insert input: an upsert supplies a whole row, same as a create.
    */
   const generateUpsert = (build: WriteBuildOptions, opts: UpsertOptions): CreatedResolver => {
-    const { db, tables, relationMap, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } = build;
+    const { db, tables, eagerRelations, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } =
+      build;
     const { tableName, table, baseType, onConflictType, uniqueSets, fieldName, typeName, single } = opts;
     const queryArgs: GraphQLFieldConfigArgumentMap = {
       values: {
@@ -310,7 +312,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             );
 
         const { columns, hasRelations, withParams } = mutationSelection(info, {
-          relationMap,
+          eagerRelations,
           filterCtx,
           tables,
           tableName,
@@ -416,14 +418,15 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         const enriched = await withEagerRelations(executor, tableName, result, pkNames, withParams, hasRelations);
 
         return single
-          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
-          : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
+          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, eagerRelations)
+          : remapToGraphQLArrayOutput(enriched, tableName, table, eagerRelations);
       },
     });
   };
 
   const generateUpdate = (build: WriteBuildOptions, opts: UpdateOptions): CreatedResolver => {
-    const { db, tables, relationMap, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } = build;
+    const { db, tables, eagerRelations, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } =
+      build;
     const { tableName, table, setArgs, filterArgs, fieldName, typeName, single, requireWhere } = opts;
     const queryArgs = {
       set: {
@@ -451,7 +454,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         const visibility = policies?.visibility?.(context);
 
         const { columns, hasRelations, withParams } = mutationSelection(info, {
-          relationMap,
+          eagerRelations,
           filterCtx,
           tables,
           tableName,
@@ -541,8 +544,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         const enriched = await withEagerRelations(executor, tableName, result, pkNames, withParams, hasRelations);
 
         return single
-          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
-          : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
+          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, eagerRelations)
+          : remapToGraphQLArrayOutput(enriched, tableName, table, eagerRelations);
       },
     });
   };

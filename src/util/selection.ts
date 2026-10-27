@@ -39,7 +39,7 @@ import { parseResolveInfo, type ResolveTree } from './parse-resolve-info.ts';
  */
 type SelectionContext = {
   tables: Record<string, Table>;
-  relationMap: Record<string, Record<string, TableNamedRelations>>;
+  namedRelations: Record<string, Record<string, TableNamedRelations>>;
   filterCtx: RelationFilterBase;
   primaryKeyOf: (tableName: string) => readonly string[];
   /** The dialect's NULL placement, for a read no build identifies. */
@@ -116,10 +116,10 @@ const contextFor = (db: AnyDrizzleDB<any>): SelectionContext => {
     return pk;
   };
 
-  const relationMap = buildNamedRelations(relations, tableEntries);
+  const namedRelations = buildNamedRelations(relations, tableEntries);
   // Paginated relations fall back to a primary-key order, which is resolved once per target
   // and hung off the relation entry — exactly as the generated schema does it.
-  attachTargetPrimaryKeys(relationMap, tables, (table) => [...primaryKeyOf(tableNameOf(tables, table))]);
+  attachTargetPrimaryKeys(namedRelations, tables, (table) => [...primaryKeyOf(tableNameOf(tables, table))]);
 
   // Every table's unique-key `where` fields, for a read no build identifies: which tables enabled
   // them is per build. A client cannot spell a field its schema did not generate, so offering
@@ -128,15 +128,15 @@ const contextFor = (db: AnyDrizzleDB<any>): SelectionContext => {
     tableEntries
       .map(([tableName, table]): [string, UniqueKeyMap] => [
         tableName,
-        tableUniqueKeyMap(table, Object.keys(relationMap[tableName] ?? {}), getUniqueColumnSets(table, getTableConfig)),
+        tableUniqueKeyMap(table, Object.keys(namedRelations[tableName] ?? {}), getUniqueColumnSets(table, getTableConfig)),
       ])
       .filter(([, map]) => Object.keys(map).length),
   );
 
   const context: SelectionContext = {
     tables,
-    relationMap,
-    filterCtx: { tables, relationMap, uniqueKeys },
+    namedRelations,
+    filterCtx: { tables, relationMap: namedRelations, uniqueKeys },
     primaryKeyOf,
     nullOrdering: DIALECT_NULL_ORDERING[dialect],
   };
@@ -275,18 +275,18 @@ export const selectionToWith = (
 ): Record<string, any> | undefined => {
   const { db, table, typeNameMapper } = options;
   const resolveName = namingRuleOf(options);
-  const { tables, relationMap, filterCtx } = contextFor(db);
+  const { tables, namedRelations, filterCtx } = contextFor(db);
   if (!tables[table]) {
     throw new Error(`Drizzle-GraphQL Error: '${table}' is not a table in the Drizzle schema.`);
   }
-  if (!relationMap[table]) {
+  if (!namedRelations[table]) {
     return undefined;
   }
 
   const typeName = resolveObjectTypeName(table, typeNameMapper, resolveName);
   const runtime = runtimeFor(info, db, typeName, 'selectionToWith');
   const parsed = parseInfo(info);
-  const params = extractRelationsParams(relationMap, tables, table, parsed, typeName, {
+  const params = extractRelationsParams(namedRelations, tables, table, parsed, typeName, {
     typeNameMapper,
     filterCtx: runtime?.filterCtx ?? filterCtx,
     resolveName,
@@ -358,7 +358,7 @@ export const resolveSelection = async (
     deleted,
   } = options;
   const resolveName = namingRuleOf(options);
-  const { tables, relationMap, filterCtx, primaryKeyOf, nullOrdering } = contextFor(db);
+  const { tables, namedRelations, filterCtx, primaryKeyOf, nullOrdering } = contextFor(db);
   const table = tables[tableName];
   if (!table) {
     throw new Error(`Drizzle-GraphQL Error: '${tableName}' is not a table in the Drizzle schema.`);
@@ -390,7 +390,8 @@ export const resolveSelection = async (
     tables,
     tableName,
     table,
-    relationMap,
+    // The helpers load every selected relation, so the whole graph is the eager map.
+    eagerRelations: namedRelations,
     typeName,
     typeNameMapper,
     resolveName,

@@ -127,32 +127,32 @@ export const remapToGraphQLCore = (
   tableName: string,
   // Relation keys have no column; the guard below is what handles them.
   column: Column | undefined,
-  relationMap?: Record<string, Record<string, TableNamedRelations>>,
+  eagerRelations?: Record<string, Record<string, TableNamedRelations>>,
 ): any => {
   // Check for relation fields BEFORE the column check.
   // Relation fields don't have corresponding table columns.
   if (Array.isArray(value)) {
-    const relations = relationMap?.[tableName];
+    const relations = eagerRelations?.[tableName];
     if (relations?.[key]) {
       const rel = relations[key]!;
       return remapToGraphQLArrayOutput(
         value,
         rel.targetTableName,
         (rel.relation as any)?.targetTable ?? (rel.relation as any)?.referencedTable,
-        relationMap,
+        eagerRelations,
       );
     }
   }
 
   if (typeof value === 'object' && value !== null) {
-    const relations = relationMap?.[tableName];
+    const relations = eagerRelations?.[tableName];
     if (relations?.[key]) {
       const rel = relations[key]!;
       const remapped = remapToGraphQLSingleOutput(
         value,
         rel.targetTableName,
         (rel.relation as any)?.targetTable ?? (rel.relation as any)?.referencedTable,
-        relationMap,
+        eagerRelations,
       );
       return remapped;
     }
@@ -232,7 +232,7 @@ export const remapToGraphQLCore = (
       return value;
     }
 
-    return value.map((arrVal) => remapToGraphQLCore(key, arrVal, tableName, column, relationMap));
+    return value.map((arrVal) => remapToGraphQLCore(key, arrVal, tableName, column, eagerRelations));
   }
 
   if (typeof value === 'object' && value !== null) {
@@ -285,7 +285,7 @@ export const remapToGraphQLSingleOutput = (
   queryOutput: Record<string, any>,
   tableName: string,
   table: Table,
-  relationMap?: Record<string, Record<string, TableNamedRelations>>,
+  eagerRelations?: Record<string, Record<string, TableNamedRelations>>,
 ) => {
   const columns = getColumns(table);
 
@@ -296,7 +296,7 @@ export const remapToGraphQLSingleOutput = (
       // re-querying it through the batch loader. Only to-one relations are nullable; a
       // to-many relation is a non-null list, so a null there must fall through to deletion
       // (the field resolver then resolves it to []) rather than be emitted as null.
-      const relEntry = value === null ? relationMap?.[tableName]?.[key] : undefined;
+      const relEntry = value === null ? eagerRelations?.[tableName]?.[key] : undefined;
       if (relEntry && is(relEntry.relation, One)) {
         queryOutput[key] = null;
         continue;
@@ -307,7 +307,7 @@ export const remapToGraphQLSingleOutput = (
 
     const column = columns[key];
 
-    const remapped = remapToGraphQLCore(key, value, tableName, column, relationMap);
+    const remapped = remapToGraphQLCore(key, value, tableName, column, eagerRelations);
     if (column && remapped !== value) {
       keepRawColumnValue(queryOutput, key, value);
     }
@@ -321,10 +321,10 @@ export const remapToGraphQLArrayOutput = (
   queryOutput: Record<string, any>[],
   tableName: string,
   table: Table,
-  relationMap?: Record<string, Record<string, TableNamedRelations>>,
+  eagerRelations?: Record<string, Record<string, TableNamedRelations>>,
 ) => {
   for (const entry of queryOutput) {
-    remapToGraphQLSingleOutput(entry, tableName, table, relationMap);
+    remapToGraphQLSingleOutput(entry, tableName, table, eagerRelations);
   }
 
   return queryOutput;

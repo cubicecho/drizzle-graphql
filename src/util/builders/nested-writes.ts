@@ -378,7 +378,7 @@ const buildThroughPlan = (
  */
 export const buildNestedWritePlans = (
   tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
+  namedRelations: Record<string, Record<string, TableNamedRelations>>,
   resolveUniqueSets: (table: Table) => string[][],
   resolvePrimaryKeys: (table: Table) => string[],
   extractJoinColumns: (
@@ -427,7 +427,7 @@ export const buildNestedWritePlans = (
 
   const plans: NestedWritePlans = {};
 
-  for (const [tableName, relations] of Object.entries(relationMap)) {
+  for (const [tableName, relations] of Object.entries(namedRelations)) {
     const table = tables[tableName];
     if (!table) {
       continue;

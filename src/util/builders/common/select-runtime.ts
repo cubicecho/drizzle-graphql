@@ -46,7 +46,7 @@ export const runRelationalSelect = async (opts: {
   tables: Record<string, Table>;
   tableName: string;
   table: Table;
-  relationMap: Record<string, Record<string, TableNamedRelations>>;
+  eagerRelations: Record<string, Record<string, TableNamedRelations>>;
   typeName: string;
   typeNameMapper: TypeNameMapper | undefined;
   parsedInfo: ResolveTree;
@@ -73,7 +73,7 @@ export const runRelationalSelect = async (opts: {
     tables,
     tableName,
     table,
-    relationMap,
+    eagerRelations,
     typeName,
     typeNameMapper,
     parsedInfo,
@@ -161,9 +161,9 @@ export const runRelationalSelect = async (opts: {
   const params: any = {
     columns: extractSelectedColumnsFromTree(parsedInfo.fieldsByTypeName[typeName]!, table, {
       tableName,
-      relationMap,
+      eagerRelations,
       tables,
-      allRelations: filterCtx?.relationMap,
+      namedRelations: filterCtx?.relationMap,
     }),
     offset: distinctRows ? undefined : offset,
     // drizzle-orm v1 RQB calls orderBy/where with the aliased table proxy — use it
@@ -217,8 +217,8 @@ export const runRelationalSelect = async (opts: {
               ),
           }
         : undefined,
-    with: relationMap[tableName]
-      ? extractRelationsParams(relationMap, tables, tableName, parsedInfo, typeName, {
+    with: eagerRelations[tableName]
+      ? extractRelationsParams(eagerRelations, tables, tableName, parsedInfo, typeName, {
           typeNameMapper,
           filterCtx,
           limits: opts.limits,
@@ -231,7 +231,7 @@ export const runRelationalSelect = async (opts: {
 
   if (single) {
     const result = await queryBase.findFirst(omitUndefinedKeys(params));
-    return result ? remapToGraphQLSingleOutput(result, tableName, table, relationMap) : undefined;
+    return result ? remapToGraphQLSingleOutput(result, tableName, table, eagerRelations) : undefined;
   }
 
   // Computing each row's cursor needs the whole ordering tuple, which the client has no
@@ -260,7 +260,7 @@ export const runRelationalSelect = async (opts: {
     // On the raw rows, before remapping rewrites dates/bigints into transport forms.
     attachRowCursors(result, cursorEntries);
   }
-  return remapToGraphQLArrayOutput(result, tableName, table, relationMap);
+  return remapToGraphQLArrayOutput(result, tableName, table, eagerRelations);
 };
 
 /**

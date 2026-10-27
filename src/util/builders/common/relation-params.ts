@@ -44,7 +44,7 @@ export interface RelationParamsOptions {
 }
 
 export const extractRelationsParams = (
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
+  eagerRelations: Record<string, Record<string, TableNamedRelations>>,
   tables: Record<string, Table>,
   tableName: string,
   info: ResolveTree | undefined,
@@ -56,7 +56,7 @@ export const extractRelationsParams = (
     return undefined;
   }
 
-  const relationsForTable = relationMap[tableName];
+  const relationsForTable = eagerRelations[tableName];
   if (!relationsForTable) {
     return undefined;
   }
@@ -147,9 +147,9 @@ export const extractRelationsParams = (
 
     const columns = extractSelectedColumnsFromTree(relFieldSelection, tables[targetTableName]!, {
       tableName: targetTableName,
-      relationMap,
+      eagerRelations,
       tables,
-      allRelations: filterCtx?.relationMap,
+      namedRelations: filterCtx?.relationMap,
     });
 
     const thisRecord: Partial<ProcessedTableSelectArgs> = {};
@@ -242,7 +242,7 @@ export const extractRelationsParams = (
     thisRecord.offset = offset;
     thisRecord.limit = offsetOnlyLimit(tables[targetTableName]!, limit, offset);
 
-    const relWith = extractRelationsParams(relationMap, tables, targetTableName, field, relTypeName, options);
+    const relWith = extractRelationsParams(eagerRelations, tables, targetTableName, field, relTypeName, options);
     thisRecord.with = relWith;
 
     args[relName] = omitUndefinedKeys(thisRecord);
@@ -252,7 +252,7 @@ export const extractRelationsParams = (
 };
 
 /**
- * Returns a copy of `relationMap` containing only the relations that should be eagerly
+ * Returns a copy of `namedRelations` containing only the relations that should be eagerly
  * pre-fetched (per the `shouldEagerLoad` predicate). Pass the result wherever a query or
  * mutation resolver builds its `with:` clause; pass the full map to type generation so
  * opted-out relations still get a (lazily-resolved) field. Relations excluded here are
@@ -260,11 +260,11 @@ export const extractRelationsParams = (
  * resolver instead (or a resolver you override, e.g. via `@graphql-tools/schema`).
  */
 export const pruneNonEagerRelations = (
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
+  namedRelations: Record<string, Record<string, TableNamedRelations>>,
   shouldEagerLoad: (tableName: string, relationName: string) => boolean,
 ): Record<string, Record<string, TableNamedRelations>> => {
   const out: Record<string, Record<string, TableNamedRelations>> = {};
-  for (const [tableName, rels] of Object.entries(relationMap)) {
+  for (const [tableName, rels] of Object.entries(namedRelations)) {
     out[tableName] = Object.fromEntries(
       Object.entries(rels).filter(([relationName]) => shouldEagerLoad(tableName, relationName)),
     );

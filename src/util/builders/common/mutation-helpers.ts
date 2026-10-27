@@ -51,7 +51,7 @@ export const hardDeleteArg = {
  */
 export interface PrepareMutationRelationColumnsParams {
   /** The eager-load map: the relations the re-fetch attaches through `with:`. */
-  relationMap: Record<string, Record<string, TableNamedRelations>>;
+  eagerRelations: Record<string, Record<string, TableNamedRelations>>;
   /**
    * The build's relation-filter context. Its `relationMap` is every relation, including the ones
    * `eagerLoadRelations` leaves to their own resolver, which still need their join column (and
@@ -80,10 +80,11 @@ export const prepareMutationRelationColumns = (
   hasRelations: boolean;
   withParams: Record<string, Partial<ProcessedTableSelectArgs>> | undefined;
 } => {
-  const { relationMap, filterCtx, tables, tableName, typeNameMapper, table, pkNames, parsedInfo, resolveName } = params;
+  const { eagerRelations, filterCtx, tables, tableName, typeNameMapper, table, pkNames, parsedInfo, resolveName } =
+    params;
   const typeName = resolveObjectTypeName(tableName, typeNameMapper, resolveName);
-  const withParams = relationMap[tableName]
-    ? extractRelationsParams(relationMap, tables, tableName, parsedInfo, typeName, {
+  const withParams = eagerRelations[tableName]
+    ? extractRelationsParams(eagerRelations, tables, tableName, parsedInfo, typeName, {
         typeNameMapper,
         filterCtx,
         limits: params.limits,
@@ -95,9 +96,9 @@ export const prepareMutationRelationColumns = (
   const hasRelations = !!(withParams && Object.keys(withParams).length);
   const baseColumns = extractSelectedColumnsFromTreeSQLFormat(parsedInfo.fieldsByTypeName[typeName]!, table, {
     tableName,
-    relationMap,
+    eagerRelations,
     tables,
-    allRelations: filterCtx?.relationMap,
+    namedRelations: filterCtx?.relationMap,
   });
   const columns = hasRelations ? withPrimaryKeyColumns(baseColumns, table, pkNames) : baseColumns;
   return { columns, hasRelations, withParams };

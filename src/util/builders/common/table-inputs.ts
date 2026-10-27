@@ -129,10 +129,10 @@ export const generateTableSelectTypeFieldsCached = (
  */
 const orderRelations = (
   tableName: string,
-  relationMap?: Record<string, Record<string, TableNamedRelations>>,
+  namedRelations?: Record<string, Record<string, TableNamedRelations>>,
   tables?: Record<string, Table>,
 ): [string, string][] => {
-  const relations = relationMap?.[tableName];
+  const relations = namedRelations?.[tableName];
   const table = tables?.[tableName];
   if (!relations || !tables || !table) {
     return [];
@@ -159,7 +159,7 @@ const orderRelations = (
  */
 const hasOrderFields = (
   tableName: string,
-  relationMap: Record<string, Record<string, TableNamedRelations>> | undefined,
+  namedRelations: Record<string, Record<string, TableNamedRelations>> | undefined,
   tables: Record<string, Table>,
   visiting: Set<string> = new Set(),
 ): boolean => {
@@ -171,8 +171,8 @@ const hasOrderFields = (
     return false;
   }
   visiting.add(tableName);
-  return orderRelations(tableName, relationMap, tables).some(([, target]) =>
-    hasOrderFields(target, relationMap, tables, visiting),
+  return orderRelations(tableName, namedRelations, tables).some(([, target]) =>
+    hasOrderFields(target, namedRelations, tables, visiting),
   );
 };
 
@@ -186,18 +186,18 @@ const generateRelationOrderFields = (
   tableName: string,
   cacheCtx: TypeCacheCtx,
   typeNameMapper: TypeNameMapper | undefined,
-  relationMap?: Record<string, Record<string, TableNamedRelations>>,
+  namedRelations?: Record<string, Record<string, TableNamedRelations>>,
   tables?: Record<string, Table>,
 ): Record<string, { type: GraphQLInputObjectType; description?: string }> => {
   const fields: Record<string, { type: GraphQLInputObjectType; description?: string }> = {};
 
-  for (const [relationName, targetTableName] of orderRelations(tableName, relationMap, tables)) {
+  for (const [relationName, targetTableName] of orderRelations(tableName, namedRelations, tables)) {
     const type = generateTableOrderTypeCached(
       tables![targetTableName]!,
       targetTableName,
       typeNameMapper,
       cacheCtx,
-      relationMap,
+      namedRelations,
       tables,
     );
     if (type) {
@@ -217,13 +217,13 @@ export const generateTableOrderTypeCached = (
   tableName: string,
   typeNameMapper: TypeNameMapper | undefined,
   cacheCtx: TypeCacheCtx,
-  relationMap?: Record<string, Record<string, TableNamedRelations>>,
+  namedRelations?: Record<string, Record<string, TableNamedRelations>>,
   tables?: Record<string, Table>,
 ): GraphQLInputObjectType | undefined => {
   if (cacheCtx.orderTypeCache.has(table)) {
     return cacheCtx.orderTypeCache.get(table)!;
   }
-  if (!hasOrderFields(tableName, relationMap, { ...tables, [tableName]: table })) {
+  if (!hasOrderFields(tableName, namedRelations, { ...tables, [tableName]: table })) {
     return undefined;
   }
 
@@ -237,7 +237,7 @@ export const generateTableOrderTypeCached = (
     }),
     fields: () => ({
       ...generateTableOrderCached(table, innerOrderType(cacheCtx.typeName)),
-      ...generateRelationOrderFields(tableName, cacheCtx, typeNameMapper, relationMap, tables),
+      ...generateRelationOrderFields(tableName, cacheCtx, typeNameMapper, namedRelations, tables),
     }),
   });
 
@@ -256,7 +256,7 @@ const generateListRelationFilterCached = (
   targetTableName: string,
   cacheCtx: TypeCacheCtx,
   typeNameMapper: TypeNameMapper | undefined,
-  relationMap: Record<string, Record<string, TableNamedRelations>> | undefined,
+  namedRelations: Record<string, Record<string, TableNamedRelations>> | undefined,
   tables: Record<string, Table> | undefined,
 ): GraphQLInputObjectType => {
   const cached = cacheCtx.listRelationFilterCache.get(targetTableName);
@@ -276,7 +276,7 @@ const generateListRelationFilterCached = (
         targetTableName,
         cacheCtx,
         typeNameMapper,
-        relationMap,
+        namedRelations,
         tables,
       );
 
@@ -303,10 +303,10 @@ const generateRelationFilterFields = (
   cacheCtx: TypeCacheCtx,
   typeNameMapper: TypeNameMapper | undefined,
   columnFields: Record<string, ConvertedInputColumn>,
-  relationMap?: Record<string, Record<string, TableNamedRelations>>,
+  namedRelations?: Record<string, Record<string, TableNamedRelations>>,
   tables?: Record<string, Table>,
 ): Record<string, { type: GraphQLInputObjectType; description?: string }> => {
-  const relations = relationMap?.[tableName];
+  const relations = namedRelations?.[tableName];
   if (!relations || !tables) {
     return {};
   }
@@ -331,7 +331,7 @@ const generateRelationFilterFields = (
             relEntry.targetTableName,
             cacheCtx,
             typeNameMapper,
-            relationMap,
+            namedRelations,
             tables,
           ),
           description: `Matches rows whose ${relationName} matches these filters`,
@@ -342,7 +342,7 @@ const generateRelationFilterFields = (
             relEntry.targetTableName,
             cacheCtx,
             typeNameMapper,
-            relationMap,
+            namedRelations,
             tables,
           ),
         };
@@ -356,7 +356,7 @@ export const generateTableFilterTypeCached = (
   tableName: string,
   cacheCtx: TypeCacheCtx,
   typeNameMapper?: TypeNameMapper,
-  relationMap?: Record<string, Record<string, TableNamedRelations>>,
+  namedRelations?: Record<string, Record<string, TableNamedRelations>>,
   tables?: Record<string, Table>,
 ) => {
   if (cacheCtx.filterTypeCache.has(table)) {
@@ -370,7 +370,7 @@ export const generateTableFilterTypeCached = (
     const uniqueKeys = cacheCtx.uniqueKeysOf?.(tableName);
     return {
       ...filterColumns,
-      ...generateRelationFilterFields(tableName, cacheCtx, typeNameMapper, filterColumns, relationMap, tables),
+      ...generateRelationFilterFields(tableName, cacheCtx, typeNameMapper, filterColumns, namedRelations, tables),
       // Last, and already filtered against both — a key field only exists under a name no
       // column and no relation claimed.
       ...(uniqueKeys ? generateUniqueKeyFilterFields(table, tableName, uniqueKeys, typeNameMapper, cacheCtx) : {}),

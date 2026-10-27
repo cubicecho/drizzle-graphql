@@ -181,11 +181,11 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 
 ### Relations
 
-- **Relation:** A named link from one table to another, from Drizzle's relations config. Owner: `common/relations.ts buildNamedRelations`; `namedRelations`, `TableNamedRelations`, `relEntry`.
+- **Relation:** A named link from one table to another, from Drizzle's relations config. Owner: `common/relations.ts buildNamedRelations`; the whole graph is `namedRelations` everywhere, except the filter context's public key `filterCtx.relationMap`; `TableNamedRelations`, `relEntry`.
 - **To-one / to-many:** Whether a relation yields a row or a list. Owner: `is(relation, One)`; `isOne`.
 - **Junction (through, many-to-many):** A middle table linking two tables. Owner: `relations.ts extractJunctionColumns`; `NestedThroughPlan`, `junctionPolicy`.
 - **Relation's own where:** A filter declared on the relation itself, applied on every read and write through it. Owner: `relations.ts relationOwnCondition`, `relationOwnWhere`.
-- **Eager loading (with:):** Fetching selected relations in the parent's query. Owner: `common/relation-params.ts extractRelationsParams`, `pruneNonEagerRelations`; `eagerRelations`, `shouldEagerLoad`.
+- **Eager loading (with:):** Fetching selected relations in the parent's query. Owner: `common/relation-params.ts extractRelationsParams`, `pruneNonEagerRelations`; the pruned map is `eagerRelations` in every resolver, `runRelationalSelect`, the write builds and the data mappers (the selection helpers pass the whole graph as it); `shouldEagerLoad`.
 - **Relation resolver (field resolver):** The resolver on each relation field, returning the eager value or a batched load. Owner: `common/relation-resolvers.ts createRelationResolverFactory`; exported as `entities.fieldResolvers`.
 - **Mutation re-fetch:** Reloading written rows by key to eager-load their selected relations. Owner: `select-runtime.ts eagerLoadMutationRelations`, `withEagerRelations`.
 

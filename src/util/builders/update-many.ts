@@ -121,7 +121,8 @@ export const createUpdateManyGenerator = (
   runBatch: UpdateManyBatchRunner = runUpdateManyBatch,
 ): UpdateManyGenerator => {
   return (build: WriteBuildOptions, opts: UpdateManyOptions): CreatedResolver => {
-    const { db, tables, relationMap, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } = build;
+    const { db, tables, eagerRelations, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } =
+      build;
     const { tableName, table, updateManyInput, fieldName, typeName, requireWhere } = opts;
     const queryArgs = {
       updates: {
@@ -159,7 +160,7 @@ export const createUpdateManyGenerator = (
         const contextColumns = policies?.contextValues?.(tableName);
 
         const { columns, hasRelations, withParams } = mutationSelection(info, {
-          relationMap,
+          eagerRelations,
           filterCtx,
           tables,
           tableName,
@@ -246,7 +247,7 @@ export const createUpdateManyGenerator = (
             continue;
           }
           for (let i = 0; i < rows.length; i++) {
-            output.push(remapToGraphQLSingleOutput(enriched[offset + i], tableName, table, relationMap));
+            output.push(remapToGraphQLSingleOutput(enriched[offset + i], tableName, table, eagerRelations));
           }
           offset += rows.length;
         }
