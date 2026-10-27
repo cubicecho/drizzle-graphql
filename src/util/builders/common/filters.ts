@@ -28,6 +28,7 @@ import {
   sql,
 } from 'drizzle-orm';
 import { MySqlFloat } from 'drizzle-orm/mysql-core';
+import { SQLiteTimestamp } from 'drizzle-orm/sqlite-core';
 import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
 import type { FilterColumnOperators, FilterColumnOperatorsCore } from '../types.ts';
 import { columnDialect, isJsonColumn } from './column-filters.ts';
@@ -269,6 +270,36 @@ const isMySqlSingleFloat = (column: Column): boolean =>
  */
 export const comparableOperand = (column: Column, value: unknown): unknown =>
   isMySqlSingleFloat(column) ? sql`cast(${bindIfParam(value, column)} as float)` : value;
+
+const MS_PER_SECOND = 1000;
+
+/**
+ * Whether `value` is an instant between two whole seconds compared against a SQLite
+ * `integer({ mode: 'timestamp' })` column, which stores whole seconds. Its driver encoder floors
+ * the operand, which is the right bound for every operator but `lt` / `gte`.
+ */
+const isBetweenStoredSeconds = (column: Column, value: unknown): value is Date =>
+  is(column, SQLiteTimestamp) &&
+  column.mode === 'timestamp' &&
+  value instanceof Date &&
+  value.getTime() % MS_PER_SECOND !== 0;
+
+/** Operators whose bound is the next whole second when the operand lies between two stored seconds. */
+const CEILED_SECOND_OPERATORS: ReadonlySet<string> = new Set(['lt', 'gte']);
+
+/**
+ * The operand a comparison binds on a seconds-mode SQLite timestamp. `lt` / `gte` take the next
+ * whole second, so `lt: "…10:00:00.500Z"` keeps the row stored at `…10:00:00Z` and `gte` drops
+ * it. Every other operator keeps the floored operand, so `eq` finds the row that value would
+ * have written.
+ */
+const secondsBoundOperand = (column: Column, operatorName: string, value: unknown): unknown => {
+  const roundsUp = CEILED_SECOND_OPERATORS.has(operatorName) && isBetweenStoredSeconds(column, value);
+  if (!roundsUp) {
+    return value;
+  }
+  return new Date(Math.ceil(value.getTime() / MS_PER_SECOND) * MS_PER_SECOND);
+};
 
 /**
  * A compiled filter. `undefined` is the **matches every row** result ({@link MATCHES_EVERY_ROW}):
@@ -593,7 +624,11 @@ export const extractFiltersColumn = <TColumn extends Column>(
     if ((operatorName === 'eq' || operatorName === 'ne') && isJsonColumn(column)) {
       variants.push(jsonEquality(column, columnName, operatorValue, operatorName === 'ne'));
     } else if (operatorName in singleValueOps) {
-      const singleValue = remapFromGraphQLCore(operatorValue, column, columnName);
+      const singleValue = secondsBoundOperand(
+        column,
+        operatorName,
+        remapFromGraphQLCore(operatorValue, column, columnName),
+      );
       variants.push(
         foldCase
           ? lowerComparison(column, operatorName, singleValue)

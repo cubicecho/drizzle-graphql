@@ -704,7 +704,9 @@ mutation {
     mode cannot hold a fraction, so it is floored (never rounded) on write —
     `2026-09-15T10:00:00.999Z` is stored as `1789466400` and reads back as
     `2026-09-15T10:00:00.000Z` — and filter operands on such a column are floored the same way,
-    so `eq` with the value you wrote finds the row you wrote it to
+    so `eq` with the value you wrote finds the row you wrote it to. The exceptions are `lt` and
+    `gte`, which bound at the next whole second: `lt: "…T10:00:00.500Z"` includes the row stored
+    at `…T10:00:00Z` and `gte` excludes it
 
 Some columns map to built-in GraphQL types rather than a custom scalar:
 

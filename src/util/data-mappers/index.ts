@@ -356,8 +356,8 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
   // A SQLite integer timestamp takes the `Date`, which drizzle's `mapToDriverValue` turns into
   // the stored integer: milliseconds for `'timestamp_ms'`, and for `'timestamp'` whole seconds,
   // floored — `…T10:00:00.999Z` is stored, and read back, as `…T10:00:00Z`. Filter operands go
-  // through here and the same encoder, so they are floored exactly as a write would be: `eq`
-  // matches the row that input would have written.
+  // through here and the same encoder, so `eq` matches the row that input would have written;
+  // `filters.ts` (`secondsBoundOperand`) rounds `lt` / `gte` operands up instead.
   const columnType: string = (column as any).columnType ?? '';
   if (isDateTimeColumn(column)) {
     // `timestamp().array()` keeps the timestamp column type with a `dimensions` count, so an
