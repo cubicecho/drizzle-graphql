@@ -1424,7 +1424,8 @@ following the same naming rules as the other generated queries:
     places
 -   `min` / `max` — one field per orderable column (numbers, strings, enums, dates, bigints),
     typed exactly like that column is in the table's own type. PostgreSQL `uuid`, `macaddr`,
-    `macaddr8` and `bit` columns are left out, because PostgreSQL has no `min` / `max` for them,
+    `macaddr8`, `bit` and pgvector `sparsevec` columns are left out, because PostgreSQL has no
+    `min` / `max` for them,
     and so is a SQLite `blob({ mode: 'bigint' })` column, whose bytes compare as text (`9` above
     `10`)
 -   `countNonNull` — `Int!` per column: how many matching rows have a non-null value there.

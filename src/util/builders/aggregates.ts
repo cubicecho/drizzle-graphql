@@ -144,15 +144,16 @@ const SELECT_OP_FNS: Record<AggregateOp, (col: Column) => any> = {
 const SEP = '__';
 
 /**
- * Column types PostgreSQL can test for equality but has no `min`/`max` aggregate for, plus the
- * SQLite bigint blob, whose bytes compare as text (`max(9, 10)` is 9). They still count
- * distinct values and group.
+ * Column types PostgreSQL can test for equality but has no `min`/`max` aggregate for (pgvector's
+ * `bit` and `sparsevec` among them), plus the SQLite bigint blob, whose bytes compare as text
+ * (`max(9, 10)` is 9). They still count distinct values and group.
  */
 const NO_MIN_MAX_COLUMN_TYPES: ReadonlySet<string> = new Set([
   'PgUUID',
   'PgMacaddr',
   'PgMacaddr8',
   'PgBinaryVector',
+  'PgSparseVector',
   'SQLiteBigInt',
 ]);
 
