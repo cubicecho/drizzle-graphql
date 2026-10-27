@@ -25,13 +25,22 @@ const Nodes = sqliteTable(
   { id: integer('id').notNull(), tenant: integer('tenant').notNull(), parentId: integer('parent_id') },
   (t) => [primaryKey({ columns: [t.id, t.tenant] })],
 );
-const tables = { Users, Posts, Nodes };
+const Tags = sqliteTable('tags', { id: integer('id').primaryKey() });
+const PostTags = sqliteTable(
+  'post_tags',
+  { postId: integer('post_id').notNull(), tagId: integer('tag_id').notNull() },
+  (t) => [primaryKey({ columns: [t.postId, t.tagId] })],
+);
+const tables = { Users, Posts, Nodes, Tags, PostTags };
 const r = createRelationsHelper(tables);
 const relations = buildRelations(tables, {
   Users: {
     publishedPosts: r.many.Posts({ from: r.Users.id, to: r.Posts.authorId, where: { published: true }, alias: 'pub' }),
   },
-  Posts: { publishedAuthor: r.one.Users({ alias: 'pub' }) },
+  Posts: {
+    publishedAuthor: r.one.Users({ alias: 'pub' }),
+    tags: r.many.Tags({ from: r.Posts.id.through(r.PostTags.postId), to: r.Tags.id.through(r.PostTags.tagId) }),
+  },
   Nodes: { children: r.many.Nodes({ from: r.Nodes.id, to: r.Nodes.parentId }) },
 });
 
@@ -43,14 +52,21 @@ const rootMessage = (e: any): string => {
   return String(cur?.message ?? cur).slice(0, 200);
 };
 
-const setup = async () => {
-  const client = createClient({ url: ':memory:' });
+// A transaction hands libsql's connection away, which drops a private :memory: database; a test
+// that reads the database back after a write passes a shared in-memory one instead.
+const setup = async (url = ':memory:') => {
+  const client = createClient({ url });
   const db = (drizzle as any)({ client, relations });
   await db.run(sql`CREATE TABLE users (id integer primary key, name text not null)`);
   await db.run(sql`CREATE TABLE posts (id integer primary key, author_id integer, published integer not null)`);
   await db.run(
     sql`CREATE TABLE nodes (id integer not null, tenant integer not null, parent_id integer, primary key (id, tenant))`,
   );
+  await db.run(sql`CREATE TABLE tags (id integer primary key)`);
+  await db.run(
+    sql`CREATE TABLE post_tags (post_id integer not null, tag_id integer not null, primary key (post_id, tag_id))`,
+  );
+  await db.insert(Tags).values([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }]);
   await db.insert(Users).values([{ id: 1, name: 'a' }]);
   await db.run(
     sql.raw(
@@ -63,7 +79,7 @@ const setup = async () => {
     ),
   );
   const { schema } = buildSchema(db, { features: { nestedWrites: true }, onError: (e: any) => e as Error });
-  return { client, schema };
+  return { client, db, schema };
 };
 
 describe('nested writes on a plural update over more than 1,000 rows', () => {
@@ -91,6 +107,28 @@ describe('nested writes on a plural update over more than 1,000 rows', () => {
     });
     expect(res.errors?.map(rootMessage)).toBeUndefined();
     expect(res.data.updateNodes).toHaveLength(ROWS);
+    client.close();
+  });
+
+  it('links and unlinks every parent through a junction, in chunks', async () => {
+    const { client, db, schema } = await setup('file::memory:?cache=shared');
+    const linked: any = await graphql({
+      schema,
+      contextValue: {},
+      source:
+        'mutation { updatePosts(where: { published: { eq: true } }, set: { tags: { connect: [{ id: { lte: 5 } }] } }) { id } }',
+    });
+    expect(linked.errors?.map(rootMessage)).toBeUndefined();
+    expect(await db.$count(PostTags)).toBe(ROWS * 5);
+
+    const replaced: any = await graphql({
+      schema,
+      contextValue: {},
+      source:
+        'mutation { updatePosts(where: { published: { eq: true } }, set: { tags: { set: [{ id: { eq: 2 } }], disconnect: [{ id: { eq: 3 } }] } }) { id } }',
+    });
+    expect(replaced.errors?.map(rootMessage)).toBeUndefined();
+    expect(await db.$count(PostTags)).toBe(ROWS);
     client.close();
   });
 });
