@@ -25,9 +25,8 @@ import type { GraphQLFieldConfig, GraphQLInputObjectType, GraphQLObjectType, Gra
 import { GraphQLList, GraphQLNonNull } from 'graphql';
 import {
   aggregateFieldComplexity,
-  attachTargetPrimaryKeys,
   bindPolicies,
-  buildNamedRelations,
+  buildRelationGraph,
   computeResolverFieldNames,
   createMutationTxCtx,
   createRelationResolverFactory,
@@ -267,18 +266,9 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     // Which columns take a `…FieldUpdate` input depends on this build's scalar overrides.
     resetFieldUpdateCaches();
 
-    // Flatten drizzle-orm v1 TablesRelationalConfig into the canonical shape
-    // used throughout common.ts: Record<tableName, Record<relName, TableNamedRelations>>
-    const namedRelations = buildNamedRelations(relations ?? {}, tableEntries);
-    // Relations *into* an excluded table are already gone (their target no longer resolves);
-    // relations *out of* one have no type left to hang a field on.
-    for (const excluded of excludedTables) {
-      delete namedRelations[excluded];
-    }
-    // Record each relation target's primary key (composite-aware) so paginated relations
-    // default to a deterministic PK order. Must run before pruning / type generation, which
-    // share these entry objects.
-    attachTargetPrimaryKeys(namedRelations, tables, (table) => primaryKeyPropNames(table));
+    // Each relation entry carries its target's primary key before pruning and type generation,
+    // which share the entry objects, so paginated relations default to a deterministic order.
+    const namedRelations = buildRelationGraph(relations ?? {}, tableEntries, primaryKeyPropNames, excludedTables);
     // Relations to eager-load via `with:`. Query/mutation resolvers use this pruned map so
     // opted-out relations never overfetch; type generation keeps the full map so their
     // fields still exist and resolve lazily.

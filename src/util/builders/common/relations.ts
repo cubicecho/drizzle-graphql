@@ -116,6 +116,38 @@ export const attachTargetPrimaryKeys = (
 };
 
 /**
+ * The tables of a drizzle v1 handle, by schema key. Its relations config is the only table map
+ * it carries, and each entry carries its own table, so a table left out of the relations
+ * config is not part of the schema.
+ */
+export const tablesOfRelations = (relations: TablesRelationalConfig | undefined): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries((relations ?? {}) as Record<string, any>)
+      .filter(([, config]) => config?.table != null)
+      .map(([key, config]) => [key, config.table]),
+  );
+
+/**
+ * The whole relation graph over `tableEntries`: every relation whose target is one of them,
+ * minus the relations of `excludedTables`, each entry carrying its target's primary key.
+ */
+export const buildRelationGraph = (
+  relations: TablesRelationalConfig,
+  tableEntries: [string, Table][],
+  primaryKeyPropNames: (table: Table) => string[],
+  excludedTables: ReadonlySet<string> = new Set(),
+): Record<string, Record<string, TableNamedRelations>> => {
+  const namedRelations = buildNamedRelations(relations, tableEntries);
+  // Relations *into* an excluded table are already gone (their target is not in
+  // `tableEntries`); relations *out of* one have no type left to hang a field on.
+  for (const excluded of excludedTables) {
+    delete namedRelations[excluded];
+  }
+  attachTargetPrimaryKeys(namedRelations, Object.fromEntries(tableEntries), primaryKeyPropNames);
+  return namedRelations;
+};
+
+/**
  * The table column behind one entry of a relation's `sourceColumns`, `targetColumns` or
  * `through` lists.
  *

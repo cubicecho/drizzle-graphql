@@ -303,11 +303,9 @@ tsdown defaults to `.mjs` / `.d.mts` for the ESM half, which the `exports` map d
 ## Key Architectural Patterns
 
 ### Database engine detection
-`buildSchema` detects the DB type at runtime using `is()` from drizzle-orm, then delegates to the appropriate generator:
+`dialectOf` in `src/util/builders/dialects.ts` tests the handle with `is()` from drizzle-orm against each dialect's database class (`MySqlAsyncDatabase`, `PgAsyncDatabase`, `SQLiteAsyncDatabase`, in that order) and returns that dialect's generator and primary-key lookup. `buildSchema` and the selection helpers both go through it:
 ```typescript
-if (is(db, MySqlAsyncDatabase))       generatorOutput = generateMySQL(db, ...);
-else if (is(db, PgAsyncDatabase))     generatorOutput = generatePG(db, ...);
-else if (is(db, SQLiteAsyncDatabase)) generatorOutput = generateSQLite(db, ...);
+const generatorOutput = dialectOf(db)!.generateSchemaData(db, schema, relations, generatorOptions);
 ```
 
 Each engine has its own builder in `src/util/builders/`. PostgreSQL and SQLite share the build in `schema-data.ts` and `build-context.ts`; all three share the helpers under `common/`.

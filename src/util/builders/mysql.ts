@@ -3,7 +3,7 @@ import {
   type MySqlAsyncDatabase,
   MySqlSelectBase,
   MySqlTable,
-  getTableConfig as mysqlTableConfig,
+  getTableConfig as mysqlTableConfigUncached,
 } from 'drizzle-orm/mysql-core';
 import {
   GraphQLBoolean,
@@ -467,11 +467,11 @@ const generateDelete = (
 };
 
 /** The dialect's table config, cached per table — see {@link memoizeTableConfig}. */
-const getTableConfig = memoizeTableConfig(mysqlTableConfig);
+export const mysqlTableConfig = memoizeTableConfig(mysqlTableConfigUncached);
 
 /** Primary-key property names for a MySQL table, including table-level composite keys. */
-const mysqlPrimaryKeyPropNames = (table: MySqlTable): string[] =>
-  getPrimaryKeyPropNamesFromConfig(table, getTableConfig);
+export const mysqlPrimaryKeyPropNames = (table: MySqlTable): string[] =>
+  getPrimaryKeyPropNamesFromConfig(table, mysqlTableConfig);
 
 const TABLE_ORIGINAL_NAME = Symbol.for('drizzle:OriginalName');
 const TABLE_SCHEMA = Symbol.for('drizzle:Schema');
@@ -534,7 +534,7 @@ const mysqlWriteFilter = (table: MySqlTable, filters: SQL | undefined): SQL | un
 // MySQL sorts NULLs as the smallest values (first in ASC), and its writes return no rows.
 const { prepareBuild, forEachTable, finalizeBuild } = createSchemaBuilder({
   tableClass: MySqlTable,
-  getTableConfig,
+  getTableConfig: mysqlTableConfig,
   primaryKeyPropNames: mysqlPrimaryKeyPropNames,
   nullOrdering: DIALECT_NULL_ORDERING.mysql,
   returnsRows: false,

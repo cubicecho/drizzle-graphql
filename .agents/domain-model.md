@@ -13,7 +13,7 @@ writes, filters, pagination, aggregates and row policies all compiled to SQL.
 
 ## Flow
 
-- **Schema build:** drizzle db + `BuildSchemaConfig` → `buildSchema` (table map from `db._.relations`) → `resolveBuildConfig` (validate, resolve features/limits/defaults/policies/hooks) → dialect dispatch (`generatePG` / `generateMySQL` / `generateSQLite`) → `createSchemaBuilder.prepareBuild` (drop excluded tables, reset per-build registries, relation graph, unique keys, filter context, bound policies, type cache, preflight, nested-write plans, per-table types) → `forEachTable` (read fields + dialect's mutation half → `defineRootField`) → `finalizeBuild` (relation field resolvers, transaction roster, build registry) → `applyErrorMapper` → `new GraphQLSchema` → `{ schema, entities }`.
+- **Schema build:** drizzle db + `BuildSchemaConfig` → `buildSchema` (table map from `db._.relations`, `tablesOfRelations`) → `resolveBuildConfig` (validate, resolve features/limits/defaults/policies/hooks) → `dialectOf(db).generateSchemaData` (`generatePG` / `generateMySQL` / `generateSQLite`) → `createSchemaBuilder.prepareBuild` (drop excluded tables, reset per-build registries, relation graph, unique keys, filter context, bound policies, type cache, preflight, nested-write plans, per-table types) → `forEachTable` (read fields + dialect's mutation half → `defineRootField`) → `finalizeBuild` (relation field resolvers, transaction roster, build registry) → `applyErrorMapper` → `new GraphQLSchema` → `{ schema, entities }`.
 - **List read:** client `users(where, orderBy, limit, offset, after, distinct, deleted)` → select resolver → `withDefaultOrderBy` → `parseResolveInfo` → `resolveQueryExecutor` → `applyLimitPolicy` → `runRelationalSelect` (cursor entries, distinct subquery, filters + scope, `with:` from `extractRelationsParams`) → `db.query[table].findMany` → `attachRowCursors` → `remapToGraphQLArrayOutput`.
 - **Single-row read:** `usersSingle(where, orderBy, offset)` → same path with `single: true` → `findFirst` (PK order by default, no limit policy, no cursor) → `remapToGraphQLSingleOutput` or `null`.
 - **Relation field read:** parent row → relation resolver → eager value on the parent? return it : `getOrCreateRequestValue` (args → loader key, per execution) → `getOrCreateLoader` (per execution + key) → next microtask: one `IN`/OR query per chunk, windowed when paginated, scoped + soft-delete filtered → group by parent key → remap.
@@ -181,7 +181,7 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 
 ### Relations
 
-- **Relation:** A named link from one table to another, from Drizzle's relations config. Owner: `common/relations.ts buildNamedRelations`; the whole graph is `namedRelations` everywhere, except the filter context's public key `filterCtx.relationMap`; `TableNamedRelations`, `relEntry`.
+- **Relation:** A named link from one table to another, from Drizzle's relations config. Owner: `common/relations.ts buildRelationGraph` (over `buildNamedRelations` and `attachTargetPrimaryKeys`), used by both `prepareBuild` and the selection helpers; the whole graph is `namedRelations` everywhere, except the filter context's public key `filterCtx.relationMap`; `TableNamedRelations`, `relEntry`.
 - **To-one / to-many:** Whether a relation yields a row or a list. Owner: `is(relation, One)`; `isOne`.
 - **Junction (through, many-to-many):** A middle table linking two tables. Owner: `relations.ts extractJunctionColumns`; `NestedThroughPlan`, `junctionPolicy`.
 - **Relation's own where:** A filter declared on the relation itself, applied on every read and write through it. Owner: `relations.ts relationOwnCondition`, `relationOwnWhere`.
@@ -231,7 +231,7 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 
 ### Dialects
 
-- **Dialect:** PostgreSQL, MySQL or SQLite; picked from the handle's class. Owner: `index.ts` dispatch; `selection.ts tableConfigFor` repeats it.
+- **Dialect:** PostgreSQL, MySQL or SQLite; picked from the handle's class. Owner: `builders/dialects.ts dialectOf` (`DIALECTS`: database class, schema generator, primary-key lookup), used by `index.buildSchema` and `selection.ts`.
 - **Dialect adapter:** What a dialect supplies to the shared build: table class, table config, PK lookup, null ordering, whether writes return rows, preflight. Owner: `build-context.ts SchemaBuildAdapter`, `schema-data.ts DialectSchemaAdapter`.
 - **Null ordering:** Whether the database sorts NULLs first or last, which cursors must match. Owner: `cursor.ts NullOrdering`.
 - **Preflight:** Build-time refusal of options a dialect/driver cannot honour. Owner: `SchemaBuildAdapter.preflight` in `mysql.ts`, `sqlite.ts`.

@@ -1,5 +1,9 @@
 import type { Table } from 'drizzle-orm';
-import { type SQLiteAsyncDatabase, SQLiteTable, getTableConfig as sqliteTableConfig } from 'drizzle-orm/sqlite-core';
+import {
+  type SQLiteAsyncDatabase,
+  SQLiteTable,
+  getTableConfig as sqliteTableConfigUncached,
+} from 'drizzle-orm/sqlite-core';
 
 import type { GeneratedEntities } from '../../types.ts';
 import {
@@ -14,11 +18,11 @@ import type { SchemaGeneratorOptions } from './types.ts';
 import { createUpdateManyGenerator, type UpdateManyBatchRunner, type UpdateManyEntry } from './update-many.ts';
 
 /** The dialect's table config, cached per table — see {@link memoizeTableConfig}. */
-const getTableConfig = memoizeTableConfig(sqliteTableConfig);
+export const sqliteTableConfig = memoizeTableConfig(sqliteTableConfigUncached);
 
 /** Primary-key property names for a SQLite table, including table-level composite keys. */
-const sqlitePrimaryKeyPropNames = (table: SQLiteTable): string[] =>
-  getPrimaryKeyPropNamesFromConfig(table, getTableConfig);
+export const sqlitePrimaryKeyPropNames = (table: SQLiteTable): string[] =>
+  getPrimaryKeyPropNamesFromConfig(table, sqliteTableConfig);
 
 /**
  * SQLite's batch runner. A synchronous driver (better-sqlite3) commits the moment its
@@ -103,7 +107,7 @@ const generateUpdateMany = createUpdateManyGenerator(sqlitePrimaryKeyPropNames, 
 
 const sqliteSchemaData = createSchemaDataGenerator({
   tableClass: SQLiteTable,
-  getTableConfig,
+  getTableConfig: sqliteTableConfig,
   primaryKeyPropNames: sqlitePrimaryKeyPropNames,
   // SQLite sorts NULLs as the smallest values (first in ASC).
   nullOrdering: DIALECT_NULL_ORDERING.sqlite,

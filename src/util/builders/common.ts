@@ -138,6 +138,7 @@ export type { RelationAggregateFactory, RelationResolverFactory, TablesRelationa
 export {
   attachTargetPrimaryKeys,
   buildNamedRelations,
+  buildRelationGraph,
   extractJunctionColumns,
   extractRelationJoinColumnPairs,
   extractRelationJoinColumns,
@@ -149,6 +150,7 @@ export {
   relatedRowParents,
   relationColumns,
   relationOwnCondition,
+  tablesOfRelations,
   unwrapRelationColumn,
   warnUnresolvedJoin,
 } from './common/relations.ts';

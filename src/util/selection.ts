@@ -1,21 +1,14 @@
 import { is, Table } from 'drizzle-orm';
-import { MySqlAsyncDatabase, getTableConfig as mysqlTableConfig } from 'drizzle-orm/mysql-core';
-import { PgAsyncDatabase, getTableConfig as pgTableConfig } from 'drizzle-orm/pg-core';
-import { SQLiteAsyncDatabase, getTableConfig as sqliteTableConfig } from 'drizzle-orm/sqlite-core';
 import { type GraphQLResolveInfo, getNamedType } from 'graphql';
 import type { AnyDrizzleDB } from '../types.ts';
 import { type BuildRuntime, runtimeForDb, runtimeForType } from './builders/common/build-registry.ts';
 import type { DeletedMode, RowVisibility } from './builders/common/policies.ts';
 import {
   applyLimitPolicy,
-  attachTargetPrimaryKeys,
-  buildNamedRelations,
+  buildRelationGraph,
   type DerivedTypeNameMapper,
-  DIALECT_NULL_ORDERING,
   extractRelationsParams,
-  getPrimaryKeyPropNamesFromConfig,
   getUniqueColumnSets,
-  memoizeTableConfig,
   type NullOrdering,
   type RelationFilterBase,
   resolveGeneratedTypeNames,
@@ -23,10 +16,12 @@ import {
   runRelationalSelect,
   type TypeNameMapper,
   type TypeNameResolver,
+  tablesOfRelations,
   tableUniqueKeyMap,
   type UniqueKeyMap,
   withDefaultOrderBy,
 } from './builders/common.ts';
+import { type Dialect, dialectOf } from './builders/dialects.ts';
 import type { TableNamedRelations } from './builders/types.ts';
 import { parseResolveInfo, type ResolveTree } from './parse-resolve-info.ts';
 
@@ -48,33 +43,15 @@ type SelectionContext = {
 
 const contextCache = new WeakMap<object, SelectionContext>();
 
-type TableConfigLookup = Parameters<typeof getUniqueColumnSets<Table>>[1];
-
-type Dialect = keyof typeof DIALECT_NULL_ORDERING;
-
-/**
- * Each dialect's `getTableConfig`, the only place a composite primary key or a unique constraint
- * shows up. Cached per table, and bound at module scope so the cache is shared with every
- * selection this process translates — the same memoization each dialect builder applies.
- */
-const TABLE_CONFIG: Record<Dialect, TableConfigLookup> = {
-  mysql: memoizeTableConfig(mysqlTableConfig as unknown as TableConfigLookup),
-  pg: memoizeTableConfig(pgTableConfig as unknown as TableConfigLookup),
-  sqlite: memoizeTableConfig(sqliteTableConfig as unknown as TableConfigLookup),
-};
-
-/** Which dialect a drizzle instance speaks, by the same `is()` checks `buildSchema` dispatches on. */
-const dialectOf = (db: AnyDrizzleDB<any>): Dialect => {
-  if (is(db, MySqlAsyncDatabase)) {
-    return 'mysql';
+/** The dialect a drizzle instance speaks, or an error when it is none this library supports. */
+const dialectFor = (db: AnyDrizzleDB<any>): Dialect => {
+  const dialect = dialectOf(db);
+  if (!dialect) {
+    throw new Error(
+      'Drizzle-GraphQL Error: unsupported database instance — expected a PostgreSQL, MySQL or SQLite one.',
+    );
   }
-  if (is(db, PgAsyncDatabase)) {
-    return 'pg';
-  }
-  if (is(db, SQLiteAsyncDatabase)) {
-    return 'sqlite';
-  }
-  throw new Error('Drizzle-GraphQL Error: unsupported database instance — expected a PostgreSQL, MySQL or SQLite one.');
+  return dialect;
 };
 
 const contextFor = (db: AnyDrizzleDB<any>): SelectionContext => {
@@ -84,18 +61,10 @@ const contextFor = (db: AnyDrizzleDB<any>): SelectionContext => {
   }
 
   const relations = (db as any)._.relations ?? {};
-  // Same reconstruction `buildSchema` does: the relations config is the only table map a v1
-  // handle carries, and each of its entries carries its table.
-  const schema = Object.fromEntries(
-    Object.entries(relations as Record<string, any>)
-      .filter(([, config]) => config?.table != null)
-      .map(([key, config]) => [key, config.table]),
-  );
+  // The same table map `buildSchema` reads.
+  const schema = tablesOfRelations(relations);
 
-  const tableEntries = Object.entries(schema as Record<string, unknown>).filter(([, value]) => is(value, Table)) as [
-    string,
-    Table,
-  ][];
+  const tableEntries = Object.entries(schema).filter(([, value]) => is(value, Table)) as [string, Table][];
   if (!tableEntries.length) {
     throw new Error(
       'Drizzle-GraphQL Error: Schema not found in drizzle instance. Pass relations (from buildRelations/defineRelations) to the drizzle constructor so drizzle-graphql can read your tables.',
@@ -103,23 +72,20 @@ const contextFor = (db: AnyDrizzleDB<any>): SelectionContext => {
   }
 
   const tables = Object.fromEntries(tableEntries);
-  const dialect = dialectOf(db);
-  const getTableConfig = TABLE_CONFIG[dialect];
+  const { primaryKeyPropNames, getTableConfig, nullOrdering } = dialectFor(db);
   const primaryKeyCache = new Map<string, readonly string[]>();
   const primaryKeyOf = (tableName: string): readonly string[] => {
     let pk = primaryKeyCache.get(tableName);
     if (!pk) {
       const table = tables[tableName];
-      pk = table ? getPrimaryKeyPropNamesFromConfig(table, getTableConfig) : [];
+      pk = table ? primaryKeyPropNames(table) : [];
       primaryKeyCache.set(tableName, pk);
     }
     return pk;
   };
 
-  const namedRelations = buildNamedRelations(relations, tableEntries);
-  // Paginated relations fall back to a primary-key order, which is resolved once per target
-  // and hung off the relation entry — exactly as the generated schema does it.
-  attachTargetPrimaryKeys(namedRelations, tables, (table) => [...primaryKeyOf(tableNameOf(tables, table))]);
+  // Derived exactly as the generated schema derives it, minus the build's excluded tables.
+  const namedRelations = buildRelationGraph(relations, tableEntries, primaryKeyPropNames);
 
   // Every table's unique-key `where` fields, for a read no build identifies: which tables enabled
   // them is per build. A client cannot spell a field its schema did not generate, so offering
@@ -128,7 +94,11 @@ const contextFor = (db: AnyDrizzleDB<any>): SelectionContext => {
     tableEntries
       .map(([tableName, table]): [string, UniqueKeyMap] => [
         tableName,
-        tableUniqueKeyMap(table, Object.keys(namedRelations[tableName] ?? {}), getUniqueColumnSets(table, getTableConfig)),
+        tableUniqueKeyMap(
+          table,
+          Object.keys(namedRelations[tableName] ?? {}),
+          getUniqueColumnSets(table, getTableConfig),
+        ),
       ])
       .filter(([, map]) => Object.keys(map).length),
   );
@@ -138,15 +108,11 @@ const contextFor = (db: AnyDrizzleDB<any>): SelectionContext => {
     namedRelations,
     filterCtx: { tables, relationMap: namedRelations, uniqueKeys },
     primaryKeyOf,
-    nullOrdering: DIALECT_NULL_ORDERING[dialect],
+    nullOrdering,
   };
   contextCache.set(db as object, context);
   return context;
 };
-
-/** Reverse lookup for `attachTargetPrimaryKeys`, which hands back the table, not its key. */
-const tableNameOf = (tables: Record<string, Table>, table: Table): string =>
-  Object.keys(tables).find((name) => tables[name] === table) ?? '';
 
 /** Options shared by {@link selectionToWith} and {@link resolveSelection}. */
 export type SelectionOptions = {
