@@ -402,6 +402,11 @@ export type OrderByArgs<TTable extends Table> = {
 export type GeneratedTableTypesInputs = {
   insertInput: GraphQLInputObjectType;
   updateInput: GraphQLInputObjectType;
+  /**
+   * `Upsert<Table>Input`, for a table with nested-write relations only — the upsert of any
+   * other table takes `insertInput`.
+   */
+  upsertInput: GraphQLInputObjectType | undefined;
   /** Absent when the table has nothing to order by (see `generateTableOrderTypeCached`). */
   tableOrder: GraphQLInputObjectType | undefined;
   tableFilters: GraphQLInputObjectType;

@@ -447,7 +447,7 @@ const { schema } = buildSchema(db, {
 ```
 
 `kind` is one of `object`, `filter`, `listRelationFilter`, `orderBy`, `createInput`, `updateInput`,
-`updateManyInput`, `nestedWriteInput`, `fieldUpdateInput`, `aggregate`, `having`, `groupBy`,
+`updateManyInput`, `upsertInput`, `nestedWriteInput`, `fieldUpdateInput`, `aggregate`, `having`, `groupBy`,
 `groupKeys`, `onConflict`, `uniqueKey`, `columnEnum`, `columnFilter` and `shared`. `table` is the
 Drizzle schema key the type belongs to, where it belongs to one, and `operation` further identifies
 it (the aggregate's `avg`, the column filter's `String`, the unique key's field name). An answer is
@@ -1747,7 +1747,8 @@ mutation {
 -   `action: NOTHING` inserts nothing and returns nothing for the conflicting row. An `UPDATE`
     with no columns left to write degrades to the same thing
 -   `values` is the same `Create<Type>Input` the insert mutations take, so turning `insert`
-    off does not remove it
+    off does not remove it. With [nested writes](#nested-writes) on, a table with writable
+    relations takes `Upsert<Type>Input` instead — see [Nested upserts](#nested-upserts)
 
 ### A null key is an absent key
 
@@ -1842,8 +1843,9 @@ mutation {
     `author: { create: … }` available, `authorId` is one of two ways to supply it
 -   Nesting is one level deep: the row a nested `create` inserts takes columns only, and the
     join column is left off, since the write it is part of sets it
--   The generated input types are `<Type><Relation>NestedCreateInput` and
-    `<Type><Relation>NestedUpdateInput` for the operations, and
+-   The generated input types are `<Type><Relation>NestedCreateInput`,
+    `<Type><Relation>NestedUpdateInput` and `<Type><Relation>NestedUpsertInput` for the
+    operations, and
     `<Type><Relation>NestedCreatePayloadInput` for the row a `create` inserts — all named
     outside the root input namespace, so a relation whose name spells a sibling table's
     (`item.type` beside a table named `itemType`) is not a collision
@@ -1866,6 +1868,40 @@ mutation {
     parent row, the parent rows are read back after it
 -   A relation joining on more than one column per side gets no nested-write field: setting
     one key would leave the rest of the join (a tenant column, say) unmatched and unwritten
+
+### Nested upserts
+
+With `features.upsert` on as well, the upsert of a table that has writable relations takes
+`Upsert<Type>Input`: the create input's columns, with relation fields that offer what the
+update input's do. So one upsert can save a form whether or not its row exists yet, including
+the tags the user removed:
+
+```graphql
+mutation Save($id: Int, $title: String!, $tagIds: [Int!]!) {
+    upsertPostsSingle(values: { id: $id, title: $title, tags: { set: [{ id: { inArray: $tagIds } }] } }) {
+        id
+        tags {
+            id
+        }
+    }
+}
+```
+
+-   On the **conflict branch** the operations run exactly as they do on `update<Table>`
+-   On the **insert branch** they run the same way against a row that has nothing attached
+    yet: `set` only attaches, and `disconnect` finds nothing to detach
+-   The row and every nested statement run in one transaction, and the target tables'
+    `onWrite` hooks fire for the nested statements as they do for create and update
+-   A conflict with a soft-deleted row updates nothing, as `update<Table>` matches nothing, so
+    the nested operations do not run either and the mutation returns `null`
+-   A parent-side `disconnect` has to be written by the conflict branch, like a parent-side
+    `connect`: an `onConflict.update` that leaves the join column out fails with
+    `DRIZZLE_NESTED_WRITE_INVALID`
+-   A parent-side relation whose `where` filters its target offers no `disconnect` here.
+    `update<Table>` leaves a key that points at a row the `where` hides in place, and the
+    conflict branch writes the key as a plain column, so it could not do the same
+-   A table with no writable relation has nothing to add, so its upsert keeps
+    `Create<Type>Input`. `derivedTypeNameMapper` names the new type with `kind: 'upsertInput'`
 
 ### A relation's own `where`
 

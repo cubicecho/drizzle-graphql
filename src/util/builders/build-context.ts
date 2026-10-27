@@ -413,6 +413,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
           typeNameMapper,
           prefixes.insert,
           prefixes.update,
+          prefixes.upsert,
           resolverFactory,
           featureOf(tableName).relationAggregates ? relationAggregateFactory : undefined,
           nestedTypes,
@@ -649,13 +650,14 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
         }
       }
 
-      const { insertInput, updateInput, tableFilters, tableOrder } = tableTypes.inputs;
+      const { insertInput, updateInput, upsertInput, tableFilters, tableOrder } = tableTypes.inputs;
       // The insert/update inputs are still built (they type the mutations that survive) but
       // only reach the schema's type map when a mutation actually references them.
       const activeInputs = [
-        // The insert input types the upsert mutations too, so either feature keeps it.
-        ...(tableFeatures.insert || built.onConflictInput ? [insertInput] : []),
-        ...(built.onConflictInput ? [built.onConflictInput] : []),
+        // The insert input types the upsert mutations too, unless the table has an upsert
+        // input of its own.
+        ...(tableFeatures.insert || (built.onConflictInput && !upsertInput) ? [insertInput] : []),
+        ...(built.onConflictInput ? [built.onConflictInput, ...(upsertInput ? [upsertInput] : [])] : []),
         ...(tableFeatures.update ? [updateInput] : []),
         ...(built.updateManyInput ? [built.updateManyInput] : []),
         tableFilters,

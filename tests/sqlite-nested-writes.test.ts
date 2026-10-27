@@ -565,3 +565,44 @@ describe.sequential('SQLite nested writes under policies', () => {
     expect((await authors()).map((row: any) => row.name)).toEqual(['Kept']);
   });
 });
+
+// ── upsert: the update operations, applied on either branch (issue #219) ────
+
+describe.sequential('SQLite nested upsert', () => {
+  let upsertSchema: GraphQLSchema;
+  const runUpsert = (source: string) => graphql({ schema: upsertSchema, source, contextValue: {} });
+
+  beforeAll(() => {
+    upsertSchema = buildSchema(db, { features: { nestedWrites: true, upsert: true } }).schema;
+  });
+
+  beforeEach(async () => {
+    await db.insert(Tags).values([{ name: 'a' }, { name: 'b' }, { name: 'c' }]);
+  });
+
+  it('treats set as connect when the upsert inserts the row', async () => {
+    const result = await runUpsert(`mutation {
+      upsertPostsSingle(values: { id: 1, title: "new", tags: { set: [{ id: { inArray: [1, 2] } }], disconnect: [{ id: { eq: 3 } }] } }) { id }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    expect(await links()).toEqual(['1:1', '1:2']);
+  });
+
+  it('replaces the set and detaches when the upsert hits an existing row', async () => {
+    await db.insert(Authors).values({ name: 'ann' });
+    await db.insert(Posts).values({ id: 1, authorId: 1, title: 'old' });
+    await db.insert(PostsToTags).values([
+      { postId: 1, tagId: 1 },
+      { postId: 1, tagId: 2 },
+    ]);
+
+    const result = await runUpsert(`mutation {
+      upsertPostsSingle(values: { id: 1, title: "edited", author: { disconnect: true }, tags: { set: [{ id: { eq: 3 } }] } }) { id title authorId }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    expect((result.data as any).upsertPostsSingle).toEqual({ id: 1, title: 'edited', authorId: null });
+    expect(await links()).toEqual(['1:3']);
+  });
+});
