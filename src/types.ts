@@ -1277,9 +1277,10 @@ export type BuildSchemaConfig = {
   /**
    * Turns individual generated features off, for the whole build or per table.
    *
-   * Every flag defaults to `true` except `upsert` and `nestedWrites`, which are opt-in: a
-   * build with no `features` block generates exactly what it generated before this option
-   * existed. Turning one off removes both the schema surface it adds and the work behind it.
+   * The opt-in flags default to `false`: `upsert`, `nestedWrites`, `fieldUpdateOperations`,
+   * `countMutations`, `requireWhere` and `uniqueKeyFilters`. Every other flag defaults to
+   * `true`, so a build with no `features` block generates exactly what it generated before this
+   * option existed. Turning one off removes both the schema surface it adds and the work behind it.
    *
    * ```ts
    * buildSchema(db, {

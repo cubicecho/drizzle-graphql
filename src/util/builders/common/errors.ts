@@ -10,7 +10,10 @@ import type { DrizzleFieldOperation } from '../../extensions.ts';
  * a client to read and may be reworded in any release, so it is not something to match on.
  */
 export type DrizzleErrorCode =
-  /** A `Single` write's `where` matched more than one row, so nothing was written. */
+  /**
+   * A `Single` write's `where` matched more than one row, so nothing was written. On a table
+   * without a primary key a row arriving between the check and the write can still be written.
+   */
   | 'DRIZZLE_MULTI_ROW_MATCH'
   /** A write that refuses to run unbounded was given no `where`, or one that restricts nothing (`{}`, `notInArray: []`). */
   | 'DRIZZLE_WHERE_REQUIRED'

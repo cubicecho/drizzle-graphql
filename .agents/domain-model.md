@@ -99,7 +99,7 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 | Inserts stamp every `contextValues` column (and a NOT NULL soft-delete marker's restored value) | `policies.insertStamps`, `policies.applyContextValues` |
 | Updates never write a `contextValues` column | `policies.stripContextValues` |
 | Generated and identity-ALWAYS columns never appear in a write input | `writable-columns.isWritableColumn` |
-| A `Single` update/delete is refused before writing if its `where` matches more than one row | `mutation-helpers.assertSingleMatch` |
+| A `Single` update/delete writes at most one row: refused before writing if its `where` matches more than one, then narrowed to the primary key of the row it checked | `mutation-helpers.narrowToSingleMatch` |
 | `Single` writes and `requireWhere` writes refuse a `where` that matches every row (`{}`, `notInArray: []`, `NOT: { inArray: [] }`) | `mutation-helpers.extractRequiredFilters` (`DRIZZLE_WHERE_REQUIRED`) |
 | An update must write a column or carry nested ops | `write-resolvers.generateUpdate`, `update-many.createUpdateManyGenerator`, `mysql.ts` update |
 | A field-update input carries exactly one operation | `field-updates.remapUpdateInput` |
@@ -122,12 +122,8 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 
 ### Claimed but not enforced (findings)
 
-- `DRIZZLE_MULTI_ROW_MATCH` is documented as "so nothing was written" (`src/util/builders/common/errors.ts:13`), but the post-write re-check throws after the update/delete already ran (`src/util/builders/write-resolvers.ts:517-518`, `:628-629`); it is only undone when a transaction happens to be open.
-- `BuildSchemaConfig.features` says every flag defaults to `true` except `upsert` and `nestedWrites` (`src/types.ts:1280`); five more are off (`src/util/features.ts` `featureDefaults`, and `types.ts:764` says so).
-- `updateMany`'s result is described as "aligned with the input, one slot per entry" (`schema-data.ts:352`), yet a multi-row entry contributes several slots (`update-many.ts` output loop), so slots no longer map to entries.
-- The eager re-fetch says "the write has already committed" (`common/select-runtime.ts:353`); under a hook-forced, nested or shared transaction it has not.
+- `DRIZZLE_MULTI_ROW_MATCH` means nothing was written (`common/errors.ts`). On a table without a primary key the write cannot be narrowed to the row checked, so a row arriving between the check and the write is still written (`mutation-helpers.narrowToSingleMatch`).
 - `transactions: 'auto'` says two executions must not share one context object at the same time (`types.ts` `transactions`); nothing checks it, and the second would find the first's transaction under `drizzleExecutorKey` and run on it.
-- AGENTS.md's dispatch snippet names `MySqlDatabase` / `BaseSQLiteDatabase` (`AGENTS.md:309-310`) and calls `common.ts` "shared helpers (extractFilters, extractOrderBy)" (`AGENTS.md:18`); the code dispatches on `MySqlAsyncDatabase` first and PG/SQLite share `schema-data.ts` + `build-context.ts`.
 - `WriteHookFor` takes the operation (`common/write-hooks.ts` `WriteHookFor`), but the resolved lookup ignores it (`build-config.ts:330-331`): hooks are per table, not per operation.
 
 ## Glossary

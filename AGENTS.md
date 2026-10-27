@@ -15,7 +15,7 @@ drizzle-graphql/
 │   ├── types.ts                     # All public TypeScript types
 │   └── util/
 │       ├── builders/
-│       │   ├── common.ts            # Shared helpers (extractFilters, extractOrderBy)
+│       │   ├── common.ts            # Barrel re-exporting the shared helpers in common/
 │       │   ├── index.ts             # Re-exports all builders
 │       │   ├── pg.ts                # PostgreSQL schema generator
 │       │   ├── mysql.ts             # MySQL schema generator
@@ -305,12 +305,12 @@ tsdown defaults to `.mjs` / `.d.mts` for the ESM half, which the `exports` map d
 ### Database engine detection
 `buildSchema` detects the DB type at runtime using `is()` from drizzle-orm, then delegates to the appropriate generator:
 ```typescript
-if (is(db, PgAsyncDatabase))    generatorOutput = generatePG(db, ...);
-if (is(db, MySqlDatabase))      generatorOutput = generateMySQL(db, ...);
-if (is(db, BaseSQLiteDatabase)) generatorOutput = generateSQLite(db, ...);
+if (is(db, MySqlAsyncDatabase))       generatorOutput = generateMySQL(db, ...);
+else if (is(db, PgAsyncDatabase))     generatorOutput = generatePG(db, ...);
+else if (is(db, SQLiteAsyncDatabase)) generatorOutput = generateSQLite(db, ...);
 ```
 
-Each engine has its own builder in `src/util/builders/` but shares helpers from `common.ts`.
+Each engine has its own builder in `src/util/builders/`. PostgreSQL and SQLite share the build in `schema-data.ts` and `build-context.ts`; all three share the helpers under `common/`.
 
 ### Public API surface
 Everything public is exported from `src/index.ts`. The type definitions live in `src/types.ts` but are re-exported from `index.ts`. Consumers should only import from the package root (`drizzle-graphql`), never from deep paths.
