@@ -95,3 +95,37 @@ describe("SQLite: a parent-side relation's own where", () => {
     expect((await post(4)).authorId).toBe(2);
   });
 });
+
+// Issue #222: an upsert's conflict branch writes the key as update<Table> does.
+describe("SQLite: a parent-side relation's own where, through an upsert", () => {
+  let upsertSchema: GraphQLSchema;
+  const runUpsert = (source: string) => graphql({ schema: upsertSchema, source, contextValue: {} });
+
+  beforeAll(() => {
+    upsertSchema = buildSchema(db, { features: { nestedWrites: true, upsert: true } }).schema;
+  });
+
+  it('refuses a connect that would replace a hidden key, and replaces a shown one', async () => {
+    const hidden = await runUpsert(
+      'mutation { upsertPostsSingle(values: { id: 3, title: "edited", shownAuthor: { connect: { id: { eq: 2 } } } }) { id } }',
+    );
+    expect((hidden.errors?.[0] as any)?.extensions?.code).toBe('DRIZZLE_NESTED_WRITE_INVALID');
+    expect(await post(3)).toMatchObject({ authorId: 3, title: 'hidden author' });
+
+    const shown = await runUpsert(
+      'mutation { upsertPostsSingle(values: { id: 4, title: "edited", shownAuthor: { connect: { id: { eq: 2 } } } }) { id authorId } }',
+    );
+    expect(shown.errors).toBeUndefined();
+    expect(await post(4)).toMatchObject({ authorId: 2, title: 'edited' });
+  });
+
+  it('disconnect clears only a key the relation shows', async () => {
+    const res = await runUpsert(`mutation { upsertPosts(values: [
+      { id: 3, title: "a", shownAuthor: { disconnect: true } },
+      { id: 4, title: "b", shownAuthor: { disconnect: true } }
+    ]) { id } }`);
+    expect(res.errors).toBeUndefined();
+    expect((await post(3)).authorId).toBe(3);
+    expect((await post(4)).authorId).toBeNull();
+  });
+});

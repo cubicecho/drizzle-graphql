@@ -54,7 +54,13 @@ import {
   writeResolver,
 } from './common.ts';
 import { remapUpdateInput } from './field-updates.ts';
-import { mergedOps, type NestedWriteRuntime, updateWithNestedOps, writeWithNestedOps } from './nested-writes.ts';
+import {
+  mergedOps,
+  type NestedOps,
+  type NestedWriteRuntime,
+  updateWithNestedOps,
+  writeWithNestedOps,
+} from './nested-writes.ts';
 import type { CreatedResolver, Filters, TableNamedRelations } from './types.ts';
 
 /** Every database handle these resolvers can run on. `runMutation` takes `any`, so this is purely a call-site guard. */
@@ -317,7 +323,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         // The conflict plan reads the columns the write actually supplies, so a nested write
         // — whose rows go in one at a time, each already carrying whatever its parent-side
         // operations produced — resolves its plan per row rather than once for the batch.
-        const runUpsert = async (target: any, values: Record<string, any>[]) => {
+        const runUpsert = async (target: any, values: Record<string, any>[], ops?: NestedOps) => {
           const batches = resolveConflictPlan({
             table,
             values,
@@ -337,7 +343,9 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             // to it exactly as it would to `update<Table>`: a conflicting row the caller cannot
             // see is left alone rather than taken over.
             const setWhere = withScope(scope, tableName, table, plan.setWhere);
-            return applyConflictPlan(query, table, plan, setWhere);
+            // A parent-side key the nested operations set is written as an update writes it.
+            const guarded = ops && nested ? { ...plan, set: nested.guardConflictSet(tableName, ops, plan.set) } : plan;
+            return applyConflictPlan(query, table, guarded, setWhere);
           };
 
           // Rows that write different columns on conflict go in as separate statements, which
@@ -380,7 +388,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
               entries: nestedEntries,
               remapValues: (values) =>
                 applyContextValues(remapFromGraphQLSingleInput(values, table), contextColumns, context),
-              write: (tx, values) => runUpsert(tx, [values]),
+              write: (tx, values, ops) => runUpsert(tx, [values], ops),
               request: { context, args, info },
             })
           : await runUpsert(executor, input);
