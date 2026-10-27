@@ -15,6 +15,7 @@ import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { dateToCalendarDate } from '../../scalars/index.ts';
 import { isDateOnlyColumn } from '../../type-converter/index.ts';
 import { drizzleError } from './errors.ts';
+import { comparableOperand } from './filters.ts';
 import type { OrderNullsOption } from './order-by.ts';
 import { orderByEntries, orderExpressions } from './order-by.ts';
 
@@ -280,7 +281,8 @@ const strictComparison = (col: Column, direction: 'asc' | 'desc', value: unknown
       return direction === 'asc' ? sql`${position} > ${index + 1}` : sql`${position} < ${index + 1}`;
     }
   }
-  return direction === 'asc' ? gt(col, value) : lt(col, value);
+  const operand = comparableOperand(col, value);
+  return direction === 'asc' ? gt(col, operand) : lt(col, operand);
 };
 
 /**
@@ -409,7 +411,7 @@ export const buildCursorCondition = (
     if (strictlyAfter) {
       disjuncts.push(equalities.length ? and(...equalities, strictlyAfter)! : strictlyAfter);
     }
-    equalities.push(value === null || value === undefined ? isNull(col) : eq(col, value));
+    equalities.push(value === null || value === undefined ? isNull(col) : eq(col, comparableOperand(col, value)));
   }
 
   if (!disjuncts.length) {

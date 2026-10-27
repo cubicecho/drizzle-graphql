@@ -6,11 +6,13 @@ import {
   and,
   arrayContains,
   arrayOverlaps,
+  bindIfParam,
   eq,
   gt,
   gte,
   ilike,
   inArray,
+  is,
   isNotNull,
   isNull,
   like,
@@ -25,6 +27,7 @@ import {
   type SQL,
   sql,
 } from 'drizzle-orm';
+import { MySqlFloat } from 'drizzle-orm/mysql-core';
 import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
 import type { FilterColumnOperators, FilterColumnOperatorsCore } from '../types.ts';
 import { columnDialect, isJsonColumn } from './column-filters.ts';
@@ -250,6 +253,22 @@ const jsonEquality = (column: Column, columnName: string, value: unknown, negate
       });
   }
 };
+
+/** The largest `FLOAT(p)` precision MySQL still stores in single precision; above it is DOUBLE. */
+const MYSQL_SINGLE_PRECISION_MAX = 24;
+
+/** Whether a MySQL `float` column stores single-precision values (`float`, `float(p,s)`, `float(p ≤ 24)`). */
+const isMySqlSingleFloat = (column: Column): boolean =>
+  is(column, MySqlFloat) &&
+  (column.precision === undefined || column.scale !== undefined || column.precision <= MYSQL_SINGLE_PRECISION_MAX);
+
+/**
+ * A value bound for comparison against `column`. MySQL compares a single-precision `float` with a
+ * bound double in double precision, so `0.1` never equals the stored `0.1` and a cursor never gets
+ * past its own row. There the operand is cast to `float` (MySQL 8.0.17+) so both sides round alike.
+ */
+export const comparableOperand = (column: Column, value: unknown): unknown =>
+  isMySqlSingleFloat(column) ? sql`cast(${bindIfParam(value, column)} as float)` : value;
 
 /**
  * A compiled filter. `undefined` is the **matches every row** result ({@link MATCHES_EVERY_ROW}):
@@ -578,7 +597,7 @@ export const extractFiltersColumn = <TColumn extends Column>(
       variants.push(
         foldCase
           ? lowerComparison(column, operatorName, singleValue)
-          : singleValueOps[operatorName]!(column, singleValue),
+          : singleValueOps[operatorName]!(column, comparableOperand(column, singleValue)),
       );
     } else if (operatorName in stringValueOps) {
       // Under `insensitive`, `like`/`notLike` compile the same way their `i` counterparts
@@ -628,7 +647,10 @@ export const extractFiltersColumn = <TColumn extends Column>(
       variants.push(
         foldCase
           ? lowerMembership(column, arrayValue, operatorName === 'notInArray')
-          : arrayValueOps[operatorName]!(column, arrayValue),
+          : arrayValueOps[operatorName]!(
+              column,
+              arrayValue.map((value) => comparableOperand(column, value)),
+            ),
       );
     } else if (operatorName === 'has') {
       // Single-element membership: containment with a one-element array (`col @> ARRAY[value]`).
