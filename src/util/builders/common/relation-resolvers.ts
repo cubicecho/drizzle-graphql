@@ -22,7 +22,7 @@ import {
   orderByHasRelationEntry,
   selectsCursorField,
 } from './cursor.ts';
-import { DISTINCT_PARENT, primaryKeyRestriction, selectDistinctKeys } from './distinct.ts';
+import { distinctRowsCondition } from './distinct.ts';
 import { type DrizzleErrorContext, drizzleError, toGraphQLError, withErrorContext } from './errors.ts';
 import { resolveExecutor } from './executor.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
@@ -35,7 +35,6 @@ import type { RelationFilterBase, RelationFilterContext } from './relation-filte
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import type { RelationResolverFactory } from './relations.ts';
 import {
-  balancedOr,
   extractJunctionColumns,
   extractRelationJoinColumnPairs,
   joinKeyOf,
@@ -359,9 +358,9 @@ export const createRelationResolverFactory =
         // Loaders are keyed per context too, so the scope resolved here is this request's.
         const scope = resolveScope(policies, context, filterCtx);
 
-        // One query (or, with `distinct`, one pass and one query) over a group of parents,
-        // returning each parent's result by its key. Every parent's rows come from the query
-        // its key is in, so splitting the batch changes nothing a parent sees.
+        // One query over a group of parents, returning each parent's result by its key. Every
+        // parent's rows come from the query its key is in, so splitting the batch changes
+        // nothing a parent sees.
         const loadChunk = async (chunkKeys: readonly (readonly unknown[])[]): Promise<Map<string, any>> => {
           let whereCondition = withScope(
             scope,
@@ -387,40 +386,26 @@ export const createRelationResolverFactory =
           if (distinct) {
             // Partitioned by the foreign key as well as the requested columns, so "one row per
             // distinct value" means one per parent — `users { posts(distinct: [status]) }` gives
-            // each user one post per status, not one post per status across all users. The pass
-            // runs first and the batch query is then narrowed to the keys it picked, exactly as
-            // the root list does.
-            const keys = await selectDistinctKeys({
-              db: executor,
-              table: targetTable,
-              tableName: targetTableName,
-              distinct,
-              pkNames: targetPkNames,
-              where: whereCondition,
-              orderBy: orderByArg,
-              partitionBy: groupCols,
-              junction: junction
-                ? { table: junction.table, on: eq(junction.targetCol, foreignCol), parentKey: junction.sourceCol }
-                : undefined,
-            });
-            if (!keys.length) {
-              return new Map();
-            }
-            // Through a junction, a key is kept for one parent and not necessarily another, so the
-            // batch is narrowed to (parent, row) pairs rather than to rows — one term per pair,
-            // nested as a balanced tree so a large batch stays within SQLite's expression depth.
+            // each user one post per status, not one post per status across all users. The batch
+            // query is narrowed to the rows the pass keeps by a subquery, as the root list is —
+            // through a junction, to the (parent, row) pairs it keeps. Any per-parent limit/offset
+            // is then cut from those rows by the batch query's own window, in the same statement.
             whereCondition = and(
               whereCondition,
-              junction
-                ? balancedOr(
-                    keys.map((key) =>
-                      and(
-                        eq(junction.sourceCol, key[DISTINCT_PARENT]),
-                        primaryKeyRestriction(targetTable, targetPkNames, [key]),
-                      ),
-                    ),
-                  )
-                : primaryKeyRestriction(targetTable, targetPkNames, keys),
+              distinctRowsCondition({
+                db: executor,
+                table: targetTable,
+                target: targetTable,
+                tableName: targetTableName,
+                distinct,
+                pkNames: targetPkNames,
+                where: whereCondition,
+                orderBy: orderByArg,
+                partitionBy: groupCols,
+                junction: junction
+                  ? { table: junction.table, on: eq(junction.targetCol, foreignCol), parentKey: junction.sourceCol }
+                  : undefined,
+              }),
             );
           }
 

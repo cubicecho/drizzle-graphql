@@ -513,8 +513,8 @@ describe('eager loading and the fallback', () => {
     `);
 
     expect(res.errors).toBeUndefined();
-    // Authors, the distinct key pass, and the batched posts query.
-    expect(queryCount).toBe(3);
+    // Authors, and the batched posts query with the distinct pass as its subquery.
+    expect(queryCount).toBe(2);
   });
 
   it('follows the cursor field through a fragment spread', async () => {

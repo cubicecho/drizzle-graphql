@@ -1555,10 +1555,11 @@ enum. Rows sharing the same combination of those columns collapse to one:
 -   JSON columns are not in `<Type>DistinctColumn` (see
     [Filtering inside JSON documents](#filtering-inside-json-documents))
 
-It runs as an extra `row_number() over (partition by …)` query that picks the surviving
-rows' primary keys, after which the main query is narrowed to them — so it needs the same
-window-function support as per-parent paginated relations (**PostgreSQL**, **MySQL 8.0+**,
-or **SQLite 3.25+**), and a table with no primary key cannot use it.
+It runs as a `row_number() over (partition by …)` subquery that picks the surviving rows'
+primary keys, and the main query is narrowed to them in the same statement — however many rows
+survive, nothing is bound per row. It needs the same window-function support as per-parent
+paginated relations (**PostgreSQL**, **MySQL 8.0+**, or **SQLite 3.25+**), and a table with no
+primary key cannot use it.
 
 ## Pagination ordering
 
@@ -1729,9 +1730,9 @@ request's own total order, `distinct` needs a window pass, and a `cursor` has to
 from the raw row. So a relation field that is passed `after` or `distinct`, or that selects
 `cursor`, drops out of the eager fetch and resolves through the request-scoped batch loader
 instead, which implements all three. That is still **one query per relation** across every
-parent in the batch (`distinct` adds its key-selection pass, as on a root list) — never one
-per parent. Nothing about the arguments changes; only how many round-trips the request
-costs.
+parent in the batch (`distinct` runs its key-selection pass as a subquery of it, as on a root
+list) — never one per parent. Nothing about the arguments changes; only how many round-trips
+the request costs.
 
 
 ## Upsert
