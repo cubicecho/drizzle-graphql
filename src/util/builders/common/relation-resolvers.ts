@@ -87,8 +87,9 @@ const batchedPaginatedRelationQuery = async (
   // Partitioned by the whole parent key: every join column, or the junction's source column.
   const rowNumber = sql`row_number() over (partition by ${sql.join([...partitionCols], sql`, `)}${orderClause})`.as(RN);
 
-  // Subquery: every target column plus a per-partition row number. Each column has to come
-  // out under its own name, since the outer select reads it back by that name.
+  // Subquery: every target column (and a junction's parent key) plus a per-partition row
+  // number. Each comes out aliased to its key, since the outer select reads it back by key and
+  // a target column can share a database name with the junction's source column.
   const sub = withJunction(
     db.select({ ...subquerySafeSelection(cols), [RN]: rowNumber }).from(targetTable),
     junction,

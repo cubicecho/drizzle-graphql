@@ -2,7 +2,7 @@
 // the relational query builder's `columns` map, and a SQL select list.
 
 import type { Table } from 'drizzle-orm';
-import { Column, getColumns, is, sql } from 'drizzle-orm';
+import { Column, getColumns, is, SQL, sql } from 'drizzle-orm';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import type { SelectedColumnsRaw, SelectedSQLColumns, TableNamedRelations } from '../types.ts';
 import { extractRelationJoinColumnPairs } from './relations.ts';
@@ -159,21 +159,29 @@ export const extractSelectedColumnsFromTreeSQLFormat = <TColType extends Column 
 /** SQLite column types drizzle selects through `cast(… as text)` to keep their full precision. */
 const SQLITE_TEXT_CAST_TYPES: ReadonlySet<string> = new Set(['SQLiteNumeric', 'SQLiteNumericBigInt']);
 
+/** One subquery entry under an explicit alias equal to its key; see `subquerySafeSelection`. */
+const aliasedAs = (key: string, field: unknown): unknown => {
+  if (is(field, Column)) {
+    // Selected through the same cast drizzle uses, so the value keeps its full precision.
+    const expression = SQLITE_TEXT_CAST_TYPES.has(field.columnType) ? sql`cast(${field} as text)` : sql`${field}`;
+    return expression.mapWith(field).as(key);
+  }
+  if (is(field, SQL.Aliased)) {
+    return field.fieldAlias === key ? field : field.sql.as(key);
+  }
+  if (is(field, SQL)) {
+    return field.as(key);
+  }
+  return field;
+};
+
 /**
- * A select list that can be wrapped in a subquery and read back by name.
+ * A select list that can be wrapped in a subquery and read back by key.
  *
- * drizzle selects a SQLite `numeric()` column (string and bigint modes) as an unaliased
- * `cast("col" as text)`, so a subquery built from it has no column called `col` and the outer
- * query's reference to it fails. Those columns are given the same cast under an explicit alias,
- * decoded by the column itself; every other entry is left as it was, so the dialects' own
- * decoding of it is untouched.
+ * Every entry is selected under an alias equal to its key. An unaliased column comes out under
+ * its database name, which two joined tables can share (`posts.user_id`, `likes.user_id`), and
+ * drizzle selects a SQLite `numeric()` column as an unaliased `cast("col" as text)`. Each
+ * aliased column is still decoded by the column itself.
  */
 export const subquerySafeSelection = <T extends Record<string, unknown>>(selection: T): T =>
-  Object.fromEntries(
-    Object.entries(selection).map(([key, field]) => [
-      key,
-      is(field, Column) && SQLITE_TEXT_CAST_TYPES.has(field.columnType)
-        ? sql`cast(${field} as text)`.mapWith(field).as(key)
-        : field,
-    ]),
-  ) as T;
+  Object.fromEntries(Object.entries(selection).map(([key, field]) => [key, aliasedAs(key, field)])) as T;
