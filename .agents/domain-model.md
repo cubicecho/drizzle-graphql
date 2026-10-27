@@ -13,7 +13,7 @@ writes, filters, pagination, aggregates and row policies all compiled to SQL.
 
 ## Flow
 
-- **Schema build:** drizzle db + `BuildSchemaConfig` → `buildSchema` (table map from `db._.relations`, `tablesOfRelations`) → `resolveBuildConfig` (validate, resolve features/limits/defaults/policies/hooks) → `dialectOf(db).generateSchemaData` (`generatePG` / `generateMySQL` / `generateSQLite`) → `createSchemaBuilder.prepareBuild` (drop excluded tables, reset per-build registries, relation graph, unique keys, filter context, bound policies, type cache, preflight, nested-write plans, per-table types) → `forEachTable` (read fields + dialect's mutation half → `defineRootField`) → `finalizeBuild` (relation field resolvers, transaction roster, build registry) → `applyErrorMapper` → `new GraphQLSchema` → `{ schema, entities }`.
+- **Schema build:** drizzle db + `BuildSchemaConfig` → `buildSchema` (table map from `db._.relations`, `tablesOfRelations`) → `resolveBuildConfig` (validate, resolve features/limits/defaults/policies/hooks) → `dialectOf(db).generateSchemaData` (`generatePG` / `generateMySQL` / `generateSQLite`) → `createSchemaBuilder.prepareBuild` (drop excluded tables, `installBuildRegistries`, `buildRelationGraph`, `buildUniqueKeys`, filter context, `bindPolicies`, `createTypeCache`, preflight, `buildGatedNestedPlans`, per-table types) → `forEachTable` (read fields + dialect's mutation half → `defineRootField`) → `finalizeBuild` (relation field resolvers, transaction roster, build registry) → `applyErrorMapper` → `new GraphQLSchema` → `{ schema, entities }`.
 - **List read:** client `users(where, orderBy, limit, offset, after, distinct, deleted)` → select resolver → `withDefaultOrderBy` → `parseResolveInfo` → `resolveQueryExecutor` → `applyLimitPolicy` → `runRelationalSelect` (cursor entries, distinct subquery, filters + scope, `with:` from `extractRelationsParams`) → `db.query[table].findMany` → `attachRowCursors` → `remapToGraphQLArrayOutput`.
 - **Single-row read:** `usersSingle(where, orderBy, offset)` → same path with `single: true` → `findFirst` (PK order by default, no limit policy, no cursor) → `remapToGraphQLSingleOutput` or `null`.
 - **Relation field read:** parent row → relation resolver → eager value on the parent? return it : `getOrCreateRequestValue` (args → loader key, per execution) → `getOrCreateLoader` (per execution + key) → next microtask: one `IN`/OR query per chunk, windowed when paginated, scoped + soft-delete filtered → group by parent key → remap.
@@ -85,7 +85,7 @@ pending --applyParentSide--> parent-keyed --parent write--> written --checkParen
 parent-keyed --parent write returns no row (savepoint)--> rolled back, entry yields []
 ```
 
-Per-build registries — owner `build-context.ts installBuildRegistries`, called once by `prepareBuild`:
+Per-build registries — owner `build-context.ts installBuildRegistries`, the second step of `prepareBuild`:
 ```
 (previous build's state) --registerScalarOverrides / installSqliteBlobJsonDecoders / registerEnumConfig / registerColumnExclusions / resetAggregateColumnCache / resetFieldUpdateCaches--> this build's state --next buildSchema--> overwritten (per table/column object for scalar overrides, exclusions, blob decoders; whole for the rest)
 ```

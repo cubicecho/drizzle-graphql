@@ -75,6 +75,7 @@ import {
   createNestedWriteTypes,
   dropContextValueRelations,
   gateNestedWritePlans,
+  type NestedWritePlans,
   type NestedWriteRuntime,
   type NestedWriteTypes,
 } from './nested-writes.ts';
@@ -219,6 +220,45 @@ const installBuildRegistries = (tables: Record<string, Table>, options: SchemaGe
   resetFieldUpdateCaches();
 };
 
+/** How many omitted nested inputs the build-time warning names before it only counts the rest. */
+const MAX_LISTED_OMISSIONS = 5;
+
+/**
+ * A fresh type cache for one build, so a second `buildSchema` never reuses the first one's
+ * types and two of them never collide on a name.
+ */
+const createTypeCache = (build: {
+  options: SchemaGeneratorOptions;
+  tables: Record<string, Table>;
+  primaryKeyPropNames: (table: any) => string[];
+  featureOf: (tableName: string) => TableFeatures;
+  uniqueKeys: Record<string, UniqueKeyMap>;
+}): TypeCacheCtx => {
+  const { options, tables, primaryKeyPropNames, featureOf, uniqueKeys } = build;
+  return {
+    resolveName: options.resolveName ?? ((info) => info.defaultName),
+    genericFilterCache: new Map(),
+    objectTypeCache: new Map(),
+    relationFieldContainers: new Map(),
+    fullyBuiltTables: new Set(),
+    relationTypeCache: new Map(),
+    selectFieldCache: new WeakMap(),
+    filterFieldCache: new WeakMap(),
+    orderTypeCache: new WeakMap(),
+    filterTypeCache: new WeakMap(),
+    listRelationFilterCache: new Map(),
+    aggregateTypeCache: new Map(),
+    complexity: options.complexity,
+    limits: options.limits,
+    docs: options.docs ?? {},
+    primaryKeyOf: (name) => (tables[name] ? primaryKeyPropNames(tables[name] as Table) : []),
+    contextValuesOf: options.policies?.contextValues,
+    softDeleteOf: options.policies?.softDelete,
+    featureOf,
+    uniqueKeysOf: (tableName) => uniqueKeys[tableName],
+  };
+};
+
 /**
  * Binds a dialect and returns the shared halves of its build.
  *
@@ -234,6 +274,85 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     adapter.nullOrdering,
   );
 
+  /**
+   * A `where` field per compound unique constraint, for the tables that asked for one. Shared
+   * by the input types and the resolvers, so the fields a request may spell and the fields a
+   * resolver understands cannot drift apart.
+   */
+  const buildUniqueKeys = (
+    tableEntries: [string, Table][],
+    featureOf: (tableName: string) => TableFeatures,
+    namedRelations: Record<string, Record<string, TableNamedRelations>>,
+  ): Record<string, UniqueKeyMap> => {
+    const uniqueKeys: Record<string, UniqueKeyMap> = {};
+    for (const [tableName, table] of tableEntries) {
+      if (!featureOf(tableName).uniqueKeyFilters) {
+        continue;
+      }
+      // Whatever the filter input already offers under a name keeps it — columns are added
+      // first, then relations, and a key field last.
+      const map = tableUniqueKeyMap(table, Object.keys(namedRelations[tableName] ?? {}), uniqueColumnSets(table));
+      if (Object.keys(map).length) {
+        uniqueKeys[tableName] = map;
+      }
+    }
+    return uniqueKeys;
+  };
+
+  /**
+   * The nested-write plans, less what the build cannot offer: an input whose write is turned
+   * off on its target (or junction) table, and a relation keyed on a column the server stamps
+   * from `contextValues`. Each omission is reported once as a warning.
+   */
+  const buildGatedNestedPlans = (build: {
+    schemaEntries: [string, unknown][];
+    tables: Record<string, Table>;
+    namedRelations: Record<string, Record<string, TableNamedRelations>>;
+    excludedTables: ReadonlySet<string>;
+    featureOf: (tableName: string) => TableFeatures;
+    tablePolicies: SchemaGeneratorOptions['policies'];
+  }): NestedWritePlans => {
+    const { schemaEntries, tables, namedRelations, excludedTables, featureOf, tablePolicies } = build;
+    const contextValuesOf = tablePolicies?.contextValues;
+    const softDeleteOf = tablePolicies?.softDelete;
+    const plans = buildNestedWritePlans(
+      tables,
+      namedRelations,
+      // A partial unique index still says which side of a one-to-one holds the key.
+      (target) => getUniqueColumnSets(target as Table, adapter.getTableConfig, { partial: true }),
+      (target) => primaryKeyPropNames(target as Table),
+      extractRelationJoinColumns,
+      // A junction is written without being a relation target, so it is named from the
+      // whole schema — excluded tables included, which the gate below then refuses.
+      (junction) => schemaEntries.find(([, value]) => value === junction)?.[0],
+      (tableName) => insertStamps({ contextValues: contextValuesOf, softDelete: softDeleteOf }, tableName),
+    );
+
+    const turnedOff = gateNestedWritePlans(
+      plans,
+      featureOf,
+      (tableName) => excludedTables.has(tableName),
+      (tableName) => !!softDeleteOf?.(tableName),
+    );
+    if (turnedOff.length) {
+      const listed =
+        turnedOff.length > MAX_LISTED_OMISSIONS
+          ? `${turnedOff.slice(0, MAX_LISTED_OMISSIONS).join(', ')} and ${turnedOff.length - MAX_LISTED_OMISSIONS} more`
+          : turnedOff.join(', ');
+      console.warn(
+        `Drizzle-GraphQL Warning: config.features — nestedWrites leaves out the nested inputs whose table has that write turned off: ${listed}.`,
+      );
+    }
+
+    const stamped = dropContextValueRelations(plans, contextValuesOf);
+    if (stamped.length) {
+      console.warn(
+        `Drizzle-GraphQL Warning: config.contextValues — nestedWrites leaves out the relations whose foreign key the server stamps from context: ${stamped.join(', ')}.`,
+      );
+    }
+    return plans;
+  };
+
   /** Everything up to and including each table's generated types. */
   const prepareBuild = (
     db: any,
@@ -241,7 +360,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     relations: TablesRelationalConfig,
     options: SchemaGeneratorOptions,
   ): SchemaBuildContext<WithReturning> => {
-    const { relationsDepthLimit, prefixes, typeNameMapper, shouldEagerLoad, features, complexity, limits } = options;
+    const { relationsDepthLimit, prefixes, typeNameMapper, shouldEagerLoad, features, limits } = options;
     const schemaEntries = Object.entries(schema);
     // Excluded tables are dropped here, before anything reads `tableEntries` — which also makes
     // `buildNamedRelations` skip every relation pointing at one, since it resolves targets
@@ -275,22 +394,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     // fields still exist and resolve lazily.
     const eagerRelations = pruneNonEagerRelations(namedRelations, shouldEagerLoad);
 
-    // A `where` field per compound unique constraint, for the tables that asked for one. Built
-    // once and shared by the input types and the resolvers: the fields a request may spell and
-    // the fields a resolver understands are the same map, so neither can drift from the other.
-    const uniqueKeys: Record<string, UniqueKeyMap> = {};
-    for (const [tableName, table] of tableEntries) {
-      if (!featureOf(tableName).uniqueKeyFilters) {
-        continue;
-      }
-      // Whatever the filter input already offers under a name keeps it — columns are added
-      // first, then relations, and a key field last.
-      const map = tableUniqueKeyMap(table, Object.keys(namedRelations[tableName] ?? {}), uniqueColumnSets(table));
-      if (Object.keys(map).length) {
-        uniqueKeys[tableName] = map;
-      }
-    }
-
+    const uniqueKeys = buildUniqueKeys(tableEntries, featureOf, namedRelations);
     const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations, uniqueKeys };
 
     // The row scope compiled against this build's relation graph, plus the columns whose value
@@ -309,30 +413,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       tablePolicies,
     );
 
-    // Fresh cache per build — prevents type name collisions when buildSchema() is called
-    // multiple times.
-    const cacheCtx: TypeCacheCtx = {
-      resolveName: options.resolveName ?? ((info) => info.defaultName),
-      genericFilterCache: new Map(),
-      objectTypeCache: new Map(),
-      relationFieldContainers: new Map(),
-      fullyBuiltTables: new Set(),
-      relationTypeCache: new Map(),
-      selectFieldCache: new WeakMap(),
-      filterFieldCache: new WeakMap(),
-      orderTypeCache: new WeakMap(),
-      filterTypeCache: new WeakMap(),
-      listRelationFilterCache: new Map(),
-      aggregateTypeCache: new Map(),
-      complexity,
-      limits,
-      docs: options.docs ?? {},
-      primaryKeyOf: (name) => (tables[name] ? primaryKeyPropNames(tables[name] as Table) : []),
-      contextValuesOf,
-      softDeleteOf,
-      featureOf,
-      uniqueKeysOf: (tableName) => uniqueKeys[tableName],
-    };
+    const cacheCtx = createTypeCache({ options, tables, primaryKeyPropNames, featureOf, uniqueKeys });
 
     adapter.preflight?.(db, options);
 
@@ -340,46 +421,8 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     // fields to the create/update inputs, and the runtime executes them. All three are left
     // undefined when the feature is off, so the inputs and the resolvers stay as they were.
     const nestedPlans = features.nestedWrites
-      ? buildNestedWritePlans(
-          tables,
-          namedRelations,
-          // A partial unique index still says which side of a one-to-one holds the key.
-          (target) => getUniqueColumnSets(target as Table, adapter.getTableConfig, { partial: true }),
-          (target) => primaryKeyPropNames(target as Table),
-          extractRelationJoinColumns,
-          // A junction is written without being a relation target, so it is named from the
-          // whole schema — excluded tables included, which the gate below then refuses.
-          (junction) => schemaEntries.find(([, value]) => value === junction)?.[0],
-          (tableName) => insertStamps({ contextValues: contextValuesOf, softDelete: softDeleteOf }, tableName),
-        )
+      ? buildGatedNestedPlans({ schemaEntries, tables, namedRelations, excludedTables, featureOf, tablePolicies })
       : undefined;
-    // A nested write is a write to the target (or junction) table, so it obeys that table's
-    // features: an input whose write is turned off there is left out of the schema.
-    if (nestedPlans) {
-      const omitted = gateNestedWritePlans(
-        nestedPlans,
-        featureOf,
-        (tableName) => excludedTables.has(tableName),
-        (tableName) => !!softDeleteOf?.(tableName),
-      );
-      if (omitted.length) {
-        const listed =
-          omitted.length > 5 ? `${omitted.slice(0, 5).join(', ')} and ${omitted.length - 5} more` : omitted.join(', ');
-        console.warn(
-          `Drizzle-GraphQL Warning: config.features — nestedWrites leaves out the nested inputs whose table has that write turned off: ${listed}.`,
-        );
-      }
-    }
-    // A relation keyed on a `contextValues` column would let a nested input write the column
-    // the server stamps, so it is not offered at all.
-    if (nestedPlans) {
-      const omitted = dropContextValueRelations(nestedPlans, contextValuesOf);
-      if (omitted.length) {
-        console.warn(
-          `Drizzle-GraphQL Warning: config.contextValues — nestedWrites leaves out the relations whose foreign key the server stamps from context: ${omitted.join(', ')}.`,
-        );
-      }
-    }
     const nestedTypes = nestedPlans
       ? createNestedWriteTypes({ plans: nestedPlans, cacheCtx, typeNameMapper })
       : undefined;
