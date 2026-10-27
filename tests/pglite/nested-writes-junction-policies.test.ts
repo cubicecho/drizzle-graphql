@@ -2,7 +2,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { buildRelations, createRelationsHelper, eq, sql } from 'drizzle-orm';
 import { integer, pgTable, primaryKey, serial, text, unique } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
-import { graphql } from 'graphql';
+import { type GraphQLInputObjectType, graphql } from 'graphql';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildSchema } from '@/index';
 
@@ -176,5 +176,20 @@ describe('many-to-many nested writes through a soft-deleting junction', () => {
     );
     expect(data.updatePostsSingle.tags).toEqual([{ id: 2 }]);
     expect(await postLinks()).toEqual(['1:1:1:marked', '1:2:1:live', '1:3:2:live']);
+  });
+
+  it("offers `connect` and `set` only when the junction's update is on, since they can restore", () => {
+    const inputsOf = (config: Record<string, any>) =>
+      Object.keys(
+        (
+          buildSchema(db, {
+            ...config,
+            features: { nestedWrites: true, update: (t) => t !== 'PostTags' },
+          }).schema.getType('PostsTagsNestedUpdateInput') as GraphQLInputObjectType
+        ).getFields(),
+      ).sort();
+    expect(inputsOf(softDelete)).toEqual(['disconnect']);
+    // A junction without a marker only ever inserts and deletes its rows.
+    expect(inputsOf({})).toEqual(['connect', 'disconnect', 'set']);
   });
 });

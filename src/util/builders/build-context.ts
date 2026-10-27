@@ -367,7 +367,12 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     // A nested write is a write to the target (or junction) table, so it obeys that table's
     // features: an input whose write is turned off there is left out of the schema.
     if (nestedPlans) {
-      const omitted = gateNestedWritePlans(nestedPlans, featureOf, (tableName) => excludedTables.has(tableName));
+      const omitted = gateNestedWritePlans(
+        nestedPlans,
+        featureOf,
+        (tableName) => excludedTables.has(tableName),
+        (tableName) => !!softDeleteOf?.(tableName),
+      );
       if (omitted.length) {
         const listed =
           omitted.length > 5 ? `${omitted.slice(0, 5).join(', ')} and ${omitted.length - 5} more` : omitted.join(', ');

@@ -563,22 +563,28 @@ type RequiredWrite = { tableName: string | undefined; feature: 'insert' | 'updat
  * parent-side `connect` / `disconnect` only rewrites the parent's own column, so it needs
  * nothing of the target; a child-side one moves the target's foreign key, which is an update
  * of the target. A to-one child-side `create` also detaches the row attached before it, when
- * the key is nullable.
+ * the key is nullable. Linking through a soft-deleting junction can restore a marked link row
+ * with an update instead of inserting one.
  */
-const requiredWrites = (plan: NestedRelationPlan, op: NestedWriteOp): RequiredWrite[] => {
+const requiredWrites = (
+  plan: NestedRelationPlan,
+  op: NestedWriteOp,
+  softDeletes: (tableName: string) => boolean,
+): RequiredWrite[] => {
   if (plan.through) {
     const junction = plan.through.tableName;
+    const links: RequiredWrite[] = [{ tableName: junction, feature: 'insert' }];
+    if (junction !== undefined && softDeletes(junction)) {
+      links.push({ tableName: junction, feature: 'update' });
+    }
     if (op === 'connect') {
-      return [{ tableName: junction, feature: 'insert' }];
+      return links;
     }
     if (op === 'disconnect') {
       return [{ tableName: junction, feature: 'delete' }];
     }
     if (op === 'set') {
-      return [
-        { tableName: junction, feature: 'delete' },
-        { tableName: junction, feature: 'insert' },
-      ];
+      return [{ tableName: junction, feature: 'delete' }, ...links];
     }
     return [];
   }
@@ -599,6 +605,7 @@ const requiredWrites = (plan: NestedRelationPlan, op: NestedWriteOp): RequiredWr
  * Narrows every plan's `allowed` inputs to the ones whose writes the table they land on
  * permits: its `features.insert` / `update` / `delete`, and for a junction table that it is
  * not excluded. A plan left with nothing is dropped, so its relation field is not generated.
+ * `softDeletes` says which tables have a soft-delete marker.
  *
  * Returns one line per input taken out, for the build note.
  */
@@ -606,12 +613,13 @@ export const gateNestedWritePlans = (
   plans: NestedWritePlans,
   featureOf: (tableName: string) => TableFeatures,
   isExcluded: (tableName: string) => boolean,
+  softDeletes: (tableName: string) => boolean,
 ): string[] => {
   const omitted: string[] = [];
   for (const [tableName, tablePlans] of Object.entries(plans)) {
     for (const [relationName, plan] of Object.entries(tablePlans)) {
       for (const op of [...plan.allowed]) {
-        const blocked = requiredWrites(plan, op).filter(
+        const blocked = requiredWrites(plan, op, softDeletes).filter(
           ({ tableName: target, feature }) =>
             target !== undefined && (isExcluded(target) || !featureOf(target)[feature]),
         );

@@ -2022,9 +2022,9 @@ root field's:
     | `create` | the target's `insert` (and its `update` too on a to-one whose nullable key lives on the target, since attaching detaches the previous row) |
     | `connect` / `disconnect` / `set`, key on the target | the target's `update` |
     | `connect` / `disconnect`, key on the parent | nothing — only the parent's own row changes |
-    | many-to-many `connect` | the junction's `insert` |
+    | many-to-many `connect` | the junction's `insert` (and its `update` too when the junction soft-deletes, since linking again restores a marked link row) |
     | many-to-many `disconnect` | the junction's `delete` |
-    | many-to-many `set` | the junction's `insert` and `delete` |
+    | many-to-many `set` | the junction's `insert` and `delete` (and `update`, as for `connect`) |
 
     An excluded junction table takes its relation's inputs with it. A table whose writes are
     reserved for a hand-written mutation (`insert: false`) can therefore no longer be written
