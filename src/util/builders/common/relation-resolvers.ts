@@ -6,6 +6,7 @@ import type { Column, Table } from 'drizzle-orm';
 import { and, eq, getColumns, gt, lte, type SQL, sql } from 'drizzle-orm';
 import { getOrCreateLoader, getOrCreateRequestValue } from '../../batch-loader/index.ts';
 import { remapToGraphQLArrayOutput } from '../../data-mappers/index.ts';
+import { executionKey } from '../../execution.ts';
 import { relationFieldExtension } from '../../extensions.ts';
 import { requestValueNodes } from '../../graphql-variables.ts';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
@@ -264,8 +265,11 @@ export const createRelationResolverFactory =
       // identical for every parent row the batch fetches. Resolvers run once per parent row, so it
       // is computed once per field per request and reused, rather than re-reading the selection and
       // re-stringifying the loader key N times.
+      // The memo and the loader below belong to this execution, so a reused context or document
+      // never serves one execution another's args.
+      const execution = executionKey(context, info);
       const { orderByArg, limit, distinct, cursorEntries, cursorValues, columns, loaderKey } = getOrCreateRequestValue(
-        context,
+        execution,
         requestValueNodes(info),
         `relation:${tableName}::${relationName}`,
         () => {
@@ -350,12 +354,12 @@ export const createRelationResolverFactory =
         );
       }
 
-      const loader = getOrCreateLoader(context, loaderKey, async (parentKeys: readonly (readonly unknown[])[]) => {
-        // Loaders are cached per context, so every call batched here shares this request's
+      const loader = getOrCreateLoader(execution, loaderKey, async (parentKeys: readonly (readonly unknown[])[]) => {
+        // Loaders are cached per execution, so every call batched here shares this request's
         // executor — the transaction on the context, when there is one.
         const executor = resolveExecutor(db, context);
         const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key, localCols), key])).values()];
-        // Loaders are keyed per context too, so the scope resolved here is this request's.
+        // Loaders are keyed per execution too, so the scope resolved here is this request's.
         const scope = resolveScope(policies, context, filterCtx);
 
         // One query over a group of parents, returning each parent's result by its key. Every
