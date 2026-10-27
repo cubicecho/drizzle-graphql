@@ -12,10 +12,10 @@ import { CURSOR_FIELD_NAME, rowCursorResolver } from './cursor.ts';
 import { columnDocs } from './docs.ts';
 import { hasExcludedColumns, visibleColumns } from './exclusions.ts';
 import { innerOrderType } from './input-order.ts';
-import type { TypeNameMapper } from './naming.ts';
-import { resolveTypeName } from './naming.ts';
 import { isFilterableRelation } from './relations.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
+import type { TypeNameMapper } from './type-names.ts';
+import { resolveTypeName } from './type-names.ts';
 import { generateUniqueKeyFilterFields } from './unique-keys.ts';
 
 // Keyed by the `InnerOrder` instance as well as the table: the type's name follows the

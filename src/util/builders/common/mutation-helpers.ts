@@ -17,8 +17,6 @@ import { drizzleError } from './errors.ts';
 import { MATCHES_EVERY_ROW } from './filters.ts';
 import { withPrimaryKeyColumns } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
-import type { TypeNameMapper } from './naming.ts';
-import { resolveObjectTypeName } from './naming.ts';
 import type { DeletedMode, ResolverPolicies, RowVisibility } from './policies.ts';
 import { stripContextValues, withRowVisibility } from './policies.ts';
 import type { RelationFilterBase, RelationFilterContext } from './relation-filters.ts';
@@ -28,7 +26,8 @@ import { eagerLoadMutationRelations } from './select-runtime.ts';
 import { extractSelectedColumnsFromTreeSQLFormat } from './selected-columns.ts';
 import type { MutationTxCtx } from './transactions.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
-import type { TypeNameResolver } from './type-names.ts';
+import type { TypeNameMapper, TypeNameResolver } from './type-names.ts';
+import { resolveObjectTypeName } from './type-names.ts';
 import { writeResolver } from './write-scaffold.ts';
 
 /**

@@ -1,17 +1,35 @@
-// Every name the build gives a generated type, in one place.
-//
-// `typeNameMapper` names a table's object type and its root fields. It does not reach the
-// types generated *around* that table — the filter, the write inputs, the order-by, the
-// aggregate family — which are derived from that name by a fixed rule. A build that stitches
-// its schema next to a second generator over the same tables collides on exactly those
-// derived names, and had no hook to say otherwise.
-//
-// Both levers here answer that. `derivedTypeNameMapper` is asked for every type the build
-// creates and may decline, so a single kind can be renamed and nothing else moves;
-// `typeNamePrefix` / `typeNameSuffix` wrap every name the mapper did not answer for, which is
-// the one-line way to make a whole subschema collision-free.
+// Every name the build gives a generated type, in one place. `typeNameMapper` names a table's
+// object type; the types derived from it (filter, inputs, order-by, aggregates) go through the
+// naming rule, where `derivedTypeNameMapper` may rename one kind and `typeNamePrefix` /
+// `typeNameSuffix` wrap the rest, so a stitched subschema can avoid colliding names.
 
 import type { GraphQLNamedType } from 'graphql';
+import { capitalize } from '../../case-ops/index.ts';
+
+/** Optional mapper from table key to singular/plural name pair. Return undefined to use default naming for a table. */
+export type TypeNameMapper = (tableName: string) => { singular: string; plural: string } | undefined;
+
+/** Produce the GraphQL object type name for a table, using the mapper if provided. */
+export const resolveTypeName = (name: string, typeNameMapper?: TypeNameMapper): string => {
+  const mapped = typeNameMapper?.(name);
+  return mapped ? capitalize(mapped.singular) : capitalize(name);
+};
+
+/**
+ * The name a table's object type actually carries in the built schema — {@link resolveTypeName}
+ * put through the build's naming rule. Resolvers read selections out of
+ * `fieldsByTypeName`, which is keyed by the real type name, so anything that walks a
+ * selection tree has to ask for the name this way rather than assuming the default.
+ */
+export const resolveObjectTypeName = (
+  name: string,
+  typeNameMapper?: TypeNameMapper,
+  resolveName?: TypeNameResolver,
+): string => applyObjectTypeName(resolveTypeName(name, typeNameMapper), name, resolveName);
+
+/** {@link resolveObjectTypeName} for a caller that already holds the table's default type name. */
+export const applyObjectTypeName = (defaultName: string, tableName: string, resolveName?: TypeNameResolver): string =>
+  resolveName ? resolveName({ kind: 'object', defaultName, table: tableName }) : defaultName;
 
 /**
  * What a generated type is, so a name mapper can answer for one kind without matching on the

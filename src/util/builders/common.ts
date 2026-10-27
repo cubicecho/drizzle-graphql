@@ -63,6 +63,7 @@ export {
   visibleColumns,
 } from './common/exclusions.ts';
 export { drizzleExecutorKey, resolveExecutor, resolveQueryExecutor } from './common/executor.ts';
+export { computeResolverFieldNames, type ResolverFieldNames } from './common/field-names.ts';
 export { extractFiltersColumn } from './common/filters.ts';
 export { innerOrderType, orderNullsType } from './common/input-order.ts';
 export {
@@ -101,8 +102,6 @@ export {
   visibleWhere,
   withEagerRelations,
 } from './common/mutation-helpers.ts';
-export type { TypeNameMapper } from './common/naming.ts';
-export { applyObjectTypeName, resolveObjectTypeName, resolveTypeName } from './common/naming.ts';
 export type { OrderNullsOption } from './common/order-by.ts';
 export { extractOrderBy, orderByEntries, orderExpressions } from './common/order-by.ts';
 export type {
@@ -154,7 +153,6 @@ export {
   unwrapRelationColumn,
   warnUnresolvedJoin,
 } from './common/relations.ts';
-export { computeResolverFieldNames, type ResolverFieldNames } from './common/resolver-names.ts';
 export { defineRootField } from './common/root-fields.ts';
 export { eagerLoadMutationRelations, runRelationalSelect } from './common/select-runtime.ts';
 export type { SelectionCtx } from './common/selected-columns.ts';
@@ -173,9 +171,16 @@ export type {
   GeneratedTypeInfo,
   GeneratedTypeKind,
   GeneratedTypeNameConfig,
+  TypeNameMapper,
   TypeNameResolver,
 } from './common/type-names.ts';
-export { resolveGeneratedTypeNames, sharedType } from './common/type-names.ts';
+export {
+  applyObjectTypeName,
+  resolveGeneratedTypeNames,
+  resolveObjectTypeName,
+  resolveTypeName,
+  sharedType,
+} from './common/type-names.ts';
 export { tableUniqueKeyMap, type UniqueKeyMap, uniqueKeyFieldName } from './common/unique-keys.ts';
 export type {
   NestedWriteOp,

@@ -16,8 +16,6 @@ import {
   offsetOnlyLimit,
   withDefaultOrderBy,
 } from './limits.ts';
-import type { TypeNameMapper } from './naming.ts';
-import { resolveObjectTypeName } from './naming.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { DeletedMode, RowVisibility } from './policies.ts';
 import { hasJunctionPolicy, junctionTableName, withRowVisibility } from './policies.ts';
@@ -26,7 +24,8 @@ import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractJunctionColumns } from './relations.ts';
 import { omitUndefinedKeys } from './rqb-config.ts';
 import { extractSelectedColumnsFromTree } from './selected-columns.ts';
-import type { TypeNameResolver } from './type-names.ts';
+import type { TypeNameMapper, TypeNameResolver } from './type-names.ts';
+import { resolveObjectTypeName } from './type-names.ts';
 
 /**
  * The build-wide policy the walk carries down unchanged. Grouped rather than passed

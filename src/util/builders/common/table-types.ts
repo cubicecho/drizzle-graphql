@@ -25,8 +25,6 @@ import { generateDistinctEnum } from './column-enums.ts';
 import { inputFieldDocs } from './docs.ts';
 import { visibleColumns } from './exclusions.ts';
 import { aggregateFieldComplexity, listFieldComplexity } from './limits.ts';
-import type { TypeNameMapper } from './naming.ts';
-import { resolveTypeName } from './naming.ts';
 import { relationExtensionFor } from './relation-resolvers.ts';
 import type { RelationAggregateFactory, RelationResolverFactory } from './relations.ts';
 import {
@@ -35,6 +33,8 @@ import {
   generateTableSelectTypeFieldsCached,
 } from './table-inputs.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
+import type { TypeNameMapper } from './type-names.ts';
+import { resolveTypeName } from './type-names.ts';
 import { isWritableColumn } from './writable-columns.ts';
 
 /**

@@ -23,7 +23,6 @@ import { drizzleError } from './errors.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import { assertPagingNotNegative, effectiveOffset, offsetOnlyLimit } from './limits.ts';
-import type { TypeNameMapper } from './naming.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { DeletedMode, RowVisibility } from './policies.ts';
 import { withRowVisibility } from './policies.ts';
@@ -32,7 +31,7 @@ import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractRelationsParams } from './relation-params.ts';
 import { omitUndefinedKeys } from './rqb-config.ts';
 import { extractSelectedColumnsFromTree } from './selected-columns.ts';
-import type { TypeNameResolver } from './type-names.ts';
+import type { TypeNameMapper, TypeNameResolver } from './type-names.ts';
 
 /**
  * Runs the relational-query-builder select shared by every dialect's `generateSelect*`
