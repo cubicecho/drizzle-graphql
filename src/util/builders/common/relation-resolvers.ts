@@ -27,7 +27,7 @@ import { type DrizzleErrorContext, drizzleError, toGraphQLError, withErrorContex
 import { resolveExecutor } from './executor.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { LimitPolicyFor } from './limits.ts';
-import { applyLimitPolicy, assertPagingNotNegative, withDefaultOrderBy } from './limits.ts';
+import { applyLimitPolicy, assertPagingNotNegative, effectiveOffset, withDefaultOrderBy } from './limits.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { TablePolicies } from './policies.ts';
 import { junctionPolicy, junctionTableName, relationDeletedDefault, resolveScope, withScope } from './policies.ts';
@@ -45,7 +45,7 @@ import {
   relatedRowParents,
   relationOwnCondition,
 } from './relations.ts';
-import { extractSelectedColumnsFromTreeSQLFormat } from './selected-columns.ts';
+import { extractSelectedColumnsFromTreeSQLFormat, subquerySafeSelection } from './selected-columns.ts';
 
 /**
  * Fetches a to-many relation with per-parent limit/offset for ALL parents in a
@@ -88,8 +88,13 @@ const batchedPaginatedRelationQuery = async (
   // Partitioned by the whole parent key: every join column, or the junction's source column.
   const rowNumber = sql`row_number() over (partition by ${sql.join([...partitionCols], sql`, `)}${orderClause})`.as(RN);
 
-  // Subquery: every target column plus a per-partition row number.
-  const sub = withJunction(db.select({ ...cols, [RN]: rowNumber }).from(targetTable), junction, foreignCol)
+  // Subquery: every target column plus a per-partition row number. Each column has to come
+  // out under its own name, since the outer select reads it back by that name.
+  const sub = withJunction(
+    db.select({ ...subquerySafeSelection(cols), [RN]: rowNumber }).from(targetTable),
+    junction,
+    foreignCol,
+  )
     .where(whereCondition)
     .as('__paginated');
 
@@ -251,7 +256,9 @@ export const createRelationResolverFactory =
         return isOne ? null : [];
       }
 
-      const { where: whereArg, limit: requestedLimit, offset, after, deleted } = (args ?? {}) as any;
+      const { where: whereArg, limit: requestedLimit, offset: requestedOffset, after, deleted } = (args ?? {}) as any;
+      // `offset: 0` is the same page as no offset, and batches with it.
+      const offset = effectiveOffset(requestedOffset);
 
       // Everything below is derived from this field alone — its args and its selection — so it is
       // identical for every parent row the batch fetches. Resolvers run once per parent row, so it
@@ -268,7 +275,7 @@ export const createRelationResolverFactory =
             ? (args as any)?.orderBy
             : withDefaultOrderBy(args ?? {}, targetTableName, policies?.defaultOrderBy).orderBy;
           const limit = applyLimitPolicy(requestedLimit, limitPolicy, errorCtx);
-          assertPagingNotNegative({ offset }, errorCtx);
+          assertPagingNotNegative({ offset: requestedOffset }, errorCtx);
           const distinct = ((args ?? {}) as any).distinct?.length ? ((args ?? {}) as any).distinct : undefined;
 
           // ── keyset (cursor) pagination ──
@@ -452,14 +459,19 @@ export const createRelationResolverFactory =
             ).where(whereCondition) as any;
             const orderExprs = cursorEntries
               ? cursorOrderExprs(targetTable, cursorEntries)
-              : orderByArg
-                ? extractOrderBy(
-                    targetTable,
-                    orderByArg,
-                    relationFilterCtx(filterCtx, targetTableName, scope),
-                    whereArg,
-                  )
-                : [];
+              : [
+                  ...(orderByArg
+                    ? extractOrderBy(
+                        targetTable,
+                        orderByArg,
+                        relationFilterCtx(filterCtx, targetTableName, scope),
+                        whereArg,
+                      )
+                    : []),
+                  // The rows a `distinct` pass kept come back in its order — the request's plus
+                  // the primary key — as they do on a root list.
+                  ...(distinct ? primaryKeyOrderExprs(targetTable, targetPkNames) : []),
+                ];
             if (orderExprs.length) {
               q = q.orderBy(...orderExprs);
             }

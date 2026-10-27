@@ -101,13 +101,43 @@ describe.sequential('boolean filter tree (table level)', () => {
     expect(result.data?.users).toEqual([{ id: 2 }]);
   });
 
-  it('treats an empty NOT as no restriction', async () => {
+  // A branch that compiles to no condition restricts nothing, so it matches every row.
+  it('reads an empty NOT as NOT (every row) — it matches none', async () => {
     const result = await ctx.gql.queryGql(`{
       users(where: { NOT: {} }, orderBy: { id: { direction: asc, priority: 1 } }) { id }
     }`);
 
     expect(result.errors).toBeUndefined();
-    expect(result.data?.users).toEqual([{ id: 1 }, { id: 2 }, { id: 5 }]);
+    expect(result.data?.users).toEqual([]);
+  });
+
+  it('lets an OR branch that restricts nothing match every row', async () => {
+    for (const empty of ['{}', '{ name: { isNull: false } }', '{ posts: { every: {} } }', '{ AND: [] }']) {
+      const result = await ctx.gql.queryGql(`{
+        users(where: { OR: [{ id: { eq: 1 } }, ${empty}] }, orderBy: { id: { direction: asc, priority: 1 } }) { id }
+      }`);
+
+      expect(result.errors, empty).toBeUndefined();
+      expect(result.data?.users, empty).toEqual([{ id: 1 }, { id: 2 }, { id: 5 }]);
+    }
+  });
+
+  it('still ANDs an always-true OR group with its siblings', async () => {
+    const result = await ctx.gql.queryGql(`{
+      users(where: { id: { lte: 2 }, OR: [{ id: { eq: 1 } }, {}] }, orderBy: { id: { direction: asc, priority: 1 } }) { id }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    expect(result.data?.users).toEqual([{ id: 1 }, { id: 2 }]);
+  });
+
+  it('drops an empty AND branch', async () => {
+    const result = await ctx.gql.queryGql(`{
+      users(where: { AND: [{ id: { eq: 1 } }, {}] }) { id }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    expect(result.data?.users).toEqual([{ id: 1 }]);
   });
 
   it('applies the boolean tree to mutations too', async () => {
@@ -143,6 +173,24 @@ describe.sequential('boolean filter tree (column level)', () => {
 
     expect(result.errors).toBeUndefined();
     expect(result.data?.users).toEqual([{ id: 1 }, { id: 2 }]);
+  });
+
+  it('lets an operator OR branch that restricts nothing match every row', async () => {
+    const result = await ctx.gql.queryGql(`{
+      users(where: { name: { OR: [{ eq: "FirstUser" }, { isNull: false }] } }, orderBy: { id: { direction: asc, priority: 1 } }) { id }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    expect(result.data?.users).toEqual([{ id: 1 }, { id: 2 }, { id: 5 }]);
+  });
+
+  it('reads an operator NOT that restricts nothing as matching none', async () => {
+    const result = await ctx.gql.queryGql(`{
+      users(where: { name: { NOT: { isNull: false } } }) { id }
+    }`);
+
+    expect(result.errors).toBeUndefined();
+    expect(result.data?.users).toEqual([]);
   });
 
   it('supports NOT over an OR of operators', async () => {

@@ -240,6 +240,20 @@ describe.sequential('updateSingle / deleteSingle mutations', () => {
     const remaining = await ctx.db.select({ id: schema.Posts.id }).from(schema.Posts);
     expect(remaining).toHaveLength(6);
   });
+  it('deleteSingle rejects a where whose OR group has a branch that matches every row', async () => {
+    // `OR: [X, {}]` matches every row, so it is no more of a filter than `where: {}`.
+    const res = await ctx.gql.queryGql(/* GraphQL */ `
+      mutation {
+        deletePost(where: { OR: [{ id: { eq: 1 } }, {}] }) {
+          id
+        }
+      }
+    `);
+
+    expect(res.errors?.[0]?.extensions?.['code']).toBe('DRIZZLE_WHERE_REQUIRED');
+    const remaining = await ctx.db.select({ id: schema.Posts.id }).from(schema.Posts);
+    expect(remaining).toHaveLength(6);
+  });
 });
 
 // ── features.requireWhere ─────────────────────────────────────────────────────

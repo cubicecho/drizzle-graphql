@@ -1,8 +1,8 @@
 // Reading the requested columns off a parsed selection tree, in both shapes the builders need —
 // the relational query builder's `columns` map, and a SQL select list.
 
-import type { Column, Table } from 'drizzle-orm';
-import { getColumns } from 'drizzle-orm';
+import type { Table } from 'drizzle-orm';
+import { Column, getColumns, is, sql } from 'drizzle-orm';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import type { SelectedColumnsRaw, SelectedSQLColumns, TableNamedRelations } from '../types.ts';
 import { extractRelationJoinColumnPairs } from './relations.ts';
@@ -155,3 +155,25 @@ export const extractSelectedColumnsFromTreeSQLFormat = <TColType extends Column 
 
   return Object.fromEntries(selectedColumns) as Record<string, TColType>;
 };
+
+/** SQLite column types drizzle selects through `cast(… as text)` to keep their full precision. */
+const SQLITE_TEXT_CAST_TYPES: ReadonlySet<string> = new Set(['SQLiteNumeric', 'SQLiteNumericBigInt']);
+
+/**
+ * A select list that can be wrapped in a subquery and read back by name.
+ *
+ * drizzle selects a SQLite `numeric()` column (string and bigint modes) as an unaliased
+ * `cast("col" as text)`, so a subquery built from it has no column called `col` and the outer
+ * query's reference to it fails. Those columns are given the same cast under an explicit alias,
+ * decoded by the column itself; every other entry is left as it was, so the dialects' own
+ * decoding of it is untouched.
+ */
+export const subquerySafeSelection = <T extends Record<string, unknown>>(selection: T): T =>
+  Object.fromEntries(
+    Object.entries(selection).map(([key, field]) => [
+      key,
+      is(field, Column) && SQLITE_TEXT_CAST_TYPES.has(field.columnType)
+        ? sql`cast(${field} as text)`.mapWith(field).as(key)
+        : field,
+    ]),
+  ) as T;
