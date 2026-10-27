@@ -1,3 +1,16 @@
+## [17.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v16.0.1...v17.0.0) (2026-10-27)
+
+### ⚠ BREAKING CHANGES
+
+* with features.upsert and features.nestedWrites on, the
+upsert mutations of a table with writable relations take
+Upsert<Table>Input instead of Create<Table>Input. Clients that declare
+the values variable by type name must switch to the new name.
+
+### Features
+
+* give upsert its own nested relation inputs ([f4b1df6](https://github.com/cubicecho/drizzle-graphql/commit/f4b1df600a5b800ed1c83d9930894e2fbf18e6ac)), closes [#219](https://github.com/cubicecho/drizzle-graphql/issues/219)
+
 ## [16.0.1](https://github.com/cubicecho/drizzle-graphql/compare/v16.0.0...v16.0.1) (2026-10-27)
 
 ### Bug Fixes
