@@ -22,34 +22,34 @@ session scratchpad (`repro/`, `reads-rev/repros/`, `filters-review/src/`,
 
 | ID | Kind | What it does | Buys | Needs | Status |
 |---|---|---|---|---|---|
-| M1 | Model change | Name "writable column": one owner decides which columns a create, update or upsert input may carry | B7 has one place to land; inputs stop drifting apart | — | open |
-| M2 | Model change | Name "matches every row" as a filter result instead of an opaque `true` SQL | `requireWhere` can see it (B4) | — | open |
-| M3 | Model change | Per-request state is keyed on the execution, not on the context object alone | B12 and B22 fixed at the cause | — | open |
-| B7 | Bug | Drop generated and identity-ALWAYS columns from create/update/upsert inputs and field updates | Creates stop demanding a value the DB ignores; updates stop failing in the DB | M1 | open |
-| B4 | Bug | Make `requireWhere` reject filters that match every row, such as `notInArray: []` | An empty variable list can no longer update or delete a whole table | M2 | open |
-| B12 | Bug | Key the per-request field memo on the execution, so a reused context with new variables gets fresh relation args | Stops a cached document returning the previous request's filtered rows | M3 | open |
-| B22 | Bug | Clear auto-transaction state once a request's fields finish, and refuse it for non-object contexts | A reused context keeps getting transactions; no shared state across requests | M3 | open |
-| B1 | Bug | On Postgres, stop swallowing a failed relation reload after a write inside a transaction | A mutation that reports success can no longer be silently rolled back | — | open |
-| B2 | Bug | Alias every column in the paginated many-to-many subquery | Stops rows grouping under the wrong parent (SQLite) or erroring (PG/MySQL) | — | open |
-| B3 | Bug | Run `…Single` update/delete so a multi-row match never commits | "Matched more than one row" really means nothing was written | — | open |
-| B5 | Bug | Treat an explicit `null` nested op (`create: null`) as absent everywhere | No blank rows, no replaced relations, no internal errors | — | open |
-| B6 | Bug | Refuse a to-one nested attach when a NOT NULL, non-unique FK already has a different row attached | A to-one relation can no longer end up with two rows, or steal another parent's row | — | open |
-| B8 | Bug | Type MySQL unsigned `int` and `serial` as `Float` instead of 32-bit `Int` | Values above 2^31 read and write | — | open |
-| B9 | Bug | Compare MySQL `float` cursor and `eq` operands at single precision | Cursor walks end; `eq` matches the value just read | — | open |
-| B10 | Bug | Encode `NaN`/`±Infinity` in cursors instead of letting them become NULL | Postgres walks over float columns stop dropping rows | — | open |
-| B11 | Bug (question) | Decide whether `every` should fail a related row whose compared column is NULL | Either fixes the SQL or documents the caveat | — | open |
-| B14 | Bug | Type `bigint({ mode: 'string' })` as `BigIntString`, with number filters | Consistent bigint typing; no SQL errors from `like` on a bigint | — | open |
-| B15 | Bug | Type MySQL unsigned `decimal` as `Decimal` like the signed one | Same validation and filters for both | — | open |
-| B16 | Bug | Let Postgres array elements be null in output types | A `{1,NULL,3}` value reads instead of erroring the field or row | — | open |
-| B13 | Bug | Stop the field-update kind cache outliving a build | A later build's scalar override is respected | — | open |
-| B17 | Bug | Detect relation `orderBy` hops correctly when the target table has a `direction` column | Internal errors become the right result or error | — | open |
-| B18 | Bug | Round `lt`/`gte` operands up on SQLite second-precision timestamps | Fractional-second bounds return the right rows | — | open |
-| B19 | Bug (question) | Pick one rule for JSON `path` `as: NUMBER/BOOLEAN` on string values, across dialects | Same query, same rows on every dialect | — | open |
-| B20 | Bug | A relation field's `cursor` under `matchFilterOrder` resolves to null like the root list | Internal error becomes null | — | open |
-| B21 | Bug | Validate decoded cursor values; reject bad ones as `DRIZZLE_INVALID_CURSOR` | Forged cursors stop causing internal errors or silent empty pages | — | open |
-| B23 | Bug (question) | Run the `before` hook at the same point (before or after input validation) on every write path | A rejected write fires the hook on all paths or on none | — | open |
-| D1 | Docs | Fix docs that disagree with code: feature defaults, `updateMany` slots, "already committed", stale AGENTS.md lines | Docs match code | B1, B3 | open |
-| D2 | Docs | Document the `every` + NULL caveat in the README if B11 keeps the behaviour | Users are told | B11 | open |
+| M1 | Model change | Name "writable column": one owner decides which columns a create, update or upsert input may carry | B7 has one place to land; inputs stop drifting apart | — | done |
+| M2 | Model change | Name "matches every row" as a filter result instead of an opaque `true` SQL | `requireWhere` can see it (B4) | — | done |
+| M3 | Model change | Per-request state is keyed on the execution, not on the context object alone | B12 and B22 fixed at the cause | — | done |
+| B7 | Bug | Drop generated and identity-ALWAYS columns from create/update/upsert inputs and field updates | Creates stop demanding a value the DB ignores; updates stop failing in the DB | M1 | done |
+| B4 | Bug | Make `requireWhere` reject filters that match every row, such as `notInArray: []` | An empty variable list can no longer update or delete a whole table | M2 | done |
+| B12 | Bug | Key the per-request field memo on the execution, so a reused context with new variables gets fresh relation args | Stops a cached document returning the previous request's filtered rows | M3 | done |
+| B22 | Bug | Clear auto-transaction state once a request's fields finish, and refuse it for non-object contexts | A reused context keeps getting transactions; no shared state across requests | M3 | done |
+| B1 | Bug | On Postgres, stop swallowing a failed relation reload after a write inside a transaction | A mutation that reports success can no longer be silently rolled back | — | done |
+| B2 | Bug | Alias every column in the paginated many-to-many subquery | Stops rows grouping under the wrong parent (SQLite) or erroring (PG/MySQL) | — | done |
+| B3 | Bug | Run `…Single` update/delete so a multi-row match never commits | "Matched more than one row" really means nothing was written | — | done |
+| B5 | Bug | Treat an explicit `null` nested op (`create: null`) as absent everywhere | No blank rows, no replaced relations, no internal errors | — | done |
+| B6 | Bug | Refuse a to-one nested attach when a NOT NULL, non-unique FK already has a different row attached | A to-one relation can no longer end up with two rows, or steal another parent's row | — | waiting on decision |
+| B8 | Bug | Type MySQL unsigned `int` and `serial` as `Float` instead of 32-bit `Int` | Values above 2^31 read and write | — | done |
+| B9 | Bug | Compare MySQL `float` cursor and `eq` operands at single precision | Cursor walks end; `eq` matches the value just read | — | done |
+| B10 | Bug | Encode `NaN`/`±Infinity` in cursors instead of letting them become NULL | Postgres walks over float columns stop dropping rows | — | done |
+| B11 | Bug (question) | Decide whether `every` should fail a related row whose compared column is NULL | Either fixes the SQL or documents the caveat | — | waiting on decision |
+| B14 | Bug | Type `bigint({ mode: 'string' })` as `BigIntString`, with number filters | Consistent bigint typing; no SQL errors from `like` on a bigint | — | done |
+| B15 | Bug | Type MySQL unsigned `decimal` as `Decimal` like the signed one | Same validation and filters for both | — | done |
+| B16 | Bug | Let Postgres array elements be null in output types | A `{1,NULL,3}` value reads instead of erroring the field or row | — | done |
+| B13 | Bug | Stop the field-update kind cache outliving a build | A later build's scalar override is respected | — | done |
+| B17 | Bug | Detect relation `orderBy` hops correctly when the target table has a `direction` column | Internal errors become the right result or error | — | done |
+| B18 | Bug | Round `lt`/`gte` operands up on SQLite second-precision timestamps | Fractional-second bounds return the right rows | — | done |
+| B19 | Bug (question) | Pick one rule for JSON `path` `as: NUMBER/BOOLEAN` on string values, across dialects | Same query, same rows on every dialect | — | waiting on decision |
+| B20 | Bug | A relation field's `cursor` under `matchFilterOrder` resolves to null like the root list | Internal error becomes null | — | done |
+| B21 | Bug | Validate decoded cursor values; reject bad ones as `DRIZZLE_INVALID_CURSOR` | Forged cursors stop causing internal errors or silent empty pages | — | done |
+| B23 | Bug (question) | Run the `before` hook at the same point (before or after input validation) on every write path | A rejected write fires the hook on all paths or on none | — | waiting on decision |
+| D1 | Docs | Fix docs that disagree with code: feature defaults, `updateMany` slots, "already committed", stale AGENTS.md lines | Docs match code | B1, B3 | done |
+| D2 | Docs | Document the `every` + NULL caveat in the README if B11 keeps the behaviour | Users are told | B11 | waiting on decision |
 | B24 | Bug · low value | Stop remapping write args in place (hooks see remapped args; a shared variable is remapped twice) (unverified) | Hooks see what the docs promise | — | open |
 | B25 | Bug · low value | Add `PgSparseVector` to the no-min/max column list (unverified: no pgvector in PGlite) | No SQL error from `min(sparsevec)` | — | open |
 | B26 | Bug · low value | Gate the junction restore UPDATE on the junction's `update` feature | Feature switch honoured | — | open |
@@ -57,7 +57,17 @@ session scratchpad (`repro/`, `reads-rev/repros/`, `filters-review/src/`,
 | B28 | Bug · low value | `resolveSelection` fallback: derive null ordering from the dialect (unverified) | Correct cursors in the multi-build fallback | — | open |
 | B29 | Bug · low value | `matchFilterOrder` + `insensitive` ranks case-insensitive matches as "not in list" (unverified) | Correct order | — | open |
 
-Status is `open`, `approved`, `declined` or `done`.
+Status is `open`, `approved`, `declined`, `waiting on decision` or `done`.
+
+Implemented on branch `fix/correctness-pass`, one commit per item (`Ledger: <ID>` in each body).
+
+Follow-ups found while fixing:
+
+| ID | Kind | What it does | Buys | Needs | Status |
+|---|---|---|---|---|---|
+| B30 | Bug | Close the `…Single` race on MySQL and sync SQLite | B3 holds on every dialect | — | done (in B3) |
+| B32 | Bug | Check a decoded cursor value fits its column's type (B21 checks only that it is well formed) | Cleaner `DRIZZLE_INVALID_CURSOR` | — | open |
+| B33 | Bug (question) | Postgres array *inputs* still require non-null elements (`[T!]`); B16 relaxed only outputs | Your call | — | waiting on decision |
 
 ## Model changes
 
@@ -120,6 +130,8 @@ CONFIRMED (`reads-rev/repros/junction-name-clash*.test.ts`). Fix: alias every su
 its key (generalise `subquerySafeSelection`).
 
 ### B3 — `…Single` update/delete commits a multi-row write, then errors
+
+Done: the check reads the matched row's primary key and the write is narrowed to it, on every dialect and driver. A first version forced a transaction instead, which on libsql `:memory:` swaps to a fresh empty database, so it was replaced. Tables without a primary key keep the old race.
 
 **File:** `src/util/builders/write-resolvers.ts:516-519`, `:627-630`. Probe, write, re-check;
 on bare `db` a row arriving between probe and write is changed and committed, yet the client
@@ -220,6 +232,8 @@ column-key check.
 
 ### B18 — SQLite second-precision timestamps: `lt` / `gte` with fractional operand
 
+Done for `lt`/`gte` only. `eq`/`ne`/`inArray` keep the documented floor (an "instant" rule for them was drafted and dropped: it reverses documented behaviour; ask before changing it).
+
 **File:** `src/util/data-mappers/index.ts` `remapFromGraphQLCore` via `filters.ts`. Operand is
 floored. CONFIRMED (`sqlite-a.test.ts`). Fix: ceil for `lt`/`gte`.
 
@@ -240,6 +254,8 @@ instead of `orderByCursorObstacle`. CONFIRMED (`sqlite-a.test.ts`).
 bigint/object/array → Internal server error. CONFIRMED (`sqlite-a.test.ts`).
 
 ### B22 — Auto-transaction state on reused or non-object contexts
+
+Done: state is keyed on the execution. Non-object contexts now get a working shared transaction instead of a refusal. Still unchecked: two executions sharing one context object at the same time (documented requirement).
 
 **File:** `src/util/builders/common/transactions.ts:338`, `:379`, `:261`. Non-object context
 keys state on the cached AST node; a reused context keeps `passthrough` forever. PLAUSIBLE
