@@ -1058,6 +1058,9 @@ A **to-many** relation takes a `some` / `none` / `every` wrapper
 -   They're accepted anywhere a filter is — list and single queries, aggregate queries,
     `update`/`delete` mutations, and the `where` argument on a relation field
 -   `some: {}` means "at least one related row exists"; `none: {}` means "none exist"
+-   `every` passes a related row only when its condition is true. A row whose compared column
+    is NULL fails it, the same as it fails to match `some`: `every: { title: { eq: "x" } }`
+    drops a user with a post whose title is NULL
 -   Several modes may be given at once and are `AND`ed together
 -   A relation whose name collides with a column name is skipped — the column keeps the field
 -   Many-to-many relations declared with `.through()` are filterable too: the `EXISTS`

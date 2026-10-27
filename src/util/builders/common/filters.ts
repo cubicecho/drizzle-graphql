@@ -329,6 +329,12 @@ const matchesNoRow = (): SQL => {
 const isMatchesNoRow = (filter: CompiledFilter): boolean => filter !== undefined && noRowPredicates.has(filter);
 
 /**
+ * True when `condition` is FALSE or NULL. `NOT condition` is NULL for a NULL condition, so a row
+ * it should select drops out. `1 = 0` stands in for FALSE, which older SQLite cannot spell.
+ */
+export const isNotTrue = (condition: SQL): SQL => sql`not coalesce(${condition}, 1 = 0)`;
+
+/**
  * ANDs the conditions of one filter object together. A "no row matches" condition decides the
  * whole conjunction (`x AND false` is false even when `x` is NULL), so it is kept recognisable
  * rather than buried in an `and(...)`.
