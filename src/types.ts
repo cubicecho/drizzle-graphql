@@ -635,7 +635,8 @@ export type MutationsCore<
  * The write inputs are named from the configured `prefixes`, so these keys describe a build
  * that uses the defaults (`insert: 'create'`, `update: 'update'`); a build that overrides a
  * prefix produces correspondingly different keys. Inputs that only exist when a feature is
- * enabled — `${Table}OnConflict` for upsert, `${Table}Having` for group-by — are not listed,
+ * enabled — `${Table}OnConflict` for upsert, `${Table}Having` for group-by,
+ * `Upsert${Table}Input` for an upserted table with nested-write relations — are not listed,
  * since whether they were generated is a runtime decision.
  */
 export type GeneratedInputs<TSchema extends Record<string, Table>, TNaming extends TypeNaming = false> = {
@@ -805,7 +806,9 @@ export type SchemaFeatures = {
   upsert?: FeatureSwitch;
   /**
    * Relation fields on `Create<Table>Input` and `Update<Table>Input`, so a parent row and
-   * the rows it is related to can be written in one mutation. Off unless asked for: it adds
+   * the rows it is related to can be written in one mutation. With `upsert` on too, a table
+   * with writable relations is upserted through `Upsert<Table>Input`, whose relation fields
+   * also offer `disconnect` and `set`. Off unless asked for: it adds
    * a field per writable relation to every create and update input.
    *
    * ```graphql

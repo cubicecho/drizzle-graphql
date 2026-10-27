@@ -20,8 +20,9 @@ import type { GraphQLNamedType } from 'graphql';
  * - `object` — a table's row type, the one `typeNameMapper` already names
  * - `filter` / `listRelationFilter` — `<Type>Filters` and the `some`/`none`/`every` wrapper
  * - `orderBy` — `<Type>OrderBy`
- * - `createInput` / `updateInput` / `updateManyInput` / `nestedWriteInput` / `fieldUpdateInput`
- *   — the write inputs
+ * - `createInput` / `updateInput` / `updateManyInput` / `upsertInput` / `nestedWriteInput` /
+ *   `fieldUpdateInput` — the write inputs (`upsertInput` only on a table with nested-write
+ *   relations; any other table's upsert takes its `createInput`)
  * - `aggregate` — `<Type>Aggregate` and its per-operation children (`operation` names which)
  * - `having` / `groupBy` / `groupKeys` — the group-by family
  * - `onConflict` — the upsert's conflict input
@@ -38,6 +39,7 @@ export type GeneratedTypeKind =
   | 'createInput'
   | 'updateInput'
   | 'updateManyInput'
+  | 'upsertInput'
   | 'nestedWriteInput'
   | 'fieldUpdateInput'
   | 'aggregate'

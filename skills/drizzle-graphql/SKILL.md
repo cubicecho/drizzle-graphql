@@ -82,6 +82,9 @@ anyone who reaches the endpoint. Pick the right tool:
 
 **Opt-in features default to off**: `upsert`, `nestedWrites`, `fieldUpdateOperations`,
 `countMutations`, `requireWhere` and `uniqueKeyFilters`. Everything else defaults to on.
+With both `upsert` and `nestedWrites`, a table with writable relations is upserted through
+`Upsert<Type>Input`, whose relation fields take `connect`, `disconnect` and `set` (plus
+`create` where allowed), so one upsert can save a form whether or not the row exists yet.
 
 **Public endpoints need bounds the library does not add for you:**
 

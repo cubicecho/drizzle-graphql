@@ -349,6 +349,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   typeNameMapper: TypeNameMapper | undefined = undefined,
   insertPrefix: string = 'create',
   updatePrefix: string = 'update',
+  upsertPrefix: string = 'upsert',
   resolverFactory?: RelationResolverFactory,
   relationAggregateFactory?: RelationAggregateFactory,
   nestedWrites?: NestedWriteTypes,
@@ -450,6 +451,20 @@ export const generateTableTypes = <WithReturning extends boolean>(
       : updateFields,
   });
 
+  // Upsert input: the create input's columns with relation fields that can also detach and
+  // replace, since the row may already exist. Only a table with writable relations needs one;
+  // every other table's upsert takes the create input, which would be identical.
+  const upsertInput = nestedWrites?.hasRelations(tableName)
+    ? new GraphQLInputObjectType({
+        name: cacheCtx.typeName({
+          kind: 'upsertInput',
+          defaultName: `${capitalize(upsertPrefix)}${typeName}Input`,
+          table: tableName,
+        }),
+        fields: () => ({ ...insertFields, ...nestedWrites.upsertFields(tableName, typeName) }),
+      })
+    : undefined;
+
   // Select type: ${resolveTypeName(tableName)} (with relation fields)
   // Reuse the cached shell created in generateSelectFields.
   const selectSingleOutput =
@@ -484,6 +499,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   const inputs = {
     insertInput,
     updateInput,
+    upsertInput,
     tableOrder: order,
     tableFilters: filters,
   };

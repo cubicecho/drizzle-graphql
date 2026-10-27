@@ -691,6 +691,16 @@ export type NestedWriteTypes = {
     typeName: string,
   ) => Record<string, { type: GraphQLInputType; description: string }>;
   /**
+   * Relation fields for `Upsert<Table>Input`: what the update input offers, since the row may
+   * already exist, applied the same way on either branch (see {@link wrapperType}).
+   */
+  upsertFields: (
+    tableName: string,
+    typeName: string,
+  ) => Record<string, { type: GraphQLInputType; description: string }>;
+  /** Whether the table has any writable relation, and so needs an upsert input of its own. */
+  hasRelations: (tableName: string) => boolean;
+  /**
    * Columns a relation on the same input can fill in, which therefore cannot stay required:
    * `authorId` is NOT NULL, but `author: { create: … }` supplies it.
    */
@@ -698,6 +708,9 @@ export type NestedWriteTypes = {
 };
 
 const NO_COLUMNS: ReadonlySet<string> = new Set();
+
+/** Which root input a relation field's operations input belongs to. */
+type WrapperMode = 'create' | 'update' | 'upsert';
 
 /**
  * Builds the nested-write input types for a schema.
@@ -775,9 +788,17 @@ export const createNestedWriteTypes = (params: {
   const listOf = (type: GraphQLInputObjectType) => new GraphQLList(new GraphQLNonNull(type));
 
   /**
-   * `<Type><Relation>NestedCreateInput` / `<Type><Relation>NestedUpdateInput` — the operations
-   * offered on one relation. The create variant has no `disconnect` or `set`: a row that does
-   * not exist yet has nothing attached to detach or replace.
+   * `<Type><Relation>NestedCreateInput` / `<Type><Relation>NestedUpdateInput` /
+   * `<Type><Relation>NestedUpsertInput` — the operations offered on one relation. The create
+   * variant has no `disconnect` or `set`: a row that does not exist yet has nothing attached
+   * to detach or replace.
+   *
+   * The upsert variant offers what the update one does, because the row may already exist.
+   * Its operations run the same way on both branches: on a row the upsert just inserted there
+   * is nothing attached yet, so `set` only attaches and `disconnect` finds nothing to detach.
+   * The exception is a parent-side `disconnect` on a relation with a `where` on its target: an
+   * update leaves a key the `where` hides in place, which the conflict branch's plain column
+   * write cannot do, so the upsert does not offer it.
    *
    * A many-to-many relation offers no `create`: inserting a row *and* linking it is two
    * writes to two tables, and the link half is what the relation field is for. Its
@@ -791,9 +812,9 @@ export const createNestedWriteTypes = (params: {
     tableName: string,
     typeName: string,
     plan: NestedRelationPlan,
-    forUpdate: boolean,
+    mode: WrapperMode,
   ): GraphQLInputObjectType | undefined => {
-    const key = `${tableName}.${plan.relationName}.${forUpdate ? 'update' : 'create'}`;
+    const key = `${tableName}.${plan.relationName}.${mode}`;
     const cached = wrapperCache.get(key);
     if (cached) {
       return cached;
@@ -803,7 +824,13 @@ export const createNestedWriteTypes = (params: {
     const targetTypeName = resolveTypeName(plan.targetTableName, typeNameMapper);
     const fields: Record<string, { type: GraphQLInputType; description: string }> = {};
 
-    const offers = (op: NestedWriteOp) => plan.allowed.has(op);
+    const forUpdate = mode !== 'create';
+    const upsert = mode === 'upsert';
+    const offers = (op: NestedWriteOp) =>
+      plan.allowed.has(op) && !(upsert && op === 'disconnect' && plan.fkSide === 'parent' && plan.ownCondition);
+    // What `disconnect` and `set` mean when the upsert inserted the row instead.
+    const onInsert = upsert ? ' Does nothing when the upsert inserts the row.' : '';
+    const setOnInsert = upsert ? ' When the upsert inserts the row, this only attaches.' : '';
 
     if (plan.through) {
       // Without a `Filters` input there is no way to name the rows to link, and `create` is
@@ -817,13 +844,13 @@ export const createNestedWriteTypes = (params: {
       if (filters && forUpdate && offers('disconnect')) {
         fields['disconnect'] = {
           type: listOf(filters),
-          description: `Unlink every linked ${targetTypeName} row these match, leaving the rows in place`,
+          description: `Unlink every linked ${targetTypeName} row these match, leaving the rows in place.${onInsert}`,
         };
       }
       if (filters && forUpdate && offers('set')) {
         fields['set'] = {
           type: listOf(filters),
-          description: `Replace the whole set: unlink everything linked, then link every ${targetTypeName} row these match. \`set: []\` clears the relation. Applied before \`disconnect\` and \`connect\`.`,
+          description: `Replace the whole set: unlink everything linked, then link every ${targetTypeName} row these match. \`set: []\` clears the relation. Applied before \`disconnect\` and \`connect\`.${setOnInsert}`,
         };
       }
     } else if (plan.isOne) {
@@ -842,7 +869,7 @@ export const createNestedWriteTypes = (params: {
       if (forUpdate && offers('disconnect')) {
         fields['disconnect'] = {
           type: GraphQLBoolean,
-          description: `Detach the currently attached ${targetTypeName} row, leaving it in place`,
+          description: `Detach the currently attached ${targetTypeName} row, leaving it in place.${onInsert}`,
         };
       }
     } else {
@@ -861,13 +888,13 @@ export const createNestedWriteTypes = (params: {
       if (filters && forUpdate && offers('disconnect')) {
         fields['disconnect'] = {
           type: listOf(filters),
-          description: `Detach every attached ${targetTypeName} row these match, leaving the rows in place`,
+          description: `Detach every attached ${targetTypeName} row these match, leaving the rows in place.${onInsert}`,
         };
       }
       if (filters && forUpdate && offers('set')) {
         fields['set'] = {
           type: listOf(filters),
-          description: `Replace the whole set: detach everything attached, then attach every ${targetTypeName} row these match. Applied before \`disconnect\`, \`connect\` and \`create\`.`,
+          description: `Replace the whole set: detach everything attached, then attach every ${targetTypeName} row these match. Applied before \`disconnect\`, \`connect\` and \`create\`.${setOnInsert}`,
         };
       }
     }
@@ -881,7 +908,7 @@ export const createNestedWriteTypes = (params: {
     const type = new GraphQLInputObjectType({
       name: cacheCtx.typeName({
         kind: 'nestedWriteInput',
-        defaultName: `${typeName}${capitalize(plan.relationName)}Nested${forUpdate ? 'Update' : 'Create'}Input`,
+        defaultName: `${typeName}${capitalize(plan.relationName)}Nested${capitalize(mode)}Input`,
         table: tableName,
         operation: plan.relationName,
       }),
@@ -892,14 +919,14 @@ export const createNestedWriteTypes = (params: {
     return type;
   };
 
-  const relationFields = (tableName: string, typeName: string, forUpdate: boolean) => {
+  const relationFields = (tableName: string, typeName: string, mode: WrapperMode) => {
     const tablePlans = plans[tableName];
     if (!tablePlans) {
       return {};
     }
     return Object.fromEntries(
       Object.values(tablePlans).flatMap((plan) => {
-        const wrapper = wrapperType(tableName, typeName, plan, forUpdate);
+        const wrapper = wrapperType(tableName, typeName, plan, mode);
         return wrapper
           ? [[plan.relationName, { type: wrapper, description: `Writes through ${typeName}.${plan.relationName}` }]]
           : [];
@@ -908,8 +935,10 @@ export const createNestedWriteTypes = (params: {
   };
 
   return {
-    createFields: (tableName, typeName) => relationFields(tableName, typeName, false),
-    updateFields: (tableName, typeName) => relationFields(tableName, typeName, true),
+    createFields: (tableName, typeName) => relationFields(tableName, typeName, 'create'),
+    updateFields: (tableName, typeName) => relationFields(tableName, typeName, 'update'),
+    upsertFields: (tableName, typeName) => relationFields(tableName, typeName, 'upsert'),
+    hasRelations: (tableName) => !!plans[tableName],
     relaxedColumns: (tableName) => {
       const tablePlans = plans[tableName];
       if (!tablePlans) {
@@ -1583,6 +1612,11 @@ export const createNestedWriteRuntime = (params: {
           // A row the relation's own `where` hides is out of a disconnect's reach, as it is
           // child-side: the key is cleared only where it points at a row the relation shows.
           patch[plan.localColPropName] = existing ? keepingHidden(plan, null) : null;
+          // Only an upsert's input offers this without `existing`, and its conflict branch
+          // has to write the cleared key, as it has to write a connected one.
+          if (!existing) {
+            result.expected[relationName] = null;
+          }
         }
       }
 

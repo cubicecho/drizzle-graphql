@@ -94,7 +94,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
     };
 
     forEachTable(ctx, ({ tableName, tableFeatures, names, types, softDeleteInfo }) => {
-      const { insertInput, updateInput, tableFilters } = types.inputs;
+      const { insertInput, updateInput, upsertInput, tableFilters } = types.inputs;
       const { singleTableItemOutput, arrTableItemOutput } = types.outputs;
       const {
         typeName,
@@ -153,7 +153,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
         ? generateUpsert(writeBuild, {
             tableName,
             table: schema[tableName] as Table,
-            baseType: insertInput,
+            baseType: upsertInput ?? insertInput,
             onConflictType: onConflictInput,
             uniqueSets,
             fieldName: upsertArrayFieldName,
@@ -165,7 +165,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
         ? generateUpsert(writeBuild, {
             tableName,
             table: schema[tableName] as Table,
-            baseType: insertInput,
+            baseType: upsertInput ?? insertInput,
             onConflictType: onConflictInput,
             uniqueSets,
             fieldName: upsertSingleFieldName,
