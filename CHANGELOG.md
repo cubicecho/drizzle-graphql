@@ -1,3 +1,10 @@
+## [17.0.2](https://github.com/cubicecho/drizzle-graphql/compare/v17.0.1...v17.0.2) (2026-10-27)
+
+### Bug Fixes
+
+* batch nested child-side writes across the parent rows of an update ([7752cc8](https://github.com/cubicecho/drizzle-graphql/commit/7752cc8256480b211f3f542341ad88123fb8fbab))
+* run the distinct pass as a subquery instead of binding its keys ([b3cd30b](https://github.com/cubicecho/drizzle-graphql/commit/b3cd30b111a83c326c6737c8c90ec169589df3ff))
+
 ## [17.0.1](https://github.com/cubicecho/drizzle-graphql/compare/v17.0.0...v17.0.1) (2026-10-27)
 
 ### Bug Fixes
