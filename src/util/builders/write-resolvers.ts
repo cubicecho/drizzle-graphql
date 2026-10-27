@@ -27,7 +27,6 @@ import {
   applyContextValues,
   applyContextValuesAll,
   applyObjectTypeName,
-  assertSingleMatch,
   drizzleError,
   excludedColumnRef,
   extractFilters,
@@ -37,6 +36,7 @@ import {
   type LimitPolicyFor,
   type MutationTxCtx,
   mutationSelection,
+  narrowToSingleMatch,
   type OnConflictArg,
   type RelationFilterBase,
   type ResolverPolicies,
@@ -469,7 +469,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
 
         const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
         // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
-        const filters = scopedWhere({
+        const matched = scopedWhere({
           scope,
           tableName,
           table,
@@ -477,10 +477,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           relationCtx,
           required: single || requireWhere,
         });
-
-        if (single) {
-          await assertSingleMatch(executor, table, filters!);
-        }
+        const filters = single ? await narrowToSingleMatch(executor, table, matched!, pkNames) : matched;
 
         const returning = withHookReturning(
           nestedOps ? nested!.withJoinColumns(tableName, nestedOps, { ...columns }, table) : columns,
@@ -514,7 +511,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         const result = output(written);
 
         if (single && result.length > 1) {
-          // A row started matching between the pre-check and the write.
+          // Unreachable on a table with a primary key: the write is narrowed to the one row the
+          // check found. Without a key a row arriving between the check and the write is written.
           throw drizzleError("'where' matched more than one row!", { code: 'DRIZZLE_MULTI_ROW_MATCH' });
         }
 
@@ -552,6 +550,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
     // Only a soft-deleting table that opted in gets the argument, so the schema itself says
     // which tables can be purged — and `restore` never takes one, having nothing to remove.
     const canHardDelete = !restore && softDelete?.hardDelete === true;
+    const pkNames = primaryKeyPropNames(table);
     const queryArgs = {
       where: {
         type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
@@ -591,7 +590,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         // rows inside it — an out-of-scope row is not matched rather than being refused.
         // A soft-deleting table adds the marker predicate the same way: `delete` only sees
         // rows that are not already marked, `restore` only sees the ones that are.
-        const filters = scopedWhere({
+        const matched = scopedWhere({
           scope,
           tableName,
           table,
@@ -602,10 +601,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           // ones already marked, which the default EXCLUDE could not reach at all.
           deleted: restore ? 'ONLY' : hard ? 'INCLUDE' : undefined,
         });
-
-        if (single) {
-          await assertSingleMatch(executor, table, filters!);
-        }
+        const filters = single ? await narrowToSingleMatch(executor, table, matched!, pkNames) : matched;
 
         let query =
           softDelete && !hard
@@ -625,7 +621,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         const result = output(written);
 
         if (single && result.length > 1) {
-          // A row started matching between the pre-check and the write.
+          // Unreachable on a table with a primary key: the write is narrowed to the one row the
+          // check found. Without a key a row arriving between the check and the write is written.
           throw drizzleError("'where' matched more than one row!", { code: 'DRIZZLE_MULTI_ROW_MATCH' });
         }
 

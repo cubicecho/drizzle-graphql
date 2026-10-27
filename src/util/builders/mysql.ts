@@ -17,7 +17,6 @@ import type { GeneratedEntities } from '../../types.ts';
 import {
   applyContextValues,
   applyContextValuesAll,
-  assertSingleMatch,
   drizzleError,
   generateOnConflictInput,
   generateUpdateManyInput,
@@ -28,6 +27,7 @@ import {
   type MutationTxCtx,
   memoizeTableConfig,
   mysqlValuesColumnRef,
+  narrowToSingleMatch,
   type OnConflictArg,
   type RelationFilterBase,
   type ResolverPolicies,
@@ -268,7 +268,7 @@ const generateUpdate = (
 
       const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
       // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
-      const filters = scopedWhere({
+      const matched = scopedWhere({
         scope,
         tableName,
         table,
@@ -277,9 +277,9 @@ const generateUpdate = (
         required: single || requireWhere,
       });
 
-      if (single) {
-        await assertSingleMatch(executor, table, filters!);
-      }
+      const filters = single
+        ? await narrowToSingleMatch(executor, table, matched!, mysqlPrimaryKeyPropNames(table))
+        : matched;
 
       let query = executor.update(table).set(input);
       if (filters) {
@@ -429,7 +429,7 @@ const generateDelete = (
       // rows inside it — an out-of-scope row is not matched rather than being refused.
       // A soft-deleting table adds the marker predicate the same way: `delete` only sees
       // rows that are not already marked, `restore` only sees the ones that are.
-      const filters = scopedWhere({
+      const matched = scopedWhere({
         scope,
         tableName,
         table,
@@ -441,9 +441,9 @@ const generateDelete = (
         deleted: restore ? 'ONLY' : hard ? 'INCLUDE' : undefined,
       });
 
-      if (single) {
-        await assertSingleMatch(executor, table, filters!);
-      }
+      const filters = single
+        ? await narrowToSingleMatch(executor, table, matched!, mysqlPrimaryKeyPropNames(table))
+        : matched;
 
       let query =
         softDelete && !hard

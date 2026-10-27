@@ -89,12 +89,12 @@ export {
   withDefaultOrderBy,
 } from './common/limits.ts';
 export {
-  assertSingleMatch,
   extractRequiredFilters,
   generateUpdateManyInput,
   generateWriteCount,
   hardDeleteArg,
   mutationSelection,
+  narrowToSingleMatch,
   prepareMutationRelationColumns,
   rowsAffected,
   scopedWhere,

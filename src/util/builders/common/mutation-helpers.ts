@@ -2,7 +2,7 @@
 // update's input type, the filters a write requires, and the write-count return type.
 
 import type { Column, Table } from 'drizzle-orm';
-import { getColumns, type SQL, sql } from 'drizzle-orm';
+import { and, getColumns, type SQL, sql } from 'drizzle-orm';
 import type { GraphQLFieldConfigArgumentMap } from 'graphql';
 import { GraphQLBoolean, GraphQLInputObjectType, GraphQLNonNull } from 'graphql';
 import { capitalize } from '../../case-ops/index.ts';
@@ -254,18 +254,43 @@ export const rowsAffected = (result: any): number => {
   });
 };
 
+/** Alias prefix for the primary-key columns {@link narrowToSingleMatch} reads. */
+const KEY_ALIAS_PREFIX = '__single_key_';
+
 /**
- * Guard for the `Single` write variants: throws before anything is written when `where`
- * matches more than one row, so a multi-row update/delete never executes. Probed with a
- * `LIMIT 2` select rather than a count so the check stays cheap on large matches.
+ * The `where` a `Single` update or delete runs with. It checks that `filters` matches at most
+ * one row and narrows it to that row's primary key, so a row that starts matching between the
+ * check and the write is never written. A table without a primary key keeps `filters`.
  */
-export const assertSingleMatch = async (executor: any, table: Table, filters: SQL): Promise<void> => {
-  const matched = await executor.select({ found: sql`1` }).from(table).where(filters).limit(2);
+export const narrowToSingleMatch = async (
+  executor: any,
+  table: Table,
+  filters: SQL,
+  keyNames: readonly string[],
+): Promise<SQL> => {
+  const columns = getColumns(table) as Record<string, Column>;
+  const keyColumns = keyNames.map((name) => columns[name]!);
+  const hasKey = keyColumns.length > 0;
+  // Each key is read raw (no `mapWith`), so it binds back exactly as the database holds it.
+  const probe = hasKey
+    ? Object.fromEntries(keyColumns.map((column, index) => [`${KEY_ALIAS_PREFIX}${index}`, sql`${column}`]))
+    : { found: sql`1` };
+  const matched = await executor.select(probe).from(table).where(filters).limit(2);
   if (matched.length > 1) {
     throw drizzleError("'where' matched more than one row — nothing was written!", {
       code: 'DRIZZLE_MULTI_ROW_MATCH',
     });
   }
+  if (!hasKey) {
+    return filters;
+  }
+  const [found] = matched;
+  if (!found) {
+    // Nothing matched when checked, so a row arriving afterwards is not written either.
+    return sql`1 = 0`;
+  }
+  const keyMatches = keyColumns.map((column, index) => sql`${column} = ${found[`${KEY_ALIAS_PREFIX}${index}`]}`);
+  return and(filters, ...keyMatches)!;
 };
 
 /**
