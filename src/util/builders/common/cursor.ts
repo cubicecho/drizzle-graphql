@@ -11,6 +11,7 @@ import {
   MySqlTimestamp,
 } from 'drizzle-orm/mysql-core';
 import { PgTimestamp } from 'drizzle-orm/pg-core';
+import { SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { dateToCalendarDate } from '../../scalars/index.ts';
 import { isDateOnlyColumn } from '../../type-converter/index.ts';
@@ -158,9 +159,10 @@ export const cursorPreciseSelection = (table: Table, entries: CursorOrderEntry[]
   );
 
 /**
- * Serializes one ordering-tuple value into a JSON-safe shape. Dates and bigints don't survive
- * JSON.stringify losslessly (bigint throws, Date turns into an untagged string), so they are
- * tagged; decimals already arrive from the driver as strings, which are lossless as-is.
+ * Serializes one ordering-tuple value into a JSON-safe shape. Dates, bigints and non-finite
+ * numbers don't survive JSON.stringify losslessly (bigint throws, Date turns into an untagged
+ * string, `NaN` / `±Infinity` into `null`), so they are tagged; decimals already arrive from the
+ * driver as strings, which are lossless as-is.
  */
 const encodeCursorValue = (value: any): any => {
   if (value instanceof Date) {
@@ -168,6 +170,11 @@ const encodeCursorValue = (value: any): any => {
   }
   if (typeof value === 'bigint') {
     return { $type: 'bigint', value: value.toString() };
+  }
+  const isNonFiniteNumber = typeof value === 'number' && !Number.isFinite(value);
+  if (isNonFiniteNumber) {
+    // `String` spells them `NaN` / `Infinity` / `-Infinity`, which `Number` reads back.
+    return { $type: 'float', value: String(value) };
   }
   return value;
 };
@@ -179,6 +186,9 @@ const decodeCursorValue = (value: any): any => {
     }
     if (value.$type === 'bigint') {
       return BigInt(value.value);
+    }
+    if (value.$type === 'float') {
+      return Number(value.value);
     }
   }
   return value;
@@ -285,6 +295,9 @@ const strictComparison = (col: Column, direction: 'asc' | 'desc', value: unknown
   return direction === 'asc' ? gt(col, operand) : lt(col, operand);
 };
 
+/** A real literal too large for a double, which SQLite reads as `Infinity`. */
+const SQLITE_INFINITY_LITERAL = '9e999';
+
 /**
  * A decoded cursor value in the form it is bound against its column. A date-only column's
  * value decodes to a JS `Date` at UTC midnight, and mysql2 renders a bound `Date` in the
@@ -292,9 +305,19 @@ const strictComparison = (col: Column, direction: 'asc' | 'desc', value: unknown
  * cursor row still sorts after itself, and every page repeats it. The calendar day the cursor
  * encodes is bound instead, as the data mappers bind a `Date` filter on the same column: a
  * `YYYY-MM-DD` string no timezone can shift, which every dialect's date column reads as is.
+ * `±Infinity` on SQLite is spliced as a literal, since its drivers will not bind it.
  */
-const boundCursorValue = (col: Column, value: unknown): unknown =>
-  value instanceof Date && isDateOnlyColumn(col) ? (dateToCalendarDate(value) ?? value) : value;
+const boundCursorValue = (col: Column, value: unknown): unknown => {
+  if (value instanceof Date && isDateOnlyColumn(col)) {
+    return dateToCalendarDate(value) ?? value;
+  }
+  const isInfinity = value === Number.POSITIVE_INFINITY || value === Number.NEGATIVE_INFINITY;
+  if (isInfinity && is(col, SQLiteColumn)) {
+    // SQLite drivers refuse to bind a non-finite number; an overflowing literal parses to it.
+    return sql.raw(value > 0 ? SQLITE_INFINITY_LITERAL : `-${SQLITE_INFINITY_LITERAL}`);
+  }
+  return value;
+};
 
 /** One key of a cursor's total order, resolved against the queried table. */
 interface CursorKey {
