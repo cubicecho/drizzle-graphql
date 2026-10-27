@@ -1,3 +1,26 @@
+## [16.0.1](https://github.com/cubicecho/drizzle-graphql/compare/v16.0.0...v16.0.1) (2026-10-27)
+
+### Bug Fixes
+
+* alias SQLite numeric columns inside the window and distinct subqueries ([9a9409d](https://github.com/cubicecho/drizzle-graphql/commit/9a9409d97aebeca2617be749655555e316db0ae9))
+* apply a junction's own scope and soft delete to many-to-many nested writes ([37711f1](https://github.com/cubicecho/drizzle-graphql/commit/37711f1fa1240fbb4e7ca60060e4ba25ac602234))
+* bind MySQL date cursors as a calendar day so paging ends outside UTC ([49d6f36](https://github.com/cubicecho/drizzle-graphql/commit/49d6f36d91c3d0954183a129f1e842e414fda246))
+* chunk the parent-key reads of nested writes over large updates ([f91b9a2](https://github.com/cubicecho/drizzle-graphql/commit/f91b9a2cfe5578486223bfe0f346f8ae9cf280a0))
+* identifyRows only reports a complete target for a non-null key equality ([4493b0f](https://github.com/cubicecho/drizzle-graphql/commit/4493b0f840ab8e75267dce72a7d49592d6da430a))
+* keep a many-to-many whose junction's NOT NULL column is stamped on insert ([9860d8c](https://github.com/cubicecho/drizzle-graphql/commit/9860d8c5f07a513f64ef46ed7bebb8b6a690d988))
+* keep field update arithmetic exact on MySQL numerics and SQLite blob bigints ([79c48e2](https://github.com/cubicecho/drizzle-graphql/commit/79c48e26f4d353a4fd9235c5c54bb1f35d4bd4d6))
+* keep MySQL onConflict NOTHING and select-builder scopes correct ([5afd6e1](https://github.com/cubicecho/drizzle-graphql/commit/5afd6e17968d3feec0e6ddb6b3ed76d15db95e58))
+* match pattern escapes, case folding and JSON path quoting on SQLite ([8050fca](https://github.com/cubicecho/drizzle-graphql/commit/8050fca5527c6525606b1f7123d4442501f5f656))
+* never rewrite a target's primary key from a shared-key one-to-one connect ([847dfc3](https://github.com/cubicecho/drizzle-graphql/commit/847dfc383a84e1d99c7bab214547047194e819f3))
+* read a boolean branch that restricts nothing as matching every row ([98584b3](https://github.com/cubicecho/drizzle-graphql/commit/98584b39bfe4cf81fbde9a9bf4d321c876340373))
+* read graphql 17 variables and fragment arguments correctly ([c0a7367](https://github.com/cubicecho/drizzle-graphql/commit/c0a7367c3f231e051ec5f9be9ae0bdca49ec9a21))
+* read min/max like their column for MySQL enums and SQLite numeric bigints ([18f9f6e](https://github.com/cubicecho/drizzle-graphql/commit/18f9f6eeaaca7823b602905e94d6576077c6bee3))
+* regroup MySQL relation rows by the key column's collation ([ea3babb](https://github.com/cubicecho/drizzle-graphql/commit/ea3babbd4b4751ffc70f572c257300ad1f25171b))
+* stamp a 'string'-mode date soft-delete marker in the column's own text form ([9b004bf](https://github.com/cubicecho/drizzle-graphql/commit/9b004bf3fdec46c548978056fdf24d0fa48ee721))
+* stamp a NOT NULL soft-delete marker's restored value on insert ([8234cc4](https://github.com/cubicecho/drizzle-graphql/commit/8234cc4532087661358ddac52a2bb8b6a0877432))
+* tiebreak root list pages and relation distinct by primary key ([9d1f2e5](https://github.com/cubicecho/drizzle-graphql/commit/9d1f2e5a1147339e37b0bca2ce1a42dd27715384))
+* treat offset 0 as no offset on every read path ([f700c9a](https://github.com/cubicecho/drizzle-graphql/commit/f700c9a54cae26724f47fe5dd739bfbc79a2776a))
+
 ## [16.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v15.1.6...v16.0.0) (2026-10-23)
 
 ### ⚠ BREAKING CHANGES
