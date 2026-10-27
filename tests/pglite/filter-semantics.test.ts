@@ -6,7 +6,13 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { type GraphQLSchema, graphql } from 'graphql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildSchema } from '@/index';
-import { JSON_DOCS, JSON_PATH_CASES } from '../util/filter-semantics';
+import {
+  INSENSITIVE_FILTER_ORDER_IDS,
+  INSENSITIVE_FILTER_ORDER_QUERY,
+  JSON_DOCS,
+  JSON_PATH_CASES,
+  TAGS,
+} from '../util/filter-semantics';
 
 const Items = pgTable('items', { id: integer('id').primaryKey(), name: text('name') });
 const Posts = pgTable('posts', { id: integer('id').primaryKey(), itemId: integer('item_id'), title: text('title') });
@@ -16,7 +22,8 @@ const Comments = pgTable('comments', {
   body: text('body'),
 });
 const Docs = pgTable('docs', { id: integer('id').primaryKey(), meta: jsonb('meta'), metaJson: json('meta_json') });
-const tables = { Items, Posts, Comments, Docs };
+const Tags = pgTable('tags', { id: integer('id').primaryKey(), label: text('label').notNull() });
+const tables = { Items, Posts, Comments, Docs, Tags };
 const r = createRelationsHelper(tables);
 const relations = buildRelations(tables, {
   Items: { posts: r.many.Posts({ from: r.Items.id, to: r.Posts.itemId }) },
@@ -64,6 +71,8 @@ beforeAll(async () => {
   ]);
   await db.execute(sql`CREATE TABLE docs (id integer primary key, meta jsonb, meta_json json)`);
   await db.insert(Docs).values(JSON_DOCS.map((doc) => ({ ...doc, metaJson: doc.meta })));
+  await db.execute(sql`CREATE TABLE tags (id integer primary key, label text not null)`);
+  await db.insert(Tags).values(TAGS);
   schema = buildSchema(db).schema;
 });
 afterAll(async () => {
@@ -102,5 +111,13 @@ describe('JSON path as: NUMBER / BOOLEAN needs that JSON type', () => {
   );
   it.each(cases)('%s path %s', async (column, filter, expected) => {
     expect(await ids('docs', `{ ${column}: { path: ${filter} } }`)).toEqual(expected);
+  });
+});
+
+describe('matchFilterOrder under insensitive', () => {
+  it('ranks rows the list matched case-insensitively in list order', async () => {
+    const res: any = await graphql({ schema, source: INSENSITIVE_FILTER_ORDER_QUERY, contextValue: {} });
+    expect(res.errors).toBeUndefined();
+    expect(res.data.tags.map((row: any) => row.id)).toEqual(INSENSITIVE_FILTER_ORDER_IDS);
   });
 });

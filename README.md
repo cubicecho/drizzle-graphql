@@ -1294,6 +1294,8 @@ that column's `inArray` list instead of by the column's value:
         works on relation fields as well as root lists
 -   It compiles to a `CASE` ladder over the list values, so it behaves identically on all
         three dialects and every value stays a bound parameter
+-   With `insensitive: true` on that filter, the ladder compares `lower()` of both sides as the
+        filter does, so `inArray: ["ALICE"]` ranks the row holding `alice` first
 -   It cannot be combined with `after` or `distinct`: a row's position in the request's own
         filter list is not a value of the row, so it cannot be encoded into a cursor or rebuilt
         against a subquery. Selecting `cursor` under it yields `null` rather than an error

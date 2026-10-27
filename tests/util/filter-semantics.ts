@@ -24,3 +24,20 @@ export const JSON_PATH_CASES: [filter: string, ids: number[]][] = [
   // A text read sees any scalar's text, so a JSON number and a string with its digits both match.
   ['{ path: ["n"], eq: "3" }', [1, 2]],
 ];
+
+/** Labels in mixed case, for `matchFilterOrder` under `insensitive`. */
+export const TAGS: { id: number; label: string }[] = [
+  { id: 1, label: 'Alpha' },
+  { id: 2, label: 'beta' },
+  { id: 3, label: 'GAMMA' },
+  { id: 4, label: 'delta' },
+];
+
+/** Orders {@link TAGS} by their position in a list that matches them only case-insensitively. */
+export const INSENSITIVE_FILTER_ORDER_QUERY = `{ tags(
+  where: { label: { inArray: ["gamma", "ALPHA", "Beta"], insensitive: true } }
+  orderBy: { label: { direction: asc, priority: 1, matchFilterOrder: true } }
+) { id } }`;
+
+/** The ids {@link INSENSITIVE_FILTER_ORDER_QUERY} returns, in list order. */
+export const INSENSITIVE_FILTER_ORDER_IDS = [3, 1, 2];

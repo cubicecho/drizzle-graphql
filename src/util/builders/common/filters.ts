@@ -181,7 +181,7 @@ const COMPARISON_SQL: Record<string, string> = { eq: '=', ne: '<>', lt: '<', lte
  * `lower()` the case-insensitive LIKE operators already fall back to on the dialects without
  * a native `ILIKE`, so it adds no dialect surface.
  */
-const lowerComparison = (column: Column, operatorName: string, value: unknown): SQL =>
+export const lowerComparison = (column: Column, operatorName: string, value: unknown): SQL =>
   sql`lower(${column}) ${sql.raw(COMPARISON_SQL[operatorName]!)} lower(${value})`;
 
 /** `lower(column) IN (lower($1), …)` / `NOT IN` — the case-insensitive `inArray`/`notInArray`. */

@@ -19,6 +19,7 @@ import { MySqlEnumColumn, MySqlEnumObjectColumn } from 'drizzle-orm/mysql-core';
 import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
 import type { OrderByArgs, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
+import { lowerComparison } from './filters.ts';
 import type { RelationFilterContext } from './relation-filters.ts';
 import { buildRelationJoinCondition, relationTargetPolicy } from './relation-filters.ts';
 import { isFilterableRelation, isRelationFilterReversed, relationOwnWhere } from './relations.ts';
@@ -180,10 +181,12 @@ const extendRelationOrderChain = (
  * driver form differs from its JS one (a SQLite integer timestamp's `Date`) is bound as stored.
  * The branch indices are library-generated integers, so they are written into the SQL text — a
  * bound parameter there would leave Postgres unable to infer the CASE result type. Values
- * outside the list sort after every listed one.
+ * outside the list sort after every listed one. Under `insensitive` each branch compares
+ * lowered values, as the filter itself does, so a row it matched by case is ranked too.
  */
 const filterOrderExpression = (column: Column, columnName: string, whereArgs: Record<string, any> | undefined): SQL => {
-  const values = whereArgs?.[columnName]?.inArray as unknown;
+  const columnFilter = whereArgs?.[columnName];
+  const values = columnFilter?.inArray as unknown;
   if (!Array.isArray(values)) {
     throw drizzleError(
       `ORDER BY ${columnName}: 'matchFilterOrder' needs an 'inArray' filter on the same column in this query's 'where'`,
@@ -196,10 +199,12 @@ const filterOrderExpression = (column: Column, columnName: string, whereArgs: Re
     return sql`0`;
   }
 
-  const branches = values.map(
-    (value, index) =>
-      sql`when ${column} = ${sql.param(remapFromGraphQLCore(value, column, columnName), column)} then ${sql.raw(String(index))}`,
-  );
+  const foldCase = columnFilter.insensitive === true;
+  const branches = values.map((value, index) => {
+    const operand = sql.param(remapFromGraphQLCore(value, column, columnName), column);
+    const matches = foldCase ? lowerComparison(column, 'eq', operand) : sql`${column} = ${operand}`;
+    return sql`when ${matches} then ${sql.raw(String(index))}`;
+  });
   return sql`case ${sql.join(branches, sql` `)} else ${sql.raw(String(values.length))} end`;
 };
 
