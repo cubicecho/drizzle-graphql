@@ -1820,7 +1820,7 @@ export const createNestedWriteRuntime = (params: {
           .filter((name) => columns[name])
           .map((name) => [name, columns[name]!]),
       );
-      const keyOf = (row: Record<string, any>) => pk.map((name) => String(row[name])).join('\u0000');
+      const keyOf = (row: Record<string, any>) => pk.map((name) => keyString(row[name])).join('\u0000');
       const pkCols = pk.map((name) => columns[name]!);
       const fresh = new Map<string, Record<string, any>>();
       for (const chunk of parentKeyChunks(rows, pk.length)) {
