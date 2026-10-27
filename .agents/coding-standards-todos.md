@@ -33,29 +33,29 @@ session scratchpad (`repro/`, `reads-rev/repros/`, `filters-review/src/`,
 | B2 | Bug | Alias every column in the paginated many-to-many subquery | Stops rows grouping under the wrong parent (SQLite) or erroring (PG/MySQL) | — | done |
 | B3 | Bug | Run `…Single` update/delete so a multi-row match never commits | "Matched more than one row" really means nothing was written | — | done |
 | B5 | Bug | Treat an explicit `null` nested op (`create: null`) as absent everywhere | No blank rows, no replaced relations, no internal errors | — | done |
-| B6 | Bug | Refuse a to-one nested attach when a NOT NULL, non-unique FK already has a different row attached | A to-one relation can no longer end up with two rows, or steal another parent's row | — | waiting on decision |
+| B6 | Bug | Refuse a to-one nested attach when a NOT NULL, non-unique FK already has a different row attached | A to-one relation can no longer end up with two rows, or steal another parent's row | — | done |
 | B8 | Bug | Type MySQL unsigned `int` and `serial` as `Float` instead of 32-bit `Int` | Values above 2^31 read and write | — | done |
 | B9 | Bug | Compare MySQL `float` cursor and `eq` operands at single precision | Cursor walks end; `eq` matches the value just read | — | done |
 | B10 | Bug | Encode `NaN`/`±Infinity` in cursors instead of letting them become NULL | Postgres walks over float columns stop dropping rows | — | done |
-| B11 | Bug (question) | Decide whether `every` should fail a related row whose compared column is NULL | Either fixes the SQL or documents the caveat | — | waiting on decision |
+| B11 | Bug (question) | Decide whether `every` should fail a related row whose compared column is NULL | Either fixes the SQL or documents the caveat | — | done |
 | B14 | Bug | Type `bigint({ mode: 'string' })` as `BigIntString`, with number filters | Consistent bigint typing; no SQL errors from `like` on a bigint | — | done |
 | B15 | Bug | Type MySQL unsigned `decimal` as `Decimal` like the signed one | Same validation and filters for both | — | done |
 | B16 | Bug | Let Postgres array elements be null in output types | A `{1,NULL,3}` value reads instead of erroring the field or row | — | done |
 | B13 | Bug | Stop the field-update kind cache outliving a build | A later build's scalar override is respected | — | done |
 | B17 | Bug | Detect relation `orderBy` hops correctly when the target table has a `direction` column | Internal errors become the right result or error | — | done |
 | B18 | Bug | Round `lt`/`gte` operands up on SQLite second-precision timestamps | Fractional-second bounds return the right rows | — | done |
-| B19 | Bug (question) | Pick one rule for JSON `path` `as: NUMBER/BOOLEAN` on string values, across dialects | Same query, same rows on every dialect | — | waiting on decision |
+| B19 | Bug (question) | Pick one rule for JSON `path` `as: NUMBER/BOOLEAN` on string values, across dialects | Same query, same rows on every dialect | — | done |
 | B20 | Bug | A relation field's `cursor` under `matchFilterOrder` resolves to null like the root list | Internal error becomes null | — | done |
 | B21 | Bug | Validate decoded cursor values; reject bad ones as `DRIZZLE_INVALID_CURSOR` | Forged cursors stop causing internal errors or silent empty pages | — | done |
-| B23 | Bug (question) | Run the `before` hook at the same point (before or after input validation) on every write path | A rejected write fires the hook on all paths or on none | — | waiting on decision |
+| B23 | Bug (question) | Run the `before` hook at the same point (before or after input validation) on every write path | A rejected write fires the hook on all paths or on none | — | done |
 | D1 | Docs | Fix docs that disagree with code: feature defaults, `updateMany` slots, "already committed", stale AGENTS.md lines | Docs match code | B1, B3 | done |
-| D2 | Docs | Document the `every` + NULL caveat in the README if B11 keeps the behaviour | Users are told | B11 | waiting on decision |
-| B24 | Bug · low value | Stop remapping write args in place (hooks see remapped args; a shared variable is remapped twice) (unverified) | Hooks see what the docs promise | — | open |
-| B25 | Bug · low value | Add `PgSparseVector` to the no-min/max column list (unverified: no pgvector in PGlite) | No SQL error from `min(sparsevec)` | — | open |
-| B26 | Bug · low value | Gate the junction restore UPDATE on the junction's `update` feature | Feature switch honoured | — | open |
-| B27 | Bug · low value | Match nested `refreshed` rows by `keyString`, not `String()` (unverified) | Timestamp keys under 1s apart stay distinct | — | open |
-| B28 | Bug · low value | `resolveSelection` fallback: derive null ordering from the dialect (unverified) | Correct cursors in the multi-build fallback | — | open |
-| B29 | Bug · low value | `matchFilterOrder` + `insensitive` ranks case-insensitive matches as "not in list" (unverified) | Correct order | — | open |
+| D2 | Docs | Document the `every` + NULL caveat in the README if B11 keeps the behaviour | Users are told | B11 | declined (B11 was fixed instead) |
+| B24 | Bug · low value | Stop remapping write args in place (hooks see remapped args; a shared variable is remapped twice) (unverified) | Hooks see what the docs promise | — | open (confirmed: hooks see converted args; a variable shared by two fields fails the second) |
+| B25 | Bug · low value | Add `PgSparseVector` to the no-min/max column list (unverified: no pgvector in PGlite) | No SQL error from `min(sparsevec)` | — | done |
+| B26 | Bug · low value | Gate the junction restore UPDATE on the junction's `update` feature | Feature switch honoured | — | done |
+| B27 | Bug · low value | Match nested `refreshed` rows by `keyString`, not `String()` (unverified) | Timestamp keys under 1s apart stay distinct | — | done |
+| B28 | Bug · low value | `resolveSelection` fallback: derive null ordering from the dialect (unverified) | Correct cursors in the multi-build fallback | — | deferred |
+| B29 | Bug · low value | `matchFilterOrder` + `insensitive` ranks case-insensitive matches as "not in list" (unverified) | Correct order | — | done |
 
 Status is `open`, `approved`, `declined`, `waiting on decision` or `done`.
 
@@ -67,6 +67,7 @@ Follow-ups found while fixing:
 |---|---|---|---|---|---|
 | B30 | Bug | Close the `…Single` race on MySQL and sync SQLite | B3 holds on every dialect | — | done (in B3) |
 | B32 | Bug | Check a decoded cursor value fits its column's type (B21 checks only that it is well formed) | Cleaner `DRIZZLE_INVALID_CURSOR` | — | open |
+| B34 | Bug (question) | Root `restore` mutations are generated for every soft-deleting table, ignoring feature flags (unverified) | Feature switches honoured | — | open |
 | B33 | Bug (question) | Postgres array *inputs* still require non-null elements (`[T!]`); B16 relaxed only outputs | Your call | — | waiting on decision |
 
 ## Model changes
