@@ -1,3 +1,11 @@
+## [17.0.1](https://github.com/cubicecho/drizzle-graphql/compare/v17.0.0...v17.0.1) (2026-10-27)
+
+### Bug Fixes
+
+* keep a hidden key on an upsert's conflict branch, as update does ([73e9d7f](https://github.com/cubicecho/drizzle-graphql/commit/73e9d7f9287f68a69a8c0a3678c5f70aff0d753c)), closes [#222](https://github.com/cubicecho/drizzle-graphql/issues/222)
+* let cursor pagination predicates use indexes ([5b7e27a](https://github.com/cubicecho/drizzle-graphql/commit/5b7e27af25102ba3d81232bf7203d42f07a31cd4))
+* make schema build linear on cyclic relation graphs ([b88b542](https://github.com/cubicecho/drizzle-graphql/commit/b88b5423252cfa2d895e8d92aebe96e63485eb89))
+
 ## [17.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v16.0.1...v17.0.0) (2026-10-27)
 
 ### ⚠ BREAKING CHANGES
