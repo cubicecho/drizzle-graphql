@@ -53,13 +53,11 @@ describe('integer column types', () => {
   it.each(['real', 'double', 'bigint53'])('pg %s stays Float', (key) => {
     expect(typeOf(pgT, key)).toBe(GraphQLFloat);
   });
-  it.each(['int', 'unsignedInt', 'tinyint', 'unsignedTinyint', 'smallint', 'mediumint', 'serial', 'year'])(
-    'mysql %s is Int',
-    (key) => {
-      expect(typeOf(myT, key)).toBe(GraphQLInt);
-    },
-  );
-  it.each(['float', 'double', 'bigint53'])('mysql %s stays Float', (key) => {
+  it.each(['int', 'tinyint', 'unsignedTinyint', 'smallint', 'mediumint', 'year'])('mysql %s is Int', (key) => {
+    expect(typeOf(myT, key)).toBe(GraphQLInt);
+  });
+  // unsigned int (uint32) and serial (BIGINT UNSIGNED) hold values past 2^31 - 1.
+  it.each(['float', 'double', 'bigint53', 'unsignedInt', 'serial'])('mysql %s is Float', (key) => {
     expect(typeOf(myT, key)).toBe(GraphQLFloat);
   });
   it('sqlite integer is Float, since it holds 64-bit integers; real stays Float', () => {

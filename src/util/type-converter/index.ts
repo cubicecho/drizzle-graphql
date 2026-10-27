@@ -5,12 +5,10 @@ import {
   MySqlDateString,
   MySqlDateTime,
   MySqlDateTimeString,
-  MySqlInt,
-  MySqlSerial,
   MySqlTimestamp,
   MySqlTimestampString,
 } from 'drizzle-orm/mysql-core';
-import { PgDate, PgDateString, PgInteger, PgSerial, PgTimestamp, PgTimestampString, PgUUID } from 'drizzle-orm/pg-core';
+import { PgDate, PgDateString, PgTimestamp, PgTimestampString, PgUUID } from 'drizzle-orm/pg-core';
 import { SQLiteTimestamp } from 'drizzle-orm/sqlite-core';
 import {
   GraphQLBoolean,
@@ -430,21 +428,11 @@ const columnBaseToGraphQLCore = (
     case 'bigint':
       return { type: GraphQLBigIntString, typeLabel: 'BigInt' };
     case 'number': {
-      // Every integer kind that fits GraphQL's 32-bit signed Int: smallint / tinyint /
-      // mediumint / smallserial and MySQL `year` report these constraints in drizzle v1, and
-      // used to fall through to Float. Wider kinds (int53, uint32, uint53) are matched only
-      // through the column classes below, as before.
-      //
-      // A SQLite `integer()` in number mode is not among them: SQLite stores any 64-bit integer
-      // in it (a rowid primary key included), and drizzle reads it as a JS number, so values
-      // past 2^31 are ordinary. `Float` carries every integer up to 2^53 exactly; `Int` would
-      // fail to serialize them. Its `'boolean'` and `'timestamp'` modes are other classes and
-      // keep `Boolean` and `DateTime`.
-      return (constraint !== undefined && smallIntegerConstraints.has(constraint)) ||
-        is(column, PgInteger) ||
-        is(column, PgSerial) ||
-        is(column, MySqlInt) ||
-        is(column, MySqlSerial)
+      // Only integer kinds whose range fits GraphQL's 32-bit signed Int get `Int`, decided by
+      // drizzle's constraint alone. Wider kinds — MySQL unsigned `int` (uint32) and `serial`
+      // (uint53), bigint number mode (int53/uint53) and SQLite `integer()` (int53, any 64-bit
+      // value) — get `Float`, which carries every integer up to 2^53 exactly.
+      return constraint !== undefined && smallIntegerConstraints.has(constraint)
         ? { type: GraphQLInt, typeLabel: 'Integer' }
         : { type: GraphQLFloat, typeLabel: 'Float' };
     }

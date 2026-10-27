@@ -713,6 +713,7 @@ Some columns map to built-in GraphQL types rather than a custom scalar:
 | Drizzle column | GraphQL type | Transported as |
 | --- | --- | --- |
 | SQLite `integer()` (number mode) | `Float` | a JS number, exact up to 2^53 |
+| MySQL `int({ unsigned: true })`, `serial()`; `bigint({ mode: 'number' })` (every dialect) | `Float` | a JS number, exact up to 2^53 |
 | Postgres `bytea`, SQLite `blob({ mode: 'buffer' })` | `[Int!]` | the bytes, each 0–255 |
 | Postgres `point` / `line` (tuple mode), PostGIS `geometry` (tuple mode), `vector`, `halfvec` | `[Float!]` | the tuple or vector |
 | Postgres `point({ mode: 'xy' })`, `line({ mode: 'abc' })` | `JSON` | the object, `{ x, y }` / `{ a, b, c }` |
@@ -737,6 +738,11 @@ Some columns map to built-in GraphQL types rather than a custom scalar:
 > the values themselves are unchanged. `integer({ mode: 'boolean' })` and the timestamp modes are
 > not affected. A SQLite `blob({ mode: 'buffer' })` column, which used to be `JSON` and could
 > not be written, is now `[Int!]`.
+
+> **Upgrading — MySQL unsigned `int` and `serial`.** `int({ unsigned: true })` (up to 2^32 - 1)
+> and `serial()` (`BIGINT UNSIGNED`) used to be `Int`, so a value past 2^31 - 1 failed to read or
+> write. Both are now `Float` in every position, with the same consequences as for SQLite
+> `integer()` above. Unsigned `tinyint`, `smallint` and `mediumint` still fit `Int` and keep it.
 
 The scalars are exported if you need them in a hand-written schema:
 
