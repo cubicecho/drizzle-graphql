@@ -27,6 +27,7 @@ import { remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import { drizzleError } from './common/errors.ts';
 import { balancedOr, parentKeyChunks, parentKeyCondition, relationOwnWhere } from './common/relations.ts';
+import { isWritableColumn } from './common/writable-columns.ts';
 import {
   type NestedWriteOp,
   type ResolvedWriteHooks,
@@ -753,15 +754,12 @@ export const createNestedWriteTypes = (params: {
     }
 
     const omitted = plan.fkSide === 'child' ? plan.foreignColPropName : undefined;
-    // Same rule as the table's own create input: a column the server fills in from context
-    // is not something a nested `create` may supply either, and neither is the soft-delete
-    // marker, which only the delete and restore mutations write.
-    const contextColumns = cacheCtx.contextValuesOf?.(plan.targetTableName);
-    const markerColumn = cacheCtx.softDeleteOf?.(plan.targetTableName)?.columnName;
+    // Same rule as the table's own create input, minus the key the parent row supplies.
     const fields = Object.fromEntries(
       Object.entries(visibleColumns(plan.targetTable))
         .filter(
-          ([columnName]) => columnName !== omitted && !contextColumns?.[columnName] && columnName !== markerColumn,
+          ([columnName, column]) =>
+            columnName !== omitted && isWritableColumn(cacheCtx, plan.targetTableName, columnName, column as Column),
         )
         .map(([columnName, column]) => [
           columnName,

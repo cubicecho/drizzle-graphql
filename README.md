@@ -2478,6 +2478,12 @@ and they let the default apply, which is what makes `id: $id` with a null variab
 row. A `NOT NULL` column with nothing to fill it is rejected while GraphQL coerces the request.
 Upserts take the create input, so they follow the insert rule.
 
+A column the database always computes — `generatedAlwaysAs(...)` (stored or virtual, on every
+dialect) or PostgreSQL's `generatedAlwaysAsIdentity()` — is in no write input: not create,
+update, upsert, `onConflict.update`, field-update operations or a nested `create`. It still reads,
+filters and orders like any other column. An identity `generatedByDefaultAsIdentity()` column stays
+writable, and optional on create.
+
 The `drizzle` block is only on errors raised from inside a field. An argument rejected while
 GraphQL coerces the request — a `BigInt` variable that is not an integer, say — is rejected
 before any resolver runs, so it carries its `code` but no `drizzle` and no `path`.

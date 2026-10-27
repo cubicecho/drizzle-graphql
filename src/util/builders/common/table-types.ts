@@ -35,6 +35,7 @@ import {
   generateTableSelectTypeFieldsCached,
 } from './table-inputs.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
+import { isWritableColumn } from './writable-columns.ts';
 
 /**
  * The single `GraphQLObjectType` for a table, created on first request as a shell whose fields
@@ -286,20 +287,11 @@ export const generateTableTypes = <WithReturning extends boolean>(
   const columns = visibleColumns(table);
   const columnEntries = Object.entries(columns);
 
-  // A column whose value comes from the request context is not part of any write input: the
-  // client cannot supply one on create, and cannot reassign one on update. It stays an
-  // ordinary column everywhere else — the output type, the filters, the ordering.
-  const contextColumns = cacheCtx.contextValuesOf?.(tableName);
-  // Same for the column that marks a row deleted: `delete` and `restore` own it, and a client
-  // that could write it through an ordinary create or update could delete or undelete a row
-  // without going through either.
-  const markerColumn = cacheCtx.softDeleteOf?.(tableName)?.columnName;
-  const writableEntries =
-    contextColumns || markerColumn
-      ? columnEntries.filter(
-          ([columnName]) => !(contextColumns && columnName in contextColumns) && columnName !== markerColumn,
-        )
-      : columnEntries;
+  // A client writes only the columns it may set; the rest stay in the output type, filters and
+  // ordering.
+  const writableEntries = columnEntries.filter(([columnName, column]) =>
+    isWritableColumn(cacheCtx, tableName, columnName, column),
+  );
 
   // A column a nested write can supply (`author: { create: … }` fills in `authorId`) cannot
   // stay required on the create input, or the two ways of setting it would be mutually

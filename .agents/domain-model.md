@@ -98,6 +98,7 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 | A scope hook returns SQL, a filter object or nothing | `policies.resolveScope` (`DRIZZLE_INVALID_SCOPE`) |
 | Inserts stamp every `contextValues` column (and a NOT NULL soft-delete marker's restored value) | `policies.insertStamps`, `policies.applyContextValues` |
 | Updates never write a `contextValues` column | `policies.stripContextValues` |
+| Generated and identity-ALWAYS columns never appear in a write input | `writable-columns.isWritableColumn` |
 | A `Single` update/delete is refused before writing if its `where` matches more than one row | `mutation-helpers.assertSingleMatch` |
 | `Single` writes and `requireWhere` writes refuse a `where` that matches every row (`{}`, `notInArray: []`, `NOT: { inArray: [] }`) | `mutation-helpers.extractRequiredFilters` (`DRIZZLE_WHERE_REQUIRED`) |
 | An update must write a column or carry nested ops | `write-resolvers.generateUpdate`, `update-many.createUpdateManyGenerator`, `mysql.ts` update |
@@ -151,6 +152,7 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 - **Enum type:** A GraphQL enum for an enum column, shared per named `pgEnum`. Owner: `type-converter/index.ts generateEnumCached`.
 - **Value mapping (remap):** Converting values between database form and GraphQL form, both ways. Owner: `src/util/data-mappers/index.ts` (`remapToGraphQL*`, `remapFromGraphQL*`).
 - **Primary key (pkNames):** The columns identifying a row, composite-aware; also the default order and cursor tiebreak. Owner: `common/keys.ts getPrimaryKeyPropNamesFromConfig`; `primaryKeyPropNames`, `pkNames`, `targetPkNames`.
+- **Writable column:** A column a client may set through a create, update, upsert or nested-create input; generated-ALWAYS and identity-ALWAYS columns, `contextValues` columns and the soft-delete marker are not. Owner: `common/writable-columns.ts isWritableColumn` (`isDatabaseOwnedColumn` for the database-computed half).
 
 ### Reads
 
