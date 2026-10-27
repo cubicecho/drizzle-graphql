@@ -796,9 +796,6 @@ export const createNestedWriteTypes = (params: {
    * The upsert variant offers what the update one does, because the row may already exist.
    * Its operations run the same way on both branches: on a row the upsert just inserted there
    * is nothing attached yet, so `set` only attaches and `disconnect` finds nothing to detach.
-   * The exception is a parent-side `disconnect` on a relation with a `where` on its target: an
-   * update leaves a key the `where` hides in place, which the conflict branch's plain column
-   * write cannot do, so the upsert does not offer it.
    *
    * A many-to-many relation offers no `create`: inserting a row *and* linking it is two
    * writes to two tables, and the link half is what the relation field is for. Its
@@ -826,8 +823,7 @@ export const createNestedWriteTypes = (params: {
 
     const forUpdate = mode !== 'create';
     const upsert = mode === 'upsert';
-    const offers = (op: NestedWriteOp) =>
-      plan.allowed.has(op) && !(upsert && op === 'disconnect' && plan.fkSide === 'parent' && plan.ownCondition);
+    const offers = (op: NestedWriteOp) => plan.allowed.has(op);
     // What `disconnect` and `set` mean when the upsert inserted the row instead.
     const onInsert = upsert ? ' Does nothing when the upsert inserts the row.' : '';
     const setOnInsert = upsert ? ' When the upsert inserts the row, this only attaches.' : '';
@@ -1006,6 +1002,13 @@ export type NestedWriteRuntime = {
     rows: Record<string, any>[],
     patch: ParentSidePatch,
   ) => Promise<void>;
+  /**
+   * An upsert's conflict `SET`, with the key of every parent-side relation in `ops` whose
+   * `where` filters its target written as an update writes it: a key pointing at a row the
+   * `where` hides is kept, so `checkParentSide` can tell that apart from a key the conflict
+   * branch did not write. Returned unchanged when no such relation is written.
+   */
+  guardConflictSet: (tableName: string, ops: NestedOps, set: Record<string, SQL>) => Record<string, SQL>;
   /** Runs the operations that attach to a parent row, once that row exists. */
   applyChildSide: (
     executor: any,
@@ -1432,9 +1435,33 @@ export const createNestedWriteRuntime = (params: {
     if (!plan.ownCondition) {
       return next;
     }
-    const shown = sql`select ${plan.foreignCol} from ${plan.targetTable} where ${plan.ownCondition()}`;
-    const replacement = next === null ? sql`null` : sql`${sql.param(next, plan.localCol)}`;
+    return keepingHiddenSql(plan, next === null ? sql`null` : sql`${sql.param(next, plan.localCol)}`);
+  };
+
+  /** {@link keepingHidden} around a value that is already SQL — an upsert's `excluded.<key>`. */
+  const keepingHiddenSql = (plan: NestedRelationPlan, replacement: SQL): SQL => {
+    const shown = sql`select ${plan.foreignCol} from ${plan.targetTable} where ${plan.ownCondition!()}`;
     return sql`case when ${plan.localCol} is null or ${plan.localCol} in (${shown}) then ${replacement} else ${plan.localCol} end`;
+  };
+
+  /**
+   * Which of `keys` — keys the written parent rows hold — point at a target row the relation's
+   * own `where` hides. A null key points at nothing, so it is never hidden.
+   */
+  const hiddenKeys = async (executor: any, plan: NestedRelationPlan, keys: any[]): Promise<Set<string>> => {
+    const held = keys.filter((key) => key !== null && key !== undefined);
+    if (!held.length || !plan.ownCondition) {
+      return new Set();
+    }
+    const shown = new Set(
+      (
+        (await executor
+          .select({ key: plan.foreignCol })
+          .from(plan.targetTable)
+          .where(and(inArray(plan.foreignCol, held), plan.ownCondition()))) as { key: any }[]
+      ).map((row) => keyString(row.key)),
+    );
+    return new Set(held.map(keyString).filter((key) => !shown.has(key)));
   };
 
   const detachAll = (
@@ -1613,7 +1640,8 @@ export const createNestedWriteRuntime = (params: {
           // child-side: the key is cleared only where it points at a row the relation shows.
           patch[plan.localColPropName] = existing ? keepingHidden(plan, null) : null;
           // Only an upsert's input offers this without `existing`, and its conflict branch
-          // has to write the cleared key, as it has to write a connected one.
+          // has to write the cleared key, as it has to write a connected one. A key it kept
+          // because the relation's `where` hides its row is allowed (see `checkParentSide`).
           if (!existing) {
             result.expected[relationName] = null;
           }
@@ -1641,13 +1669,33 @@ export const createNestedWriteRuntime = (params: {
         }
         if (relationName in patch.expected) {
           const expected = keyString(patch.expected[relationName]);
-          if (rows.some((row) => keyString(row[plan.localColPropName]) !== expected)) {
-            throw drizzleError(
-              patch.existing
-                ? `Drizzle-GraphQL Error: cannot connect through '${relationName}': the row it holds now is one its \`where\` hides, which a write through it cannot detach.`
-                : `Drizzle-GraphQL Error: cannot write through '${relationName}': the ${tableName} row was not written with it — an upsert whose conflict branch did not write '${plan.localColPropName}'. Include it in onConflict.update, or leave update unset.`,
+          const mismatched = rows.filter((row) => keyString(row[plan.localColPropName]) !== expected);
+          if (mismatched.length) {
+            const hiddenError = drizzleError(
+              `Drizzle-GraphQL Error: cannot connect through '${relationName}': the row it holds now is one its \`where\` hides, which a write through it cannot detach.`,
               { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
             );
+            // On an update the key is only ever kept because its row is hidden.
+            if (patch.existing) {
+              throw hiddenError;
+            }
+            // An upsert's conflict branch either kept a hidden key (see `guardConflictSet`) or
+            // did not write the key at all, and the two read the same from the row alone.
+            const hidden = await hiddenKeys(
+              executor,
+              plan,
+              mismatched.map((row) => row[plan.localColPropName]),
+            );
+            if (mismatched.some((row) => !hidden.has(keyString(row[plan.localColPropName])))) {
+              throw drizzleError(
+                `Drizzle-GraphQL Error: cannot write through '${relationName}': the ${tableName} row was not written with it — an upsert whose conflict branch did not write '${plan.localColPropName}'. Include it in onConflict.update, or leave update unset.`,
+                { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
+              );
+            }
+            // A disconnect that leaves a hidden row attached is what an update does too.
+            if (ops[relationName]?.['disconnect'] !== true) {
+              throw hiddenError;
+            }
           }
         }
         if (plan.parentHidden && (await plan.parentHidden(executor, rows))) {
@@ -1657,6 +1705,18 @@ export const createNestedWriteRuntime = (params: {
           );
         }
       }
+    },
+
+    guardConflictSet: (tableName, ops, set) => {
+      const tablePlans = plans[tableName];
+      let guarded = set;
+      for (const relationName of Object.keys(ops)) {
+        const plan = tablePlans?.[relationName];
+        if (plan?.fkSide === 'parent' && plan.ownCondition && set[plan.localColPropName]) {
+          guarded = { ...guarded, [plan.localColPropName]: keepingHiddenSql(plan, set[plan.localColPropName]!) };
+        }
+      }
+      return guarded;
     },
 
     applyChildSide: async (executor, tableName, ops, parentRows, request) => {
@@ -1882,7 +1942,8 @@ export const writeWithNestedOps = async (params: {
   tableName: string;
   entries: { columns: Record<string, any>; ops: NestedOps }[];
   remapValues: (columns: Record<string, any>) => Record<string, any>;
-  write: (executor: any, values: Record<string, any>) => Promise<Record<string, any>[]>;
+  /** `ops` is the entry's nested operations, for a write whose statement depends on them. */
+  write: (executor: any, values: Record<string, any>, ops: NestedOps) => Promise<Record<string, any>[]>;
   request?: NestedWriteRequest;
 }): Promise<Record<string, any>[]> => {
   const { executor, runtime, tableName, entries, remapValues, write, request } = params;
@@ -1895,7 +1956,7 @@ export const writeWithNestedOps = async (params: {
         runtime,
         tableName,
         ops: entry.ops,
-        write: (target, patch) => write(target, { ...remapValues(entry.columns), ...patch }),
+        write: (target, patch) => write(target, { ...remapValues(entry.columns), ...patch }, entry.ops),
         request,
       });
       rows.push(...written);

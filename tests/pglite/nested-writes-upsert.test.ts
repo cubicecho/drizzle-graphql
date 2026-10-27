@@ -159,9 +159,8 @@ describe.sequential('nested upsert: generated surface', () => {
     expect(gqlSchema.getType('UpsertPinsInput')).toBeUndefined();
   });
 
-  it('does not offer a parent-side disconnect through a relation whose where filters the target', () => {
-    expect(Object.keys(inFields('NotesPinNestedUpsertInput')).sort()).toEqual(['connect']);
-    expect(Object.keys(inFields('NotesPinNestedUpdateInput')).sort()).toEqual(['connect', 'disconnect']);
+  it('offers a parent-side disconnect through a relation whose where filters the target', () => {
+    expect(Object.keys(inFields('NotesPinNestedUpsertInput')).sort()).toEqual(['connect', 'disconnect']);
   });
 
   it('generates no upsert input without nested writes', () => {
@@ -300,6 +299,76 @@ describe.sequential('nested upsert: conflict branch', () => {
 
     expect(res.errors).toBeUndefined();
     expect(await links()).toEqual(['1:3', '2:1']);
+  });
+});
+
+// Issue #222: the conflict branch writes a parent-side key the way update<Table> does, so a
+// key pointing at a row the relation's own `where` hides is kept rather than replaced.
+describe.sequential("nested upsert: a parent-side relation's own where", () => {
+  const notes = () => db.select().from(Notes).orderBy(Notes.id);
+  const UPSERT_NOTE = 'mutation ($values: UpsertNotesInput!) { upsertNotesSingle(values: $values) { id pinnedId } }';
+
+  beforeEach(async () => {
+    await db.insert(Pins).values([
+      { id: 1, visible: 0 },
+      { id: 2, visible: 1 },
+      { id: 3, visible: 1 },
+    ]);
+  });
+
+  it('refuses a connect that would replace a hidden key, and rolls back', async () => {
+    await db.insert(Notes).values({ id: 1, pinnedId: 1, body: 'old' });
+
+    const res = await run(UPSERT_NOTE, { values: { id: 1, body: 'new', pin: { connect: { id: { eq: 2 } } } } });
+
+    expect(res.errors?.[0]?.extensions?.['code']).toBe('DRIZZLE_NESTED_WRITE_INVALID');
+    expect(res.errors?.[0]?.message).toMatch(/hides/);
+    expect(await notes()).toEqual([{ id: 1, pinnedId: 1, body: 'old' }]);
+  });
+
+  it('replaces a key the where shows', async () => {
+    await db.insert(Notes).values({ id: 1, pinnedId: 2, body: 'old' });
+
+    const res = await run(UPSERT_NOTE, { values: { id: 1, body: 'new', pin: { connect: { id: { eq: 3 } } } } });
+
+    expect(res.errors).toBeUndefined();
+    expect((res.data as any).upsertNotesSingle).toEqual({ id: 1, pinnedId: 3 });
+  });
+
+  it('connects on the insert branch', async () => {
+    const res = await run(UPSERT_NOTE, { values: { id: 1, body: 'new', pin: { connect: { id: { eq: 2 } } } } });
+
+    expect(res.errors).toBeUndefined();
+    expect((res.data as any).upsertNotesSingle).toEqual({ id: 1, pinnedId: 2 });
+  });
+
+  it('leaves a hidden key in place on disconnect, as update does', async () => {
+    await db.insert(Notes).values({ id: 1, pinnedId: 1, body: 'old' });
+
+    const res = await run(UPSERT_NOTE, { values: { id: 1, body: 'new', pin: { disconnect: true } } });
+
+    expect(res.errors).toBeUndefined();
+    expect(await notes()).toEqual([{ id: 1, pinnedId: 1, body: 'new' }]);
+  });
+
+  it('clears a shown key on disconnect', async () => {
+    await db.insert(Notes).values({ id: 1, pinnedId: 2, body: 'old' });
+
+    const res = await run(UPSERT_NOTE, { values: { id: 1, body: 'new', pin: { disconnect: true } } });
+
+    expect(res.errors).toBeUndefined();
+    expect((res.data as any).upsertNotesSingle).toEqual({ id: 1, pinnedId: null });
+  });
+
+  it('still refuses a conflict branch that does not write the key', async () => {
+    await db.insert(Notes).values({ id: 1, pinnedId: 2, body: 'old' });
+
+    const res = await run(
+      'mutation { upsertNotesSingle(values: { id: 1, body: "new", pin: { disconnect: true } }, onConflict: { update: [body] }) { id } }',
+    );
+
+    expect(res.errors?.[0]?.message).toMatch(/onConflict\.update/);
+    expect(await notes()).toEqual([{ id: 1, pinnedId: 2, body: 'old' }]);
   });
 });
 

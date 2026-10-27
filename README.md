@@ -1949,9 +1949,10 @@ mutation Save($id: Int, $title: String!, $tagIds: [Int!]!) {
 -   A parent-side `disconnect` has to be written by the conflict branch, like a parent-side
     `connect`: an `onConflict.update` that leaves the join column out fails with
     `DRIZZLE_NESTED_WRITE_INVALID`
--   A parent-side relation whose `where` filters its target offers no `disconnect` here.
-    `update<Table>` leaves a key that points at a row the `where` hides in place, and the
-    conflict branch writes the key as a plain column, so it could not do the same
+-   On a parent-side relation whose `where` filters its target, the conflict branch writes
+    the key as `update<Table>` does: a key pointing at a row the `where` hides stays in place.
+    A `connect` that would replace it fails with `DRIZZLE_NESTED_WRITE_INVALID`, and a
+    `disconnect` leaves it, exactly as on the update
 -   A table with no writable relation has nothing to add, so its upsert keeps
     `Create<Type>Input`. `derivedTypeNameMapper` names the new type with `kind: 'upsertInput'`
 
