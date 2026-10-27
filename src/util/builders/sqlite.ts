@@ -13,10 +13,14 @@ import {
   type TablesRelationalConfig,
 } from '../builders/common.ts';
 import { isSyncDriver, runInOrder } from './common/sync-driver.ts';
-import { writeNestedEntry } from './nested-writes.ts';
 import { createSchemaDataGenerator } from './schema-data.ts';
 import type { SchemaGeneratorOptions } from './types.ts';
-import { createUpdateManyGenerator, type UpdateManyBatchRunner, type UpdateManyEntry } from './update-many.ts';
+import {
+  createUpdateManyGenerator,
+  type UpdateManyBatchRunner,
+  type UpdateManyEntry,
+  writeEntriesInOrder,
+} from './update-many.ts';
 
 /** The dialect's table config, cached per table — see {@link memoizeTableConfig}. */
 export const sqliteTableConfig = memoizeTableConfig(sqliteTableConfigUncached);
@@ -30,17 +34,9 @@ export const sqlitePrimaryKeyPropNames = (table: SQLiteTable): string[] =>
  * that callback must not be async: {@link runInOrder} runs the entries and tells the driver
  * families apart from the first statement's result, so one resolver serves both.
  */
-const runSqliteUpdateManyBatch: UpdateManyBatchRunner = ({
-  executor,
-  entries,
-  table,
-  returning,
-  anyNested,
-  nested,
-  tableName,
-  request,
-}) => {
-  const runEntry = (tx: any, entry: UpdateManyEntry) => {
+const runSqliteUpdateManyBatch: UpdateManyBatchRunner = (ctx) => {
+  const { executor, entries, table, returning, anyNested } = ctx;
+  const runEntry = (tx: any, entry: UpdateManyEntry): Record<string, any>[] => {
     let query = tx.update(table).set(entry.set);
     if (entry.filters) {
       query = query.where(entry.filters);
@@ -50,41 +46,16 @@ const runSqliteUpdateManyBatch: UpdateManyBatchRunner = ({
     return query.returning(returning).all();
   };
 
-  // Nested writes need statements interleaved with awaited reads, which only an async driver
-  // can do inside a transaction — `features.nestedWrites` rejects a sync driver at build
-  // time, so this path is always on one.
-  const runNestedEntry = async (tx: any, entry: UpdateManyEntry) => {
-    const write = async (target: any, patch: Record<string, any>) => {
-      const values = { ...entry.set, ...patch };
-      // Same as the single update: an entry with no column values reads the rows its `where`
-      // matched so the nested operations have something to attach to.
-      const writes = Object.keys(values).length > 0;
-      let query = writes ? target.update(table).set(values) : target.select(returning).from(table);
-      if (entry.filters) {
-        query = query.where(entry.filters);
-      }
-      return (await (writes ? query.returning(returning) : query)) as Record<string, any>[];
-    };
-    return entry.ops
-      ? writeNestedEntry({ executor: tx, runtime: nested!, tableName, ops: entry.ops, write, request, existing: true })
-      : write(tx, {});
-  };
-
   // On a caller-supplied transaction — or the shared multi-mutation transaction opened by
   // `runMutation` — this opens a savepoint, so the batch stays atomic without breaking the
   // outer transaction.
   return executor.transaction((tx: any) => {
+    // Nested writes interleave statements with awaited reads, which only an async driver can
+    // do inside a transaction; `features.nestedWrites` rejects a sync driver at build time.
     if (anyNested) {
-      return (async () => {
-        const results: Record<string, any>[][] = [];
-        for (const entry of entries) {
-          results.push(await runNestedEntry(tx, entry));
-        }
-        return results;
-      })();
+      return writeEntriesInOrder(tx, ctx);
     }
-
-    return runInOrder(entries, (entry): Record<string, any>[] => runEntry(tx, entry));
+    return runInOrder(entries, (entry) => runEntry(tx, entry));
   });
 };
 

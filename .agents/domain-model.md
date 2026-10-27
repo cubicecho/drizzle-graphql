@@ -200,7 +200,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, called
 - **Mutation (write):** A generated field that changes rows. Owner: `common/write-scaffold.ts writeResolver`; `WriteOperation`.
 - **Insert (create):** Adds rows. Owner: `write-resolvers.ts generateInsert`; MySQL `generateInsertArray`/`generateInsertSingle`; prefix `create`.
 - **Update:** Changes matching rows' columns. Owner: `write-resolvers.ts generateUpdate`.
-- **Update many (updateMany):** Several `where`/`set` entries in one transaction. Owner: `update-many.ts createUpdateManyGenerator`; dialect `UpdateManyBatchRunner`.
+- **Update many (updateMany):** Several `where`/`set` entries in one transaction. Owner: `update-many.ts createUpdateManyGenerator`; dialect `UpdateManyBatchRunner`: `runUpdateManyBatch` (PostgreSQL) awaits `writeEntriesInOrder`; `sqlite.ts runSqliteUpdateManyBatch` uses it for nested batches and `runInOrder` with `.all()` otherwise, so a sync driver works.
 - **Delete:** Removes (or soft-marks) matching rows. Owner: `write-resolvers.ts generateDelete`.
 - **Count mutation:** An update or delete that answers how many rows instead of the rows. Owner: `mutation-helpers.ts generateWriteCount`.
 - **Upsert (onConflict):** Insert, or on a key conflict update or do nothing. Owner: `write-resolvers.ts generateUpsert`, `common/conflict.ts resolveConflictPlan`; `ConflictPlan`, deprecated `conflictDoNothing`.
