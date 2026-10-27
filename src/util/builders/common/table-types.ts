@@ -37,306 +37,223 @@ import {
 import type { TypeCacheCtx } from './type-cache.ts';
 
 /**
- * Build the select fields for a table.
- * Creates:
- * - Main select type: ${capitalize(tableName)} (e.g. Users)
- * - Relation fields reference the target table's own type directly (e.g. posts: [Posts!]!)
- *   rather than creating intermediate relation types.
- *
- * The function is called recursively for relation targets.
- * Cycle detection: usedTables tracks tables currently being processed in the call stack.
- * When we see a table already in usedTables, we stop recursing (no relation fields for that type).
+ * The single `GraphQLObjectType` for a table, created on first request as a shell whose fields
+ * thunk reads the table's relation-field container. Whichever comes first — the table's own
+ * {@link generateSelectFields} call or another table's relation field pointing at it —
+ * registers it, and everything after reuses that instance, so the schema never holds two types
+ * with one name and a cyclic relation graph needs no recursion to wire up.
  */
-const generateSelectFields = <TWithOrder extends boolean>(
+const objectTypeShell = (
   tables: Record<string, Table>,
   tableName: string,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  fromTableName: string,
-  fromRelationName: string,
-  withOrder: TWithOrder,
-  relationsDepthLimit: number | undefined,
   cacheCtx: TypeCacheCtx,
   typeNameMapper: TypeNameMapper | undefined,
-  usedTables: Set<string> = new Set(),
-  resolverFactory?: RelationResolverFactory,
-  currentDepth: number = 0,
-  relationAggregateFactory?: RelationAggregateFactory,
-): SelectData<TWithOrder> => {
+): GraphQLObjectType => {
+  const cached = cacheCtx.objectTypeCache.get(tableName);
+  if (cached) {
+    return cached;
+  }
   const table = tables[tableName]!;
-  const order = withOrder
-    ? generateTableOrderTypeCached(table, tableName, typeNameMapper, cacheCtx, relationMap, tables)
-    : undefined;
-  const filters = generateTableFilterTypeCached(table, tableName, cacheCtx, typeNameMapper, relationMap, tables);
   const tableFields = generateTableSelectTypeFieldsCached(table, tableName, cacheCtx);
-
-  const relationsForTable = relationMap[tableName];
-  const relationEntries: [string, TableNamedRelations][] = relationsForTable ? Object.entries(relationsForTable) : [];
-
-  // Depth limit: stop generating relation fields once we reach the configured maximum.
-  // relationsDepthLimit: 0 → no relation fields on any type.
-  // relationsDepthLimit: N → each table's own root call (depth 0) generates its relations,
-  // but traversals beyond depth N stop, which prevents unbounded recursive generation.
-  if (relationsDepthLimit !== undefined && currentDepth >= relationsDepthLimit) {
-    return {
-      order,
-      filters,
-      tableFields,
-      relationFields: {},
-    } as SelectData<TWithOrder>;
-  }
-
-  // If this table is already being processed (cycle), stop recursing.
-  // Return just the base fields with no relation fields.
-  if (usedTables.has(tableName)) {
-    return {
-      order,
-      filters,
-      tableFields,
-      relationFields: {},
-    } as SelectData<TWithOrder>;
-  }
-
-  // For the root call (fromTableName === '' && fromRelationName === ''), this builds the
-  // main ${capitalize(tableName)}SelectItem type.
-  // For recursive calls, this builds the relation type.
-  const isRootCall = fromTableName === '' && fromRelationName === '';
-
-  // If the root type has already been fully built (not just pre-registered as a shell), return early.
-  if (isRootCall && cacheCtx.fullyBuiltTables.has(tableName)) {
-    return {
-      order,
-      filters,
-      tableFields,
-      relationFields: {},
-    } as SelectData<TWithOrder>;
-  }
-
-  // Obtain or create the mutable relation-fields container for this table.
-  // The container is a plain object whose `fields` property the GraphQLObjectType thunk reads.
-  // Pre-registering it here (before recursion) allows sibling relation traversals to reference
-  // the same single GraphQLObjectType instance even when it hasn't been fully built yet.
   let container = cacheCtx.relationFieldContainers.get(tableName);
   if (!container) {
     container = { fields: {} };
     cacheCtx.relationFieldContainers.set(tableName, container);
   }
-
-  if (isRootCall && !cacheCtx.objectTypeCache.has(tableName)) {
-    const typeName = cacheCtx.typeName({
+  const capturedContainer = container;
+  // The thunk runs when the schema is assembled, by which point the table's own
+  // generateSelectFields call has filled the container in.
+  const shell = new GraphQLObjectType({
+    name: cacheCtx.typeName({
       kind: 'object',
       defaultName: resolveTypeName(tableName, typeNameMapper),
       table: tableName,
-    });
-    // Pre-register shell with thunk BEFORE recursing to break circular refs.
-    // The thunk reads container.fields, which will be populated after recursion completes.
-    const shell = new GraphQLObjectType({
-      name: typeName,
-      description: cacheCtx.docs.describeTable?.(tableName, table),
-      fields: () => ({ ...tableFields, ...container!.fields }),
-      extensions: { drizzle: tableTypeExtension(tableName, cacheCtx.primaryKeyOf?.(tableName) ?? []) },
-    });
-    cacheCtx.objectTypeCache.set(tableName, shell);
+    }),
+    description: cacheCtx.docs.describeTable?.(tableName, table),
+    fields: () => ({ ...tableFields, ...capturedContainer.fields }),
+    extensions: { drizzle: tableTypeExtension(tableName, cacheCtx.primaryKeyOf?.(tableName) ?? []) },
+  });
+  cacheCtx.objectTypeCache.set(tableName, shell);
+  return shell;
+};
+
+/**
+ * Build the select fields for a table: its columns, its filter and order inputs, and one field
+ * per relation (plus `${relation}Aggregate` for a to-many one).
+ *
+ * A relation field's type is the target table's own object type (see {@link objectTypeShell})
+ * and its `where` / `orderBy` arguments are the target's cached filter and order inputs. None of
+ * that depends on the target's own relation fields, so this does not recurse: every table's
+ * relation fields are built exactly once, by its own call. It used to recurse into each relation
+ * target and throw the result away, which walked every simple path through the relation graph —
+ * build time exponential in the number of relation cycles.
+ */
+const generateSelectFields = (
+  tables: Record<string, Table>,
+  tableName: string,
+  relationMap: Record<string, Record<string, TableNamedRelations>>,
+  relationsDepthLimit: number | undefined,
+  cacheCtx: TypeCacheCtx,
+  typeNameMapper: TypeNameMapper | undefined,
+  resolverFactory?: RelationResolverFactory,
+  relationAggregateFactory?: RelationAggregateFactory,
+): SelectData<true> => {
+  const table = tables[tableName]!;
+  const order = generateTableOrderTypeCached(table, tableName, typeNameMapper, cacheCtx, relationMap, tables);
+  const filters = generateTableFilterTypeCached(table, tableName, cacheCtx, typeNameMapper, relationMap, tables);
+  const tableFields = generateTableSelectTypeFieldsCached(table, tableName, cacheCtx);
+
+  // relationsDepthLimit: 0 → no relation fields on any type (a flat, columns-only schema).
+  // Any positive limit generates every table's direct relations, which is the whole relation
+  // surface: a deeper level is the same shared types again, so there is nothing more to bound.
+  if (relationsDepthLimit !== undefined && relationsDepthLimit <= 0) {
+    return { order, filters, tableFields, relationFields: {} };
   }
 
-  // Build relation fields — recurse into each related table.
-  // Mark this table as in-progress before recursing to detect cycles.
-  if (relationEntries.length > 0) {
-    const rawRelationFields: [string, ConvertedRelationColumnWithArgs][] = [];
+  // A table's relation fields are built once; a repeat call has nothing to add.
+  if (cacheCtx.fullyBuiltTables.has(tableName)) {
+    return { order, filters, tableFields, relationFields: {} };
+  }
 
-    // Mark this table as currently being processed.
-    const nextUsedTables = new Set(usedTables);
-    nextUsedTables.add(tableName);
+  // Registered before the relation loop, so a self-relation resolves to this same instance.
+  objectTypeShell(tables, tableName, cacheCtx, typeNameMapper);
+  const container = cacheCtx.relationFieldContainers.get(tableName)!;
 
-    for (const [relationName, relEntry] of relationEntries) {
-      const { targetTableName } = relEntry;
-      const relation = (relEntry as any).relation ?? relEntry;
-      const isOne = is(relation, One);
+  const relationsForTable = relationMap[tableName];
+  const relationEntries: [string, TableNamedRelations][] = relationsForTable ? Object.entries(relationsForTable) : [];
+  const rawRelationFields: [string, ConvertedRelationColumnWithArgs][] = [];
 
-      // Always recurse to get the target table's filters/order (needed for args).
-      // The usedTables check inside the recursive call prevents actual infinite recursion.
-      const relSelectData = generateSelectFields(
-        tables,
-        targetTableName,
-        relationMap,
-        tableName, // fromTableName for the relation type
-        relationName, // fromRelationName for the relation type
-        !isOne,
-        relationsDepthLimit,
-        cacheCtx,
-        typeNameMapper,
-        nextUsedTables,
-        resolverFactory,
-        currentDepth + 1,
-        relationAggregateFactory,
-      );
+  for (const [relationName, relEntry] of relationEntries) {
+    const { targetTableName } = relEntry;
+    const relation = (relEntry as any).relation ?? relEntry;
+    const isOne = is(relation, One);
+    const targetTable = tables[targetTableName]!;
 
-      // Use the target table's own GraphQL type directly instead of creating an intermediate relation type.
-      // Ensure exactly one GraphQLObjectType instance exists for the target table.
-      // If the root call for the target table has already run (or pre-registered a shell),
-      // reuse that instance so the schema never contains duplicate type names.
-      let relType = cacheCtx.objectTypeCache.get(targetTableName);
-      if (!relType) {
-        // The target table hasn't been processed yet. Pre-register a shell so that:
-        //   (a) this relation field has a concrete type reference, and
-        //   (b) when the target table's root call eventually runs, it reuses this same object.
-        const targetTable = tables[targetTableName]!;
-        const targetTableFields = generateTableSelectTypeFieldsCached(targetTable, targetTableName, cacheCtx);
-        // Get or create a container for the target table's relation fields.
-        let targetContainer = cacheCtx.relationFieldContainers.get(targetTableName);
-        if (!targetContainer) {
-          targetContainer = { fields: {} };
-          cacheCtx.relationFieldContainers.set(targetTableName, targetContainer);
-        }
-        const capturedTargetContainer = targetContainer;
-        // The thunk reads capturedTargetContainer.fields so that when the target table's root
-        // call populates the container, the shell automatically includes those relation fields.
-        relType = new GraphQLObjectType({
-          name: cacheCtx.typeName({
-            kind: 'object',
-            defaultName: resolveTypeName(targetTableName, typeNameMapper),
-            table: targetTableName,
-          }),
-          description: cacheCtx.docs.describeTable?.(targetTableName, targetTable),
-          fields: () => ({ ...targetTableFields, ...capturedTargetContainer.fields }),
-          extensions: {
-            drizzle: tableTypeExtension(targetTableName, cacheCtx.primaryKeyOf?.(targetTableName) ?? []),
-          },
-        });
-        cacheCtx.objectTypeCache.set(targetTableName, relType);
-      }
+    // The target's own filter and order inputs — the same instances its root list query takes.
+    const targetFilters = generateTableFilterTypeCached(
+      targetTable,
+      targetTableName,
+      cacheCtx,
+      typeNameMapper,
+      relationMap,
+      tables,
+    );
+    const targetOrder = isOne
+      ? undefined
+      : generateTableOrderTypeCached(targetTable, targetTableName, typeNameMapper, cacheCtx, relationMap, tables);
 
-      const resolve = resolverFactory?.({ tableName, relationName, relEntry: relEntry as TableNamedRelations, isOne });
-      const relationDescription = cacheCtx.docs.describeRelation?.(tableName, relationName);
-      const relationDocs = relationDescription !== undefined ? { description: relationDescription } : {};
+    // The target table's own type, shared by every relation field that points at it.
+    const relType = objectTypeShell(tables, targetTableName, cacheCtx, typeNameMapper);
 
-      if (isOne) {
-        // Honor the relation's declared optionality: `r.one.Target({ ..., optional: false })`
-        // asserts the related row always exists (a NOT NULL foreign key), so the field is
-        // emitted as `Target!`. The default (`optional: true` / omitted) stays nullable.
-        // Column nullability alone is NOT used to infer this — a notNull `from` column does
-        // not guarantee a related row exists when the FK constraint lives on the other side
-        // (e.g. `Users.customer` joins the notNull `Users.id` to `Customers.userId`).
-        const isRequired = (relation as One<any, any>).optional === false;
-        rawRelationFields.push([
-          relationName,
-          {
-            type: isRequired ? new GraphQLNonNull(relType) : relType,
-            args: {
-              where: { type: relSelectData.filters },
-              ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.typeName),
-            },
-            resolve,
-            ...relationDocs,
-            extensions: { drizzle: relationExtensionFor(relEntry, tableName, relationName, true) },
-          },
-        ]);
-        continue;
-      }
+    const resolve = resolverFactory?.({ tableName, relationName, relEntry: relEntry as TableNamedRelations, isOne });
+    const relationDescription = cacheCtx.docs.describeRelation?.(tableName, relationName);
+    const relationDocs = relationDescription !== undefined ? { description: relationDescription } : {};
 
-      // A to-many relation field is a list of the target table, so it takes the same
-      // pagination surface a root list of that table does. `after` and `distinct` are the
-      // two drizzle's `with:` clause cannot express, so a request that passes either drops
-      // the relation out of the eager fetch and resolves it through the batch loader, which
-      // implements both — see extractRelationsParams.
-      const targetDistinctEnum = cacheCtx.featureOf(targetTableName).distinct
-        ? generateDistinctEnum(
-            tables[targetTableName]!,
-            resolveTypeName(targetTableName, typeNameMapper),
-            cacheCtx.typeName,
-            targetTableName,
-          )
-        : undefined;
-
+    if (isOne) {
+      // Honor the relation's declared optionality: `r.one.Target({ ..., optional: false })`
+      // asserts the related row always exists (a NOT NULL foreign key), so the field is
+      // emitted as `Target!`. The default (`optional: true` / omitted) stays nullable.
+      // Column nullability alone is NOT used to infer this — a notNull `from` column does
+      // not guarantee a related row exists when the FK constraint lives on the other side
+      // (e.g. `Users.customer` joins the notNull `Users.id` to `Customers.userId`).
+      const isRequired = (relation as One<any, any>).optional === false;
       rawRelationFields.push([
         relationName,
         {
-          type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(relType))),
+          type: isRequired ? new GraphQLNonNull(relType) : relType,
           args: {
-            where: { type: relSelectData.filters },
-            ...(relSelectData.order ? { orderBy: { type: relSelectData.order } } : {}),
-            offset: { type: GraphQLInt },
-            limit: { type: GraphQLInt },
+            where: { type: targetFilters },
             ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.typeName),
-            after: {
-              type: GraphQLString,
-              description:
-                "Keyset pagination: only return related rows strictly after this cursor (a row's `cursor` field from a previous page of this relation, under the same orderBy).",
-            },
-            ...(targetDistinctEnum
-              ? { distinct: { type: new GraphQLList(new GraphQLNonNull(targetDistinctEnum)) } }
-              : {}),
           },
           resolve,
           ...relationDocs,
-          extensions: {
-            drizzle: relationExtensionFor(relEntry, tableName, relationName, false),
-            ...(cacheCtx.complexity
-              ? { complexity: listFieldComplexity(cacheCtx.complexity, cacheCtx.limits?.(targetTableName)) }
-              : {}),
-          },
+          extensions: { drizzle: relationExtensionFor(relEntry, tableName, relationName, true) },
         },
       ]);
+      continue;
+    }
 
-      // Aggregate over the related rows without fetching them: `user { postsAggregate { count } }`.
-      // Skipped when the name would shadow a column or another relation.
-      const aggregateFieldName = `${relationName}Aggregate`;
-      if (!tableFields[aggregateFieldName] && !relationsForTable?.[aggregateFieldName]) {
-        const relationAggregate = relationAggregateFactory?.({
-          tableName,
-          relationName,
-          relEntry: relEntry as TableNamedRelations,
-        });
+    // A to-many relation field is a list of the target table, so it takes the same
+    // pagination surface a root list of that table does. `after` and `distinct` are the
+    // two drizzle's `with:` clause cannot express, so a request that passes either drops
+    // the relation out of the eager fetch and resolves it through the batch loader, which
+    // implements both — see extractRelationsParams.
+    const targetDistinctEnum = cacheCtx.featureOf(targetTableName).distinct
+      ? generateDistinctEnum(
+          tables[targetTableName]!,
+          resolveTypeName(targetTableName, typeNameMapper),
+          cacheCtx.typeName,
+          targetTableName,
+        )
+      : undefined;
 
-        if (relationAggregate) {
-          rawRelationFields.push([
-            aggregateFieldName,
-            {
-              type: new GraphQLNonNull(relationAggregate.type),
-              args: {
-                where: { type: relSelectData.filters },
-                ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.typeName),
-              },
-              resolve: relationAggregate.resolve,
-              extensions: {
-                drizzle: relationExtensionFor(relEntry, tableName, relationName, isOne, true),
-                ...(cacheCtx.complexity ? { complexity: aggregateFieldComplexity(cacheCtx.complexity) } : {}),
-              },
-            } as unknown as ConvertedRelationColumnWithArgs,
-          ]);
-        }
+    rawRelationFields.push([
+      relationName,
+      {
+        type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(relType))),
+        args: {
+          where: { type: targetFilters },
+          ...(targetOrder ? { orderBy: { type: targetOrder } } : {}),
+          offset: { type: GraphQLInt },
+          limit: { type: GraphQLInt },
+          ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.typeName),
+          after: {
+            type: GraphQLString,
+            description:
+              "Keyset pagination: only return related rows strictly after this cursor (a row's `cursor` field from a previous page of this relation, under the same orderBy).",
+          },
+          ...(targetDistinctEnum
+            ? { distinct: { type: new GraphQLList(new GraphQLNonNull(targetDistinctEnum)) } }
+            : {}),
+        },
+        resolve,
+        ...relationDocs,
+        extensions: {
+          drizzle: relationExtensionFor(relEntry, tableName, relationName, false),
+          ...(cacheCtx.complexity
+            ? { complexity: listFieldComplexity(cacheCtx.complexity, cacheCtx.limits?.(targetTableName)) }
+            : {}),
+        },
+      },
+    ]);
+
+    // Aggregate over the related rows without fetching them: `user { postsAggregate { count } }`.
+    // Skipped when the name would shadow a column or another relation.
+    const aggregateFieldName = `${relationName}Aggregate`;
+    if (!tableFields[aggregateFieldName] && !relationsForTable?.[aggregateFieldName]) {
+      const relationAggregate = relationAggregateFactory?.({
+        tableName,
+        relationName,
+        relEntry: relEntry as TableNamedRelations,
+      });
+
+      if (relationAggregate) {
+        rawRelationFields.push([
+          aggregateFieldName,
+          {
+            type: new GraphQLNonNull(relationAggregate.type),
+            args: {
+              where: { type: targetFilters },
+              ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.typeName),
+            },
+            resolve: relationAggregate.resolve,
+            extensions: {
+              drizzle: relationExtensionFor(relEntry, tableName, relationName, isOne, true),
+              ...(cacheCtx.complexity ? { complexity: aggregateFieldComplexity(cacheCtx.complexity) } : {}),
+            },
+          } as unknown as ConvertedRelationColumnWithArgs,
+        ]);
       }
     }
-
-    const builtRelationFields = Object.fromEntries(rawRelationFields);
-
-    // Only the root call should populate the container — non-root calls are temporary traversals
-    // to collect filters/order for args and should not overwrite the canonical relation fields.
-    if (isRootCall) {
-      // Populate the container so that the thunk on the GraphQLObjectType shell (whether it was
-      // created here or pre-registered by another table's relation traversal) picks up the fields.
-      container.fields = builtRelationFields;
-      cacheCtx.fullyBuiltTables.add(tableName);
-    }
-
-    return {
-      order,
-      filters,
-      tableFields,
-      relationFields: builtRelationFields,
-    } as SelectData<TWithOrder>;
   }
 
-  // No relation entries — mark as fully built if root call.
-  if (isRootCall) {
-    cacheCtx.fullyBuiltTables.add(tableName);
-  }
+  // Populate the container, which the type's fields thunk reads — whether the shell was created
+  // above or pre-registered by another table's relation field.
+  const relationFields = Object.fromEntries(rawRelationFields);
+  container.fields = relationFields;
+  cacheCtx.fullyBuiltTables.add(tableName);
 
-  return {
-    order,
-    filters,
-    tableFields,
-    relationFields: {},
-  } as SelectData<TWithOrder>;
+  return { order, filters, tableFields, relationFields };
 };
 
 export const generateTableTypes = <WithReturning extends boolean>(
@@ -358,15 +275,10 @@ export const generateTableTypes = <WithReturning extends boolean>(
     tables,
     tableName,
     relationMap,
-    '', // root call: no fromTableName
-    '', // root call: no fromRelationName
-    true,
     relationsDepthLimit,
     cacheCtx,
     typeNameMapper,
-    new Set(),
     resolverFactory,
-    0,
     relationAggregateFactory,
   );
 
