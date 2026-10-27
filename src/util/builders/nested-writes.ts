@@ -1748,7 +1748,7 @@ export const createNestedWriteRuntime = (params: {
       const rows = keys.flatMap((key) =>
         asArray(op['create']).map((row) =>
           applyContextValues(
-            { ...remapFromGraphQLSingleInput({ ...row }, plan.targetTable), [plan.foreignColPropName]: key },
+            { ...remapFromGraphQLSingleInput(row, plan.targetTable), [plan.foreignColPropName]: key },
             stampsOf(plan.targetTableName),
             context,
           ),
@@ -1897,7 +1897,7 @@ export const createNestedWriteRuntime = (params: {
           steps.add('create', 'insert');
           await steps.before();
           const values = applyContextValues(
-            remapFromGraphQLSingleInput({ ...op['create'] }, plan.targetTable),
+            remapFromGraphQLSingleInput(op['create'], plan.targetTable),
             stampsOf(plan.targetTableName),
             context,
           );

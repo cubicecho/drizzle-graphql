@@ -484,17 +484,21 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
  */
 export type RemapInputOperation = 'insert' | 'update';
 
+/**
+ * Converts one row of write input into database form, returning a new object. The input is
+ * left as it is: it is the client's argument, which the write hooks report and a shared
+ * variable hands to every field that uses it.
+ */
 export const remapFromGraphQLSingleInput = (
   queryInput: Record<string, any>,
   table: Table,
   operation: RemapInputOperation = 'insert',
-) => {
+): Record<string, any> => {
   const columns = getColumns(table);
+  const remapped: Record<string, any> = {};
 
   for (const [key, value] of Object.entries(queryInput)) {
-    if (value === undefined) {
-      delete queryInput[key];
-    } else {
+    if (value !== undefined) {
       const column = columns[key];
       if (!column) {
         throw drizzleError(`Unknown column: ${key}`, { code: 'DRIZZLE_UNKNOWN_COLUMN' });
@@ -519,25 +523,19 @@ export const remapFromGraphQLSingleInput = (
         if (operation === 'update') {
           throw drizzleError(`Column '${key}' cannot be set to null.`, { code: 'DRIZZLE_NOT_NULL' });
         }
-        delete queryInput[key];
         continue;
       }
 
-      queryInput[key] = remapFromGraphQLCore(value, column, key);
+      remapped[key] = remapFromGraphQLCore(value, column, key);
     }
   }
 
-  return queryInput;
+  return remapped;
 };
 
+/** {@link remapFromGraphQLSingleInput} over a batch, returning new rows. */
 export const remapFromGraphQLArrayInput = (
   queryInput: Record<string, any>[],
   table: Table,
   operation: RemapInputOperation = 'insert',
-) => {
-  for (const entry of queryInput) {
-    remapFromGraphQLSingleInput(entry, table, operation);
-  }
-
-  return queryInput;
-};
+): Record<string, any>[] => queryInput.map((entry) => remapFromGraphQLSingleInput(entry, table, operation));

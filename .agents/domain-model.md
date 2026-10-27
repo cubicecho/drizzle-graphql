@@ -149,7 +149,7 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 - **Item type (`${Table}Item`):** The row type a PG/SQLite mutation returns; MySQL has none. Owner: `generateTableTypes`; `singleTableItemOutput`, `arrTableItemOutput`.
 - **Scalar mapping (scalar override):** Which GraphQL scalar a column uses, built-in or overridden. Owner: `type-converter/index.ts drizzleColumnToGraphQLType`, `registerScalarOverrides`.
 - **Enum type:** A GraphQL enum for an enum column, shared per named `pgEnum`. Owner: `type-converter/index.ts generateEnumCached`.
-- **Value mapping (remap):** Converting values between database form and GraphQL form, both ways. Owner: `src/util/data-mappers/index.ts` (`remapToGraphQL*`, `remapFromGraphQL*`).
+- **Value mapping (remap):** Converting values between database form and GraphQL form, both ways. Owner: `src/util/data-mappers/index.ts` (`remapToGraphQL*`, `remapFromGraphQL*`). Input remapping returns a converted copy and never changes the client's arguments, which the write hooks report and a shared variable hands to every field using it.
 - **Primary key (pkNames):** The columns identifying a row, composite-aware; also the default order and cursor tiebreak. Owner: `common/keys.ts getPrimaryKeyPropNamesFromConfig`; `primaryKeyPropNames`, `pkNames`, `targetPkNames`.
 - **Writable column:** A column a client may set through a create, update, upsert or nested-create input; generated-ALWAYS and identity-ALWAYS columns, `contextValues` columns and the soft-delete marker are not. Owner: `common/writable-columns.ts isWritableColumn` (`isDatabaseOwnedColumn` for the database-computed half).
 

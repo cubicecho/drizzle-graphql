@@ -396,3 +396,44 @@ describe.sequential('mysql: a row that starts matching during a Single write', (
     expect((await users()).map((u) => u.id)).toEqual([2]);
   });
 });
+
+describe.sequential('mysql: write arguments are converted into a copy', () => {
+  beforeEach(async () => {
+    await db.execute(sql`DELETE FROM users`);
+  });
+
+  it('a variable shared by two insert fields reaches both hooks as sent', async () => {
+    const seen: unknown[] = [];
+    const schema = build({
+      features: { upsert: true },
+      contextValues: { Users: { orgId: (ctx: any) => ctx.org } },
+      onWrite: {
+        Users: {
+          before: (payload: any) => {
+            seen.push(structuredClone(payload.args));
+          },
+        },
+      },
+    });
+    const res = await graphql({
+      schema,
+      source: `mutation($v: CreateUsersInput!, $w: CreateUsersInput!) {
+        a: createUsersSingle(values: $v) { isSuccess }
+        b: createUsers(values: [$w]) { isSuccess }
+        c: upsertUsersSingle(values: $v) { isSuccess }
+      }`,
+      variableValues: { v: { id: 1, name: null }, w: { id: 2, name: 'w' } },
+      contextValue: { org: 7 },
+    });
+    expect(errorsOf(res)).toBeUndefined();
+    expect(seen).toEqual([
+      { values: { id: 1, name: null } },
+      { values: [{ id: 2, name: 'w' }] },
+      { values: { id: 1, name: null } },
+    ]);
+    expect((await db.select().from(Users).orderBy(Users.id)).map((u: any) => [u.id, u.name, u.orgId])).toEqual([
+      [1, null, 7],
+      [2, 'w', 7],
+    ]);
+  });
+});
