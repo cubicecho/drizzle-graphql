@@ -569,7 +569,7 @@ export const generateSchemaData = <
   // MySQL cannot return the rows a write touched, so every mutation reports only whether it
   // succeeded — one shared type for the whole build.
   const mutationReturnType = new GraphQLObjectType({
-    name: cacheCtx.typeName({ kind: 'shared', defaultName: 'MutationReturn' }),
+    name: cacheCtx.resolveName({ kind: 'shared', defaultName: 'MutationReturn' }),
     fields: {
       isSuccess: {
         type: new GraphQLNonNull(GraphQLBoolean),

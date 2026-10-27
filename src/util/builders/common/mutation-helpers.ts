@@ -182,7 +182,7 @@ export const generateUpdateManyInput = (params: {
 }): GraphQLInputObjectType => {
   const { tableName, typeName, updatePrefix, updateInput, tableFilters, cacheCtx } = params;
   return new GraphQLInputObjectType({
-    name: cacheCtx.typeName({
+    name: cacheCtx.resolveName({
       kind: 'updateManyInput',
       defaultName: `${capitalize(updatePrefix)}${typeName}ManyInput`,
       table: tableName,

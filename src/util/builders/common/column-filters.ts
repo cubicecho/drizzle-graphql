@@ -183,7 +183,7 @@ const resolveGenericFilterDescriptor = (
  * Postgres `@>` / MySQL `JSON_CONTAINS`. SQLite stores json as text and has no containment
  * operator, so `contains` is omitted there (same precedent as dialect-specific ops like ilike).
  */
-const jsonFilterFields = (column: Column, colType: ConvertedColumn<true>['type'], typeName: TypeNameResolver) => {
+const jsonFilterFields = (column: Column, colType: ConvertedColumn<true>['type'], resolveName: TypeNameResolver) => {
   const dialect = columnDialect(column);
   return {
     eq: { type: colType, description: 'JSON equality on the whole value' },
@@ -197,7 +197,7 @@ const jsonFilterFields = (column: Column, colType: ConvertedColumn<true>['type']
         }
       : {}),
     path: {
-      type: new GraphQLList(new GraphQLNonNull(jsonPathFilterType(typeName))),
+      type: new GraphQLList(new GraphQLNonNull(jsonPathFilterType(resolveName))),
       description:
         'Compares the value at one path inside the document. Several entries are ANDed; a single object may be passed without the list brackets.',
     },
@@ -212,9 +212,9 @@ const jsonFilterFields = (column: Column, colType: ConvertedColumn<true>['type']
  * text. Set it when the operand's type does not match the document's — comparing a numeric
  * field against a `String` variable, say.
  */
-const jsonPathCastType = (typeName: TypeNameResolver): GraphQLEnumType =>
+const jsonPathCastType = (resolveName: TypeNameResolver): GraphQLEnumType =>
   sharedType(
-    typeName,
+    resolveName,
     { kind: 'shared', defaultName: 'JSONPathCast' },
     (name) =>
       new GraphQLEnumType({
@@ -238,9 +238,9 @@ const jsonPathCastType = (typeName: TypeNameResolver): GraphQLEnumType =>
  * on the column itself, which is structural JSON containment. A path names a scalar, so the
  * string reading is the useful one.
  */
-const jsonPathFilterType = (typeName: TypeNameResolver): GraphQLInputObjectType =>
+const jsonPathFilterType = (resolveName: TypeNameResolver): GraphQLInputObjectType =>
   sharedType(
-    typeName,
+    resolveName,
     { kind: 'shared', defaultName: 'JSONPathFilter' },
     (name) =>
       new GraphQLInputObjectType({
@@ -251,7 +251,7 @@ const jsonPathFilterType = (typeName: TypeNameResolver): GraphQLInputObjectType 
             description:
               'Keys to walk from the document root, e.g. `["profile", "level"]`. An all-digits key indexes an array.',
           },
-          as: { type: jsonPathCastType(typeName), description: 'Overrides how the value is read before comparing' },
+          as: { type: jsonPathCastType(resolveName), description: 'Overrides how the value is read before comparing' },
           eq: { type: GraphQLJSON, description: 'Equal to' },
           ne: { type: GraphQLJSON, description: 'Not equal to' },
           lt: { type: GraphQLJSON, description: 'Less than' },
@@ -426,7 +426,7 @@ export const generateColumnFilterValues = (
 
   const baseFields =
     kind === 'json'
-      ? jsonFilterFields(column, colType, cacheCtx.typeName)
+      ? jsonFilterFields(column, colType, cacheCtx.resolveName)
       : kind === 'array'
         ? arrayFilterFields(colType as GraphQLList<any>, colArr)
         : {
@@ -488,7 +488,7 @@ export const generateColumnFilterValues = (
   // The boolean branches are recursive — each branch is this filter type itself — so the
   // fields are thunked and reference the type being constructed.
   const mainType: GraphQLInputObjectType = new GraphQLInputObjectType({
-    name: cacheCtx.typeName({ kind: 'columnFilter', defaultName: `${genericName}Filter`, operation: genericName }),
+    name: cacheCtx.resolveName({ kind: 'columnFilter', defaultName: `${genericName}Filter`, operation: genericName }),
     fields: () => ({
       ...baseFields,
       OR: {

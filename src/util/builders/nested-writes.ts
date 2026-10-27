@@ -776,7 +776,7 @@ export const createNestedWriteTypes = (params: {
     );
 
     const type = new GraphQLInputObjectType({
-      name: cacheCtx.typeName({
+      name: cacheCtx.resolveName({
         kind: 'nestedWriteInput',
         defaultName: `${typeName}${capitalize(plan.relationName)}NestedCreatePayloadInput`,
         table: tableName,
@@ -913,7 +913,7 @@ export const createNestedWriteTypes = (params: {
     }
 
     const type = new GraphQLInputObjectType({
-      name: cacheCtx.typeName({
+      name: cacheCtx.resolveName({
         kind: 'nestedWriteInput',
         defaultName: `${typeName}${capitalize(plan.relationName)}Nested${capitalize(mode)}Input`,
         table: tableName,

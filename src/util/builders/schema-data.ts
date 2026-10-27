@@ -90,7 +90,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
       nested: nestedRuntime,
       limits,
       policies,
-      resolveName: cacheCtx.typeName,
+      resolveName: cacheCtx.resolveName,
     };
 
     forEachTable(ctx, ({ tableName, tableFeatures, names, types, softDeleteInfo }) => {

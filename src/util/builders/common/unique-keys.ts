@@ -81,7 +81,7 @@ export const generateUniqueKeyFilterFields = (
   for (const [fieldName, members] of Object.entries(uniqueKeys)) {
     fields[fieldName] = {
       type: new GraphQLInputObjectType({
-        name: cacheCtx.typeName({
+        name: cacheCtx.resolveName({
           kind: 'uniqueKey',
           defaultName: `${typeName}${members.map((member) => capitalize(member)).join('')}Key`,
           table: tableName,

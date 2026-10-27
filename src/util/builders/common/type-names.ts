@@ -122,11 +122,11 @@ const sharedTypeCache = new Map<string, GraphQLNamedType>();
  *   the default the caller passed in
  */
 export const sharedType = <T extends GraphQLNamedType>(
-  typeName: TypeNameResolver,
+  resolveName: TypeNameResolver,
   info: GeneratedTypeInfo,
   build: (name: string) => T,
 ): T => {
-  const name = typeName(info);
+  const name = resolveName(info);
   const cached = sharedTypeCache.get(name);
   if (cached) {
     return cached as T;

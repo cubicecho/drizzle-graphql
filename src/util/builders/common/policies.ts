@@ -80,9 +80,9 @@ export type SoftDeleteFor = (tableName: string) => SoftDeleteInfo | undefined;
  * per name it resolves to — it carries no per-build state beyond that name, so every build
  * that names it the same way shares one instance.
  */
-export const deletedFilterEnumType = (typeName: TypeNameResolver): GraphQLEnumType =>
+export const deletedFilterEnumType = (resolveName: TypeNameResolver): GraphQLEnumType =>
   sharedType(
-    typeName,
+    resolveName,
     { kind: 'shared', defaultName: 'DeletedFilter' },
     (name) =>
       new GraphQLEnumType({

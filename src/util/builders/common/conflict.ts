@@ -13,9 +13,9 @@ import { sharedType, type TypeNameResolver } from './type-names.ts';
 import { isWritableColumn } from './writable-columns.ts';
 
 /** Shared by every table's `${typeName}OnConflict` input, so it is created once per name. */
-export const conflictActionEnumType = (typeName: TypeNameResolver): GraphQLEnumType =>
+export const conflictActionEnumType = (resolveName: TypeNameResolver): GraphQLEnumType =>
   sharedType(
-    typeName,
+    resolveName,
     { kind: 'shared', defaultName: 'ConflictAction' },
     (name) =>
       new GraphQLEnumType({
@@ -52,7 +52,7 @@ export const generateOnConflictInput = (params: {
   cacheCtx: TypeCacheCtx;
 }): GraphQLInputObjectType | undefined => {
   const { table, tableName, typeName, uniqueSets, tableFilters, withTarget, cacheCtx } = params;
-  const resolveName = cacheCtx.typeName;
+  const resolveName = cacheCtx.resolveName;
   // The predicate varies per build only through the policies, so they name the cached variant.
   const policyVariant = [
     ...Object.keys(cacheCtx.contextValuesOf?.(tableName) ?? {}).sort(),

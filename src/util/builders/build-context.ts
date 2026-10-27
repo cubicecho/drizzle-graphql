@@ -321,7 +321,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     // Fresh cache per build — prevents type name collisions when buildSchema() is called
     // multiple times.
     const cacheCtx: TypeCacheCtx = {
-      typeName: options.typeName ?? ((info) => info.defaultName),
+      resolveName: options.resolveName ?? ((info) => info.defaultName),
       genericFilterCache: new Map(),
       objectTypeCache: new Map(),
       relationFieldContainers: new Map(),
@@ -497,7 +497,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       tableFeatures.distinct,
       limits,
       policies,
-      cacheCtx.typeName,
+      cacheCtx.resolveName,
     );
     const selectSingleGenerated = generateSelectSingle(
       db,
@@ -512,7 +512,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       filterCtx,
       limits,
       policies,
-      cacheCtx.typeName,
+      cacheCtx.resolveName,
     );
 
     const aggregateType = tableFeatures.aggregates
@@ -528,7 +528,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
           tableFilters,
           filterCtx,
           tablePolicies,
-          cacheCtx.typeName,
+          cacheCtx.resolveName,
         )
       : undefined;
 
@@ -552,7 +552,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
             havingInput,
             filterCtx,
             tablePolicies,
-            cacheCtx.typeName,
+            cacheCtx.resolveName,
           )
         : undefined;
 

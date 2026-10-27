@@ -230,13 +230,13 @@ export const generateTableOrderTypeCached = (
   // Fields are thunked so that relation order fields, which reference other tables' order
   // inputs (and eventually this one again), are only resolved after this type is cached.
   const order = new GraphQLInputObjectType({
-    name: cacheCtx.typeName({
+    name: cacheCtx.resolveName({
       kind: 'orderBy',
       defaultName: `${resolveTypeName(tableName, typeNameMapper)}OrderBy`,
       table: tableName,
     }),
     fields: () => ({
-      ...generateTableOrderCached(table, innerOrderType(cacheCtx.typeName)),
+      ...generateTableOrderCached(table, innerOrderType(cacheCtx.resolveName)),
       ...generateRelationOrderFields(tableName, cacheCtx, typeNameMapper, namedRelations, tables),
     }),
   });
@@ -265,7 +265,7 @@ const generateListRelationFilterCached = (
   }
 
   const listFilter = new GraphQLInputObjectType({
-    name: cacheCtx.typeName({
+    name: cacheCtx.resolveName({
       kind: 'listRelationFilter',
       defaultName: `${resolveTypeName(targetTableName, typeNameMapper)}ListRelationFilter`,
       table: targetTableName,
@@ -381,7 +381,7 @@ export const generateTableFilterTypeCached = (
   // itself — so the thunk references the type being constructed. Siblings and branches
   // compose: sibling fields are implicitly ANDed with the OR / AND / NOT groups.
   const filters: GraphQLInputObjectType = new GraphQLInputObjectType({
-    name: cacheCtx.typeName({
+    name: cacheCtx.resolveName({
       kind: 'filter',
       defaultName: `${resolveTypeName(tableName, typeNameMapper)}Filters`,
       table: tableName,

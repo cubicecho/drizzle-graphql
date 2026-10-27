@@ -65,7 +65,7 @@ const objectTypeShell = (
   // The thunk runs when the schema is assembled, by which point the table's own
   // generateSelectFields call has filled the container in.
   const shell = new GraphQLObjectType({
-    name: cacheCtx.typeName({
+    name: cacheCtx.resolveName({
       kind: 'object',
       defaultName: resolveTypeName(tableName, typeNameMapper),
       table: tableName,
@@ -164,7 +164,7 @@ const generateSelectFields = (
           type: isRequired ? new GraphQLNonNull(relType) : relType,
           args: {
             where: { type: targetFilters },
-            ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.typeName),
+            ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.resolveName),
           },
           resolve,
           ...relationDocs,
@@ -183,7 +183,7 @@ const generateSelectFields = (
       ? generateDistinctEnum(
           tables[targetTableName]!,
           resolveTypeName(targetTableName, typeNameMapper),
-          cacheCtx.typeName,
+          cacheCtx.resolveName,
           targetTableName,
         )
       : undefined;
@@ -197,7 +197,7 @@ const generateSelectFields = (
           ...(targetOrder ? { orderBy: { type: targetOrder } } : {}),
           offset: { type: GraphQLInt },
           limit: { type: GraphQLInt },
-          ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.typeName),
+          ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.resolveName),
           after: {
             type: GraphQLString,
             description:
@@ -235,7 +235,7 @@ const generateSelectFields = (
             type: new GraphQLNonNull(relationAggregate.type),
             args: {
               where: { type: targetFilters },
-              ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.typeName),
+              ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.resolveName),
             },
             resolve: relationAggregate.resolve,
             extensions: {
@@ -321,7 +321,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
       // A numeric or array column takes an operations input instead of the bare scalar, so
       // it can be changed relative to its current value rather than only replaced.
       const operations = cacheCtx.featureOf(tableName).fieldUpdateOperations
-        ? fieldUpdateInputType(column, columnName, tableName, cacheCtx.typeName)
+        ? fieldUpdateInputType(column, columnName, tableName, cacheCtx.resolveName)
         : undefined;
       const field = operations ? { ...converted, type: operations } : converted;
       return [columnName, { ...field, ...inputFieldDocs(cacheCtx.docs, column, tableName, columnName, field.type) }];
@@ -334,7 +334,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   // With nested writes on, the fields are thunked: a relation field's operand is the target
   // table's filter input, which does not exist yet while this table is being generated.
   const insertInput = new GraphQLInputObjectType({
-    name: cacheCtx.typeName({
+    name: cacheCtx.resolveName({
       kind: 'createInput',
       defaultName: `${capitalize(insertPrefix)}${typeName}Input`,
       table: tableName,
@@ -345,7 +345,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   });
 
   const updateInput = new GraphQLInputObjectType({
-    name: cacheCtx.typeName({
+    name: cacheCtx.resolveName({
       kind: 'updateInput',
       defaultName: `${capitalize(updatePrefix)}${typeName}Input`,
       table: tableName,
@@ -360,7 +360,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   // every other table's upsert takes the create input, which would be identical.
   const upsertInput = nestedWrites?.hasRelations(tableName)
     ? new GraphQLInputObjectType({
-        name: cacheCtx.typeName({
+        name: cacheCtx.resolveName({
           kind: 'upsertInput',
           defaultName: `${capitalize(upsertPrefix)}${typeName}Input`,
           table: tableName,
@@ -374,7 +374,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   const selectSingleOutput =
     cacheCtx.objectTypeCache.get(tableName) ??
     new GraphQLObjectType({
-      name: cacheCtx.typeName({
+      name: cacheCtx.resolveName({
         kind: 'object',
         defaultName: resolveTypeName(tableName, typeNameMapper),
         table: tableName,

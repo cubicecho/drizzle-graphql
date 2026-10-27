@@ -71,7 +71,7 @@ export const resolveBuildConfig = (
     }
     return value;
   };
-  const typeName = resolveGeneratedTypeNames({
+  const resolveName = resolveGeneratedTypeNames({
     derivedTypeNameMapper: config?.derivedTypeNameMapper,
     typeNamePrefix: affix(config?.typeNamePrefix, 'typeNamePrefix', /^[_A-Za-z][_0-9A-Za-z]*$/),
     typeNameSuffix: affix(config?.typeNameSuffix, 'typeNameSuffix', /^[_0-9A-Za-z]+$/),
@@ -476,7 +476,7 @@ export const resolveBuildConfig = (
     suffixes,
     conflictDoNothing: config?.conflictDoNothing ?? false,
     typeNameMapper,
-    typeName,
+    resolveName,
     shouldEagerLoad,
     features: config?.features ?? {},
     complexity,
