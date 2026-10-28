@@ -82,14 +82,14 @@ describe('uuid columns', () => {
   it('codes an invalid uuid filter argument, as a literal and as a variable', async () => {
     const schema = await build();
     const literal = await graphql({ schema, source: '{ things(where: { id: { eq: "nope" } }) { id } }' });
-    expect(literal.errors?.[0]?.extensions?.code).toBe('DRIZZLE_INVALID_INPUT_VALUE');
+    expect(literal.errors?.[0]?.extensions?.['code']).toBe('DRIZZLE_INVALID_INPUT_VALUE');
 
     const variable = await graphql({
       schema,
       source: 'query ($id: UUID!) { things(where: { id: { eq: $id } }) { id } }',
       variableValues: { id: 'nope' },
     });
-    expect(variable.errors?.[0]?.extensions?.code).toBe('DRIZZLE_INVALID_INPUT_VALUE');
+    expect(variable.errors?.[0]?.extensions?.['code']).toBe('DRIZZLE_INVALID_INPUT_VALUE');
   });
 
   it("maps an override naming graphql-scalars' instance to the library's", async () => {
