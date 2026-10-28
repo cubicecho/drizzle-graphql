@@ -70,7 +70,7 @@ Cursor — owner `common/cursor.ts`:
 ```
 row read --attachRowCursors (ordering + PK values, base64url JSON)--> issued
 issued --client passes as `after`, same orderBy--> decoded --buildCursorCondition--> next page
-issued --client passes with different ordering | distinct | table without PK--> rejected DRIZZLE_INVALID_CURSOR
+issued --client passes with different ordering | distinct | table without PK | a value its column cannot hold (kind, format or range; cursor-value-formats.ts)--> rejected DRIZZLE_INVALID_CURSOR
 ```
 
 Soft-deleted row — owner `write-resolvers.ts generateDelete` + `policies.ts softDeletePredicate`:

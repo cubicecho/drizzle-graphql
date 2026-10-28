@@ -30,6 +30,7 @@ import { SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { dateToCalendarDate } from '../../scalars/index.ts';
 import { isDateOnlyColumn } from '../../type-converter/index.ts';
+import { cursorValueFormatFits, readsNumbersForStrings } from './cursor-value-formats.ts';
 import { drizzleError } from './errors.ts';
 import { comparableOperand } from './filters.ts';
 import type { OrderNullsOption } from './order-by.ts';
@@ -477,6 +478,8 @@ const columnCursorKind = (col: Column): CursorValueKind | undefined => {
  * Whether a decoded cursor value is one its column's rows can produce: NULL only for a nullable
  * column, otherwise the column's kind — or, for a column with a {@link cursorTextForm}, its
  * database text. SQLite stores any number in an integer column, so only other dialects require a whole one.
+ * A value of the right kind must also be in its column's format and range
+ * ({@link cursorValueFormatFits}): a uuid, a numeric, an enum label, an integer that fits.
  */
 const cursorValueFits = (col: Column, value: unknown): boolean => {
   const kind = cursorValueKind(value);
@@ -491,12 +494,16 @@ const cursorValueFits = (col: Column, value: unknown): boolean => {
   if (kind === 'string' && textForm) {
     return isCursorText(textForm, value as string);
   }
-  if (kind !== expected) {
+  const kindFits = kind === expected || (kind === 'number' && readsNumbersForStrings(col));
+  if (!kindFits) {
     return false;
   }
   const holdsWholeNumbers =
     INTEGER_CONSTRAINTS.has(extractExtendedColumnType(col).constraint ?? '') && !is(col, SQLiteColumn);
-  return kind !== 'number' || !holdsWholeNumbers || Number.isInteger(value);
+  if (kind === 'number' && holdsWholeNumbers && !Number.isInteger(value)) {
+    return false;
+  }
+  return cursorValueFormatFits(col, value);
 };
 
 /**
