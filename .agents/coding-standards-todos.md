@@ -80,14 +80,14 @@ the soft-delete marker inline; `field-updates.ts` and `conflict.ts` decide their
 sets; nothing reads `column.generated` / `generatedIdentity`. To-be: a **writable column** is
 a column a client may set on create (and, separately, on update); one function owns both
 answers and every input and field-update builder uses it. Why it is simpler: one rule for
-four inputs instead of four partial copies. Implemented by: B7. Status: open.
+four inputs instead of four partial copies. Implemented by: B7. Status: done.
 
 ### M2 — name: matches every row
 
 As-is: empty `notInArray`, `NOT inArray: []` and similar compile to `sqlTrue()`, which is
 indistinguishable from a real condition; `extractRequiredFilters` only rejects "no
 condition". To-be: the filter compiler returns a distinct **matches every row** result;
-reads treat it as no condition, `requireWhere` rejects it. Implemented by: B4. Status: open.
+reads treat it as no condition, `requireWhere` rejects it. Implemented by: B4. Status: done.
 
 ### M3 — introduce a scope: execution
 
@@ -95,7 +95,7 @@ As-is: the request memo (`getOrCreateRequestValue`) and auto-transaction state h
 context object (or `info.operation` when the context isn't an object), so a reused context
 or a cached document shares state across executions. To-be: an **execution** (one
 `execute()` call, identified by `info.variableValues` / the operation per run) owns
-per-request state. Implemented by: B12, B22. Status: open.
+per-request state. Implemented by: B12, B22. Status: done.
 
 ---
 
@@ -313,4 +313,14 @@ graph derived twice (`index.ts`, `selection.ts`); naming spread over five module
 driver" unnamed; module-global per-build registries; two `updateMany` batch runners;
 `nested-writes.ts` (2115 lines) and `prepareBuild` crowded. Note: the after-hook of a
 parent-side nested create fires before a savepoint may roll it back (external side effects
-are not undone).
+are not undone). Filed as #232.
+
+### Filed as GitHub issues (for later)
+
+| Issue | What | From |
+|---|---|---|
+| #230 | `…Single` on a table without a primary key can still write a row that arrived after the multi-row check | Claimed but not enforced |
+| #231 | `transactions: 'auto'`: concurrent executions sharing one context share one transaction | Claimed but not enforced |
+| #232 | `after` hooks' external side effects survive a later rollback (outbox now, `onCommit` later) | Hook note (b) |
+| #233 | Per-operation hooks: config strictness and `restore` validation before shipping | `feat/per-operation-hooks` |
+| #234 | Per-build registries are module globals; move them onto the build context in a major | R8 |

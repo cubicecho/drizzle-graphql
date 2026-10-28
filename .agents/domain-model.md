@@ -125,8 +125,8 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 
 ### Claimed but not enforced (findings)
 
-- `DRIZZLE_MULTI_ROW_MATCH` means nothing was written (`common/errors.ts`). On a table without a primary key the write cannot be narrowed to the row checked, so a row arriving between the check and the write is still written (`mutation-helpers.narrowToSingleMatch`).
-- `transactions: 'auto'` says two executions must not share one context object at the same time (`types.ts` `transactions`); nothing checks it, and the second would find the first's transaction under `drizzleExecutorKey` and run on it.
+- `DRIZZLE_MULTI_ROW_MATCH` means nothing was written (`common/errors.ts`). On a table without a primary key the write cannot be narrowed to the row checked, so a row arriving between the check and the write is still written (`mutation-helpers.narrowToSingleMatch`). Tracked in #230.
+- `transactions: 'auto'` says two executions must not share one context object at the same time (`types.ts` `transactions`); nothing checks it, and the second would find the first's transaction under `drizzleExecutorKey` and run on it. Tracked in #231.
 - `WriteHookFor` takes the operation (`common/write-hooks.ts` `WriteHookFor`), but the resolved lookup ignores it (`build-config.ts:330-331`): hooks are per table, not per operation.
 
 ## Glossary
