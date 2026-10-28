@@ -3,8 +3,8 @@
 // years past 9999, the infinities, and offsets with minutes or (local mean time) seconds.
 //
 // Each row's cursor is issued by the library's own encoder over the text the cursor query
-// selects. The pages themselves leave out the BC and year-20000 rows: a `mode: 'date'` column
-// reads those as an invalid JS Date, which the row's output cannot render.
+// selects. The pages list every row, the BC one a `mode: 'date'` column reads as an invalid JS
+// Date included: the column orders the page but is not selected, so nothing renders it.
 import { PGlite } from '@electric-sql/pglite';
 import { buildRelations, eq, sql } from 'drizzle-orm';
 import { integer, pgTable, timestamp } from 'drizzle-orm/pg-core';
@@ -47,8 +47,6 @@ afterAll(async () => {
   await pglite?.close().catch(() => {});
 });
 
-/** Rows whose dates a JS Date cannot hold, so no page lists them. */
-const UNREADABLE = [1, 3];
 const ASCENDING = [5, 1, 6, 2, 3, 4];
 
 /** The cursor the library issues for row `id` under `entries`. */
@@ -76,11 +74,11 @@ describe('pglite: cursors over every timestamp text PostgreSQL issues', () => {
           const after = await issueCursor(entries, id);
           const res: any = await graphql({
             schema,
-            source: `{ eras(orderBy: { ${column}: { direction: ${direction}, priority: 1 } }, where: { id: { notInArray: [${UNREADABLE}] } }, after: "${after}") { id } }`,
+            source: `{ eras(orderBy: { ${column}: { direction: ${direction}, priority: 1 } }, after: "${after}") { id } }`,
             contextValue: {},
           });
           expect(res.errors?.map((error: Error) => error.message)).toBeUndefined();
-          const expected = order.slice(position + 1).filter((next) => !UNREADABLE.includes(next));
+          const expected = order.slice(position + 1);
           expect(res.data.eras.map((row: { id: number }) => row.id)).toEqual(expected);
         }
       }

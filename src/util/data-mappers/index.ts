@@ -194,8 +194,12 @@ export const remapToGraphQLCore = (
     return Number.isNaN(instant.getTime()) ? value : instant.toISOString();
   }
 
+  // A value a JS Date cannot hold (a BC date, a year past 275760, PostgreSQL's infinities) arrives
+  // as an invalid Date. It is left as one: `toISOString` would throw a `RangeError` that fails the
+  // whole read, even for a row whose column is only fetched (a cursor's ordering key). Selected,
+  // the `DateTime` scalar rejects it as an error on that one field.
   if (value instanceof Date) {
-    return value.toISOString();
+    return Number.isNaN(value.getTime()) ? value : value.toISOString();
   }
 
   // A MySQL `timestamp` / `datetime` read in `'string'` mode arrives as MySQL's offset-less text,

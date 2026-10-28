@@ -19,12 +19,13 @@ import {
 } from 'drizzle-orm';
 import {
   MySqlColumn,
+  MySqlDate,
   MySqlDateTime,
   MySqlEnumColumn,
   MySqlEnumObjectColumn,
   MySqlTimestamp,
 } from 'drizzle-orm/mysql-core';
-import { PgTimestamp } from 'drizzle-orm/pg-core';
+import { PgColumn, PgDate, PgTimestamp } from 'drizzle-orm/pg-core';
 import { SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { dateToCalendarDate } from '../../scalars/index.ts';
@@ -127,43 +128,46 @@ export const cursorOrderExprs = (table: Table, entries: CursorOrderEntry[]): SQL
 };
 
 /**
- * Property a row carries an ordering column's full-precision text under, when the column holds
- * more than a JS Date can. Namespaced like {@link ROW_CURSOR_PROP}, and removed from the row
- * once its cursor is encoded.
+ * Property a row carries an ordering column's database text under, when a JS Date cannot stand
+ * for every value the column holds. Namespaced like {@link ROW_CURSOR_PROP}, and removed from
+ * the row once its cursor is encoded.
  */
 const preciseTextProp = (column: string): string => `__drizzle_graphql_cursor_text_${column}`;
 
 /**
- * Whether a column reads into a JS Date (milliseconds) while the database keeps finer
- * fractional seconds: a PostgreSQL `timestamp` / `timestamptz` in `mode: 'date'` (precision 6
- * unless it says otherwise) or a MySQL `datetime` / `timestamp` in `mode: 'date'` with
- * `fsp` above 3. String-mode columns already arrive as the database's own text, and `time` is
- * always a string, so neither loses anything.
+ * How a column whose `mode: 'date'` values a JS Date cannot always stand for keeps its cursor
+ * position: as the database's own text of a timestamp or of a date-only value. That is every
+ * `mode: 'date'` PostgreSQL `timestamp` / `timestamptz` / `date` and MySQL `datetime` /
+ * `timestamp` / `date`:
+ * - a fraction finer than milliseconds (PostgreSQL's default precision 6, MySQL `fsp` above 3)
+ *   would be truncated, and two rows a microsecond apart would share one position;
+ * - a value outside a JS Date's range (a BC date, a year past 275760, PostgreSQL's infinities,
+ *   MySQL's zero date) reads as an invalid Date, which has no position to encode at all — and
+ *   drizzle reads `timestamp` (without time zone) infinity as an ordinary instant in 2000.
+ * String-mode columns already arrive as the database's own text, `time` is always a string, and
+ * SQLite's integer timestamps hold no text form to compare by, so none of those need it.
  */
-const outgrowsJsDate = (column: Column): boolean => {
-  if (is(column, PgTimestamp)) {
-    return column.precision === undefined || column.precision > 3;
+const cursorTextForm = (column: Column): 'timestamp' | 'date' | undefined => {
+  if (is(column, PgTimestamp) || is(column, MySqlDateTime) || is(column, MySqlTimestamp)) {
+    return 'timestamp';
   }
-  if (is(column, MySqlDateTime) || is(column, MySqlTimestamp)) {
-    return (column.fsp ?? 0) > 3;
-  }
-  return false;
+  return is(column, PgDate) || is(column, MySqlDate) ? 'date' : undefined;
 };
 
 /**
  * Extra SQL expressions a cursor-computing query selects alongside the row: for each ordering
- * column whose values a JS Date would truncate, the value as the database's own text. The
- * cursor then encodes that text rather than the Date, and `after` compares the column against
- * it — so two rows a microsecond apart stay distinct positions. `table` may be the aliased RQB
- * proxy. Empty when no ordering column needs it.
+ * column with a {@link cursorTextForm}, the value as the database's own text. The cursor then
+ * encodes that text rather than the Date, and `after` compares the column against it — so two
+ * rows a microsecond apart stay distinct positions, and a row whose value a JS Date cannot hold
+ * still has one. `table` may be the aliased RQB proxy. Empty when no ordering column needs it.
  */
 export const cursorPreciseExtras = (table: Table, entries: CursorOrderEntry[]): Record<string, SQL> => {
   const cols = getColumns(table);
   const extras: Record<string, SQL> = {};
   for (const [name] of entries) {
     const column = cols[name];
-    if (column && outgrowsJsDate(column)) {
-      extras[preciseTextProp(name)] = is(column, PgTimestamp) ? sql`${column}::text` : sql`cast(${column} as char)`;
+    if (column && cursorTextForm(column)) {
+      extras[preciseTextProp(name)] = is(column, PgColumn) ? sql`${column}::text` : sql`cast(${column} as char)`;
     }
   }
   return extras;
@@ -406,17 +410,22 @@ const INTEGER_CONSTRAINTS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Every text {@link cursorPreciseExtras} can select: PostgreSQL's `::text` of a `timestamp` /
- * `timestamptz` (ISO DateStyle — years of four or more digits, any fraction, an offset of
- * `±HH`, `±HH:MM` or local mean time's `±HH:MM:SS`, and a trailing ` BC`) and MySQL's
+ * Every timestamp text {@link cursorPreciseExtras} can select: PostgreSQL's `::text` of a
+ * `timestamp` / `timestamptz` (ISO DateStyle — years of four or more digits, any fraction, an
+ * offset of `±HH`, `±HH:MM` or local mean time's `±HH:MM:SS`, and a trailing ` BC`) and MySQL's
  * `cast(… as char)` of a `datetime` / `timestamp`, which is the same shape without the offset.
  */
 const TIMESTAMP_TEXT =
   /^(?<year>\d{4,6})-(?<month>\d{2})-(?<day>\d{2}) (?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?:\.\d+)?(?:[+-]\d{2}(?::\d{2}){0,2})?(?<bc> BC)?$/;
-/** Timestamp texts that name no instant but that the database stores: PostgreSQL's infinities, MySQL's zero date. */
-const NON_INSTANT_TIMESTAMP_TEXT = /^(-?infinity|0000-00-00 00:00:00(\.0+)?)$/;
-/** PostgreSQL's timestamp range: 4713 BC to 294276 AD. */
-const MAX_AD_YEAR = 294276;
+/** The same for a `date`: PostgreSQL's ISO `YYYY-MM-DD`, with a trailing ` BC`, and MySQL's, without. */
+const DATE_TEXT = /^(?<year>\d{4,7})-(?<month>\d{2})-(?<day>\d{2})(?<bc> BC)?$/;
+/** Texts that name no day or instant but that the database stores: PostgreSQL's infinities, MySQL's zero date. */
+const NON_INSTANT_TEXT = {
+  timestamp: /^(-?infinity|0000-00-00 00:00:00(\.0+)?)$/,
+  date: /^(-?infinity|0000-00-00)$/,
+} as const;
+/** PostgreSQL's range, which contains MySQL's: 4713 BC to 294276 AD for a timestamp, 5874897 AD for a date. */
+const MAX_AD_YEAR = { timestamp: 294276, date: 5874897 } as const;
 const MAX_BC_YEAR = 4714;
 /** The values each field of {@link TIMESTAMP_TEXT} can print, inclusive; PostgreSQL prints `24:00:00` and leap second 60. */
 const TIMESTAMP_FIELD_RANGES: Readonly<Record<string, readonly [number, number]>> = {
@@ -428,23 +437,23 @@ const TIMESTAMP_FIELD_RANGES: Readonly<Record<string, readonly [number, number]>
 };
 
 /**
- * Whether a string is timestamp text as {@link cursorPreciseExtras} selects it — any form the
+ * Whether a string is text in `form` as {@link cursorPreciseExtras} selects it — any form the
  * databases print, with each field in range. Day-of-month overflow (Feb 31) is left to the
  * database, which refuses it; it never prints one.
  */
-const isTimestampText = (text: string): boolean => {
-  if (NON_INSTANT_TIMESTAMP_TEXT.test(text)) {
+const isCursorText = (form: 'timestamp' | 'date', text: string): boolean => {
+  if (NON_INSTANT_TEXT[form].test(text)) {
     return true;
   }
-  const fields = TIMESTAMP_TEXT.exec(text)?.groups;
+  const fields = (form === 'timestamp' ? TIMESTAMP_TEXT : DATE_TEXT).exec(text)?.groups;
   if (!fields) {
     return false;
   }
   const year = Number(fields['year']);
-  const maxYear = fields['bc'] ? MAX_BC_YEAR : MAX_AD_YEAR;
+  const maxYear = fields['bc'] ? MAX_BC_YEAR : MAX_AD_YEAR[form];
   const fieldsInRange = Object.entries(TIMESTAMP_FIELD_RANGES).every(([field, [min, max]]) => {
-    const value = Number(fields[field]);
-    return value >= min && value <= max;
+    const value = fields[field];
+    return value === undefined || (Number(value) >= min && Number(value) <= max);
   });
   return fieldsInRange && year >= 1 && year <= maxYear;
 };
@@ -466,8 +475,8 @@ const columnCursorKind = (col: Column): CursorValueKind | undefined => {
 
 /**
  * Whether a decoded cursor value is one its column's rows can produce: NULL only for a nullable
- * column, otherwise the column's kind — or, for a column a JS Date would truncate, its timestamp
- * text. SQLite stores any number in an integer column, so only other dialects require a whole one.
+ * column, otherwise the column's kind — or, for a column with a {@link cursorTextForm}, its
+ * database text. SQLite stores any number in an integer column, so only other dialects require a whole one.
  */
 const cursorValueFits = (col: Column, value: unknown): boolean => {
   const kind = cursorValueKind(value);
@@ -478,8 +487,9 @@ const cursorValueFits = (col: Column, value: unknown): boolean => {
   if (expected === undefined) {
     return true;
   }
-  if (kind === 'string' && outgrowsJsDate(col)) {
-    return isTimestampText(value as string);
+  const textForm = cursorTextForm(col);
+  if (kind === 'string' && textForm) {
+    return isCursorText(textForm, value as string);
   }
   if (kind !== expected) {
     return false;
