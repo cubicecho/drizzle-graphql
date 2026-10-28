@@ -172,7 +172,12 @@ const extendRelationOrderChain = (
  * outside the list sort after every listed one. Under `insensitive` each branch compares
  * lowered values, as the filter itself does, so a row it matched by case is ranked too.
  */
-const filterOrderExpression = (column: Column, columnName: string, whereArgs: Record<string, any> | undefined): SQL => {
+const filterOrderExpression = (
+  column: Column,
+  columnName: string,
+  whereArgs: Record<string, any> | undefined,
+  ctx: RelationFilterContext | undefined,
+): SQL => {
   const columnFilter = whereArgs?.[columnName];
   const values = columnFilter?.inArray as unknown;
   if (!Array.isArray(values)) {
@@ -189,7 +194,10 @@ const filterOrderExpression = (column: Column, columnName: string, whereArgs: Re
 
   const foldCase = columnFilter.insensitive === true;
   const branches = values.map((value, index) => {
-    const operand = sql.param(remapFromGraphQLCore(value, column, columnName), column);
+    const operand = sql.param(
+      remapFromGraphQLCore(value, column, columnName, ctx?.registries?.scalarOverrides),
+      column,
+    );
     const matches = foldCase ? lowerComparison(column, 'eq', operand) : sql`${column} = ${operand}`;
     return sql`when ${matches} then ${sql.raw(String(index))}`;
   });
@@ -237,7 +245,7 @@ const collectOrderEntries = (
       }
       out.push({
         expression: config.matchFilterOrder
-          ? filterOrderExpression(column, key, whereArgs)
+          ? filterOrderExpression(column, key, whereArgs, ctx)
           : chain
             ? sql`(select ${relationSortValue(column)} from ${sql.join(chain.fromParts, sql`, `)} where ${and(...chain.conditions)})`
             : column,

@@ -2,6 +2,7 @@
 // everywhere it appears.
 
 import type { GraphQLInputObjectType, GraphQLObjectType } from 'graphql';
+import type { BuildRegistries } from '../../build-registries.ts';
 import type {
   ConvertedColumn,
   ConvertedInputColumn,
@@ -85,6 +86,12 @@ export interface TypeCacheCtx {
    * generator emits no descriptions of its own for column and relation fields.
    */
   docs: SchemaDocs;
+  /**
+   * The build's registries — scalar overrides, enums, column exclusions and the aggregate and
+   * field-update caches. Not a cache of this context's own, but every type builder reads it and
+   * this context is already threaded through all of them.
+   */
+  registries: BuildRegistries;
   /**
    * The build's resolved limit policy, or `undefined` when the caller configured none. Read
    * here so a to-many relation field can price its cost hint against the policy of the table

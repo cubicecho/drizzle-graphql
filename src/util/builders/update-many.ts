@@ -136,8 +136,19 @@ export const createUpdateManyGenerator = (
   runBatch: UpdateManyBatchRunner = runUpdateManyBatch,
 ): UpdateManyGenerator => {
   return (build: WriteBuildOptions, opts: UpdateManyOptions): CreatedResolver => {
-    const { db, tables, eagerRelations, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } =
-      build;
+    const {
+      db,
+      tables,
+      eagerRelations,
+      typeNameMapper,
+      filterCtx,
+      registries,
+      txCtx,
+      nested,
+      limits,
+      policies,
+      resolveName,
+    } = build;
     const { tableName, table, updateManyInput, fieldName, typeName, requireWhere } = opts;
     const queryArgs = {
       updates: {
@@ -196,7 +207,7 @@ export const createUpdateManyGenerator = (
           const split = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
           const ops = split && nested!.hasOps(split.ops) ? split.ops : undefined;
           const input = stripContextValues(
-            remapUpdateInput(split ? split.columns : set, table, tableName),
+            remapUpdateInput(registries, split ? split.columns : set, table, tableName),
             contextColumns,
           );
           // An entry that only writes through a relation still has work to do.
@@ -263,7 +274,15 @@ export const createUpdateManyGenerator = (
             continue;
           }
           for (let i = 0; i < rows.length; i++) {
-            output.push(remapToGraphQLSingleOutput(enriched[offset + i], tableName, table, eagerRelations));
+            output.push(
+              remapToGraphQLSingleOutput(
+                enriched[offset + i],
+                tableName,
+                table,
+                registries.scalarOverrides,
+                eagerRelations,
+              ),
+            );
           }
           offset += rows.length;
         }

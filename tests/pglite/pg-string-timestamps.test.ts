@@ -234,7 +234,7 @@ describe.sequential('Postgres string-mode timestamp round-trips', () => {
 describe('Postgres string-mode timestamp mapping helpers', () => {
   const serialize = (value: unknown) => (GraphQLDateTime.serialize(value) as Date).toISOString();
   const out = (column: keyof typeof Stamps._.columns, value: unknown) =>
-    remapToGraphQLCore(column, value, 'stamps', Stamps[column]);
+    remapToGraphQLCore(column, value, 'stamps', Stamps[column], undefined);
 
   it('rewrites timestamp text as RFC 3339 UTC, keeping the fraction', () => {
     expect(out('ts', '2026-09-15 10:00:00')).toBe('2026-09-15T10:00:00Z');
@@ -262,23 +262,23 @@ describe('Postgres string-mode timestamp mapping helpers', () => {
 
   it('writes timestamptz as an ISO instant and timestamp as UTC text without an offset', () => {
     const input = new Date('2026-09-15T05:00:00.250-05:00');
-    expect(remapFromGraphQLCore(input, Stamps.tsTz, 'tsTz')).toBe('2026-09-15T10:00:00.250Z');
-    expect(remapFromGraphQLCore(input, Stamps.tsTzP, 'tsTzP')).toBe('2026-09-15T10:00:00.250Z');
-    expect(remapFromGraphQLCore(input, Stamps.ts, 'ts')).toBe('2026-09-15 10:00:00.250');
-    expect(remapFromGraphQLCore(input, Stamps.tsP, 'tsP')).toBe('2026-09-15 10:00:00.250');
+    expect(remapFromGraphQLCore(input, Stamps.tsTz, 'tsTz', undefined)).toBe('2026-09-15T10:00:00.250Z');
+    expect(remapFromGraphQLCore(input, Stamps.tsTzP, 'tsTzP', undefined)).toBe('2026-09-15T10:00:00.250Z');
+    expect(remapFromGraphQLCore(input, Stamps.ts, 'ts', undefined)).toBe('2026-09-15 10:00:00.250');
+    expect(remapFromGraphQLCore(input, Stamps.tsP, 'tsP', undefined)).toBe('2026-09-15 10:00:00.250');
     // `'date'` mode is unchanged: drizzle's own mapToDriverValue takes the Date.
-    expect(remapFromGraphQLCore(input, Stamps.tsDate, 'tsDate')).toEqual(input);
+    expect(remapFromGraphQLCore(input, Stamps.tsDate, 'tsDate', undefined)).toEqual(input);
   });
 
   it('reads offset-less Postgres text from a hand-built caller as UTC', () => {
-    expect(remapFromGraphQLCore('2026-09-15 10:00:00', Stamps.ts, 'ts')).toBe('2026-09-15 10:00:00.000');
-    expect(remapFromGraphQLCore('2026-09-15 10:00:00', Stamps.tsTz, 'tsTz')).toBe(INSTANT);
-    expect(remapFromGraphQLCore('2026-09-15 04:00:00-06', Stamps.tsTz, 'tsTz')).toBe(INSTANT);
+    expect(remapFromGraphQLCore('2026-09-15 10:00:00', Stamps.ts, 'ts', undefined)).toBe('2026-09-15 10:00:00.000');
+    expect(remapFromGraphQLCore('2026-09-15 10:00:00', Stamps.tsTz, 'tsTz', undefined)).toBe(INSTANT);
+    expect(remapFromGraphQLCore('2026-09-15 04:00:00-06', Stamps.tsTz, 'tsTz', undefined)).toBe(INSTANT);
   });
 
   it('rejects a value that is not a date', () => {
     for (const column of STRING_COLUMNS) {
-      expect(() => remapFromGraphQLCore('not a date', Stamps[column], column)).toThrow(
+      expect(() => remapFromGraphQLCore('not a date', Stamps[column], column, undefined)).toThrow(
         expect.objectContaining({ extensions: expect.objectContaining({ code: 'DRIZZLE_INVALID_INPUT_VALUE' }) }),
       );
     }

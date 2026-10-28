@@ -14,6 +14,7 @@ import {
   GraphQLObjectType,
 } from 'graphql';
 import type { GeneratedEntities } from '../../types.ts';
+import type { BuildRegistries } from '../build-registries.ts';
 import {
   applyContextValues,
   applyContextValuesAll,
@@ -52,6 +53,7 @@ import type { CreatedResolver, Filters, SchemaGeneratorOptions } from './types.t
 const isSuccess = { isSuccess: true };
 
 const generateInsertArray = (
+  registries: BuildRegistries,
   db: MySqlAsyncDatabase<any, any>,
   tableName: string,
   table: MySqlTable,
@@ -75,7 +77,7 @@ const generateInsertArray = (
     },
     run: async ({ executor, args, context, before, after }) => {
       const input = applyContextValuesAll(
-        remapFromGraphQLArrayInput(args.values, table),
+        remapFromGraphQLArrayInput(args.values, table, registries.scalarOverrides),
         insertStamps(policies, tableName),
         context,
       );
@@ -92,6 +94,7 @@ const generateInsertArray = (
   });
 
 const generateInsertSingle = (
+  registries: BuildRegistries,
   db: MySqlAsyncDatabase<any, any>,
   tableName: string,
   table: MySqlTable,
@@ -115,7 +118,7 @@ const generateInsertSingle = (
     },
     run: async ({ executor, args, context, before, after }) => {
       const input = applyContextValues(
-        remapFromGraphQLSingleInput(args.values, table),
+        remapFromGraphQLSingleInput(args.values, table, registries.scalarOverrides),
         insertStamps(policies, tableName),
         context,
       );
@@ -129,6 +132,7 @@ const generateInsertSingle = (
   });
 
 const generateUpsert = (
+  registries: BuildRegistries,
   db: MySqlAsyncDatabase<any, any>,
   tableName: string,
   table: MySqlTable,
@@ -162,8 +166,8 @@ const generateUpsert = (
       const contextColumns = insertStamps(policies, tableName);
       const input = applyContextValuesAll(
         single
-          ? [remapFromGraphQLSingleInput(args.values as Record<string, any>, table)]
-          : remapFromGraphQLArrayInput(args.values as Record<string, any>[], table),
+          ? [remapFromGraphQLSingleInput(args.values as Record<string, any>, table, registries.scalarOverrides)]
+          : remapFromGraphQLArrayInput(args.values as Record<string, any>[], table, registries.scalarOverrides),
         contextColumns,
         context,
       );
@@ -228,6 +232,7 @@ const generateUpsert = (
 };
 
 const generateUpdate = (
+  registries: BuildRegistries,
   db: MySqlAsyncDatabase<any, any>,
   tableName: string,
   table: MySqlTable,
@@ -262,7 +267,10 @@ const generateUpdate = (
 
       // A context-derived column is the server's to set, so an update never reassigns
       // one — that is what stops a row being handed to another owner.
-      const input = stripContextValues(remapUpdateInput(set, table, tableName), policies?.contextValues?.(tableName));
+      const input = stripContextValues(
+        remapUpdateInput(registries, set, table, tableName),
+        policies?.contextValues?.(tableName),
+      );
       if (!Object.keys(input).length) {
         throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
       }
@@ -307,6 +315,7 @@ const generateUpdate = (
  * `{ isSuccess: true }` rather than the updated rows.
  */
 const generateUpdateMany = (
+  registries: BuildRegistries,
   db: MySqlAsyncDatabase<any, any>,
   tableName: string,
   table: MySqlTable,
@@ -341,7 +350,7 @@ const generateUpdateMany = (
       // Remap and validate every entry before the hook and the transaction, so a malformed
       // entry rejects the request instead of rolling back mid-batch.
       const entries = updates.map(({ where, set }) => {
-        const input = stripContextValues(remapUpdateInput(set, table, tableName), contextColumns);
+        const input = stripContextValues(remapUpdateInput(registries, set, table, tableName), contextColumns);
         if (!Object.keys(input).length) {
           throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
         }
@@ -657,6 +666,7 @@ export const generateSchemaData = <
 
     const insertArrGenerated = tableFeatures.insert
       ? generateInsertArray(
+          cacheCtx.registries,
           db,
           tableName,
           schema[tableName] as MySqlTable,
@@ -668,6 +678,7 @@ export const generateSchemaData = <
       : undefined;
     const insertSingleGenerated = tableFeatures.insert
       ? generateInsertSingle(
+          cacheCtx.registries,
           db,
           tableName,
           schema[tableName] as MySqlTable,
@@ -692,6 +703,7 @@ export const generateSchemaData = <
       : undefined;
     const upsertArrGenerated = onConflictInput
       ? generateUpsert(
+          cacheCtx.registries,
           db,
           tableName,
           schema[tableName] as MySqlTable,
@@ -705,6 +717,7 @@ export const generateSchemaData = <
       : undefined;
     const upsertSingleGenerated = onConflictInput
       ? generateUpsert(
+          cacheCtx.registries,
           db,
           tableName,
           schema[tableName] as MySqlTable,
@@ -718,6 +731,7 @@ export const generateSchemaData = <
       : undefined;
     const updateGenerated = tableFeatures.update
       ? generateUpdate(
+          cacheCtx.registries,
           db,
           tableName,
           schema[tableName] as MySqlTable,
@@ -733,6 +747,7 @@ export const generateSchemaData = <
       : undefined;
     const updateSingleGenerated = tableFeatures.update
       ? generateUpdate(
+          cacheCtx.registries,
           db,
           tableName,
           schema[tableName] as MySqlTable,
@@ -760,6 +775,7 @@ export const generateSchemaData = <
         : undefined;
     const updateManyGenerated = updateManyInput
       ? generateUpdateMany(
+          cacheCtx.registries,
           db,
           tableName,
           schema[tableName] as MySqlTable,
@@ -847,6 +863,7 @@ export const generateSchemaData = <
             fieldName: updateCountFieldName,
             requireWhere: tableFeatures.requireWhere,
             filterCtx,
+            registries: cacheCtx.registries,
             txCtx: mutationTxCtx,
             policies,
             returnsRows: false,
@@ -865,6 +882,7 @@ export const generateSchemaData = <
             fieldName: deleteCountFieldName,
             requireWhere: tableFeatures.requireWhere,
             filterCtx,
+            registries: cacheCtx.registries,
             txCtx: mutationTxCtx,
             policies,
             returnsRows: false,

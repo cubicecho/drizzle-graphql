@@ -3,7 +3,6 @@ import { isJsonColumn } from '../builders/common/column-filters.ts';
 import { readsNumbersForStrings } from '../builders/common/cursor-value-formats.ts';
 import { drizzleError } from '../builders/common/errors.ts';
 import type { TableNamedRelations } from '../builders/index.ts';
-import { declarePerBuildRegistry } from '../per-build-registry.ts';
 import { dateToCalendarDate, isCalendarDate } from '../scalars/index.ts';
 import {
   floatTupleLength,
@@ -15,6 +14,7 @@ import {
   isMySqlDateTimeStringColumn,
   isPgTimestampStringColumn,
   isSQLiteTimestampColumn,
+  type ScalarOverrides,
   sqliteTimestampToDate,
 } from '../type-converter/index.ts';
 
@@ -86,7 +86,6 @@ export const pgTimestampTextToIso = (value: string): string => {
 
 /** Marks a decoder installed by {@link installSqliteBlobJsonDecoders}, so a rebuild never wraps it twice. */
 const BLOB_JSON_DECODER = Symbol.for('drizzle-graphql.sqliteBlobJsonDecoder');
-const blobDecodersInstalled = declarePerBuildRegistry('SQLite blob JSON decoders');
 
 /**
  * Gives SQLite's blob columns a decoder for the relational query builder's JSON path, so a NULL
@@ -104,7 +103,6 @@ const blobDecodersInstalled = declarePerBuildRegistry('SQLite blob JSON decoders
  * nullable — a `notNull` column cannot hold the NULL, so there it is the empty blob.
  */
 export const installSqliteBlobJsonDecoders = (tables: Record<string, Table>): void => {
-  blobDecodersInstalled();
   for (const table of Object.values(tables)) {
     for (const column of Object.values(getColumns(table))) {
       const columnType: string = (column as any).columnType ?? '';
@@ -131,6 +129,8 @@ export const remapToGraphQLCore = (
   tableName: string,
   // Relation keys have no column; the guard below is what handles them.
   column: Column | undefined,
+  /** The build's scalar overrides; a column one owns is left to its scalar. */
+  overrides: ScalarOverrides | undefined,
   eagerRelations?: Record<string, Record<string, TableNamedRelations>>,
 ): any => {
   // Check for relation fields BEFORE the column check.
@@ -143,6 +143,7 @@ export const remapToGraphQLCore = (
         value,
         rel.targetTableName,
         (rel.relation as any)?.targetTable ?? (rel.relation as any)?.referencedTable,
+        overrides,
         eagerRelations,
       );
     }
@@ -156,6 +157,7 @@ export const remapToGraphQLCore = (
         value,
         rel.targetTableName,
         (rel.relation as any)?.targetTable ?? (rel.relation as any)?.referencedTable,
+        overrides,
         eagerRelations,
       );
       return remapped;
@@ -170,7 +172,7 @@ export const remapToGraphQLCore = (
   // Columns whose output type is a scalar override hand the driver's raw value straight to
   // that scalar — serialization is wholly the scalar's job, and converting here first would
   // double-convert.
-  if (getColumnScalarOverride(column, false)) {
+  if (getColumnScalarOverride(overrides, column, false)) {
     return value;
   }
 
@@ -243,7 +245,7 @@ export const remapToGraphQLCore = (
       return value;
     }
 
-    return value.map((arrVal) => remapToGraphQLCore(key, arrVal, tableName, column, eagerRelations));
+    return value.map((arrVal) => remapToGraphQLCore(key, arrVal, tableName, column, overrides, eagerRelations));
   }
 
   if (typeof value === 'object' && value !== null) {
@@ -296,6 +298,8 @@ export const remapToGraphQLSingleOutput = (
   queryOutput: Record<string, any>,
   tableName: string,
   table: Table,
+  /** The build's scalar overrides; a column one owns is left to its scalar. */
+  overrides: ScalarOverrides | undefined,
   eagerRelations?: Record<string, Record<string, TableNamedRelations>>,
 ) => {
   const columns = getColumns(table);
@@ -318,7 +322,7 @@ export const remapToGraphQLSingleOutput = (
 
     const column = columns[key];
 
-    const remapped = remapToGraphQLCore(key, value, tableName, column, eagerRelations);
+    const remapped = remapToGraphQLCore(key, value, tableName, column, overrides, eagerRelations);
     if (column && remapped !== value) {
       keepRawColumnValue(queryOutput, key, value);
     }
@@ -332,16 +336,24 @@ export const remapToGraphQLArrayOutput = (
   queryOutput: Record<string, any>[],
   tableName: string,
   table: Table,
+  /** The build's scalar overrides; a column one owns is left to its scalar. */
+  overrides: ScalarOverrides | undefined,
   eagerRelations?: Record<string, Record<string, TableNamedRelations>>,
 ) => {
   for (const entry of queryOutput) {
-    remapToGraphQLSingleOutput(entry, tableName, table, eagerRelations);
+    remapToGraphQLSingleOutput(entry, tableName, table, overrides, eagerRelations);
   }
 
   return queryOutput;
 };
 
-export const remapFromGraphQLCore = (value: any, column: Column, columnName: string): any => {
+export const remapFromGraphQLCore = (
+  value: any,
+  column: Column,
+  columnName: string,
+  /** The build's scalar overrides; a column one owns takes its scalar's value as-is. */
+  overrides: ScalarOverrides | undefined,
+): any => {
   // `null` is SQL NULL whatever the column's type, so there is nothing to coerce — and the
   // coercing branches below would get it wrong rather than fail: `new Date(null)` is the
   // epoch, not an invalid date, and `BigInt(null)` throws. Whether the column may hold a
@@ -354,7 +366,7 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
   // parseValue/parseLiteral produced — coercion is the scalar's job, so the value goes to
   // the driver untouched. Only the null-prototype normalization still applies (it undoes a
   // graphql-js artifact, not a coercion — see the default case below).
-  if (getColumnScalarOverride(column, true)) {
+  if (getColumnScalarOverride(overrides, column, true)) {
     if (typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === null) {
       return Object.assign({}, value);
     }
@@ -378,7 +390,7 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
     // `timestamp().array()` keeps the timestamp column type with a `dimensions` count, so an
     // array here is a list of instants, converted element by element.
     if (Array.isArray(value)) {
-      return value.map((element) => remapFromGraphQLCore(element, column, columnName));
+      return value.map((element) => remapFromGraphQLCore(element, column, columnName, overrides));
     }
     const isMySql = columnType.startsWith('MySql');
     const isPgString = isPgTimestampStringColumn(column);
@@ -415,7 +427,7 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
     // `date().array()` keeps the date column type with a `dimensions` count, so an array here
     // is a list of days, checked element by element.
     if (Array.isArray(value)) {
-      return value.map((element) => remapFromGraphQLCore(element, column, columnName));
+      return value.map((element) => remapFromGraphQLCore(element, column, columnName, overrides));
     }
     const day = value instanceof Date ? dateToCalendarDate(value) : value;
     if (typeof day !== 'string' || !isCalendarDate(day)) {
@@ -431,7 +443,7 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
   // them, converted element by element.
   if (dataType.includes('bigint')) {
     if (Array.isArray(value)) {
-      return value.map((element) => remapFromGraphQLCore(element, column, columnName));
+      return value.map((element) => remapFromGraphQLCore(element, column, columnName, overrides));
     }
     try {
       return BigInt(value);
@@ -454,7 +466,7 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
       throw drizzleError(`Field '${columnName}' is not an array!`, { code: 'DRIZZLE_INVALID_INPUT_VALUE' });
     }
     if ((column as any).dimensions > 0 && value.every((element) => element === null || Array.isArray(element))) {
-      return value.map((element) => remapFromGraphQLCore(element, column, columnName));
+      return value.map((element) => remapFromGraphQLCore(element, column, columnName, overrides));
     }
     if (!value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
       throw drizzleError(`Field '${columnName}' is not a list of bytes! Expected integers from 0 to 255.`, {
@@ -507,6 +519,7 @@ export type RemapInputOperation = 'insert' | 'update';
 export const remapFromGraphQLSingleInput = (
   queryInput: Record<string, any>,
   table: Table,
+  overrides: ScalarOverrides | undefined,
   operation: RemapInputOperation = 'insert',
 ): Record<string, any> => {
   const columns = getColumns(table);
@@ -541,7 +554,7 @@ export const remapFromGraphQLSingleInput = (
         continue;
       }
 
-      remapped[key] = remapFromGraphQLCore(value, column, key);
+      remapped[key] = remapFromGraphQLCore(value, column, key, overrides);
     }
   }
 
@@ -552,5 +565,6 @@ export const remapFromGraphQLSingleInput = (
 export const remapFromGraphQLArrayInput = (
   queryInput: Record<string, any>[],
   table: Table,
+  overrides: ScalarOverrides | undefined,
   operation: RemapInputOperation = 'insert',
-): Record<string, any>[] => queryInput.map((entry) => remapFromGraphQLSingleInput(entry, table, operation));
+): Record<string, any>[] => queryInput.map((entry) => remapFromGraphQLSingleInput(entry, table, overrides, operation));

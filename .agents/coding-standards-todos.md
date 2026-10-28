@@ -317,6 +317,8 @@ are not undone). Filed as #232.
 
 ### Filed as GitHub issues (for later)
 
+All of these are closed: #231, #233, #236, #237 in 18.x; #230 (unique-key narrowing, junction hint), #232 (`onCommit`), #235 in 18.x; #234 in 19.0.0.
+
 | Issue | What | From |
 |---|---|---|
 | #230 | `…Single` on a table without a primary or unique key (or with only nullable unique keys holding NULL) can still write a row that arrived after the multi-row check | Claimed but not enforced |

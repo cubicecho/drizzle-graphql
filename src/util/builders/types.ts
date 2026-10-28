@@ -100,8 +100,8 @@ export type SchemaGeneratorOptions = {
   limits: LimitPolicyFor | undefined;
   /**
    * Validated `BuildSchemaConfig.exclude`. Table names are filtered out of the schema before
-   * anything is generated; column names are installed into the exclusion registry by
-   * `registerColumnExclusions` and read from there by every schema-shape site.
+   * anything is generated; column names become the build's `registries.exclusions`
+   * (`createColumnExclusions`), which every schema-shape site reads.
    */
   exclude?: SchemaExclusions;
   /**

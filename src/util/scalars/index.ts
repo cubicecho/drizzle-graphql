@@ -1,5 +1,9 @@
-import { GraphQLScalarType, Kind } from 'graphql';
-import { GraphQLDateTime, GraphQLJSON, GraphQLUUID } from 'graphql-scalars';
+import { type ASTNode, GraphQLError, GraphQLScalarType, type GraphQLScalarTypeConfig, Kind } from 'graphql';
+import {
+  GraphQLJSON,
+  GraphQLDateTime as GraphQLScalarsDateTime,
+  GraphQLUUID as GraphQLScalarsUUID,
+} from 'graphql-scalars';
 import { type DrizzleErrorCode, drizzleError } from '../builders/common/errors.ts';
 
 // Both scalars below coerce the same way in both directions, so each helper is built once per
@@ -207,4 +211,91 @@ export const GraphQLDate = new GraphQLScalarType<string, string>({
   },
 });
 
-export { GraphQLDateTime, GraphQLJSON, GraphQLUUID };
+type Coercer = (...args: any[]) => unknown;
+
+/**
+ * `inner`, except that whatever it refuses is rethrown as a `GraphQLError` coded `code`, with
+ * `inner`'s own message and AST nodes. A literal coercer is handed the literal first, so it
+ * becomes the `locations` when `inner` named none.
+ */
+const codedWhenRefused =
+  (code: DrizzleErrorCode, inner: Coercer, literal = false): Coercer =>
+  (...args) => {
+    try {
+      return inner(...args);
+    } catch (error) {
+      const nodes = (error instanceof GraphQLError && error.nodes) || (literal ? (args[0] as ASTNode) : undefined);
+      throw drizzleError(error instanceof Error ? error.message : String(error), { code, nodes });
+    }
+  };
+
+// graphql 17 adds `coerce*` siblings of 16's `serialize` / `parseValue` / `parseLiteral`, and
+// executes them in preference; whichever the running version's `toConfig` has gets wrapped.
+type CoercionConfig = GraphQLScalarTypeConfig<unknown, unknown> & {
+  coerceOutputValue?: Coercer;
+  coerceInputValue?: Coercer;
+  coerceInputLiteral?: Coercer;
+};
+
+const COERCERS: ReadonlyArray<[keyof CoercionConfig, DrizzleErrorCode, boolean]> = [
+  ['serialize', UNREPRESENTABLE, false],
+  ['coerceOutputValue', UNREPRESENTABLE, false],
+  ['parseValue', INVALID_INPUT, false],
+  ['coerceInputValue', INVALID_INPUT, false],
+  ['parseLiteral', INVALID_INPUT, true],
+  ['coerceInputLiteral', INVALID_INPUT, true],
+];
+
+/**
+ * A copy of `scalar` whose refusals carry this library's codes, as its own scalars' do: a
+ * value it cannot output is `DRIZZLE_UNREPRESENTABLE_VALUE`, an argument it cannot accept
+ * `DRIZZLE_INVALID_INPUT_VALUE`. Everything else — name, description, `specifiedByURL`,
+ * extensions, what each coercion returns — is `scalar`'s config unchanged, so the SDL is too.
+ */
+const withDrizzleErrorCodes = <T extends GraphQLScalarType<any, any>>(scalar: T): T => {
+  const config: CoercionConfig = scalar.toConfig();
+  const wrapped: Record<string, Coercer> = {};
+  for (const [key, code, literal] of COERCERS) {
+    const inner = config[key];
+    if (typeof inner === 'function') {
+      wrapped[key] = codedWhenRefused(code, inner as Coercer, literal);
+    }
+  }
+  return new GraphQLScalarType({ ...config, ...wrapped }) as unknown as T;
+};
+
+/**
+ * `graphql-scalars`' `DateTime`, with coded errors: a value it cannot output — an invalid
+ * `Date`, which is how drizzle reads a BC date, a year past 275760 or an infinity — fails with
+ * `DRIZZLE_UNREPRESENTABLE_VALUE`, and an argument it cannot parse with
+ * `DRIZZLE_INVALID_INPUT_VALUE`, as {@link GraphQLDate}'s do. Messages, coercion and SDL are
+ * `graphql-scalars`' own.
+ *
+ * It is a separate instance, so a schema that also holds `graphql-scalars`' own `DateTime`
+ * holds two types of one name; scalar overrides map that instance to this one
+ * ({@link canonicalScalar}), and consumers composing schemas import this one.
+ */
+export const GraphQLDateTime: typeof GraphQLScalarsDateTime = withDrizzleErrorCodes(GraphQLScalarsDateTime);
+
+/**
+ * `graphql-scalars`' `UUID`, with coded errors the same way as {@link GraphQLDateTime}: a value
+ * that is not a UUID fails with `DRIZZLE_UNREPRESENTABLE_VALUE` on output and
+ * `DRIZZLE_INVALID_INPUT_VALUE` on input. Messages, coercion and SDL are `graphql-scalars`' own,
+ * and it is likewise a separate instance.
+ */
+export const GraphQLUUID: typeof GraphQLScalarsUUID = withDrizzleErrorCodes(GraphQLScalarsUUID);
+
+/** The library's own instances of scalars `graphql-scalars` also exports, keyed by theirs. */
+const CANONICAL_SCALARS: ReadonlyMap<GraphQLScalarType, GraphQLScalarType> = new Map<
+  GraphQLScalarType,
+  GraphQLScalarType
+>([
+  [GraphQLScalarsDateTime, GraphQLDateTime],
+  [GraphQLScalarsUUID, GraphQLUUID],
+]);
+
+/** The library's own instance of a scalar `graphql-scalars` also exports, so one schema never holds both. */
+export const canonicalScalar = (scalar: GraphQLScalarType): GraphQLScalarType =>
+  CANONICAL_SCALARS.get(scalar) ?? scalar;
+
+export { GraphQLJSON };

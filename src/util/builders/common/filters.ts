@@ -30,6 +30,7 @@ import {
 import { MySqlFloat } from 'drizzle-orm/mysql-core';
 import { SQLiteTimestamp } from 'drizzle-orm/sqlite-core';
 import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
+import type { ScalarOverrides } from '../../type-converter/index.ts';
 import type { FilterColumnOperators, FilterColumnOperatorsCore } from '../types.ts';
 import { columnDialect, isJsonColumn } from './column-filters.ts';
 import { drizzleError } from './errors.ts';
@@ -614,6 +615,11 @@ export const extractFiltersColumn = <TColumn extends Column>(
   column: TColumn,
   columnName: string,
   operators: FilterColumnOperators<TColumn>,
+  /**
+   * The build's scalar overrides: an operand on a column one owns is bound as its scalar
+   * produced it. Without them every operand is converted by the built-in rules.
+   */
+  overrides?: ScalarOverrides,
 ): CompiledFilter => {
   // Boolean branches compose with sibling operators: siblings and the AND list are ANDed
   // together, NOT negates its whole branch, and the OR group is ANDed with the rest.
@@ -644,7 +650,7 @@ export const extractFiltersColumn = <TColumn extends Column>(
       const singleValue = secondsBoundOperand(
         column,
         operatorName,
-        remapFromGraphQLCore(operatorValue, column, columnName),
+        remapFromGraphQLCore(operatorValue, column, columnName, overrides),
       );
       variants.push(
         foldCase
@@ -695,7 +701,9 @@ export const extractFiltersColumn = <TColumn extends Column>(
         }
         continue;
       }
-      const arrayValue = (operatorValue as any[]).map((val) => remapFromGraphQLCore(val, column, columnName));
+      const arrayValue = (operatorValue as any[]).map((val) =>
+        remapFromGraphQLCore(val, column, columnName, overrides),
+      );
       variants.push(
         foldCase
           ? lowerMembership(column, arrayValue, operatorName === 'notInArray')
@@ -708,7 +716,7 @@ export const extractFiltersColumn = <TColumn extends Column>(
       // Single-element membership: containment with a one-element array (`col @> ARRAY[value]`).
       // Elements are converted as a write converts them — a `DateTime` to a `Date`, a `BigInt`
       // string to a bigint — so the column's encoder accepts them.
-      variants.push(arrayContains(column, [remapFromGraphQLCore(operatorValue, column, columnName)]));
+      variants.push(arrayContains(column, [remapFromGraphQLCore(operatorValue, column, columnName, overrides)]));
     } else if (operatorName in arrayMembershipOps) {
       // Same reasoning as inArray/notInArray: overlapping with no elements is never true,
       // and every array contains all zero of them.
@@ -721,7 +729,7 @@ export const extractFiltersColumn = <TColumn extends Column>(
       variants.push(
         arrayMembershipOps[operatorName]!(
           column,
-          (operatorValue as any[]).map((element) => remapFromGraphQLCore(element, column, columnName)),
+          (operatorValue as any[]).map((element) => remapFromGraphQLCore(element, column, columnName, overrides)),
         ),
       );
     } else if (operatorName === 'isEmpty') {
@@ -737,7 +745,9 @@ export const extractFiltersColumn = <TColumn extends Column>(
     }
   }
 
-  compileBooleanBranches(variants, { AND, NOT, OR }, (branch) => extractFiltersColumn(column, columnName, branch));
+  compileBooleanBranches(variants, { AND, NOT, OR }, (branch) =>
+    extractFiltersColumn(column, columnName, branch, overrides),
+  );
 
   return allOf(variants);
 };

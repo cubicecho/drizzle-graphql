@@ -6,8 +6,9 @@ import { generateColumnEnum, getUniqueColumnSets } from '@/util/builders/common'
 
 // getUniqueColumnSets takes the dialect's getTableConfig so one implementation serves all
 // three; these helpers stand in for what pg.ts / sqlite.ts pass.
-const pgUniqueSets = (table: any): string[][] => getUniqueColumnSets(table, getTableConfig as any);
-const sqliteUniqueSets = (table: any): string[][] => getUniqueColumnSets(table, sqliteTableConfig as any);
+const pgUniqueSets = (table: any): string[][] => getUniqueColumnSets(new WeakMap(), table, getTableConfig as any);
+const sqliteUniqueSets = (table: any): string[][] =>
+  getUniqueColumnSets(new WeakMap(), table, sqliteTableConfig as any);
 
 describe('getUniqueColumnSets', () => {
   it('reports an inline primary key', () => {
@@ -88,7 +89,7 @@ describe('generateColumnEnum', () => {
   });
 
   it('builds an enum of every column property name by default', () => {
-    const gqlEnum = generateColumnEnum(table, 'EnumSourceAllColumns', 'All of them');
+    const gqlEnum = generateColumnEnum(new WeakMap(), table, 'EnumSourceAllColumns', 'All of them');
 
     expect(gqlEnum?.name).toBe('EnumSourceAllColumns');
     expect(gqlEnum?.description).toBe('All of them');
@@ -99,6 +100,7 @@ describe('generateColumnEnum', () => {
 
   it('filters columns with the predicate', () => {
     const gqlEnum = generateColumnEnum(
+      new WeakMap(),
       table,
       'EnumSourceNotNull',
       'Only the required ones',
@@ -109,13 +111,13 @@ describe('generateColumnEnum', () => {
   });
 
   it('returns undefined rather than an empty enum when nothing qualifies', () => {
-    expect(generateColumnEnum(table, 'EnumSourceNone', 'Nothing', () => false)).toBeUndefined();
+    expect(generateColumnEnum(new WeakMap(), table, 'EnumSourceNone', 'Nothing', () => false)).toBeUndefined();
   });
 
   it('caches per table and enum name', () => {
-    const first = generateColumnEnum(table, 'EnumSourceCached', 'Cached');
-    const second = generateColumnEnum(table, 'EnumSourceCached', 'Cached');
-    const other = generateColumnEnum(table, 'EnumSourceCachedOther', 'A different enum');
+    const first = generateColumnEnum(new WeakMap(), table, 'EnumSourceCached', 'Cached');
+    const second = generateColumnEnum(new WeakMap(), table, 'EnumSourceCached', 'Cached');
+    const other = generateColumnEnum(new WeakMap(), table, 'EnumSourceCachedOther', 'A different enum');
 
     expect(second).toBe(first);
     expect(other).not.toBe(first);
@@ -123,8 +125,8 @@ describe('generateColumnEnum', () => {
 
   it('does not share a cache entry between two tables', () => {
     const otherTable = pgTable('enum_source_two', { id: integer('id').primaryKey() });
-    const forFirst = generateColumnEnum(table, 'SharedName', 'x');
-    const forOther = generateColumnEnum(otherTable, 'SharedName', 'x');
+    const forFirst = generateColumnEnum(new WeakMap(), table, 'SharedName', 'x');
+    const forOther = generateColumnEnum(new WeakMap(), otherTable, 'SharedName', 'x');
 
     expect(forOther).not.toBe(forFirst);
     expect(forOther?.getValues().map((v) => v.name)).toEqual(['id']);

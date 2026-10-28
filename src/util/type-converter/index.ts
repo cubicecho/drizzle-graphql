@@ -25,8 +25,8 @@ import {
   GraphQLString,
 } from 'graphql';
 import { capitalize, constantCase } from '../case-ops/index.ts';
-import { declarePerBuildRegistry } from '../per-build-registry.ts';
 import {
+  canonicalScalar,
   GraphQLBigIntString,
   GraphQLDate,
   GraphQLDateTime,
@@ -105,34 +105,31 @@ const enumValuesKey = (values: readonly string[]): string => JSON.stringify(valu
  */
 const enumValueNamesKey = (names: readonly string[]): string => JSON.stringify(names);
 
-/**
- * Every GraphQL enum name this build has handed out. Two columns that resolve to the same
- * name share one type — that is how the columns of one `pgEnum` end up on a single type —
- * so the values are kept alongside it to tell a genuine collision from a re-use.
- */
-let enumNamesInUse = new Map<string, { type: GraphQLEnumType; valuesKey: string; namesKey: string }>();
-let enumNameMapper: EnumNameMapper | undefined;
-let enumValueNameMapper: EnumValueNameMapper | undefined;
-const enumConfigInstalled = declarePerBuildRegistry('enum config');
-
 /** The value-name presets, by the string a config passes for them. */
 const enumValueNamePresets: Record<string, EnumValueNameMapper> = {
   constant: ({ value }) => constantCase(value),
 };
 
 /**
- * Resets the enum registry for a fresh schema build and installs that build's
- * `enumNameMapper` and `enumValueNameMapper`. Called once per `generateSchemaData`, alongside
- * {@link registerScalarOverrides} — without the reset a second build would reuse the first
- * build's enum types, and so its naming decisions.
+ * One build's enum state: its naming config, and every GraphQL enum name it has handed out.
+ * Two columns that resolve to the same name share one type — that is how the columns of one
+ * `pgEnum` end up on a single type — so the values are kept alongside it to tell a genuine
+ * collision from a re-use. Created per build by {@link createEnumRegistry}, so a second build
+ * never reuses the first build's enum types, and so its naming decisions.
  */
-export const registerEnumConfig = (config: {
+export type EnumRegistry = {
+  namesInUse: Map<string, { type: GraphQLEnumType; valuesKey: string; namesKey: string }>;
+  nameMapper: EnumNameMapper | undefined;
+  valueNameMapper: EnumValueNameMapper | undefined;
+};
+
+/** A fresh enum registry for one build, with that build's `enumNameMapper` and `enumValueNameMapper`. */
+export const createEnumRegistry = (config: {
   enumNameMapper?: EnumNameMapper;
   enumValueNameMapper?: 'constant' | EnumValueNameMapper;
-}): void => {
-  enumConfigInstalled();
-  enumNameMapper = config.enumNameMapper;
+}): EnumRegistry => {
   const valueMapper = config.enumValueNameMapper;
+  let valueNameMapper: EnumValueNameMapper | undefined;
   if (typeof valueMapper === 'string') {
     const preset = enumValueNamePresets[valueMapper];
     if (!preset) {
@@ -140,11 +137,20 @@ export const registerEnumConfig = (config: {
         `Drizzle-GraphQL Error: Unknown enumValueNameMapper preset '${valueMapper}'. The only preset is 'constant'; pass a function for anything else.`,
       );
     }
-    enumValueNameMapper = preset;
+    valueNameMapper = preset;
   } else {
-    enumValueNameMapper = valueMapper;
+    valueNameMapper = valueMapper;
   }
-  enumNamesInUse = new Map();
+  return { namesInUse: new Map(), nameMapper: config.enumNameMapper, valueNameMapper };
+};
+
+/**
+ * What a column's GraphQL type depends on beyond the column itself: the build's scalar
+ * overrides and its enum registry. The type-conversion half of the build's `BuildRegistries`.
+ */
+export type ColumnTypeRegistries = {
+  scalarOverrides: ScalarOverrides;
+  enums: EnumRegistry;
 };
 
 /**
@@ -163,11 +169,16 @@ export const registerEnumConfig = (config: {
  * Sending two *different* value lists to one name is a build-time error rather than an
  * invalid schema.
  */
-const generateEnumCached = (column: Column, columnName: string, tableName: string): GraphQLEnumType => {
+const generateEnumCached = (
+  enums: EnumRegistry,
+  column: Column,
+  columnName: string,
+  tableName: string,
+): GraphQLEnumType => {
   const declared = declaredEnum(column);
   const values = column.enumValues!;
   const name =
-    enumNameMapper?.({
+    enums.nameMapper?.({
       enumName: declared?.enumName,
       schema: declared?.schema,
       tableName,
@@ -176,7 +187,7 @@ const generateEnumCached = (column: Column, columnName: string, tableName: strin
     }) ?? (declared ? `${pascalize(declared.enumName)}Enum` : `${capitalize(tableName)}${capitalize(columnName)}Enum`);
 
   const valueNames = values.map((value, index) => {
-    const mapped = enumValueNameMapper?.({
+    const mapped = enums.valueNameMapper?.({
       enumName: declared?.enumName,
       schema: declared?.schema,
       tableName,
@@ -211,7 +222,7 @@ const generateEnumCached = (column: Column, columnName: string, tableName: strin
 
   const valuesKey = enumValuesKey(values);
   const namesKey = enumValueNamesKey(valueNames);
-  const claimed = enumNamesInUse.get(name);
+  const claimed = enums.namesInUse.get(name);
   if (claimed) {
     if (claimed.valuesKey !== valuesKey) {
       throw new Error(
@@ -243,7 +254,7 @@ const generateEnumCached = (column: Column, columnName: string, tableName: strin
     ),
   });
 
-  enumNamesInUse.set(name, { type: gqlEnum, valuesKey, namesKey });
+  enums.namesInUse.set(name, { type: gqlEnum, valuesKey, namesKey });
 
   return gqlEnum;
 };
@@ -364,6 +375,7 @@ export const floatTupleLength = (column: Column): number | undefined => {
 };
 
 const columnToGraphQLCore = (
+  enums: EnumRegistry,
   column: Column,
   columnName: string,
   tableName: string,
@@ -375,7 +387,7 @@ const columnToGraphQLCore = (
   // their dedicated handling below.
   const dimensions = (column as any).dimensions as number | undefined;
   if (dimensions !== undefined && dimensions > 0) {
-    const inner = columnBaseToGraphQLCore(column, columnName, tableName, isInput);
+    const inner = columnBaseToGraphQLCore(enums, column, columnName, tableName, isInput);
     const innerLabel = inner.typeLabel ?? (inner.type as GraphQLScalarType).name;
 
     // A Postgres array may hold NULL elements at any depth, so output elements are nullable.
@@ -391,10 +403,11 @@ const columnToGraphQLCore = (
     return { type, typeLabel };
   }
 
-  return columnBaseToGraphQLCore(column, columnName, tableName, isInput);
+  return columnBaseToGraphQLCore(enums, column, columnName, tableName, isInput);
 };
 
 const columnBaseToGraphQLCore = (
+  enums: EnumRegistry,
   column: Column,
   columnName: string,
   tableName: string,
@@ -424,7 +437,7 @@ const columnBaseToGraphQLCore = (
           : { type: GraphQLJSON, typeLabel: 'JSON' };
     case 'string':
       if (column.enumValues?.length) {
-        return { type: generateEnumCached(column, columnName, tableName) };
+        return { type: generateEnumCached(enums, column, columnName, tableName) };
       }
 
       // numeric/decimal columns (pg numeric, mysql decimal, sqlite numeric) transport as
@@ -479,22 +492,28 @@ const columnBaseToGraphQLCore = (
 };
 
 /**
- * Per-column scalar overrides, resolved at build time from `BuildSchemaConfig.scalars` /
- * `BuildSchemaConfig.mapColumnType` and consulted by every column→GraphQL type decision
- * (select fields, insert/update inputs, filter operands, aggregate min/max) as well as by
- * the runtime data mappers, which must not re-coerce a value an override scalar owns.
+ * One build's per-column scalar overrides, resolved at build time from
+ * `BuildSchemaConfig.scalars` / `BuildSchemaConfig.mapColumnType` and consulted by every
+ * column→GraphQL type decision (select fields, insert/update inputs, filter operands, aggregate
+ * min/max) as well as by the runtime data mappers, which must not re-coerce a value an override
+ * scalar owns.
  *
- * Keyed weakly by the column object itself so the registry never outlives the schema.
- * `registerScalarOverrides` runs on every build and clears entries for columns that no
- * longer have an override; when two live schemas are built from the same table objects
- * with different scalar configs, the most recent build wins for runtime value mapping.
+ * Keyed by the column object and owned by the build ({@link createScalarOverrides}): it lives as
+ * long as the build does, and two live schemas built from the same table objects with different
+ * scalar configs each map values by their own overrides.
  */
-const columnScalarOverrides = new WeakMap<Column, { output?: GraphQLScalarType; input?: GraphQLScalarType }>();
-const scalarOverridesInstalled = declarePerBuildRegistry('scalar overrides');
+export type ScalarOverrides = ReadonlyMap<Column, { output?: GraphQLScalarType; input?: GraphQLScalarType }>;
 
-/** The scalar overriding this column in the given direction, if one was registered. */
-export const getColumnScalarOverride = (column: Column, isInput: boolean): GraphQLScalarType | undefined => {
-  const override = columnScalarOverrides.get(column);
+/**
+ * The scalar overriding this column in the given direction, if the build registered one. No
+ * registry — a caller with no build in hand — means no overrides: built-in conversion applies.
+ */
+export const getColumnScalarOverride = (
+  overrides: ScalarOverrides | undefined,
+  column: Column,
+  isInput: boolean,
+): GraphQLScalarType | undefined => {
+  const override = overrides?.get(column);
   return override ? (isInput ? override.input : override.output) : undefined;
 };
 
@@ -516,23 +535,35 @@ const normalizeScalarOverride = (
     }
   }
 
-  return pair;
+  // `graphql-scalars`' own `DateTime` is the library's built-in one under another instance; a
+  // schema holding both would hold two types named `DateTime`.
+  return {
+    output: pair.output && canonicalScalar(pair.output),
+    input: pair.input && canonicalScalar(pair.input),
+  };
 };
 
 /**
  * Resolves the scalar-override config against every column of the given tables and stores
- * the result in the override registry. Called by `installBuildRegistries`, before any types are
- * generated — and always, even with no config, so a rebuild clears overrides left behind
- * by a previous build against the same table objects.
+ * the result in a fresh override registry for one build. Called by `createBuildRegistries`,
+ * before any types are generated.
  *
  * The declarative `scalars` map wins over `mapColumnType`; a mapper returning `undefined`
  * leaves the column on built-in detection.
  */
-export const registerScalarOverrides = (
+export const createScalarOverrides = (
   tables: Record<string, Table>,
-  config: { scalars?: ScalarOverridesConfig; mapColumnType?: ColumnTypeMapper },
-): void => {
-  scalarOverridesInstalled();
+  config: {
+    scalars?: ScalarOverridesConfig;
+    mapColumnType?: ColumnTypeMapper;
+    enumNameMapper?: EnumNameMapper;
+    enumValueNameMapper?: 'constant' | EnumValueNameMapper;
+  },
+): ScalarOverrides => {
+  const overrides = new Map<Column, { output?: GraphQLScalarType; input?: GraphQLScalarType }>();
+  // The default types a `mapColumnType` mapper is shown are named by this build's enum config,
+  // in a registry of their own: the enums built to show the mapper are not the schema's.
+  const mapperEnums = config.mapColumnType ? createEnumRegistry(config) : undefined;
   for (const [tableName, table] of Object.entries(tables)) {
     for (const [columnName, column] of Object.entries(getColumns(table))) {
       const declared = config.scalars?.[tableName]?.[columnName];
@@ -547,10 +578,12 @@ export const registerScalarOverrides = (
         let defaultType: GraphQLOutputType | undefined;
         let defaultInputType: GraphQLInputType | undefined;
         try {
-          defaultType = columnToGraphQLCore(column, columnName, tableName, false).type as GraphQLOutputType;
+          defaultType = columnToGraphQLCore(mapperEnums!, column, columnName, tableName, false)
+            .type as GraphQLOutputType;
         } catch {}
         try {
-          defaultInputType = columnToGraphQLCore(column, columnName, tableName, true).type as GraphQLInputType;
+          defaultInputType = columnToGraphQLCore(mapperEnums!, column, columnName, tableName, true)
+            .type as GraphQLInputType;
         } catch {}
 
         const mapped = config.mapColumnType(column, { tableName, columnName, defaultType, defaultInputType });
@@ -560,15 +593,15 @@ export const registerScalarOverrides = (
       }
 
       if (resolved && (resolved.output !== undefined || resolved.input !== undefined)) {
-        columnScalarOverrides.set(column, resolved);
-      } else {
-        columnScalarOverrides.delete(column);
+        overrides.set(column, resolved);
       }
     }
   }
+  return overrides;
 };
 
 export const drizzleColumnToGraphQLType = <TColumn extends Column, TIsInput extends boolean = false>(
+  registries: ColumnTypeRegistries,
   column: TColumn,
   columnName: string,
   tableName: string,
@@ -576,12 +609,12 @@ export const drizzleColumnToGraphQLType = <TColumn extends Column, TIsInput exte
   defaultIsNullable = false,
   isInput: TIsInput = false as TIsInput,
 ): ConvertedColumn<TIsInput> => {
-  const override = getColumnScalarOverride(column, isInput);
+  const override = getColumnScalarOverride(registries.scalarOverrides, column, isInput);
   // An override replaces built-in detection entirely, so the label is the scalar's own name:
   // nothing downstream should treat an overridden column as the type it would have had.
   const typeDesc: ConvertedColumn<boolean> = override
     ? { type: override, typeLabel: override.name }
-    : columnToGraphQLCore(column, columnName, tableName, isInput);
+    : columnToGraphQLCore(registries.enums, column, columnName, tableName, isInput);
 
   if (forceNullable) {
     return typeDesc as ConvertedColumn<TIsInput>;

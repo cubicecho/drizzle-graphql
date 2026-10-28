@@ -3,61 +3,56 @@
 
 import type { Column, Table } from 'drizzle-orm';
 import { getColumns } from 'drizzle-orm';
-import { declarePerBuildRegistry } from '../../per-build-registry.ts';
 
 /**
- * Columns this build keeps out of the generated schema, keyed by the table object.
+ * Columns one build keeps out of the generated schema, keyed by the table object. Part of the
+ * build's `BuildRegistries`, created by {@link createColumnExclusions}.
  *
- * A registry rather than a threaded parameter because the sites that decide schema shape —
- * the object type, every input, the filter, `orderBy`, the aggregates, the column enums —
- * are spread across four files and reach a table with no config in hand. Runtime code keeps
- * calling `getColumns` directly: a primary key that a client cannot name is still the key a
- * cursor is built from, and hiding it there would break pagination rather than secure it.
- *
- * {@link registerColumnExclusions} runs on every build, including with no config, so a
- * second build against the same table objects never inherits the first build's exclusions.
+ * Looked up rather than threaded as config because the sites that decide schema shape — the
+ * object type, every input, the filter, `orderBy`, the aggregates, the column enums — are spread
+ * across four files and reach a table with only the build's registries in hand. Runtime code
+ * keeps calling `getColumns` directly: a primary key that a client cannot name is still the key
+ * a cursor is built from, and hiding it there would break pagination rather than secure it.
  */
-const excludedColumnRegistry = new WeakMap<object, Set<string>>();
-const exclusionsInstalled = declarePerBuildRegistry('column exclusions');
+export type ColumnExclusions = WeakMap<object, Set<string>>;
 
-/** Installs this build's column exclusions and clears any left by a previous build. */
-export const registerColumnExclusions = (
+/** One build's column exclusions, from its `exclude.columns` config. */
+export const createColumnExclusions = (
   tables: Record<string, Table>,
   exclude?: { columns?: Record<string, string[]> },
-): void => {
-  exclusionsInstalled();
+): ColumnExclusions => {
+  const exclusions: ColumnExclusions = new WeakMap();
   for (const [tableName, table] of Object.entries(tables)) {
     const hidden = exclude?.columns?.[tableName];
     if (hidden?.length) {
-      excludedColumnRegistry.set(table, new Set(hidden));
-    } else {
-      excludedColumnRegistry.delete(table);
+      exclusions.set(table, new Set(hidden));
     }
   }
+  return exclusions;
 };
 
-/** Whether any column of this table was excluded from the schema. */
-export const hasExcludedColumns = (table: Table): boolean => excludedColumnRegistry.has(table);
+/** Whether the build excluded any column of this table from the schema. */
+export const hasExcludedColumns = (exclusions: ColumnExclusions, table: Table): boolean => exclusions.has(table);
 
 /**
- * A stable string naming this build's exclusions for `table`, empty when it has none. Used to
+ * A stable string naming the build's exclusions for `table`, empty when it has none. Used to
  * key the caches that hold generated types: two builds of the same table objects with
  * different exclusions must not share an entry, but *within* one build every call site has to
  * get the same instance back or the schema ends up with two types of the same name.
  */
-export const excludedColumnsKey = (table: Table): string => {
-  const hidden = excludedColumnRegistry.get(table);
+export const excludedColumnsKey = (exclusions: ColumnExclusions, table: Table): string => {
+  const hidden = exclusions.get(table);
   return hidden ? [...hidden].sort().join(',') : '';
 };
 
 /**
- * The columns of `table` that this build exposes — every column unless some were excluded.
+ * The columns of `table` that the build exposes — every column unless some were excluded.
  * Use this anywhere the result decides what the *schema* contains; use `getColumns` where it
  * decides what SQL to write.
  */
-export const visibleColumns = (table: Table): Record<string, Column> => {
+export const visibleColumns = (exclusions: ColumnExclusions, table: Table): Record<string, Column> => {
   const columns = getColumns(table);
-  const hidden = excludedColumnRegistry.get(table);
+  const hidden = exclusions.get(table);
   if (!hidden) {
     return columns;
   }

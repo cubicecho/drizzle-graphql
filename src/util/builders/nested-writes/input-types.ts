@@ -85,14 +85,22 @@ export const createNestedWriteTypes = (params: {
     const omitted = plan.fkSide === 'child' ? plan.foreignColPropName : undefined;
     // Same rule as the table's own create input, minus the key the parent row supplies.
     const fields = Object.fromEntries(
-      Object.entries(visibleColumns(plan.targetTable))
+      Object.entries(visibleColumns(cacheCtx.registries.exclusions, plan.targetTable))
         .filter(
           ([columnName, column]) =>
             columnName !== omitted && isWritableColumn(cacheCtx, plan.targetTableName, columnName, column as Column),
         )
         .map(([columnName, column]) => [
           columnName,
-          drizzleColumnToGraphQLType(column as Column, columnName, plan.targetTableName, false, true, true),
+          drizzleColumnToGraphQLType(
+            cacheCtx.registries,
+            column as Column,
+            columnName,
+            plan.targetTableName,
+            false,
+            true,
+            true,
+          ),
         ]),
     );
 

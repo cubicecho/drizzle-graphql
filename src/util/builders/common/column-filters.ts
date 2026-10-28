@@ -382,7 +382,15 @@ export const generateColumnFilterValues = (
   columnName: string,
   cacheCtx: TypeCacheCtx,
 ): GraphQLInputObjectType => {
-  const columnGraphQLType = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, true);
+  const columnGraphQLType = drizzleColumnToGraphQLType(
+    cacheCtx.registries,
+    column,
+    columnName,
+    tableName,
+    true,
+    false,
+    true,
+  );
 
   // A scalar-overridden column gets its filter built from the override scalar, which
   // `columnGraphQLType` above already resolved to. An override to one of the library's own
@@ -390,7 +398,7 @@ export const generateColumnFilterValues = (
   // that scalar gets); any other scalar gets its own scalar-shaped filter type named after it
   // (e.g. MoneyFilter). The cache stays keyed by name, so all columns overridden with the
   // same scalar share one filter type.
-  const inputOverride = getColumnScalarOverride(column, true);
+  const inputOverride = getColumnScalarOverride(cacheCtx.registries.scalarOverrides, column, true);
 
   const {
     name: genericName,

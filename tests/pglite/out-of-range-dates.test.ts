@@ -9,8 +9,9 @@ import { buildRelations, createRelationsHelper, sql } from 'drizzle-orm';
 import { date, integer, pgTable, timestamp } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
 import { type GraphQLSchema, graphql } from 'graphql';
+import { GraphQLDateTime as GraphQLScalarsDateTime } from 'graphql-scalars';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildSchema } from '@/index';
+import { buildSchema, GraphQLDateTime } from '@/index';
 
 const Groups = pgTable('groups', { id: integer('id').primaryKey() });
 const Eras = pgTable('eras', {
@@ -31,11 +32,12 @@ const relations = buildRelations(tables, {
 
 let pglite: PGlite;
 let schema: GraphQLSchema;
+let db: any;
 
 beforeAll(async () => {
   pglite = new PGlite();
   await pglite.waitReady;
-  const db = (drizzle as any)({ client: pglite, relations });
+  db = (drizzle as any)({ client: pglite, relations });
   await db.execute(sql`CREATE TABLE groups (id integer PRIMARY KEY)`);
   await db.execute(sql`CREATE TABLE eras (
     id integer PRIMARY KEY,
@@ -61,7 +63,8 @@ afterAll(async () => {
   await pglite?.close().catch(() => {});
 });
 
-const run = (source: string) => graphql({ schema, source, contextValue: {} });
+const run = (source: string, variableValues?: Record<string, unknown>) =>
+  graphql({ schema, source, variableValues, contextValue: {} });
 
 /** Every column's values, ascending: -infinity, 44 BC, 1999, 2024, 280000, infinity. */
 const ASCENDING = [5, 1, 6, 2, 3, 4];
@@ -132,6 +135,53 @@ describe('pglite: mode date columns holding values a JS Date cannot', () => {
     for (const error of res.errors) {
       expect(error.message).not.toMatch(/Invalid time value|Internal server error/);
     }
+  });
+
+  it('codes a value the DateTime scalar cannot represent the way the Date scalar codes one', async () => {
+    const res: any = await run(`{ eras(where: { id: { eq: 1 } }) { maybeAt } }`);
+    const nested: any = await run(`{ erasAggregate { min { atTz } } }`);
+    const errors = [...(res.errors ?? []), ...(nested.errors ?? [])];
+    expect(errors.map((error: any) => error.path.join('.'))).toEqual(['eras.0.maybeAt', 'erasAggregate.min.atTz']);
+    for (const error of errors) {
+      expect(error.extensions?.code).toBe('DRIZZLE_UNREPRESENTABLE_VALUE');
+      expect(error.message).toMatch(/^DateTime cannot represent/);
+    }
+    const day: any = await run(`{ eras(where: { id: { eq: 1 } }) { day } }`);
+    expect(day.errors?.[0]?.extensions?.code).toBe('DRIZZLE_UNREPRESENTABLE_VALUE');
+  });
+
+  it('codes a DateTime argument the scalar cannot parse, as a literal or a variable', async () => {
+    const literal: any = await run(`{ eras(where: { atTz: { eq: "not a date" } }) { id } }`);
+    const variable: any = await run(`query ($at: DateTime) { eras(where: { atTz: { eq: $at } }) { id } }`, {
+      at: 'not a date',
+    });
+    const write: any = await run(
+      `mutation ($at: DateTime) { updateEras(where: { id: { eq: 2 } }, set: { maybeAt: $at }) { id } }`,
+      {
+        at: '2024-02-30T00:00:00Z',
+      },
+    );
+    const results = { literal, variable, write };
+    for (const [name, res] of Object.entries(results)) {
+      expect(res.data, name).toBeUndefined();
+      expect(res.errors, name).toHaveLength(1);
+      expect(res.errors[0].extensions?.code, name).toBe('DRIZZLE_INVALID_INPUT_VALUE');
+      expect(res.errors[0].message, name).toMatch(/DateTime cannot represent/);
+      expect(res.errors[0].locations, name).toBeDefined();
+    }
+  });
+
+  it("uses the library's DateTime instance, even for an override naming graphql-scalars' own", async () => {
+    expect(schema.getType('DateTime')).toBe(GraphQLDateTime);
+    expect(GraphQLDateTime).not.toBe(GraphQLScalarsDateTime);
+    const overridden = buildSchema(db, {
+      scalars: { Eras: { groupId: GraphQLScalarsDateTime } },
+      mapColumnType: (_column, { columnName }) =>
+        columnName === 'maybeAt' ? { output: GraphQLScalarsDateTime, input: GraphQLScalarsDateTime } : undefined,
+    }).schema;
+    expect(overridden.getType('DateTime')).toBe(GraphQLDateTime);
+    const res: any = await graphql({ schema: overridden, source: '{ eras(where: { id: { eq: 1 } }) { maybeAt } }' });
+    expect(res.errors?.[0]?.extensions?.code).toBe('DRIZZLE_UNREPRESENTABLE_VALUE');
   });
 
   it('returns a written row whose other columns a JS Date cannot hold', async () => {

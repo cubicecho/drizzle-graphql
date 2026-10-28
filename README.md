@@ -4,6 +4,65 @@ Automatically create GraphQL schema or customizable schema config fields from Dr
 
 Site: [cubicecho.github.io/drizzle-graphql](https://cubicecho.github.io/drizzle-graphql/)
 
+## Migrating to 19
+
+### Each schema keeps its own config
+
+Every `buildSchema` call now owns its scalar overrides, enum naming, column exclusions and
+`fieldUpdateOperations` state. Before 19 these were process-wide and reinstalled by each build,
+so when two schemas were built over the same tables (a multi-tenant server, a test suite) the
+earlier schema mapped request values by the *later* build's config: a column the later build
+overrode or stopped overriding came back in the wrong form, and an atomic
+`{ increment: 1 }` could stop being read as an operation. Each schema now behaves by its own
+config however many are built after it. A single schema per process behaves exactly as
+before, and the generated SDL is unchanged.
+
+Two places had no build to read the config from, and change:
+
+-   **`extractFilters` and `extractOrderBy` called without a context**, and
+    **`createRelationResolverFactory` without a filter context**, convert values by the
+    built-in rules only. They used to apply the most recent build's scalar overrides. If a
+    column's override scalar produces a value the built-in conversion would change, compile the
+    `where` / `orderBy` through `resolveSelection` instead (it finds the build through the
+    resolve info and applies its overrides), or convert the operand yourself.
+-   **`resolveSelection` / `selectionToWith` with a parsed selection tree**, over a database
+    with several builds, now throw when any of those builds has scalar overrides, as they
+    already did when one has row policies. Pass the resolver's `info`, which identifies the
+    build.
+
+### Import `GraphQLDateTime` and `GraphQLUUID` from this library
+
+`DateTime` errors now carry a code, like every other error the library raises: a value the scalar
+cannot output (an invalid `Date`, which is how a BC date, a year past 275760 or an infinity reads)
+is `DRIZZLE_UNREPRESENTABLE_VALUE`, and an argument it cannot parse, as a literal or a variable, is
+`DRIZZLE_INVALID_INPUT_VALUE`. `UUID` errors are coded the same way. The messages, coercion and
+printed SDL are unchanged.
+
+To code them, the exported `GraphQLDateTime` and `GraphQLUUID` are now the library's own copies of
+`graphql-scalars`' scalars rather than those scalars themselves. A schema you compose by hand
+around `entities` that also uses `graphql-scalars`' `GraphQLDateTime` (or `GraphQLUUID`)
+therefore holds two types named `DateTime` (or `UUID`), and graphql refuses it with `Schema must
+contain uniquely named types but contains multiple types named "DateTime"`. Import them from here
+instead:
+
+```diff
+-import { GraphQLDateTime, GraphQLUUID } from 'graphql-scalars'
++import { GraphQLDateTime, GraphQLUUID } from '@vantreeseba/drizzle-graphql'
+```
+
+The same goes for a schema stitched or merged with the generated one. A
+[`scalars` / `mapColumnType` override](#overriding-a-columns-scalar) naming `graphql-scalars`'
+`GraphQLDateTime` or `GraphQLUUID` keeps working unchanged: it is swapped for the library's instance. `buildSchema`
+cannot see what you compose afterwards, so the duplicate is only reported by graphql when that
+schema is built.
+
+### `limits.tables` names are checked
+
+A `limits.tables` key that is not a table in the schema now fails the build, as an unknown name
+in `scope`, `softDelete`, `onWrite` or `exclude` already did. Before, a misspelled key (say
+`limits.tables.Post` for `Posts`) was silently ignored and that table stayed on the global policy.
+Fix the key to the table's schema key.
+
 ## Usage
 
 -   Pass your drizzle database instance into the builder to generate a `{ schema, entities }` object. The tables are read from the `relations` you gave the drizzle constructor (`drizzle({ client, relations })`), so a table missing from your relations config is not part of the generated schema
@@ -768,6 +827,12 @@ import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLDecimalString
 `GraphQLBigIntString` is the `BigInt` scalar — named for what it does rather than what it is
 called in SDL, to avoid clashing with the language's own `BigInt`. `GraphQLDate` is this
 library's own `Date` scalar, not `graphql-scalars`' (whose `parseValue` returns a JS `Date`).
+`GraphQLDateTime` is `graphql-scalars`' `DateTime` with the same name, description, coercion and
+messages, except that its errors are coded like `Date`'s (see [Migrating to 19](#migrating-to-19)).
+It is a separate instance, so a hand-written schema combined with the generated one uses this
+export rather than `graphql-scalars`' own; a `scalars` / `mapColumnType` override naming
+`graphql-scalars`' instance is swapped for this one automatically. `GraphQLUUID` is the same:
+`graphql-scalars`' `UUID` with coded errors, as a separate instance.
 
 > **Upgrading — `date` columns.** A `date` column used to be typed differently depending on
 > where it appeared and which `mode` it was declared with. Both modes are now `Date` everywhere:
@@ -2258,7 +2323,7 @@ buildSchema(db, {
 | `defaultLimit` | The `limit` applied when the request passes none |
 | `maxLimit` | The largest `limit` a request may ask for |
 | `clampToMax` | `false` (default) rejects a `limit` above `maxLimit`; `true` reduces it |
-| `tables` | Per-table overrides, keyed by the table's key in your Drizzle schema |
+| `tables` | Per-table overrides, keyed by the table's key in your Drizzle schema; a name that is not a table fails the build |
 | `relations` | A policy for to-many relation fields apart from root lists — see [Relation fields](#relation-fields) |
 
 A per-table policy overrides the global one key by key, so `AuditLog` above still inherits
@@ -2538,8 +2603,8 @@ to match on prose:
     the generated `field`, and the `relation` for a relation field. The type is exported as
     `DrizzleErrorContext`.
 
-A value the request could not supply is `DRIZZLE_INVALID_INPUT_VALUE` — a date that does not
-parse, a `BigInt` argument that is not an integer, a malformed JSON column value, a negative
+A value the request could not supply is `DRIZZLE_INVALID_INPUT_VALUE` — a `Date` or `DateTime`
+that does not parse, a `BigInt` argument that is not an integer, a malformed JSON column value, a negative
 `limit` or `offset` — and a write
 naming something that is not a column of its table is `DRIZZLE_UNKNOWN_COLUMN`. The mirror
 image, a stored value the scalar transporting it cannot represent, is
@@ -3133,8 +3198,9 @@ build is found through each type's `extensions.drizzle`. Two things follow:
     reading unscoped. Soft delete, limits and default ordering need no context.
 -   **Pass `info`, not a parsed tree, when one database has several builds.** A parsed
     selection tree carries no type to find the build by. Over a database with exactly one
-    build, that build's policies apply. With several builds, the call throws if any of them
-    has policies, since picking one could apply the wrong policies.
+    build, that build's policies and scalar overrides apply. With several builds, the call
+    throws if any of them has policies or scalar overrides, since picking one could apply the
+    wrong ones.
 
 Both take the naming options the build used — `typeNameMapper`, `derivedTypeNameMapper`,
 `typeNamePrefix` and `typeNameSuffix`. The translation matches selections against the
