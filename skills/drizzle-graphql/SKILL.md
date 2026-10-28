@@ -157,6 +157,6 @@ for the pattern, and the trap it avoids.
 | `limits` | default and maximum page size, global or per table |
 | `defaults` | per-table default `orderBy` |
 | `scope` / `contextValues` / `softDelete` | row scoping, server-owned columns, soft delete |
-| `onWrite` | hook that runs inside the mutation's transaction |
+| `onWrite` | hooks that run inside the mutation's transaction, per table and optionally per operation (`insert`, `update`, `delete`, …); put external side effects in an outbox row through `tx` |
 | `onError` | error logging and mapping |
 | `eagerLoadRelations` | which relations are fetched with the parent query |
