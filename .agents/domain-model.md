@@ -100,7 +100,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 | Inserts stamp every `contextValues` column (and a NOT NULL soft-delete marker's restored value) | `policies.insertStamps`, `policies.applyContextValues` |
 | Updates never write a `contextValues` column | `policies.stripContextValues` |
 | Generated and identity-ALWAYS columns never appear in a write input | `writable-columns.isWritableColumn` |
-| A `Single` update/delete writes at most one row: refused before writing if its `where` matches more than one, then narrowed to the primary key of the row it checked | `mutation-helpers.narrowToSingleMatch` |
+| A `Single` update/delete writes at most one row: refused before writing if its `where` matches more than one, then narrowed to the key of the row it checked (primary key, else a non-partial unique key — see "Claimed but not enforced") | `mutation-helpers.narrowToSingleMatch` |
 | `Single` writes and `requireWhere` writes refuse a `where` that matches every row (`{}`, `notInArray: []`, `NOT: { inArray: [] }`) | `mutation-helpers.extractRequiredFilters` (`DRIZZLE_WHERE_REQUIRED`) |
 | An update must write a column or carry nested ops | `write-resolvers.generateUpdate`, `update-many.createUpdateManyGenerator`, `mysql.ts` update |
 | A field-update input carries exactly one operation | `field-updates.remapUpdateInput` |

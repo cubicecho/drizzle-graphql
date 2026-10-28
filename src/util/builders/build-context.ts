@@ -33,6 +33,7 @@ import {
   defineRootField,
   extractRelationJoinColumns,
   generateTableTypes,
+  getRowKeyCandidates,
   getUniqueColumnSets,
   insertStamps,
   type LimitPolicyFor,
@@ -216,8 +217,14 @@ const installBuildRegistries = (tables: Record<string, Table>, options: SchemaGe
   resetFieldUpdateCaches();
 };
 
-/** How many omitted nested inputs the build-time warning names before it only counts the rest. */
+/** How many tables a build-time warning names before it only counts the rest. */
 const MAX_LISTED_OMISSIONS = 5;
+
+/** `names` for a build-time warning: the first few, then how many more. */
+const listForWarning = (names: string[]): string =>
+  names.length > MAX_LISTED_OMISSIONS
+    ? `${names.slice(0, MAX_LISTED_OMISSIONS).join(', ')} and ${names.length - MAX_LISTED_OMISSIONS} more`
+    : names.join(', ');
 
 /**
  * A fresh type cache for one build, so a second `buildSchema` never reuses the first one's
@@ -331,12 +338,8 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       (tableName) => !!softDeleteOf?.(tableName),
     );
     if (turnedOff.length) {
-      const listed =
-        turnedOff.length > MAX_LISTED_OMISSIONS
-          ? `${turnedOff.slice(0, MAX_LISTED_OMISSIONS).join(', ')} and ${turnedOff.length - MAX_LISTED_OMISSIONS} more`
-          : turnedOff.join(', ');
       console.warn(
-        `Drizzle-GraphQL Warning: config.features — nestedWrites leaves out the nested inputs whose table has that write turned off: ${listed}.`,
+        `Drizzle-GraphQL Warning: config.features — nestedWrites leaves out the nested inputs whose table has that write turned off: ${listForWarning(turnedOff)}.`,
       );
     }
 
@@ -641,10 +644,18 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
   ): void => {
     const { schema, featureOf, softDeleteOf, typeNameMapper, gqlSchemaTypes, mutations, inputs, outputs } = ctx;
     const { prefixes, suffixes } = ctx.options;
+    // Tables whose `…Single` update or delete has no key to pin its write to (`narrowToSingleMatch`).
+    const unkeyed: string[] = [];
 
     for (const [tableName, tableTypes] of Object.entries(gqlSchemaTypes)) {
       // Everything this table generates, with any per-table predicate already run.
       const tableFeatures = featureOf(tableName);
+      if (
+        (tableFeatures.update || tableFeatures.delete) &&
+        !getRowKeyCandidates(schema[tableName] as Table, adapter.getTableConfig).length
+      ) {
+        unkeyed.push(tableName);
+      }
       // What every field this table generates publishes about itself under `extensions.drizzle`,
       // so a wrapper can read a field's identity instead of parsing its configurable name.
       const drizzleMeta = tableFieldExtensions(tableName, primaryKeyPropNames(schema[tableName] as Table));
@@ -713,6 +724,12 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
         outputs[groupByType.name] = groupByType;
         inputs[havingInput.name] = havingInput;
       }
+    }
+
+    if (unkeyed.length) {
+      console.warn(
+        `Drizzle-GraphQL Warning: these tables have no primary key or unique key, so their Single update and delete cannot be pinned to the row they checked — a row that starts matching mid-write is written too: ${listForWarning(unkeyed)}.`,
+      );
     }
   };
 

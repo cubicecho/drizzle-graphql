@@ -11,8 +11,14 @@ import type { DrizzleFieldOperation } from '../../extensions.ts';
  */
 export type DrizzleErrorCode =
   /**
-   * A `Single` write's `where` matched more than one row, so nothing was written. On a table
-   * without a primary key a row arriving between the check and the write can still be written.
+   * A `Single` write's `where` matched more than one row, so nothing was written. The check and
+   * the write are separate statements, so the write is pinned to the row the check found: by its
+   * primary key, else by a unique key (partial unique indexes do not count) — a NOT NULL one if
+   * there is one, else any whose columns all hold a value on that row. A row arriving between
+   * the check and the write can still be written on a table with no primary or unique key, or
+   * one whose only unique keys are nullable and hold NULL on the checked row; the build warns
+   * about the first kind. On MySQL that second row is written silently, since no `RETURNING`
+   * reports it.
    */
   | 'DRIZZLE_MULTI_ROW_MATCH'
   /** A write that refuses to run unbounded was given no `where`, or one that restricts nothing (`{}`, `notInArray: []`). */
