@@ -28,7 +28,7 @@ import {
   supplied,
   suppliedOps,
 } from './ops.ts';
-import { keyString, type NestedRelationPlan, type NestedWritePlans, writesTargetKey } from './plans.ts';
+import { isInvalidDate, keyString, type NestedRelationPlan, type NestedWritePlans, writesTargetKey } from './plans.ts';
 
 /** What the resolvers call into. Created once per build, next to the plans it closes over. */
 export type NestedWriteRuntime = {
@@ -284,7 +284,11 @@ export const createNestedWriteRuntime = (params: {
           .from(through.table)
           .where(and(inArray(through.sourceCol, chunk), live))) as { source: unknown; target: unknown }[];
         for (const row of linked) {
-          existing.add(pairKey(row.source, row.target));
+          // A link to a target whose key a JS Date cannot hold is never one being linked now:
+          // each target key here was read as a valid one, or `pairKey` below refuses it.
+          if (!isInvalidDate(row.target)) {
+            existing.add(pairKey(row.source, row.target));
+          }
         }
         // The targets each parent is missing, grouped by parent so the restore can name them.
         const missing = new Map<any, any[]>();

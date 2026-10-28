@@ -203,12 +203,31 @@ const ownWherePlan = (
   };
 };
 
+/** Whether `value` is a `Date` holding no instant — how drivers read a key a JS Date cannot hold. */
+export const isInvalidDate = (value: unknown): value is Date => value instanceof Date && Number.isNaN(value.getTime());
+
 /**
  * A key value in a form that compares equal across the two reads of it — the driver may hand
  * back a `Date` or a `bigint` that is a different object each time.
+ *
+ * An invalid `Date` is refused. drizzle reads every key a JS Date cannot hold (a BC date, a year
+ * past 275760, an infinity, a SQLite integer too large) as the same invalid Date, so two such
+ * rows are indistinguishable here, and the value cannot be bound back into a statement either:
+ * a write that has to match on one can only be refused, not made distinct.
  */
-export const keyString = (value: unknown): string =>
-  value instanceof Date ? `d${value.getTime()}` : value === null || value === undefined ? '' : `v${String(value)}`;
+export const keyString = (value: unknown): string => {
+  if (isInvalidDate(value)) {
+    throw drizzleError(
+      'Drizzle-GraphQL Error: a nested write cannot match rows by a key a JS Date cannot hold (a BC date, a year past 275760 or an infinity): every such value reads as the same invalid Date.',
+      { code: 'DRIZZLE_UNREPRESENTABLE_VALUE' },
+    );
+  }
+  return value instanceof Date
+    ? `d${value.getTime()}`
+    : value === null || value === undefined
+      ? ''
+      : `v${String(value)}`;
+};
 
 /** The property name a column is stored under on its table, matched by identity. */
 const propNameOf = (table: Table, column: Column | undefined): string | undefined => {
