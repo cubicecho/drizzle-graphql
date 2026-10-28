@@ -23,6 +23,7 @@ import {
   type GraphQLScalarType,
 } from 'graphql';
 import { remapFromGraphQLCore, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
+import { declarePerBuildRegistry } from '../per-build-registry.ts';
 import { GraphQLBigIntString, GraphQLDecimalString } from '../scalars/index.ts';
 import {
   drizzleColumnToGraphQLType,
@@ -94,9 +95,11 @@ export const fieldUpdateKind = (column: Column, columnName: string, tableName: s
 
 /** `${Scalar}FieldUpdate` / `${Scalar}ListFieldUpdate`, shared by every column of that type. */
 let inputCache = new Map<string, GraphQLInputObjectType>();
+const fieldUpdateCachesInstalled = declarePerBuildRegistry('field-update kinds and inputs');
 
 /** Drops the kinds and inputs cached for the previous build. Called by `installBuildRegistries`. */
 export const resetFieldUpdateCaches = (): void => {
+  fieldUpdateCachesInstalled();
   kindCache = new WeakMap();
   inputCache = new Map();
 };

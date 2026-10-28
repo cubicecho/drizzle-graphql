@@ -3,6 +3,7 @@
 
 import type { Column, Table } from 'drizzle-orm';
 import { getColumns } from 'drizzle-orm';
+import { declarePerBuildRegistry } from '../../per-build-registry.ts';
 
 /**
  * Columns this build keeps out of the generated schema, keyed by the table object.
@@ -17,12 +18,14 @@ import { getColumns } from 'drizzle-orm';
  * second build against the same table objects never inherits the first build's exclusions.
  */
 const excludedColumnRegistry = new WeakMap<object, Set<string>>();
+const exclusionsInstalled = declarePerBuildRegistry('column exclusions');
 
 /** Installs this build's column exclusions and clears any left by a previous build. */
 export const registerColumnExclusions = (
   tables: Record<string, Table>,
   exclude?: { columns?: Record<string, string[]> },
 ): void => {
+  exclusionsInstalled();
   for (const [tableName, table] of Object.entries(tables)) {
     const hidden = exclude?.columns?.[tableName];
     if (hidden?.length) {

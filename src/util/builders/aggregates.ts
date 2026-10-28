@@ -37,6 +37,7 @@ import { executionKey } from '../execution.ts';
 import { requestValueNodes } from '../graphql-variables.ts';
 import type { ResolveTree } from '../parse-resolve-info.ts';
 import { parseResolveInfo } from '../parse-resolve-info.ts';
+import { declarePerBuildRegistry } from '../per-build-registry.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type { ConvertedColumn } from '../type-converter/types.ts';
 import { columnDialect } from './common/column-filters.ts';
@@ -188,9 +189,11 @@ interface AggregateColumnSets {
  * second build the first build's enum instances, which is a schema with two types of one name.
  */
 let aggregateColumnSetsCache = new WeakMap<Table, Map<string, AggregateColumnSets>>();
+const aggregateCacheInstalled = declarePerBuildRegistry('aggregate column sets');
 
 /** Drops the classifications cached for the previous build. Called by `installBuildRegistries`. */
 export const resetAggregateColumnCache = (): void => {
+  aggregateCacheInstalled();
   aggregateColumnSetsCache = new WeakMap();
 };
 

@@ -56,6 +56,7 @@ import {
 import { installSqliteBlobJsonDecoders } from '../data-mappers/index.ts';
 import { type DrizzleMutationMeta, type TableFieldExtensionFactory, tableFieldExtensions } from '../extensions.ts';
 import { resolveTableFeatures } from '../features.ts';
+import { beginPerBuildInstall } from '../per-build-registry.ts';
 import { registerEnumConfig, registerScalarOverrides } from '../type-converter/index.ts';
 import {
   createRelationAggregateFactory,
@@ -206,6 +207,7 @@ export type TableBuild<WithReturning extends boolean = boolean> = {
  * scalar overrides and field-update kinds, so there the most recent build wins.
  */
 const installBuildRegistries = (tables: Record<string, Table>, options: SchemaGeneratorOptions): void => {
+  beginPerBuildInstall();
   registerScalarOverrides(tables, options);
   installSqliteBlobJsonDecoders(tables);
   registerEnumConfig(options);

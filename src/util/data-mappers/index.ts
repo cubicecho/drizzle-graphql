@@ -2,6 +2,7 @@ import { type Column, getColumns, is, One, type Table } from 'drizzle-orm';
 import { isJsonColumn } from '../builders/common/column-filters.ts';
 import { drizzleError } from '../builders/common/errors.ts';
 import type { TableNamedRelations } from '../builders/index.ts';
+import { declarePerBuildRegistry } from '../per-build-registry.ts';
 import { dateToCalendarDate, isCalendarDate } from '../scalars/index.ts';
 import {
   floatTupleLength,
@@ -84,6 +85,7 @@ export const pgTimestampTextToIso = (value: string): string => {
 
 /** Marks a decoder installed by {@link installSqliteBlobJsonDecoders}, so a rebuild never wraps it twice. */
 const BLOB_JSON_DECODER = Symbol.for('drizzle-graphql.sqliteBlobJsonDecoder');
+const blobDecodersInstalled = declarePerBuildRegistry('SQLite blob JSON decoders');
 
 /**
  * Gives SQLite's blob columns a decoder for the relational query builder's JSON path, so a NULL
@@ -101,6 +103,7 @@ const BLOB_JSON_DECODER = Symbol.for('drizzle-graphql.sqliteBlobJsonDecoder');
  * nullable — a `notNull` column cannot hold the NULL, so there it is the empty blob.
  */
 export const installSqliteBlobJsonDecoders = (tables: Record<string, Table>): void => {
+  blobDecodersInstalled();
   for (const table of Object.values(tables)) {
     for (const column of Object.values(getColumns(table))) {
       const columnType: string = (column as any).columnType ?? '';
