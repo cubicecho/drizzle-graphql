@@ -22,17 +22,18 @@ import {
   MySqlColumn,
   MySqlDate,
   MySqlDateTime,
+  MySqlDecimalNumber,
   MySqlEnumColumn,
   MySqlEnumObjectColumn,
   MySqlSerial,
   MySqlTimestamp,
 } from 'drizzle-orm/mysql-core';
-import { PgBigInt53, PgBigSerial53, PgColumn, PgDate, PgTimestamp } from 'drizzle-orm/pg-core';
+import { PgBigInt53, PgBigSerial53, PgColumn, PgDate, PgNumericNumber, PgTimestamp } from 'drizzle-orm/pg-core';
 import { SQLiteColumn, SQLiteTimestamp } from 'drizzle-orm/sqlite-core';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { dateToCalendarDate } from '../../scalars/index.ts';
 import { isDateOnlyColumn } from '../../type-converter/index.ts';
-import { cursorValueFormatFits, isInt64Text, readsNumbersForStrings } from './cursor-value-formats.ts';
+import { cursorValueFormatFits, isDecimalText, isInt64Text, readsNumbersForStrings } from './cursor-value-formats.ts';
 import { drizzleError } from './errors.ts';
 import { comparableOperand } from './filters.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
@@ -167,14 +168,15 @@ export const cursorOrderExprs = (table: Table, entries: CursorOrderEntry[]): SQL
 const preciseTextProp = (column: string): string => `__drizzle_graphql_cursor_text_${column}`;
 
 /** The database text a {@link cursorTextForm} column's cursor value takes. */
-type CursorTextForm = 'timestamp' | 'date' | 'integer';
+type CursorTextForm = 'timestamp' | 'date' | 'integer' | 'decimal';
 
 /** 64-bit integer columns drizzle reads as JS numbers (`mode: 'number'`). */
 const NUMBER_MODE_INT64_COLUMNS = [PgBigInt53, PgBigSerial53, MySqlBigInt53, MySqlSerial] as const;
 
 /**
  * How a column whose values its JS form cannot always stand for keeps its cursor position: as
- * the database's own text of a timestamp, of a date-only value, or of a 64-bit integer.
+ * the database's own text of a timestamp, of a date-only value, of a 64-bit integer or of a
+ * decimal.
  *
  * Every `mode: 'date'` PostgreSQL `timestamp` / `timestamptz` / `date` and MySQL `datetime` /
  * `timestamp` / `date` takes a timestamp or date text:
@@ -189,6 +191,10 @@ const NUMBER_MODE_INT64_COLUMNS = [PgBigInt53, PgBigSerial53, MySqlBigInt53, MyS
  * values share one position, and -2^63 reads as a number below every row (MySQL) or one
  * PostgreSQL refuses as out of range.
  *
+ * Every `mode: 'number'` PostgreSQL `numeric` and MySQL `decimal` takes a decimal text. It reads
+ * as the nearest double, so values that differ past double precision (0.1 and
+ * 0.10000000000000000001, or two 30-digit integers one apart) share one position.
+ *
  * String-mode columns already arrive as the database's own text and `time` is always a string,
  * so neither needs it. SQLite's integer timestamps have no text form; see {@link isStoredNumberTimestamp}.
  */
@@ -198,6 +204,9 @@ const cursorTextForm = (column: Column): CursorTextForm | undefined => {
   }
   if (is(column, PgDate) || is(column, MySqlDate)) {
     return 'date';
+  }
+  if (is(column, PgNumericNumber) || is(column, MySqlDecimalNumber)) {
+    return 'decimal';
   }
   return NUMBER_MODE_INT64_COLUMNS.some((type) => is(column, type)) ? 'integer' : undefined;
 };
@@ -354,8 +363,8 @@ const cursorEncoder = (entries: CursorOrderEntry[]): ((row: Record<string, any>)
         const value = row[column] ?? null;
         // The database's own text of a value a Date or number would round (see
         // cursorPreciseExtras). It goes out as a plain string: both dialects' date-mode and
-        // number-mode bigint columns bind a string as-is, and the database parses it back
-        // exactly, at the column's own type.
+        // number-mode bigint and decimal columns bind a string as-is, and the database parses it
+        // back exactly, at the column's own type.
         const precise = row[preciseTextProp(column)];
         if (value !== null && typeof precise === 'string') {
           return precise;
@@ -512,11 +521,14 @@ const TIMESTAMP_FIELD_RANGES: Readonly<Record<string, readonly [number, number]>
  * Whether a string is text in `form` as {@link cursorPreciseExtras} selects it — any form the
  * databases print, with each field in range. Day-of-month overflow (Feb 31) is left to the
  * database, which refuses it; it never prints one. An integer text is a whole number the column's
- * 64 bits hold.
+ * 64 bits hold, and a decimal text one its database prints.
  */
 const isCursorText = (col: Column, form: CursorTextForm, text: string): boolean => {
   if (form === 'integer') {
     return isInt64Text(col, text);
+  }
+  if (form === 'decimal') {
+    return isDecimalText(col, text);
   }
   if (NON_INSTANT_TEXT[form].test(text)) {
     return true;

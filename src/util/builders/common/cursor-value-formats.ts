@@ -86,6 +86,13 @@ export const isInt64Text = (col: Column, text: string): boolean => {
   return INTEGER_TEXT.test(text) && inRange(BigInt(text), INTEGER_RANGES[unsigned ? 'uint64' : 'int64']!);
 };
 
+/**
+ * Whether text is a decimal a number-mode `numeric` / `decimal` column holds, in the form its
+ * database prints it: PostgreSQL's numeric, NaN and infinities included, or MySQL's decimal.
+ */
+export const isDecimalText = (col: Column, text: string): boolean =>
+  is(col, PgColumn) ? isPgNumericText(text) : DECIMAL_TEXT.test(text);
+
 /** A PostgreSQL `real` refuses a finite value float32 overflows to infinity or underflows to zero. */
 const fitsPgReal = (value: number): boolean => {
   const single = Math.fround(value);
