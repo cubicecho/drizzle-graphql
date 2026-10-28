@@ -186,6 +186,30 @@ describe.sequential('SQLite onWrite per operation', () => {
     expect(calls).toEqual(['update:Items:update:after:connect', 'insert:Items:insert:after:create']);
   });
 
+  it('treats a null hook, columns or operation key as no hook', async () => {
+    const off: WriteHook | null = null;
+    const gqlSchema = buildWith({
+      onWrite: {
+        Items: {
+          before: off,
+          after: log('shared'),
+          columns: null,
+          update: { before: off, after: log('own') },
+          delete: null,
+        },
+        Orgs: { restore: null },
+      },
+    });
+
+    await run(gqlSchema, `mutation { updateItems(set: { name: "x" }, where: { id: { eq: 1 } }) { id } }`);
+    await run(gqlSchema, `mutation { deleteItems(where: { id: { eq: 2 } }) { id } }`);
+
+    expect(calls).toEqual(['shared:Items:update:after', 'own:Items:update:after', 'shared:Items:delete:after']);
+    expect(() => buildWith({ onWrite: { Items: { before: 'nope' as any } } })).toThrow(
+      'config.onWrite.Items.before must be a function, got string.',
+    );
+  });
+
   it('fails the build for an unknown operation key or a restore the table lacks', () => {
     expect(() => buildWith({ onWrite: { Items: { remove: () => {} } as any } })).toThrow(
       "config.onWrite.Items has an unknown key 'remove'",

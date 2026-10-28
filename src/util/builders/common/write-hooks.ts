@@ -83,9 +83,10 @@ export type WriteHookPayload = {
 };
 
 export type WriteHook = (payload: WriteHookPayload) => void | Promise<void>;
+/** `null` at any position, or for an operation key, means no hook, the same as leaving it out. */
 export type WriteHookPositions = {
-  before?: WriteHook;
-  after?: WriteHook;
+  before?: WriteHook | null;
+  after?: WriteHook | null;
   /**
    * Columns the `after` hook's `rows` always carry, whatever the client selected: a list of
    * column keys (the table object's property names, as `rows` is keyed), or `'all'` for
@@ -95,7 +96,7 @@ export type WriteHookPositions = {
    * An unknown column fails the build, and so does `columns` without an `after` hook. On a
    * top-level (every-table) registration a named column must exist on every table.
    */
-  columns?: readonly string[] | 'all';
+  columns?: readonly string[] | 'all' | null;
 };
 export type WriteHooks = WriteHook | WriteHookPositions;
 
@@ -104,7 +105,7 @@ export type WriteHooks = WriteHook | WriteHookPositions;
  * shape a table takes for every operation: a bare function (the `after` hook) or
  * `{ before, after, columns }`.
  */
-export type WriteHooksByOperation = { [Operation in WriteOperation]?: WriteHooks };
+export type WriteHooksByOperation = { [Operation in WriteOperation]?: WriteHooks | null };
 
 /**
  * One table's registration (or the every-table one): a bare function, which is the `after`
@@ -168,12 +169,12 @@ export const normalizeWriteHooks = (
   }
   for (const position of ['before', 'after'] as const) {
     const hook = hooks[position];
-    if (hook !== undefined && typeof hook !== 'function') {
+    if (hook !== undefined && hook !== null && typeof hook !== 'function') {
       throw new Error(`Drizzle-GraphQL Error: ${where}.${position} must be a function, got ${typeof hook}.`);
     }
   }
-  const resolved: ResolvedWriteHooks = { before: hooks.before, after: hooks.after };
-  if (hooks.columns !== undefined) {
+  const resolved: ResolvedWriteHooks = { before: hooks.before ?? undefined, after: hooks.after ?? undefined };
+  if (hooks.columns !== undefined && hooks.columns !== null) {
     resolved.columns = resolveHookColumns(hooks.columns, !!hooks.after, tableColumns, where);
   }
   return resolved.before || resolved.after ? resolved : undefined;
@@ -261,7 +262,9 @@ export const isEveryTableWriteHooks = (
   }
   const positions = config as WriteHookPositions;
   const hasPosition =
-    typeof positions.before === 'function' || typeof positions.after === 'function' || positions.columns !== undefined;
+    typeof positions.before === 'function' ||
+    typeof positions.after === 'function' ||
+    (positions.columns !== undefined && positions.columns !== null);
   if (hasPosition) {
     return true;
   }

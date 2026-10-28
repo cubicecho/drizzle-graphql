@@ -2699,6 +2699,8 @@ onWrite: {
     `columns` without an `after` beside it, an unknown column, and a `restore` key on a table
     that does not [soft-delete](#soft-delete) (it has no restore to hook). The every-table form
     skips `restore` on tables that cannot restore.
+-   **`null` means no hook**, wherever a hook, `columns` or an operation key goes, so
+    `before: isProduction ? check : null` works.
 
 ### Which columns `rows` holds
 
