@@ -1636,6 +1636,11 @@ export type BuildSchemaConfig = {
    *   table — `if (payload.nested) return;` keeps a hook to root writes. A nested
    *   statement's `rows` hold the table's primary key and the join column(s) it changed, plus
    *   the hook's `columns`. A throw rolls the whole tree back, parent row included.
+   * - **A side effect outside the database** (email, queue, webhook) belongs after the commit:
+   *   write an outbox row through `tx`, or defer it with `payload.onCommit(fn)`, which runs `fn`
+   *   once the transaction commits and drops it when anything rolls it back. Under a
+   *   caller-supplied executor the callbacks wait on the context for `runCommitCallbacks`
+   *   (or `discardCommitCallbacks`). See {@link WriteHookPayload.onCommit}.
    *
    * Off by default, and a build without it opens exactly the transactions it did before.
    */

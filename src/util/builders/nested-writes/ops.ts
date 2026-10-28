@@ -1,3 +1,4 @@
+import type { CommitQueue } from '../common/commit-callbacks.ts';
 import type { NestedWriteOp } from '../common/write-hooks.ts';
 
 /** The nested operations of one mutation input, keyed by relation name. */
@@ -7,7 +8,13 @@ export type NestedOps = Record<string, Record<string, any>>;
  * The request a nested write runs for. `context` drives the scope and the context values;
  * all three are what the target table's `onWrite` hooks are handed alongside the rows.
  */
-export type NestedWriteRequest = { context?: any; args?: any; info?: any };
+export type NestedWriteRequest = {
+  context?: any;
+  args?: any;
+  info?: any;
+  /** Where the hooks of the nested statements queue their `payload.onCommit` callbacks. */
+  commits?: CommitQueue;
+};
 
 /**
  * The union of the relation names a batch of entries writes through — enough to decide which

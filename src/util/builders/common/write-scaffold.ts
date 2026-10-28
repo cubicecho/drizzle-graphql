@@ -14,6 +14,7 @@
 import type { Column } from 'drizzle-orm';
 import type { GraphQLFieldConfigArgumentMap } from 'graphql';
 import type { CreatedResolver } from '../types.ts';
+import type { CommitQueue } from './commit-callbacks.ts';
 import { type DrizzleErrorContext, toGraphQLError, withErrorContext } from './errors.ts';
 import type { ResolverPolicies } from './policies.ts';
 import { type MutationTxCtx, runMutation } from './transactions.ts';
@@ -49,6 +50,11 @@ export type WriteBody<TArgs> = (
     args: TArgs;
     context: any;
     info: any;
+    /**
+     * The field's `onCommit` queue, for the hooks a nested write fires: pass it on in the
+     * nested write's request.
+     */
+    commits: CommitQueue;
   } & WriteHookEmitter,
 ) => Promise<any>;
 
@@ -96,8 +102,17 @@ export const writeResolver = <TArgs = any>({
           context,
           info,
           txCtx,
-          (executor) => {
-            const payload = { table: tableName, operation, single, args, context, info, tx: executor };
+          (executor, commits) => {
+            const payload = {
+              table: tableName,
+              operation,
+              single,
+              args,
+              context,
+              info,
+              tx: executor,
+              onCommit: commits.add,
+            };
             // Per request: which keys `returning` added is a function of this request's selection.
             let added: string[] | undefined;
             return run({
@@ -105,6 +120,7 @@ export const writeResolver = <TArgs = any>({
               args,
               context,
               info,
+              commits,
               before: () => runWriteHook(hooks, 'before', payload),
               after: (rows) => runWriteHook(hooks, 'after', { ...payload, rows: rows ?? [] }),
               returning: (columns) => {

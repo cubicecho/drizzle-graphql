@@ -33,23 +33,29 @@ export const writeNestedEntry = async (params: {
   const { executor, runtime, tableName, ops, write, request, existing } = params;
   const guarded = runtime.createsParentSide(tableName, ops);
 
-  const run = async (tx: any) => {
-    const patch = await runtime.applyParentSide(tx, tableName, ops, request, existing);
+  const run = async (tx: any, entryRequest: NestedWriteRequest | undefined) => {
+    const patch = await runtime.applyParentSide(tx, tableName, ops, entryRequest, existing);
     const rows = await write(tx, patch.values);
     if (guarded && !rows.length) {
       throw new NoParentRow();
     }
     await runtime.checkParentSide(tx, tableName, ops, rows, patch);
-    await runtime.applyChildSide(tx, tableName, ops, rows, request);
+    await runtime.applyChildSide(tx, tableName, ops, rows, entryRequest);
     return runtime.refreshed(tx, tableName, ops, rows);
   };
 
   if (!guarded) {
-    return run(executor);
+    return run(executor, request);
   }
+  // The savepoint can roll back without failing the field, so the `onCommit` callbacks its
+  // hooks register (the parent-side `create`'s `after`) are staged with it and dropped with it.
+  const stage = request?.commits?.stage();
   try {
-    return await executor.transaction(run);
+    const rows = await executor.transaction((tx: any) => run(tx, stage ? { ...request, commits: stage } : request));
+    stage?.keep();
+    return rows;
   } catch (error) {
+    stage?.drop();
     if (error instanceof NoParentRow) {
       return [];
     }

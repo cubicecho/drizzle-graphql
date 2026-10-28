@@ -169,7 +169,7 @@ export const buildWriteResolvers = (
       txCtx,
       policies,
       args: queryArgs,
-      run: async ({ executor, args, context, info, before, after, returning: withHookReturning, output }) => {
+      run: async ({ executor, args, context, info, commits, before, after, returning: withHookReturning, output }) => {
         const supplied = single ? [args.values as Record<string, any>] : (args.values as Record<string, any>[]);
         if (!supplied.length) {
           throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
@@ -233,7 +233,7 @@ export const buildWriteResolvers = (
               remapValues: (values) =>
                 applyContextValues(remapFromGraphQLSingleInput(values, table), contextColumns, context),
               write: (tx, values) => runInsert(tx, [values]),
-              request: { context, args, info },
+              request: { context, args, info, commits },
             })
           : await runInsert(executor, input);
 
@@ -289,7 +289,7 @@ export const buildWriteResolvers = (
       txCtx,
       policies,
       args: queryArgs,
-      run: async ({ executor, args, context, info, before, after, returning: withHookReturning, output }) => {
+      run: async ({ executor, args, context, info, commits, before, after, returning: withHookReturning, output }) => {
         const supplied = single ? [args.values as Record<string, any>] : (args.values as Record<string, any>[]);
         if (!supplied.length) {
           throw drizzleError('No values were provided!', { code: 'DRIZZLE_NO_VALUES' });
@@ -400,7 +400,7 @@ export const buildWriteResolvers = (
               remapValues: (values) =>
                 applyContextValues(remapFromGraphQLSingleInput(values, table), contextColumns, context),
               write: (tx, values, ops) => runUpsert(tx, conflictBatches([values]), ops),
-              request: { context, args, info },
+              request: { context, args, info, commits },
             })
           : await runUpsert(executor, plainBatches!);
 
@@ -447,7 +447,7 @@ export const buildWriteResolvers = (
       txCtx,
       policies,
       args: queryArgs,
-      run: async ({ executor, args, context, info, before, after, returning: withHookReturning, output }) => {
+      run: async ({ executor, args, context, info, commits, before, after, returning: withHookReturning, output }) => {
         const { where, set } = args;
         const visibility = policies?.visibility?.(context);
 
@@ -522,7 +522,7 @@ export const buildWriteResolvers = (
               ops: nestedOps,
               remapValues: (values) => values,
               write: runUpdate,
-              request: { context, args, info },
+              request: { context, args, info, commits },
             })
           : await runUpdate(executor, input);
 

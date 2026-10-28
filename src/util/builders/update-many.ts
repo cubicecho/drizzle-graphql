@@ -162,6 +162,7 @@ export const createUpdateManyGenerator = (
         args,
         context,
         info,
+        commits,
         before,
         after,
         returning: withHookReturning,
@@ -243,7 +244,7 @@ export const createUpdateManyGenerator = (
           anyNested,
           nested,
           tableName,
-          request: { context, args, info },
+          request: { context, args, info, commits },
         });
 
         const written = perEntry.flat();
