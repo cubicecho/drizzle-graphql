@@ -20,7 +20,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { Duplex } from 'node:stream';
 import { buildRelations, createRelationsHelper, eq, inArray, sql } from 'drizzle-orm';
-import { date, datetime, int, mysqlTable, text, timestamp, varchar } from 'drizzle-orm/mysql-core';
+import { date, datetime, float, int, mysqlTable, text, timestamp, varchar } from 'drizzle-orm/mysql-core';
 import { drizzle } from 'drizzle-orm/mysql2';
 import { type GraphQLSchema, graphql } from 'graphql';
 import * as mysql from 'mysql2/promise';
@@ -709,5 +709,64 @@ describe.sequential('mysql: self-referencing writes on a table without a primary
     );
     expect(errnoOf(res)).toBe(1093);
     expect(await namesIn(PeopleNoKey)).toEqual(['boss', 'w1']);
+  });
+});
+
+// A Single write reads the key of the row it checked and narrows the write to it. MySQL prints a
+// single-precision `float` with 6 significant digits and compares it with a bound value in double
+// precision, so the value read back (`0.1`) matched no row and nothing was written.
+const ByFloat = mysqlTable('by_float', {
+  k: float('k').primaryKey(),
+  label: varchar('label', { length: 8 }).notNull(),
+});
+const ByUniqueFloat = mysqlTable('by_unique_float', {
+  k: float('k').notNull().unique(),
+  label: varchar('label', { length: 8 }).notNull(),
+});
+
+describe.sequential('mysql: a Single write on a table keyed by a float column', () => {
+  const floats = { ByFloat, ByUniqueFloat };
+  let floatDb: any;
+  let schema: GraphQLSchema;
+  const labels = async (table: any) =>
+    (await floatDb.select({ label: table.label }).from(table).orderBy(table.label)).map((row: any) => row.label);
+
+  beforeAll(async () => {
+    floatDb = (drizzle as any)({ client: connection, relations: buildRelations(floats, {}) });
+    await connection!.query('CREATE TABLE by_float (k float PRIMARY KEY, label varchar(8) NOT NULL)');
+    await connection!.query('CREATE TABLE by_unique_float (k float NOT NULL UNIQUE, label varchar(8) NOT NULL)');
+    schema = buildSchema(floatDb).schema;
+  });
+
+  beforeEach(async () => {
+    await connection!.query('DELETE FROM by_float');
+    await connection!.query('DELETE FROM by_unique_float');
+    // 1.0000001 and 1.0000002 are distinct floats that both print as `1`.
+    await connection!.query("INSERT INTO by_float VALUES (0.1, 'a'), (1.0000001, 'b'), (1.0000002, 'c')");
+    await connection!.query("INSERT INTO by_unique_float VALUES (0.1, 'a'), (1.0000001, 'b'), (1.0000002, 'c')");
+  });
+
+  it('primary key: update writes the row the check found', async () => {
+    const res = await run(
+      schema,
+      'mutation { updateByFloatSingle(where: { label: { eq: "a" } }, set: { label: "z" }) { isSuccess } }',
+    );
+    expect(errorsOf(res)).toBeUndefined();
+    expect(await labels(ByFloat)).toEqual(['b', 'c', 'z']);
+  });
+
+  it('primary key: a value that prints like another names only its own row', async () => {
+    const res = await run(schema, 'mutation { deleteByFloatSingle(where: { label: { eq: "b" } }) { isSuccess } }');
+    expect(errorsOf(res)).toBeUndefined();
+    expect(await labels(ByFloat)).toEqual(['a', 'c']);
+  });
+
+  it('NOT NULL unique key: update writes the row the check found', async () => {
+    const res = await run(
+      schema,
+      'mutation { updateByUniqueFloatSingle(where: { label: { eq: "c" } }, set: { label: "z" }) { isSuccess } }',
+    );
+    expect(errorsOf(res)).toBeUndefined();
+    expect(await labels(ByUniqueFloat)).toEqual(['a', 'b', 'z']);
   });
 });

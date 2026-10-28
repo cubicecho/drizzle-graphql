@@ -2,7 +2,8 @@
 // update's input type, the filters a write requires, and the write-count return type.
 
 import type { Column, Table } from 'drizzle-orm';
-import { and, getColumns, type SQL, sql } from 'drizzle-orm';
+import { and, getColumns, is, type SQL, sql } from 'drizzle-orm';
+import { PgDoublePrecision, PgReal } from 'drizzle-orm/pg-core';
 import type { GraphQLFieldConfigArgumentMap } from 'graphql';
 import { GraphQLBoolean, GraphQLInputObjectType, GraphQLNonNull } from 'graphql';
 import { capitalize } from '../../case-ops/index.ts';
@@ -14,7 +15,7 @@ import { remapUpdateInput } from '../field-updates.ts';
 import type { NestedWriteRuntime } from '../nested-writes/runtime.ts';
 import type { CreatedResolver, Filters, ProcessedTableSelectArgs, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
-import { MATCHES_EVERY_ROW } from './filters.ts';
+import { isMySqlSingleFloat, MATCHES_EVERY_ROW } from './filters.ts';
 import { withPrimaryKeyColumns } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import type { DeletedMode, ResolverPolicies, RowVisibility } from './policies.ts';
@@ -259,6 +260,33 @@ export const rowsAffected = (result: any): number => {
 const KEY_ALIAS_PREFIX = '__single_key_';
 
 /**
+ * How {@link narrowToSingleMatch} reads a key column and matches the value it read. Most keys are
+ * read raw (no `mapWith`) and bound back as they are, which names the same value. A float key's
+ * raw read need not:
+ *
+ * - PostgreSQL prints `real` / `double precision` with `extra_float_digits`, and below 1 that is
+ *   rounded (`0.12345679` reads as `0.123457`), so the bound value matches no row. The key is
+ *   read and matched as the hex of its binary form (`float4send` / `float8send`) instead.
+ * - MySQL prints a single-precision `float` with 6 significant digits, and compares it with a
+ *   bound value in double precision, so even `0.1` reads back as a different number. It is read
+ *   as `cast(… as double)`, which is exact and prints exactly, and matched as it is.
+ *
+ * SQLite stores a REAL as a double and hands it to the driver as one, so it reads exactly. Number
+ * mode `numeric` / `decimal` / 64-bit keys read exactly too: the drivers return them as strings
+ * (or a BigInt) where a JS number would round, and the raw read skips the column's `mapWith`.
+ */
+const keyAccess = (column: Column): { read: SQL; matches: (value: unknown) => SQL } => {
+  if (is(column, PgReal) || is(column, PgDoublePrecision)) {
+    const bits = sql`encode(${sql.raw(is(column, PgReal) ? 'float4send' : 'float8send')}(${column}), 'hex')`;
+    return { read: bits, matches: (value) => sql`${bits} = ${value}` };
+  }
+  const matches = (value: unknown) => sql`${column} = ${value}`;
+  return isMySqlSingleFloat(column)
+    ? { read: sql`cast(${column} as double)`, matches }
+    : { read: sql`${column}`, matches };
+};
+
+/**
  * The `where` a `Single` update or delete runs with. It checks that `filters` matches at most
  * one row and narrows it to that row's key, so a row that starts matching between the check and
  * the write is never written.
@@ -278,9 +306,10 @@ export const narrowToSingleMatch = async (
   const columns = getColumns(table) as Record<string, Column>;
   const keyNames = [...new Set(keySets.flat())];
   const aliasOf = (name: string) => `${KEY_ALIAS_PREFIX}${keyNames.indexOf(name)}`;
-  // Each key is read raw (no `mapWith`), so it binds back exactly as the database holds it.
+  const access = Object.fromEntries(keyNames.map((name) => [name, keyAccess(columns[name]!)]));
+  // Each key is read in a form that binds back exactly as the database holds it (`keyAccess`).
   const probe = keyNames.length
-    ? Object.fromEntries(keyNames.map((name) => [aliasOf(name), sql`${columns[name]!}`]))
+    ? Object.fromEntries(keyNames.map((name) => [aliasOf(name), access[name]!.read]))
     : { found: sql`1` };
   const matched = await executor.select(probe).from(table).where(filters).limit(2);
   if (matched.length > 1) {
@@ -297,7 +326,7 @@ export const narrowToSingleMatch = async (
   if (!keySet) {
     return filters;
   }
-  return and(filters, ...keySet.map((name) => sql`${columns[name]!} = ${found[aliasOf(name)]}`))!;
+  return and(filters, ...keySet.map((name) => access[name]!.matches(found[aliasOf(name)])))!;
 };
 
 /**

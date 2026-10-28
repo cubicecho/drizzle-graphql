@@ -259,7 +259,7 @@ const jsonEquality = (column: Column, columnName: string, value: unknown, negate
 const MYSQL_SINGLE_PRECISION_MAX = 24;
 
 /** Whether a MySQL `float` column stores single-precision values (`float`, `float(p,s)`, `float(p ≤ 24)`). */
-const isMySqlSingleFloat = (column: Column): boolean =>
+export const isMySqlSingleFloat = (column: Column): boolean =>
   is(column, MySqlFloat) &&
   (column.precision === undefined || column.scale !== undefined || column.precision <= MYSQL_SINGLE_PRECISION_MAX);
 
