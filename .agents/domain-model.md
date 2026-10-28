@@ -117,6 +117,8 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 | Two generated root fields never share a name | `root-fields.defineRootField` |
 | List and single suffixes differ unless a `typeNameMapper` is set | `build-config.resolveBuildConfig` |
 | Every table/column name in `exclude`, `scope`, `contextValues`, `softDelete`, `defaults`, `onWrite` exists | `build-config.resolveBuildConfig` |
+| Every `limits.relations.tables` entry names a table and one of its to-many relations | `build-config.resolveBuildConfig` |
+| A to-many relation field is bounded and priced by one resolved policy (relation entry → `limits.relations` → target table) on every read path: eager `with:`, batch loader and window, mutation re-fetch, selection helpers, cost hint | `relation-params.extractRelationsParams`, `relation-resolvers.createRelationResolverFactory`, `table-types` |
 | Every key of an `onWrite` registration is a position or an operation, operation keys do not nest, and a `restore` key needs a soft-deleting table | `write-hooks.resolveTableWriteHooks`, `build-config.resolveBuildConfig` |
 | A default ordering never uses an excluded or unorderable column | `build-config.resolveBuildConfig` |
 | Excluded tables generate nothing and no relation points at them | `build-context.prepareBuild` |
@@ -157,7 +159,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 - **Exclusion (exclude):** A table or column kept out of every schema surface. Owner: `common/exclusions.ts visibleColumns`; `registerColumnExclusions`.
 - **Naming (field names, type names):** How tables become query, mutation and type names. Owner: `common/field-names.ts computeResolverFieldNames` (root field names) and `common/type-names.ts` (every type name: `resolveTypeName`, `resolveObjectTypeName`, `applyObjectTypeName`, `resolveGeneratedTypeNames`, `sharedType`); read from `typeNameMapper`, the naming rule `TypeNameResolver` (always called `resolveName`, as in `cacheCtx.resolveName` and `SchemaGeneratorOptions.resolveName`; `typeName` is always a string). `src/util/type-naming.ts` is the type-level mirror of `singularizeMapper` that keys `entities`.
 - **Field identity (extensions.drizzle):** A stable tag on each generated field and type saying what it is (table, operation, single, target arg). Owner: `src/util/extensions.ts tableFieldExtensions`, `drizzleExtension`; meta type `DrizzleMutationMeta`.
-- **Cost hint (complexity):** Per-field price for query-complexity tools. Owner: `common/limits.ts listFieldComplexity`, `aggregateFieldComplexity`.
+- **Cost hint (complexity):** Per-field price for query-complexity tools; a list or relation field without `limit` is priced at its resolved limit policy's default (a relation's through `limits.relations`), `defaultListSize` only when no policy applies. Owner: `common/limits.ts listFieldComplexity`, `aggregateFieldComplexity`.
 
 ### Tables & columns
 
@@ -193,6 +195,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 
 - **Limit / offset:** Page size and skip. Owner: `limits.ts effectiveOffset`, `offsetOnlyLimit`.
 - **Limit policy (limits):** Default and maximum page size per table. Owner: `limits.ts applyLimitPolicy`, `resolveLimitPolicy`; `LimitPolicyFor`.
+- **Relation limit policy (limits.relations):** The page policy of to-many relation fields apart from root lists, with per-relation overrides keyed by parent table then relation name. Resolved key by key: relation entry → `limits.relations` → target table's policy. Looked up as `LimitPolicyFor(target, { parent, name })`; without `limits.relations` that is exactly the target's root policy. Owner: `build-config.resolveBuildConfig` (validation + `relationLimitPolicy`); read by `relation-params.extractRelationsParams`, `relation-resolvers.createRelationResolverFactory` and `table-types` (relation cost hint).
 - **Cursor (after):** An opaque token for "rows after this one" under the same ordering. Owner: `common/cursor.ts encodeCursor`, `decodeCursor`, `buildCursorCondition`; `CursorOrderEntry`.
 
 ### Relations

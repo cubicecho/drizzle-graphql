@@ -42,6 +42,7 @@ export type {
   NestedWriteOrigin,
   OnWriteConfig,
   QueriesCore,
+  RelationLimitsConfig,
   RowScope,
   RowScopeFilter,
   SchemaExclusions,
@@ -142,7 +143,7 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>, TConfig extends
     );
   }
 
-  const generatorOptions = resolveBuildConfig(config, schema);
+  const generatorOptions = resolveBuildConfig(config, schema, relations);
 
   const dialect = dialectOf(db);
   if (!dialect) {

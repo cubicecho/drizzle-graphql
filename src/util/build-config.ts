@@ -8,7 +8,7 @@
 // normalized into the single options object the three dialect generators take.
 // =============================================================================
 
-import { getColumns, is, Table } from 'drizzle-orm';
+import { getColumns, is, One, Table, type TablesRelationalConfig } from 'drizzle-orm';
 import type { BuildSchemaConfig, TableLimitPolicy } from '../types.ts';
 import { isOrderableColumn } from './builders/common/column-filters.ts';
 import {
@@ -42,10 +42,13 @@ import { resolveTableFeatures } from './features.ts';
  *
  * @param config the caller's config, or `undefined` for an all-defaults build
  * @param schema the Drizzle schema map `buildSchema` resolved from the database instance
+ * @param relations the database instance's relations config, which `limits.relations` names
+ *   relations of
  */
 export const resolveBuildConfig = (
   config: BuildSchemaConfig | undefined,
   schema: Record<string, unknown>,
+  relations?: TablesRelationalConfig,
 ): SchemaGeneratorOptions => {
   const prefixes = {
     insert: config?.prefixes?.insert ?? 'create',
@@ -147,17 +150,78 @@ export const resolveBuildConfig = (
     for (const [tableName, policy] of Object.entries(limitsConfig.tables ?? {})) {
       check(policy, `.tables.${tableName}`);
     }
+    const relationsLimits = limitsConfig.relations;
+    if (relationsLimits) {
+      check(relationsLimits, '.relations');
+      // Named against the real relations config, so a renamed table or relation fails the
+      // build rather than silently pricing and paging that field at the target's root page.
+      for (const [tableName, byRelation] of Object.entries(relationsLimits.tables ?? {})) {
+        if (!is(schema[tableName], Table)) {
+          throw new Error(
+            `Drizzle-GraphQL Error: config.limits.relations.tables names '${tableName}', which is not a table in the Drizzle schema. Key it by the schema key of the table the relation is declared on, then the relation name: { ${tableName}: { <relation>: { defaultLimit } } }.`,
+          );
+        }
+        const declared = (relations as Record<string, any> | undefined)?.[tableName]?.relations as
+          | Record<string, unknown>
+          | undefined;
+        for (const [relationName, policy] of Object.entries(byRelation ?? {})) {
+          const relation = declared?.[relationName];
+          if (!relation) {
+            const known = Object.keys(declared ?? {});
+            throw new Error(
+              `Drizzle-GraphQL Error: config.limits.relations.tables.${tableName} names '${relationName}', which is not a relation of '${tableName}'${known.length ? ` (it has ${known.map((name) => `'${name}'`).join(', ')})` : ' (it declares none)'}. Relations are keyed by the table they are declared on, not the table they read.`,
+            );
+          }
+          if (is(relation, One)) {
+            throw new Error(
+              `Drizzle-GraphQL Error: config.limits.relations.tables.${tableName}.${relationName} is a to-one relation, which reads a single row and takes no limit. Only to-many relations have a limit policy.`,
+            );
+          }
+          check(policy, `.relations.tables.${tableName}.${relationName}`);
+        }
+      }
+    }
   }
   const limitPolicyCache = new Map<string, ResolvedLimitPolicy | undefined>();
+  const tableLimitPolicy = (tableName: string) => {
+    if (limitPolicyCache.has(tableName)) {
+      return limitPolicyCache.get(tableName);
+    }
+    const resolved = resolveLimitPolicy(limitsConfig, limitsConfig?.tables?.[tableName]);
+    limitPolicyCache.set(tableName, resolved);
+    return resolved;
+  };
+  // A relation field's policy, key by key: its own entry, then `limits.relations`, then the
+  // target table's policy (its `tables` entry over the top level). Only built when
+  // `limits.relations` is configured, so without it a relation field gets the very same policy
+  // its target's root list does.
+  const relationsLimits = limitsConfig?.relations;
+  const relationPolicyCache = new Map<string, ResolvedLimitPolicy | undefined>();
+  const relationLimitPolicy = (targetTableName: string, parent: string, name: string) => {
+    const key = `${parent}\u0000${name}`;
+    if (relationPolicyCache.has(key)) {
+      return relationPolicyCache.get(key);
+    }
+    const own = relationsLimits?.tables?.[parent]?.[name];
+    const target = tableLimitPolicy(targetTableName);
+    const defaultLimit = own?.defaultLimit ?? relationsLimits?.defaultLimit ?? target?.defaultLimit;
+    const maxLimit = own?.maxLimit ?? relationsLimits?.maxLimit ?? target?.maxLimit;
+    const resolved: ResolvedLimitPolicy | undefined =
+      defaultLimit === undefined && maxLimit === undefined
+        ? undefined
+        : {
+            defaultLimit,
+            maxLimit,
+            clampToMax: own?.clampToMax ?? relationsLimits?.clampToMax ?? target?.clampToMax ?? false,
+          };
+    relationPolicyCache.set(key, resolved);
+    return resolved;
+  };
   const limits: LimitPolicyFor | undefined = limitsConfig
-    ? (tableName: string) => {
-        if (limitPolicyCache.has(tableName)) {
-          return limitPolicyCache.get(tableName);
-        }
-        const resolved = resolveLimitPolicy(limitsConfig, limitsConfig.tables?.[tableName]);
-        limitPolicyCache.set(tableName, resolved);
-        return resolved;
-      }
+    ? (tableName, relation) =>
+        relation && relationsLimits
+          ? relationLimitPolicy(tableName, relation.parent, relation.name)
+          : tableLimitPolicy(tableName)
     : undefined;
 
   // Per-table defaults are resolved against the real schema at build time, so a renamed table
