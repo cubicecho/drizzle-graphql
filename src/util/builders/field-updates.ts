@@ -22,8 +22,8 @@ import {
   GraphQLNonNull,
   type GraphQLScalarType,
 } from 'graphql';
+import type { BuildRegistries } from '../build-registries.ts';
 import { remapFromGraphQLCore, remapFromGraphQLSingleInput } from '../data-mappers/index.ts';
-import { declarePerBuildRegistry } from '../per-build-registry.ts';
 import { GraphQLBigIntString, GraphQLDecimalString } from '../scalars/index.ts';
 import {
   drizzleColumnToGraphQLType,
@@ -59,11 +59,17 @@ const NUMERIC_SCALARS = new Set<GraphQLInputType>([
 const isNonListArrayColumn = (column: Column): boolean => isFloatTupleColumn(column) || isBufferColumn(column);
 
 /**
- * Per-build caches: a column's kind depends on this build's scalar overrides, so both are
- * dropped by {@link resetFieldUpdateCaches} at the start of every build, alongside the
- * scalar-override registry they read.
+ * One build's field-update caches: a column's kind depends on the build's scalar overrides,
+ * and the `${Scalar}FieldUpdate` / `${Scalar}ListFieldUpdate` inputs are shared by every column
+ * of that type in the build. Part of the build's `BuildRegistries`.
  */
-let kindCache = new WeakMap<Column, FieldUpdateKind>();
+export type FieldUpdateCaches = {
+  kinds: WeakMap<Column, FieldUpdateKind>;
+  inputs: Map<string, GraphQLInputObjectType>;
+};
+
+/** Empty field-update caches for a new build. */
+export const createFieldUpdateCaches = (): FieldUpdateCaches => ({ kinds: new WeakMap(), inputs: new Map() });
 
 /**
  * Whether a column takes an operations input, and which one.
@@ -73,15 +79,20 @@ let kindCache = new WeakMap<Column, FieldUpdateKind>();
  * GraphQL type the column already converts to, so the operations follow the same
  * scalar-mapping rules as the rest of the schema.
  */
-export const fieldUpdateKind = (column: Column, columnName: string, tableName: string): FieldUpdateKind => {
-  const cached = kindCache.get(column);
+export const fieldUpdateKind = (
+  registries: BuildRegistries,
+  column: Column,
+  columnName: string,
+  tableName: string,
+): FieldUpdateKind => {
+  const cached = registries.fieldUpdates.kinds.get(column);
   if (cached) {
     return cached;
   }
 
   let kind: FieldUpdateKind = 'none';
-  if (!getColumnScalarOverride(column, true)) {
-    const { type } = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, true);
+  if (!getColumnScalarOverride(registries.scalarOverrides, column, true)) {
+    const { type } = drizzleColumnToGraphQLType(registries, column, columnName, tableName, true, false, true);
     if (NUMERIC_SCALARS.has(type)) {
       kind = 'numeric';
     } else if (type instanceof GraphQLList && !isNonListArrayColumn(column)) {
@@ -89,22 +100,13 @@ export const fieldUpdateKind = (column: Column, columnName: string, tableName: s
     }
   }
 
-  kindCache.set(column, kind);
+  registries.fieldUpdates.kinds.set(column, kind);
   return kind;
 };
 
 /** `${Scalar}FieldUpdate` / `${Scalar}ListFieldUpdate`, shared by every column of that type. */
-let inputCache = new Map<string, GraphQLInputObjectType>();
-const fieldUpdateCachesInstalled = declarePerBuildRegistry('field-update kinds and inputs');
-
-/** Drops the kinds and inputs cached for the previous build. Called by `installBuildRegistries`. */
-export const resetFieldUpdateCaches = (): void => {
-  fieldUpdateCachesInstalled();
-  kindCache = new WeakMap();
-  inputCache = new Map();
-};
-
 const namedFieldUpdateInput = (
+  inputCache: Map<string, GraphQLInputObjectType>,
   name: string,
   fields: () => Record<string, { type: GraphQLInputType; description: string }>,
   description: string,
@@ -126,12 +128,13 @@ const namedFieldUpdateInput = (
  * shares one `IntFieldUpdate` — the operations are the same wherever they appear.
  */
 export const fieldUpdateInputType = (
+  registries: BuildRegistries,
   column: Column,
   columnName: string,
   tableName: string,
   resolveName?: TypeNameResolver,
 ): GraphQLInputObjectType | undefined => {
-  const kind = fieldUpdateKind(column, columnName, tableName);
+  const kind = fieldUpdateKind(registries, column, columnName, tableName);
   if (kind === 'none') {
     return undefined;
   }
@@ -140,11 +143,12 @@ export const fieldUpdateInputType = (
   const nameOf = (defaultName: string) =>
     resolveName?.({ kind: 'fieldUpdateInput', defaultName, operation: kind }) ?? defaultName;
 
-  const { type } = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, true);
+  const { type } = drizzleColumnToGraphQLType(registries, column, columnName, tableName, true, false, true);
 
   if (kind === 'numeric') {
     const scalar = type as GraphQLScalarType;
     return namedFieldUpdateInput(
+      registries.fieldUpdates.inputs,
       nameOf(`${scalar.name}FieldUpdate`),
       () => ({
         set: { type: scalar, description: 'Replace the current value with this one' },
@@ -166,6 +170,7 @@ export const fieldUpdateInputType = (
   const element = list.ofType;
   const elementName = element instanceof GraphQLNonNull ? String(element.ofType) : String(element);
   return namedFieldUpdateInput(
+    registries.fieldUpdates.inputs,
     nameOf(`${elementName}ListFieldUpdate`),
     () => ({
       set: { type: list, description: 'Replace the current array with this one' },
@@ -292,12 +297,13 @@ const sqliteBlobBigIntArithmetic = (
  * two column types where the plain form is not.
  */
 const arithmeticExpression = (
+  registries: BuildRegistries,
   column: Column,
   columnName: string,
   operation: ArithmeticOperation,
   operand: unknown,
 ): SQL => {
-  const value = remapFromGraphQLCore(operand, column, columnName);
+  const value = remapFromGraphQLCore(operand, column, columnName, registries.scalarOverrides);
   if (is(column, SQLiteBigInt)) {
     return sqliteBlobBigIntArithmetic(column, columnName, operation, value);
   }
@@ -325,6 +331,7 @@ export type SplitUpdateValues = {
  * input remapping applies to it.
  */
 export const splitFieldUpdateOperations = (
+  registries: BuildRegistries,
   values: Record<string, any>,
   table: Table,
   tableName: string,
@@ -346,7 +353,7 @@ export const splitFieldUpdateOperations = (
     // with it off, a numeric or list column's field is typed as the scalar or the list, so
     // graphql-js has already ruled out the object shape by the time the value gets here.
     const isOperations = typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date);
-    if (!isOperations || fieldUpdateKind(column as Column, columnName, tableName) === 'none') {
+    if (!isOperations || fieldUpdateKind(registries, column as Column, columnName, tableName) === 'none') {
       columns[columnName] = value;
       continue;
     }
@@ -359,11 +366,15 @@ export const splitFieldUpdateOperations = (
 
     if (operation === 'push') {
       // Array concatenation — and arrays are a PostgreSQL column type to begin with.
-      const param = sql.param(remapFromGraphQLCore(operand, column as Column, columnName), column);
+      const param = sql.param(
+        remapFromGraphQLCore(operand, column as Column, columnName, registries.scalarOverrides),
+        column,
+      );
       expressions[columnName] = sql`${column} || ${param}`;
       continue;
     }
     expressions[columnName] = arithmeticExpression(
+      registries,
       column as Column,
       columnName,
       operation as ArithmeticOperation,
@@ -385,8 +396,13 @@ export const splitFieldUpdateOperations = (
  * `updateMany`, the `Count` mutations and the MySQL builder's own — which is why it is the
  * one place that has to tell the remapper it is serving an update rather than an insert.
  */
-export const remapUpdateInput = (values: Record<string, any>, table: Table, tableName: string): Record<string, any> => {
-  const { columns, expressions } = splitFieldUpdateOperations(values, table, tableName);
-  const remapped = remapFromGraphQLSingleInput(columns, table, 'update');
+export const remapUpdateInput = (
+  registries: BuildRegistries,
+  values: Record<string, any>,
+  table: Table,
+  tableName: string,
+): Record<string, any> => {
+  const { columns, expressions } = splitFieldUpdateOperations(registries, values, table, tableName);
+  const remapped = remapFromGraphQLSingleInput(columns, table, registries.scalarOverrides, 'update');
   return Object.keys(expressions).length ? { ...remapped, ...expressions } : remapped;
 };

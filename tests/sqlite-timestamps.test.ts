@@ -299,13 +299,13 @@ describe('SQLite integer timestamp mappers', () => {
   const column = (name: 'at' | 'atMs') => (Events as any)[name];
 
   it('reads a bare stored integer in the column unit', () => {
-    expect(remapToGraphQLCore('at', INSTANT_S, 'events', column('at'))).toBe('2026-09-15T10:00:00.000Z');
-    expect(remapToGraphQLCore('atMs', INSTANT_S * 1000 + 250, 'events', column('atMs'))).toBe(INSTANT);
+    expect(remapToGraphQLCore('at', INSTANT_S, 'events', column('at'), undefined)).toBe('2026-09-15T10:00:00.000Z');
+    expect(remapToGraphQLCore('atMs', INSTANT_S * 1000 + 250, 'events', column('atMs'), undefined)).toBe(INSTANT);
   });
 
   it('hands drizzle a Date whose encoder gives seconds or milliseconds', () => {
-    const forSeconds = remapFromGraphQLCore(new Date(INSTANT), column('at'), 'at');
-    const forMs = remapFromGraphQLCore(new Date(INSTANT), column('atMs'), 'atMs');
+    const forSeconds = remapFromGraphQLCore(new Date(INSTANT), column('at'), 'at', undefined);
+    const forMs = remapFromGraphQLCore(new Date(INSTANT), column('atMs'), 'atMs', undefined);
     expect(forSeconds).toBeInstanceOf(Date);
     expect(column('at').mapToDriverValue(forSeconds)).toBe(INSTANT_S);
     expect(column('atMs').mapToDriverValue(forMs)).toBe(INSTANT_S * 1000 + 250);

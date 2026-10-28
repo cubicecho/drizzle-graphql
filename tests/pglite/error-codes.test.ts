@@ -104,19 +104,19 @@ describe.sequential('invalid input values are classified', () => {
  */
 describe('input remapping raises coded errors', () => {
   it('classifies a date that does not parse', () => {
-    expect(() => remapFromGraphQLSingleInput({ takenAt: 'not-a-date' }, Readings)).toThrowError(
+    expect(() => remapFromGraphQLSingleInput({ takenAt: 'not-a-date' }, Readings, undefined)).toThrowError(
       expect.objectContaining({ extensions: { code: 'DRIZZLE_INVALID_INPUT_VALUE' } }),
     );
   });
 
   it('classifies a bigint that does not convert', () => {
-    expect(() => remapFromGraphQLSingleInput({ counter: 'twelve' }, Readings)).toThrowError(
+    expect(() => remapFromGraphQLSingleInput({ counter: 'twelve' }, Readings, undefined)).toThrowError(
       expect.objectContaining({ extensions: { code: 'DRIZZLE_INVALID_INPUT_VALUE' } }),
     );
   });
 
   it('separates a key that is not a column of the table', () => {
-    expect(() => remapFromGraphQLSingleInput({ nope: 1 }, Readings)).toThrowError(
+    expect(() => remapFromGraphQLSingleInput({ nope: 1 }, Readings, undefined)).toThrowError(
       expect.objectContaining({ extensions: { code: 'DRIZZLE_UNKNOWN_COLUMN' } }),
     );
   });

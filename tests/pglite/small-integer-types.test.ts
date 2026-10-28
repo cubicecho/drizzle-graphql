@@ -14,13 +14,14 @@ import {
 } from 'graphql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildSchema } from '@/index';
+import { createBuildRegistries } from '@/util/build-registries';
 import { drizzleColumnToGraphQLType } from '@/util/type-converter';
 
 // Small integer kinds (smallint, tinyint, mediumint, smallserial, MySQL year) used to fall
 // through to Float. Wider kinds keep their previous mapping.
 
 const typeOf = (table: any, key: string) =>
-  getNullableType(drizzleColumnToGraphQLType(getColumns(table)[key]!, key, 'T').type);
+  getNullableType(drizzleColumnToGraphQLType(createBuildRegistries({}, {}), getColumns(table)[key]!, key, 'T').type);
 
 describe('integer column types', () => {
   const pgT = pg.pgTable('t', {

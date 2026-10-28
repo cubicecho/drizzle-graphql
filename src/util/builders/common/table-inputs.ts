@@ -10,7 +10,7 @@ import type { TableNamedRelations } from '../types.ts';
 import { generateColumnFilterValues, isOrderableColumn } from './column-filters.ts';
 import { CURSOR_FIELD_NAME, rowCursorResolver } from './cursor.ts';
 import { columnDocs } from './docs.ts';
-import { hasExcludedColumns, visibleColumns } from './exclusions.ts';
+import { type ColumnExclusions, hasExcludedColumns, visibleColumns } from './exclusions.ts';
 import { innerOrderType } from './input-order.ts';
 import { isFilterableRelation } from './relations.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
@@ -22,11 +22,11 @@ import { generateUniqueKeyFilterFields } from './unique-keys.ts';
 // build's naming rule, and the cache outlives a build, so two builds that name it differently
 // must not share one field map.
 const orderMap = new WeakMap<object, Map<GraphQLInputObjectType, Record<string, ConvertedInputColumn>>>();
-const generateTableOrderCached = (table: Table, innerOrder: GraphQLInputObjectType) => {
+const generateTableOrderCached = (exclusions: ColumnExclusions, table: Table, innerOrder: GraphQLInputObjectType) => {
   // The cache outlives a build, so a table whose columns this build hides must not read from
   // it (a previous build may have cached the full set) or write to it (a later unfiltered
   // build would inherit the holes).
-  const cacheable = !hasExcludedColumns(table);
+  const cacheable = !hasExcludedColumns(exclusions, table);
   const cached = cacheable ? orderMap.get(table)?.get(innerOrder) : undefined;
   if (cached) {
     return cached;
@@ -34,7 +34,7 @@ const generateTableOrderCached = (table: Table, innerOrder: GraphQLInputObjectTy
 
   let remapped = {};
   try {
-    const columns = visibleColumns(table);
+    const columns = visibleColumns(exclusions, table);
     const columnEntries = Object.entries(columns);
 
     remapped = Object.fromEntries(
@@ -60,7 +60,7 @@ const generateTableFilterValuesCached = (table: Table, tableName: string, cacheC
     return cacheCtx.filterFieldCache.get(table)!;
   }
 
-  const columns = visibleColumns(table);
+  const columns = visibleColumns(cacheCtx.registries.exclusions, table);
   const columnEntries = Object.entries(columns);
 
   const remapped = Object.fromEntries(
@@ -92,14 +92,14 @@ export const generateTableSelectTypeFieldsCached = (
     return cacheCtx.selectFieldCache.get(table)!;
   }
 
-  const columns = visibleColumns(table);
+  const columns = visibleColumns(cacheCtx.registries.exclusions, table);
   const columnEntries = Object.entries(columns);
 
   const remapped = Object.fromEntries(
     columnEntries.map(([columnName, column]) => [
       columnName,
       {
-        ...drizzleColumnToGraphQLType(column, columnName, tableName),
+        ...drizzleColumnToGraphQLType(cacheCtx.registries, column, columnName, tableName),
         ...columnDocs(cacheCtx.docs, column, tableName, columnName),
       },
     ]),
@@ -128,6 +128,7 @@ export const generateTableSelectTypeFieldsCached = (
  * the name, even one with no ordering of its own, so `extractOrderBy` never reads it as a relation.
  */
 const orderRelations = (
+  exclusions: ColumnExclusions,
   tableName: string,
   namedRelations?: Record<string, Record<string, TableNamedRelations>>,
   tables?: Record<string, Table>,
@@ -137,7 +138,7 @@ const orderRelations = (
   if (!relations || !tables || !table) {
     return [];
   }
-  const columns = visibleColumns(table);
+  const columns = visibleColumns(exclusions, table);
   return Object.entries(relations)
     .filter(([relationName, relEntry]) => {
       const relation = (relEntry as any).relation ?? relEntry;
@@ -158,21 +159,22 @@ const orderRelations = (
  * argument at all.
  */
 const hasOrderFields = (
+  exclusions: ColumnExclusions,
   tableName: string,
   namedRelations: Record<string, Record<string, TableNamedRelations>> | undefined,
   tables: Record<string, Table>,
   visiting: Set<string> = new Set(),
 ): boolean => {
   const table = tables[tableName];
-  if (table && Object.values(visibleColumns(table)).some((column) => isOrderableColumn(column as Column))) {
+  if (table && Object.values(visibleColumns(exclusions, table)).some((column) => isOrderableColumn(column as Column))) {
     return true;
   }
   if (visiting.has(tableName)) {
     return false;
   }
   visiting.add(tableName);
-  return orderRelations(tableName, namedRelations, tables).some(([, target]) =>
-    hasOrderFields(target, namedRelations, tables, visiting),
+  return orderRelations(exclusions, tableName, namedRelations, tables).some(([, target]) =>
+    hasOrderFields(exclusions, target, namedRelations, tables, visiting),
   );
 };
 
@@ -191,7 +193,12 @@ const generateRelationOrderFields = (
 ): Record<string, { type: GraphQLInputObjectType; description?: string }> => {
   const fields: Record<string, { type: GraphQLInputObjectType; description?: string }> = {};
 
-  for (const [relationName, targetTableName] of orderRelations(tableName, namedRelations, tables)) {
+  for (const [relationName, targetTableName] of orderRelations(
+    cacheCtx.registries.exclusions,
+    tableName,
+    namedRelations,
+    tables,
+  )) {
     const type = generateTableOrderTypeCached(
       tables![targetTableName]!,
       targetTableName,
@@ -223,7 +230,7 @@ export const generateTableOrderTypeCached = (
   if (cacheCtx.orderTypeCache.has(table)) {
     return cacheCtx.orderTypeCache.get(table)!;
   }
-  if (!hasOrderFields(tableName, namedRelations, { ...tables, [tableName]: table })) {
+  if (!hasOrderFields(cacheCtx.registries.exclusions, tableName, namedRelations, { ...tables, [tableName]: table })) {
     return undefined;
   }
 
@@ -236,7 +243,7 @@ export const generateTableOrderTypeCached = (
       table: tableName,
     }),
     fields: () => ({
-      ...generateTableOrderCached(table, innerOrderType(cacheCtx.resolveName)),
+      ...generateTableOrderCached(cacheCtx.registries.exclusions, table, innerOrderType(cacheCtx.resolveName)),
       ...generateRelationOrderFields(tableName, cacheCtx, typeNameMapper, namedRelations, tables),
     }),
   });

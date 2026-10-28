@@ -144,7 +144,8 @@ export const resolveSoftDeleteInfo = (
           // instant (`…T…Z`) for a DATETIME, and a DATE wants the calendar day — which is what
           // an ordinary write of the same column is mapped to.
           isDateTimeColumn(column) || isDateOnlyColumn(column)
-          ? () => remapFromGraphQLCore(new Date(), column, columnName)
+          ? // The marker is the server's value, not a client's, so no scalar override owns it.
+            () => remapFromGraphQLCore(new Date(), column, columnName, undefined)
           : () => new Date().toISOString()
         : baseType === 'number'
           ? () => Date.now()

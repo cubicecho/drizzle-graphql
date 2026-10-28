@@ -132,7 +132,9 @@ conflict branch cannot be scoped.
   for the affected primary keys (check `complete`). Don't parse field names, because
   prefixes, suffixes and mappers change them.
 - `extractFilters` and `extractOrderBy` are exported for building Drizzle conditions from
-  the generated `where` / `orderBy` arguments.
+  the generated `where` / `orderBy` arguments. Called without a context they convert operands
+  by the built-in rules, not a build's scalar overrides; `resolveSelection` compiles a `where`
+  with the build's own.
 
 ## Documenting the SDL
 

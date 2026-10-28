@@ -10,6 +10,7 @@
 import type { Table } from 'drizzle-orm';
 import type { RelationalQueryBuilder } from 'drizzle-orm/mysql-core/query-builders/query';
 import type { GraphQLInputObjectType } from 'graphql';
+import type { BuildRegistries } from '../build-registries.ts';
 import {
   applyLimitPolicy,
   type DrizzleErrorContext,
@@ -44,6 +45,8 @@ export interface ReadBuildOptions {
   eagerRelations: Record<string, Record<string, TableNamedRelations>>;
   typeNameMapper?: TypeNameMapper;
   filterCtx?: RelationFilterBase;
+  /** The build's registries; its column exclusions decide what the `distinct` enum lists. */
+  registries: BuildRegistries;
   limits?: LimitPolicyFor;
   policies?: ResolverPolicies;
   /** The build's type-naming rule, which names the `distinct` and `deleted` enums. */
@@ -94,7 +97,7 @@ export const createSelectGenerators = (
   nullOrdering: NullOrdering,
 ): { generateSelectArray: SelectArrayGenerator; generateSelectSingle: SelectSingleGenerator } => {
   const generateSelectArray: SelectArrayGenerator = (build, opts): CreatedResolver => {
-    const { db, tables, eagerRelations, typeNameMapper, filterCtx, limits, policies, resolveName } = build;
+    const { db, tables, eagerRelations, typeNameMapper, filterCtx, registries, limits, policies, resolveName } = build;
     const { tableName, orderArgs, filterArgs, fieldName, typeName, distinct: distinctEnabled } = opts;
     const queryBase = queryBaseFor(db, tableName);
 
@@ -105,7 +108,9 @@ export const createSelectGenerators = (
     const queryArgs = selectArrayArgs(
       orderArgs,
       filterArgs,
-      distinctEnabled ? generateDistinctEnum(table, typeName, resolveName, tableName) : undefined,
+      distinctEnabled
+        ? generateDistinctEnum(registries.exclusions, table, typeName, resolveName, tableName)
+        : undefined,
       policies?.softDelete,
       tableName,
       resolveName,

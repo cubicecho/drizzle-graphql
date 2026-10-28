@@ -12,10 +12,10 @@ import { and, eq, getColumns, type SQL } from 'drizzle-orm';
 import { GraphQLInputObjectType, GraphQLNonNull } from 'graphql';
 import { capitalize } from '../../case-ops/index.ts';
 import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
-import { drizzleColumnToGraphQLType } from '../../type-converter/index.ts';
+import { drizzleColumnToGraphQLType, type ScalarOverrides } from '../../type-converter/index.ts';
 import type { ConvertedInputColumn, NullableConvertedColumnType } from '../../type-converter/types.ts';
 import { drizzleError } from './errors.ts';
-import { visibleColumns } from './exclusions.ts';
+import { type ColumnExclusions, visibleColumns } from './exclusions.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
 import type { TypeNameMapper } from './type-names.ts';
 import { resolveTypeName } from './type-names.ts';
@@ -56,10 +56,12 @@ export const buildUniqueKeyMap = (sets: readonly string[][], taken: ReadonlySet<
  * its visible columns and its relations. Empty when no constraint gets a field.
  */
 export const tableUniqueKeyMap = (
+  exclusions: ColumnExclusions,
   table: Table,
   relationNames: Iterable<string>,
   sets: readonly string[][],
-): UniqueKeyMap => buildUniqueKeyMap(sets, new Set([...Object.keys(visibleColumns(table)), ...relationNames]));
+): UniqueKeyMap =>
+  buildUniqueKeyMap(sets, new Set([...Object.keys(visibleColumns(exclusions, table)), ...relationNames]));
 
 /**
  * The `where` fields for a table's compound unique constraints, one input type per constraint.
@@ -74,7 +76,7 @@ export const generateUniqueKeyFilterFields = (
   typeNameMapper: TypeNameMapper | undefined,
   cacheCtx: TypeCacheCtx,
 ): Record<string, ConvertedInputColumn> => {
-  const columns = visibleColumns(table) as Record<string, Column>;
+  const columns = visibleColumns(cacheCtx.registries.exclusions, table) as Record<string, Column>;
   const typeName = resolveTypeName(tableName, typeNameMapper);
   const fields: Record<string, ConvertedInputColumn> = {};
 
@@ -95,7 +97,7 @@ export const generateUniqueKeyFilterFields = (
               // `forceNullable` is on, so the conversion never returns an already-wrapped type;
               // the cast is only to narrow the union graphql 17 refuses to wrap.
               type: new GraphQLNonNull(
-                drizzleColumnToGraphQLType(columns[member]!, member, tableName, true, false, true)
+                drizzleColumnToGraphQLType(cacheCtx.registries, columns[member]!, member, tableName, true, false, true)
                   .type as NullableConvertedColumnType<true>,
               ),
             },
@@ -119,6 +121,7 @@ export const extractUniqueKeyFilter = (
   fieldName: string,
   members: readonly string[],
   value: Record<string, any>,
+  overrides: ScalarOverrides | undefined,
 ): SQL | undefined => {
   const columns = getColumns(table) as Record<string, Column>;
   const conditions: SQL[] = [];
@@ -134,7 +137,7 @@ export const extractUniqueKeyFilter = (
         code: 'DRIZZLE_INVALID_FILTER',
       });
     }
-    conditions.push(eq(column, remapFromGraphQLCore(supplied, column, member)));
+    conditions.push(eq(column, remapFromGraphQLCore(supplied, column, member, overrides)));
   }
 
   return conditions.length > 1 ? and(...conditions) : conditions[0];

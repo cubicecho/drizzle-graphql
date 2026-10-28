@@ -16,6 +16,7 @@ import type { Table } from 'drizzle-orm';
 import type { GraphQLInputObjectType } from 'graphql';
 import { GraphQLInt, GraphQLList, GraphQLNonNull } from 'graphql';
 import {
+  type ColumnExclusions,
   generateOnConflictInput,
   generateUpdateManyInput,
   generateWriteCount,
@@ -59,7 +60,8 @@ export type DialectSchemaAdapter = SchemaBuildAdapter<true> & {
  */
 export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
   const primaryKeyPropNames = adapter.primaryKeyPropNames;
-  const uniqueTargets = (table: Table): UniqueTarget[] => getUniqueTargets(table, adapter.getTableConfig);
+  const uniqueTargets = (exclusions: ColumnExclusions, table: Table): UniqueTarget[] =>
+    getUniqueTargets(exclusions, table, adapter.getTableConfig);
   const { generateInsert, generateUpsert, generateUpdate, generateDelete } = buildWriteResolvers(
     primaryKeyPropNames,
     (table) => getRowKeyCandidates(table, adapter.getTableConfig),
@@ -90,6 +92,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
       eagerRelations,
       typeNameMapper,
       filterCtx,
+      registries: cacheCtx.registries,
       txCtx: mutationTxCtx,
       nested: nestedRuntime,
       limits,
@@ -141,7 +144,9 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
         : undefined;
       // An upsert needs something to conflict on, so a table with no primary key and no
       // unique constraint gets no upsert mutations rather than ones that always fail.
-      const uniqueSets = tableFeatures.upsert ? uniqueTargets(schema[tableName] as Table) : [];
+      const uniqueSets = tableFeatures.upsert
+        ? uniqueTargets(cacheCtx.registries.exclusions, schema[tableName] as Table)
+        : [];
       const onConflictInput = tableFeatures.upsert
         ? generateOnConflictInput({
             table: schema[tableName] as Table,
@@ -292,6 +297,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
               fieldName: updateCountFieldName,
               requireWhere: tableFeatures.requireWhere,
               filterCtx,
+              registries: cacheCtx.registries,
               txCtx: mutationTxCtx,
               nested: nestedRuntime,
               policies,
@@ -310,6 +316,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
               fieldName: deleteCountFieldName,
               requireWhere: tableFeatures.requireWhere,
               filterCtx,
+              registries: cacheCtx.registries,
               txCtx: mutationTxCtx,
               policies,
               pkNames: primaryKeyPropNames(schema[tableName] as Table),

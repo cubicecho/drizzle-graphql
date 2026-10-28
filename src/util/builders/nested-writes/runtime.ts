@@ -2,6 +2,7 @@
 // operations, and running the parent-side and child-side statements around the parent write.
 
 import { and, type Column, getColumns, inArray, type SQL, sql, type Table } from 'drizzle-orm';
+import type { BuildRegistries } from '../../build-registries.ts';
 import { remapFromGraphQLSingleInput } from '../../data-mappers/index.ts';
 import { drizzleError } from '../common/errors.ts';
 import { balancedOr, parentKeyChunks, parentKeyCondition } from '../common/relations.ts';
@@ -137,10 +138,13 @@ const selfTargetingPlan = (
 export const createNestedWriteRuntime = (params: {
   plans: NestedWritePlans;
   filterCtx: RelationFilterBase | undefined;
+  /** The build's registries: its scalar overrides decide how a nested `create` row is mapped. */
+  registries: BuildRegistries;
   policies?: ResolverPolicies;
   contextValues?: ContextValuesFor;
 }): NestedWriteRuntime => {
-  const { plans, filterCtx, policies, contextValues } = params;
+  const { plans, filterCtx, registries, policies, contextValues } = params;
+  const overrides = registries.scalarOverrides;
   const onWrite = policies?.onWrite;
   /** What an insert into `tableName` stamps — see {@link insertStamps}. */
   const stampsOf = (tableName: string) => insertStamps({ contextValues, softDelete: policies?.softDelete }, tableName);
@@ -639,7 +643,7 @@ export const createNestedWriteRuntime = (params: {
       const rows = keys.flatMap((key) =>
         asArray(op['create']).map((row) =>
           applyContextValues(
-            { ...remapFromGraphQLSingleInput(row, plan.targetTable), [plan.foreignColPropName]: key },
+            { ...remapFromGraphQLSingleInput(row, plan.targetTable, overrides), [plan.foreignColPropName]: key },
             stampsOf(plan.targetTableName),
             context,
           ),
@@ -794,7 +798,7 @@ export const createNestedWriteRuntime = (params: {
           steps.add('create', 'insert');
           await steps.before();
           const values = applyContextValues(
-            remapFromGraphQLSingleInput(op['create'], plan.targetTable),
+            remapFromGraphQLSingleInput(op['create'], plan.targetTable, overrides),
             stampsOf(plan.targetTableName),
             context,
           );

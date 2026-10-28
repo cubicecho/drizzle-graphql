@@ -4,7 +4,7 @@
 import type { Column, Table } from 'drizzle-orm';
 import { GraphQLEnumType } from 'graphql';
 import { isJsonColumn } from './column-filters.ts';
-import { excludedColumnsKey, visibleColumns } from './exclusions.ts';
+import { type ColumnExclusions, excludedColumnsKey, visibleColumns } from './exclusions.ts';
 import type { TypeNameResolver } from './type-names.ts';
 
 /** Alias of the row-number helper column in the `distinct` pass. Namespaced against real columns. */
@@ -22,6 +22,7 @@ const columnEnumCache = new WeakMap<object, Map<string, GraphQLEnumType>>();
  * invalid GraphQL.
  */
 export const generateColumnEnum = (
+  exclusions: ColumnExclusions,
   table: Table,
   enumName: string,
   description: string,
@@ -37,14 +38,14 @@ export const generateColumnEnum = (
   // asked for from more than one place in a build (a list query's `distinct` argument and the
   // same argument on a to-many relation field pointing at it), and handing those two call
   // sites separate instances would put two types of the same name in one schema.
-  const cacheKey = `${enumName}\u0000${excludedColumnsKey(table)}\u0000${variant}`;
+  const cacheKey = `${enumName}\u0000${excludedColumnsKey(exclusions, table)}\u0000${variant}`;
   let tableCache = columnEnumCache.get(table);
   const cached = tableCache?.get(cacheKey);
   if (cached) {
     return cached;
   }
 
-  const columnNames = Object.entries(visibleColumns(table))
+  const columnNames = Object.entries(visibleColumns(exclusions, table))
     .filter(([columnName, column]) => predicate(column as Column, columnName))
     .map(([columnName]) => columnName);
   if (!columnNames.length) {
@@ -72,6 +73,7 @@ export const generateColumnEnum = (
  *   used as-is when it does not, which is what a consumer calling this directly gets.
  */
 export const generateDistinctEnum = (
+  exclusions: ColumnExclusions,
   table: Table,
   typeName: string,
   resolveName?: TypeNameResolver,
@@ -79,6 +81,7 @@ export const generateDistinctEnum = (
 ): GraphQLEnumType | undefined => {
   const defaultName = `${typeName}DistinctColumn`;
   return generateColumnEnum(
+    exclusions,
     table,
     resolveName?.({ kind: 'columnEnum', defaultName, table: tableKey, operation: 'distinct' }) ?? defaultName,
     `Columns of ${typeName} that a query can be made distinct on`,
