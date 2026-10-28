@@ -99,27 +99,29 @@ Site: [cubicecho.github.io/drizzle-graphql](https://cubicecho.github.io/drizzle-
 
 ## Migrating to 19
 
-### Import `GraphQLDateTime` from this library
+### Import `GraphQLDateTime` and `GraphQLUUID` from this library
 
 `DateTime` errors now carry a code, like every other error the library raises: a value the scalar
 cannot output (an invalid `Date`, which is how a BC date, a year past 275760 or an infinity reads)
 is `DRIZZLE_UNREPRESENTABLE_VALUE`, and an argument it cannot parse, as a literal or a variable, is
-`DRIZZLE_INVALID_INPUT_VALUE`. The messages, coercion and printed SDL are unchanged.
+`DRIZZLE_INVALID_INPUT_VALUE`. `UUID` errors are coded the same way. The messages, coercion and
+printed SDL are unchanged.
 
-To code them, the exported `GraphQLDateTime` is now the library's own copy of `graphql-scalars`'
-scalar rather than that scalar itself. A schema you compose by hand around `entities` that also
-uses `graphql-scalars`' `GraphQLDateTime` therefore holds two types named `DateTime`, and graphql
-refuses it with `Schema must contain uniquely named types but contains multiple types named
-"DateTime"`. Import it from here instead:
+To code them, the exported `GraphQLDateTime` and `GraphQLUUID` are now the library's own copies of
+`graphql-scalars`' scalars rather than those scalars themselves. A schema you compose by hand
+around `entities` that also uses `graphql-scalars`' `GraphQLDateTime` (or `GraphQLUUID`)
+therefore holds two types named `DateTime` (or `UUID`), and graphql refuses it with `Schema must
+contain uniquely named types but contains multiple types named "DateTime"`. Import them from here
+instead:
 
 ```diff
--import { GraphQLDateTime } from 'graphql-scalars'
-+import { GraphQLDateTime } from '@vantreeseba/drizzle-graphql'
+-import { GraphQLDateTime, GraphQLUUID } from 'graphql-scalars'
++import { GraphQLDateTime, GraphQLUUID } from '@vantreeseba/drizzle-graphql'
 ```
 
 The same goes for a schema stitched or merged with the generated one. A
 [`scalars` / `mapColumnType` override](#overriding-a-columns-scalar) naming `graphql-scalars`'
-`GraphQLDateTime` keeps working unchanged: it is swapped for the library's instance. `buildSchema`
+`GraphQLDateTime` or `GraphQLUUID` keeps working unchanged: it is swapped for the library's instance. `buildSchema`
 cannot see what you compose afterwards, so the duplicate is only reported by graphql when that
 schema is built.
 
@@ -798,7 +800,8 @@ library's own `Date` scalar, not `graphql-scalars`' (whose `parseValue` returns 
 messages, except that its errors are coded like `Date`'s (see [Migrating to 19](#migrating-to-19)).
 It is a separate instance, so a hand-written schema combined with the generated one uses this
 export rather than `graphql-scalars`' own; a `scalars` / `mapColumnType` override naming
-`graphql-scalars`' instance is swapped for this one automatically.
+`graphql-scalars`' instance is swapped for this one automatically. `GraphQLUUID` is the same:
+`graphql-scalars`' `UUID` with coded errors, as a separate instance.
 
 > **Upgrading — `date` columns.** A `date` column used to be typed differently depending on
 > where it appeared and which `mode` it was declared with. Both modes are now `Date` everywhere:

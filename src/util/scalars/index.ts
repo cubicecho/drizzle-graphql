@@ -1,5 +1,9 @@
 import { type ASTNode, GraphQLError, GraphQLScalarType, type GraphQLScalarTypeConfig, Kind } from 'graphql';
-import { GraphQLJSON, GraphQLDateTime as GraphQLScalarsDateTime, GraphQLUUID } from 'graphql-scalars';
+import {
+  GraphQLJSON,
+  GraphQLDateTime as GraphQLScalarsDateTime,
+  GraphQLUUID as GraphQLScalarsUUID,
+} from 'graphql-scalars';
 import { type DrizzleErrorCode, drizzleError } from '../builders/common/errors.ts';
 
 // Both scalars below coerce the same way in both directions, so each helper is built once per
@@ -273,8 +277,25 @@ const withDrizzleErrorCodes = <T extends GraphQLScalarType<any, any>>(scalar: T)
  */
 export const GraphQLDateTime: typeof GraphQLScalarsDateTime = withDrizzleErrorCodes(GraphQLScalarsDateTime);
 
+/**
+ * `graphql-scalars`' `UUID`, with coded errors the same way as {@link GraphQLDateTime}: a value
+ * that is not a UUID fails with `DRIZZLE_UNREPRESENTABLE_VALUE` on output and
+ * `DRIZZLE_INVALID_INPUT_VALUE` on input. Messages, coercion and SDL are `graphql-scalars`' own,
+ * and it is likewise a separate instance.
+ */
+export const GraphQLUUID: typeof GraphQLScalarsUUID = withDrizzleErrorCodes(GraphQLScalarsUUID);
+
+/** The library's own instances of scalars `graphql-scalars` also exports, keyed by theirs. */
+const CANONICAL_SCALARS: ReadonlyMap<GraphQLScalarType, GraphQLScalarType> = new Map<
+  GraphQLScalarType,
+  GraphQLScalarType
+>([
+  [GraphQLScalarsDateTime, GraphQLDateTime],
+  [GraphQLScalarsUUID, GraphQLUUID],
+]);
+
 /** The library's own instance of a scalar `graphql-scalars` also exports, so one schema never holds both. */
 export const canonicalScalar = (scalar: GraphQLScalarType): GraphQLScalarType =>
-  scalar === GraphQLScalarsDateTime ? GraphQLDateTime : scalar;
+  CANONICAL_SCALARS.get(scalar) ?? scalar;
 
-export { GraphQLJSON, GraphQLUUID };
+export { GraphQLJSON };
