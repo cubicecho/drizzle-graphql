@@ -1,3 +1,17 @@
+## [18.2.0](https://github.com/cubicecho/drizzle-graphql/compare/v18.1.2...v18.2.0) (2026-10-28)
+
+### Features
+
+* add payload.onCommit for write hooks ([4a52d75](https://github.com/cubicecho/drizzle-graphql/commit/4a52d750eeda81bd02f32157e89025989c4ab252)), closes [#232](https://github.com/cubicecho/drizzle-graphql/issues/232)
+
+### Bug Fixes
+
+* key MySQL self-referencing writes by a unique key when there is no primary key ([7a6973d](https://github.com/cubicecho/drizzle-graphql/commit/7a6973df5df2373c4b5239bdf399f326e3025231)), closes [#246](https://github.com/cubicecho/drizzle-graphql/issues/246)
+* match float keys exactly when narrowing a Single write ([5587a6a](https://github.com/cubicecho/drizzle-graphql/commit/5587a6ab7fca020cc6acb6dd9a116211e89f1012)), closes [#246](https://github.com/cubicecho/drizzle-graphql/issues/246)
+* name the key to give a junction table in the keyless-table warning ([6feb1ef](https://github.com/cubicecho/drizzle-graphql/commit/6feb1efdda88de41b0e873cf9fdcf14fc62bae15)), closes [#230](https://github.com/cubicecho/drizzle-graphql/issues/230)
+* page number-mode numeric and decimal columns by their exact value ([3d7a81c](https://github.com/cubicecho/drizzle-graphql/commit/3d7a81c815773031e32bc52216def8a8b5896712))
+* page SQLite number-mode integer columns by their exact value past 2^53 ([0e8b60d](https://github.com/cubicecho/drizzle-graphql/commit/0e8b60de5c48c42ac88f03dbe58eb64a43764353)), closes [#245](https://github.com/cubicecho/drizzle-graphql/issues/245)
+
 ## [18.1.2](https://github.com/cubicecho/drizzle-graphql/compare/v18.1.1...v18.1.2) (2026-10-28)
 
 ### Bug Fixes
