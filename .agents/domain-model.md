@@ -51,13 +51,13 @@ any state --throw--> failed --toGraphQLError + onError mapper--> error response 
 Auto-transaction per execution (`transactions: 'auto'`) — owner `transactions.ts runMutation / openSharedTx / runOnSharedTx`; state keyed by `executionKey`:
 ```
 (no state) --first mutation resolver, ≤1 known root field or unknown field--> passthrough (kept for this execution)
-(no state) --first mutation resolver, ≥2 known root fields--> open (tx stashed on context[drizzleExecutorKey], timer armed)
+(no state) --first mutation resolver, ≥2 known root fields--> open (tx published for the execution via executor.ts publishAutoTransaction, timer armed)
 open --field completes, completed < expected--> open (timer re-armed)
-open --last field completes--> committed (state deleted, executor key removed)
+open --last field completes--> committed (state deleted, tx withdrawn)
 open --field throws | inactivity timeout--> aborted --later fields--> fail fast DRIZZLE_TRANSACTION_ABORTED
 aborted --rollback settles--> rolled back (state kept for this execution so its stragglers keep failing)
 ```
-The next execution starts with no state, even on a reused context object or a cached document.
+The next execution starts with no state, even on a reused context object or a cached document, and concurrent executions on one context object each open their own. `context[drizzleExecutorKey]` is only ever the caller's executor, which wins over everything (`executor.ts resolveExecutor`, `callerExecutor`).
 
 Batch loader — owner `batch-loader/index.ts BatchLoader`, created by `getOrCreateLoader`:
 ```
@@ -127,7 +127,6 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 ### Claimed but not enforced (findings)
 
 - `DRIZZLE_MULTI_ROW_MATCH` means nothing was written (`common/errors.ts`). On a table without a primary key the write cannot be narrowed to the row checked, so a row arriving between the check and the write is still written (`mutation-helpers.narrowToSingleMatch`). Tracked in #230.
-- `transactions: 'auto'` says two executions must not share one context object at the same time (`types.ts` `transactions`); nothing checks it, and the second would find the first's transaction under `drizzleExecutorKey` and run on it. Tracked in #231.
 - `WriteHookFor` takes the operation (`common/write-hooks.ts` `WriteHookFor`), but the resolved lookup ignores it (`build-config.ts:330-331`): hooks are per table, not per operation.
 
 ## Glossary
@@ -159,7 +158,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 - **List query (`<table>`):** Reads many rows. Owner: `select.ts generateSelectArray`.
 - **Single query (`<table>Single`):** Reads the first matching row or null. Owner: `select.ts generateSelectSingle`.
 - **Selection:** The fields a request asked for, which decide the columns and relations fetched. Owner: `parse-resolve-info.ts parseResolveInfo`, `common/selected-columns.ts`; `ResolveTree`, `parsedInfo`, `fieldsByTypeName`.
-- **Executor (drizzleExecutorKey):** The connection or transaction a resolver runs on; a caller may supply one on the context. Owner: `common/executor.ts resolveExecutor`.
+- **Executor (drizzleExecutorKey):** The connection or transaction a resolver runs on; a caller may supply one on the context; otherwise the execution's auto-transaction (kept off the context) or the build-time db. Owner: `common/executor.ts resolveExecutor`.
 - **Distinct:** Keep one row per combination of chosen columns. Owner: `common/distinct.ts distinctRowsCondition`.
 - **Selection helpers (resolveSelection, selectionToWith):** Run a generated-style read from your own resolver, with the build's policies. Owner: `src/util/selection.ts`; finds the build via `common/build-registry.ts`.
 
