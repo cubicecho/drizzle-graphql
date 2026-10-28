@@ -23,6 +23,7 @@ import {
   generateUpdateManyInput,
   generateWriteCount,
   getPrimaryKeyPropNamesFromConfig,
+  getRowKeyCandidates,
   hardDeleteArg,
   insertStamps,
   type MutationTxCtx,
@@ -281,7 +282,7 @@ const generateUpdate = (
       await before();
 
       const filters = single
-        ? await narrowToSingleMatch(executor, table, matched!, mysqlPrimaryKeyPropNames(table))
+        ? await narrowToSingleMatch(executor, table, matched!, mysqlRowKeyCandidates(table))
         : matched;
 
       let query = executor.update(table).set(input);
@@ -445,7 +446,7 @@ const generateDelete = (
       await before();
 
       const filters = single
-        ? await narrowToSingleMatch(executor, table, matched!, mysqlPrimaryKeyPropNames(table))
+        ? await narrowToSingleMatch(executor, table, matched!, mysqlRowKeyCandidates(table))
         : matched;
 
       let query =
@@ -472,6 +473,9 @@ export const mysqlTableConfig = memoizeTableConfig(mysqlTableConfigUncached);
 /** Primary-key property names for a MySQL table, including table-level composite keys. */
 export const mysqlPrimaryKeyPropNames = (table: MySqlTable): string[] =>
   getPrimaryKeyPropNamesFromConfig(table, mysqlTableConfig);
+
+/** The column sets a `Single` write narrows to — see `getRowKeyCandidates`. */
+const mysqlRowKeyCandidates = (table: MySqlTable): string[][] => getRowKeyCandidates(table, mysqlTableConfig);
 
 const TABLE_ORIGINAL_NAME = Symbol.for('drizzle:OriginalName');
 const TABLE_SCHEMA = Symbol.for('drizzle:Schema');

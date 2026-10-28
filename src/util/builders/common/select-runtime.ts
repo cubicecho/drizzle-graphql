@@ -17,6 +17,7 @@ import {
   decodeCursor,
   isCursorFieldSelected,
   orderByCursorObstacle,
+  primaryKeyTiebreakExprs,
 } from './cursor.ts';
 import { distinctRowsCondition } from './distinct.ts';
 import { drizzleError } from './errors.ts';
@@ -181,10 +182,11 @@ export const runRelationalSelect = async (opts: {
         : orderBy
           ? (aliasedTable: Table) => [
               ...extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName, visibility), where),
-              // A page of a non-unique ordering is only stable with a tiebreak: rows that tie
-              // could otherwise land on either side of a page boundary, so pages repeat or skip
-              // them. Same tiebreak a relation page and a cursor page use.
-              ...(needsDefaultOrder && pkNames?.length ? primaryKeyOrderExprs(aliasedTable, pkNames) : []),
+              // A non-unique ordering only has one answer with a tiebreak: without it tied rows
+              // come back in whatever order the database picks — different from the cursor's,
+              // and free to differ between pages, so pages repeat or skip them. The cursor's own
+              // tiebreak, so the order is the same with or without `cursor` and paging.
+              ...primaryKeyTiebreakExprs(aliasedTable, orderBy, pkNames, needsDefaultOrder),
             ]
           : needsDefaultOrder && pkNames?.length
             ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)

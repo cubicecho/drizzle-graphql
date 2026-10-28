@@ -319,7 +319,7 @@ are not undone). Filed as #232.
 
 | Issue | What | From |
 |---|---|---|
-| #230 | `…Single` on a table without a primary key can still write a row that arrived after the multi-row check | Claimed but not enforced |
+| #230 | `…Single` on a table without a primary or unique key (or with only nullable unique keys holding NULL) can still write a row that arrived after the multi-row check | Claimed but not enforced |
 | #231 | `transactions: 'auto'`: concurrent executions sharing one context share one transaction | Claimed but not enforced |
 | #232 | `after` hooks' external side effects survive a later rollback (outbox now, `onCommit` later) | Hook note (b) |
 | #233 | Per-operation hooks: config strictness and `restore` validation before shipping | `feat/per-operation-hooks` |

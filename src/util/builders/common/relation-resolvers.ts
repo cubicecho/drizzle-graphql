@@ -21,6 +21,7 @@ import {
   cursorPreciseSelection,
   decodeCursor,
   orderByCursorObstacle,
+  primaryKeyTiebreakExprs,
   selectsCursorField,
 } from './cursor.ts';
 import { distinctRowsCondition } from './distinct.ts';
@@ -86,7 +87,7 @@ const batchedPaginatedRelationQuery = async (
   // pkNames is resolved at build time and includes composite keys.
   const orderExprs = [
     ...(orderByArg ? extractOrderBy(targetTable, orderByArg, orderCtx, whereArgs) : []),
-    ...primaryKeyOrderExprs(targetTable, pkNames),
+    ...primaryKeyTiebreakExprs(targetTable, orderByArg, pkNames, true),
   ];
   const orderClause = orderExprs.length ? sql` order by ${sql.join(orderExprs, sql`, `)}` : sql``;
   // Namespaced alias so it can't collide with a real column on the target table.
@@ -363,8 +364,8 @@ export const createRelationResolverFactory =
 
       const loader = getOrCreateLoader(execution, loaderKey, async (parentKeys: readonly (readonly unknown[])[]) => {
         // Loaders are cached per execution, so every call batched here shares this request's
-        // executor — the transaction on the context, when there is one.
-        const executor = resolveExecutor(db, context);
+        // executor — the caller's or this execution's auto-transaction, when there is one.
+        const executor = resolveExecutor(db, context, info);
         const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key, localCols), key])).values()];
         // Loaders are keyed per execution too, so the scope resolved here is this request's.
         const visibility = visibilityOf?.(context);
@@ -465,8 +466,11 @@ export const createRelationResolverFactory =
                       )
                     : []),
                   // The rows a `distinct` pass kept come back in its order — the request's plus
-                  // the primary key — as they do on a root list.
-                  ...(distinct ? primaryKeyOrderExprs(targetTable, targetPkNames) : []),
+                  // the primary key — as they do on a root list. Any other ordering gets the
+                  // cursor's tiebreak, so tied rows come back as they would with `cursor`.
+                  ...(distinct
+                    ? primaryKeyOrderExprs(targetTable, targetPkNames)
+                    : primaryKeyTiebreakExprs(targetTable, orderByArg, targetPkNames)),
                 ];
             if (orderExprs.length) {
               q = q.orderBy(...orderExprs);

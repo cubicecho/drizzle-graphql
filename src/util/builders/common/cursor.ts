@@ -35,6 +35,7 @@ import { isDateOnlyColumn } from '../../type-converter/index.ts';
 import { cursorValueFormatFits, isInt64Text, readsNumbersForStrings } from './cursor-value-formats.ts';
 import { drizzleError } from './errors.ts';
 import { comparableOperand } from './filters.ts';
+import { primaryKeyOrderExprs } from './keys.ts';
 import type { OrderNullsOption } from './order-by.ts';
 import { isRelationOrderEntry, orderByEntries, orderExpressions } from './order-by.ts';
 
@@ -100,23 +101,50 @@ export const orderByCursorObstacle = (orderBy: Record<string, any> | undefined):
 };
 
 /**
+ * The primary-key columns that break ties after an `orderBy`, each sorted ascending: the key
+ * columns the `orderBy` does not already order by value. Shared by the cursor's total order and
+ * by every list that orders without a cursor, so a list returns tied rows in one order whether
+ * or not `cursor` is selected. Entries through a relation or under `matchFilterOrder` do not
+ * sort by the row's own value, so they never stand in for a key column.
+ */
+export const primaryKeyTiebreak = (orderBy: Record<string, any> | undefined, pkNames: readonly string[]): string[] => {
+  const ordered = new Set(
+    Object.entries(orderBy ?? {})
+      .filter(([, config]) => config && !isRelationOrderEntry(config) && !config.matchFilterOrder)
+      .map(([column]) => column),
+  );
+  return pkNames.filter((pk) => !ordered.has(pk));
+};
+
+/**
+ * ORDER BY expressions for the {@link primaryKeyTiebreak} on `table` (which may be the aliased
+ * RQB proxy), to follow the request's own ordering. Added when the `orderBy` orders by
+ * anything, or always when `always` is set (a page or a single read, which need a stable order
+ * even under none); empty for a table without a primary key.
+ */
+export const primaryKeyTiebreakExprs = (
+  table: Table,
+  orderBy: Record<string, any> | undefined,
+  pkNames: readonly string[] | undefined,
+  always = false,
+): SQL[] => {
+  const ordered = !!orderBy && Object.values(orderBy).some(Boolean);
+  return (always || ordered) && pkNames?.length
+    ? primaryKeyOrderExprs(table, primaryKeyTiebreak(orderBy, pkNames))
+    : [];
+};
+
+/**
  * The total order a list query's rows follow when cursor pagination is in play: the request's
- * `orderBy` entries (highest priority first), then the primary key ascending as a tiebreak —
- * skipping PK columns the `orderBy` already names, so no key appears twice.
+ * `orderBy` entries (highest priority first), then the {@link primaryKeyTiebreak}.
  */
 export const cursorOrderingEntries = (
   orderBy: Record<string, any> | undefined,
   pkNames: readonly string[],
-): CursorOrderEntry[] => {
-  const entries: CursorOrderEntry[] = orderBy ? orderByEntries(orderBy) : [];
-  const seen = new Set(entries.map(([column]) => column));
-  for (const pk of pkNames) {
-    if (!seen.has(pk)) {
-      entries.push([pk, 'asc']);
-    }
-  }
-  return entries;
-};
+): CursorOrderEntry[] => [
+  ...(orderBy ? orderByEntries(orderBy) : []),
+  ...primaryKeyTiebreak(orderBy, pkNames).map((pk): CursorOrderEntry => [pk, 'asc']),
+];
 
 /**
  * ORDER BY expressions realizing a cursor's total order on `table` (which may be the aliased

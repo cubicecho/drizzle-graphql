@@ -134,7 +134,11 @@ export type PrimaryKeyPropNames = (table: any) => string[];
  * Binds the five resolvers to one dialect. Call once per dialect module and destructure the
  * result, so the generator call sites read exactly as they did when the functions were local.
  */
-export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) => {
+export const buildWriteResolvers = (
+  primaryKeyPropNames: PrimaryKeyPropNames,
+  /** The column sets a `Single` write narrows to — `keys.getRowKeyCandidates` on the dialect's config. */
+  rowKeyCandidates: (table: any) => string[][],
+) => {
   /**
    * `insert<Table>` / `insert<Table>Single` — one generator for both shapes, the way
    * {@link generateUpsert} handles its pair. `single` decides the argument type, whether the
@@ -346,6 +350,15 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         // A plain upsert's plan depends on its arguments alone, so a bad `onConflict` is refused
         // before the hook runs.
         const plainBatches = nestedEntries ? undefined : conflictBatches(input);
+        // A nested entry's row only gains its parent-side keys during the write, so its plan is
+        // checked here against a row that counts every key those operations may set, and built
+        // for real per row later. Every other check reads the argument alone, so this refuses
+        // exactly the requests the real plan would, without firing the hook first.
+        for (const entry of nestedEntries ?? []) {
+          const fillable = [...Object.keys(contextColumns ?? {}), ...nested!.parentSideColumns(tableName, entry.ops)];
+          const values = remapFromGraphQLSingleInput(entry.columns, table);
+          conflictBatches([{ ...Object.fromEntries(fillable.map((name) => [name, null])), ...values }]);
+        }
         await before();
 
         const runUpsert = async (target: any, batches: ConflictBatch[], ops?: NestedOps) => {
@@ -422,6 +435,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
 
     // Derived once at build time — PK prop names don't change per request.
     const pkNames = primaryKeyPropNames(table);
+    // What the Single variant narrows its write to, once the check has found the row.
+    const rowKeys = single ? rowKeyCandidates(table) : [];
 
     return writeResolver<{ where?: Filters<Table>; set: Record<string, any> }>({
       db,
@@ -481,7 +496,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         // The arguments have passed; the single-match check reads the database, which the
         // hook may write first.
         await before();
-        const filters = single ? await narrowToSingleMatch(executor, table, matched!, pkNames) : matched;
+        const filters = single ? await narrowToSingleMatch(executor, table, matched!, rowKeys) : matched;
 
         const returning = withHookReturning(
           nestedOps ? nested!.withJoinColumns(tableName, nestedOps, { ...columns }, table) : columns,
@@ -515,8 +530,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         const result = output(written);
 
         if (single && result.length > 1) {
-          // Unreachable on a table with a primary key: the write is narrowed to the one row the
-          // check found. Without a key a row arriving between the check and the write is written.
+          // Unreachable when the write was narrowed to the row the check found (see
+          // `narrowToSingleMatch`). Without a key that names it, a row arriving in between is written.
           throw drizzleError("'where' matched more than one row!", { code: 'DRIZZLE_MULTI_ROW_MATCH' });
         }
 
@@ -554,7 +569,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
     // Only a soft-deleting table that opted in gets the argument, so the schema itself says
     // which tables can be purged — and `restore` never takes one, having nothing to remove.
     const canHardDelete = !restore && softDelete?.hardDelete === true;
-    const pkNames = primaryKeyPropNames(table);
+    // What the Single variant narrows its write to, once the check has found the row.
+    const rowKeys = single ? rowKeyCandidates(table) : [];
     const queryArgs = {
       where: {
         type: single || requireWhere ? new GraphQLNonNull(filterArgs) : filterArgs,
@@ -605,7 +621,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           deleted: restore ? 'ONLY' : hard ? 'INCLUDE' : undefined,
         });
         await before();
-        const filters = single ? await narrowToSingleMatch(executor, table, matched!, pkNames) : matched;
+        const filters = single ? await narrowToSingleMatch(executor, table, matched!, rowKeys) : matched;
 
         let query =
           softDelete && !hard
@@ -625,8 +641,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         const result = output(written);
 
         if (single && result.length > 1) {
-          // Unreachable on a table with a primary key: the write is narrowed to the one row the
-          // check found. Without a key a row arriving between the check and the write is written.
+          // Unreachable when the write was narrowed to the row the check found (see
+          // `narrowToSingleMatch`). Without a key that names it, a row arriving in between is written.
           throw drizzleError("'where' matched more than one row!", { code: 'DRIZZLE_MULTI_ROW_MATCH' });
         }
 
