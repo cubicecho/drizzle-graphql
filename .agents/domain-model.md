@@ -100,7 +100,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 | Inserts stamp every `contextValues` column (and a NOT NULL soft-delete marker's restored value) | `policies.insertStamps`, `policies.applyContextValues` |
 | Updates never write a `contextValues` column | `policies.stripContextValues` |
 | Generated and identity-ALWAYS columns never appear in a write input | `writable-columns.isWritableColumn` |
-| A `Single` update/delete writes at most one row: refused before writing if its `where` matches more than one, then narrowed to the primary key of the row it checked | `mutation-helpers.narrowToSingleMatch` |
+| A `Single` update/delete writes at most one row: refused before writing if its `where` matches more than one, then narrowed to the key of the row it checked (primary key, else a non-partial unique key — see "Claimed but not enforced") | `mutation-helpers.narrowToSingleMatch` |
 | `Single` writes and `requireWhere` writes refuse a `where` that matches every row (`{}`, `notInArray: []`, `NOT: { inArray: [] }`) | `mutation-helpers.extractRequiredFilters` (`DRIZZLE_WHERE_REQUIRED`) |
 | An update must write a column or carry nested ops | `write-resolvers.generateUpdate`, `update-many.createUpdateManyGenerator`, `mysql.ts` update |
 | A field-update input carries exactly one operation | `field-updates.remapUpdateInput` |
@@ -126,7 +126,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 
 ### Claimed but not enforced (findings)
 
-- `DRIZZLE_MULTI_ROW_MATCH` means nothing was written (`common/errors.ts`). On a table without a primary key the write cannot be narrowed to the row checked, so a row arriving between the check and the write is still written (`mutation-helpers.narrowToSingleMatch`). Tracked in #230.
+- `DRIZZLE_MULTI_ROW_MATCH` means nothing was written (`common/errors.ts`). The write is narrowed to the row the check found by its primary key, else by a non-partial unique key (`keys.getRowKeyCandidates`, `mutation-helpers.narrowToSingleMatch`). Still exposed — a row arriving between the check and the write is written too: tables with no primary key and no non-partial unique key (the build warns, listing them), and tables whose only unique keys are nullable when the checked row holds NULL in each. Tracked in #230.
 - `transactions: 'auto'` says two executions must not share one context object at the same time (`types.ts` `transactions`); nothing checks it, and the second would find the first's transaction under `drizzleExecutorKey` and run on it. Tracked in #231.
 - `WriteHookFor` takes the operation (`common/write-hooks.ts` `WriteHookFor`), but the resolved lookup ignores it (`build-config.ts:330-331`): hooks are per table, not per operation.
 

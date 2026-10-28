@@ -52,6 +52,7 @@ export { innerOrderType, orderNullsType } from './common/input-order.ts';
 export {
   getPrimaryKeyPropNames,
   getPrimaryKeyPropNamesFromConfig,
+  getRowKeyCandidates,
   getUniqueColumnSets,
   getUniqueTargets,
   memoizeTableConfig,
