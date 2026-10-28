@@ -3,23 +3,18 @@
 // boolean groups and relations.
 
 import type { Column, Relation, Table } from 'drizzle-orm';
-import {
-  aliasedTable,
-  and,
-  eq,
-  getColumns,
-  getTableAsAliasSQL,
-  is,
-  One,
-  relationsFilterToSQL,
-  type SQL,
-  sql,
-} from 'drizzle-orm';
+import { aliasedTable, and, eq, getColumns, is, One, type SQL, sql } from 'drizzle-orm';
 import type { FilterColumnOperatorsCore, Filters, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
 import { allOf, type CompiledFilter, compileBooleanBranches, extractFiltersColumn, isNotTrue } from './filters.ts';
 import type { RowVisibility } from './policies.ts';
-import { isRelationFilterReversed, relationColumns, relationOwnWhere, unwrapRelationColumn } from './relations.ts';
+import {
+  isRelationFilterReversed,
+  relationColumns,
+  relationOwnWhere,
+  relationsFilterSQL,
+  unwrapRelationColumn,
+} from './relations.ts';
 import type { UniqueKeyMap } from './unique-keys.ts';
 import { extractUniqueKeyFilter } from './unique-keys.ts';
 
@@ -140,6 +135,27 @@ export const relationTargetPolicy = (
   }
   const mode = visibility.relationDefault(targetTableName, is(relation, One) && (relation as any).optional === false);
   return visibility.has(targetTableName, mode) ? visibility.on(targetTableName, aliasedTarget, mode) : undefined;
+};
+
+const TABLE_ORIGINAL_NAME = Symbol.for('drizzle:OriginalName');
+const TABLE_SCHEMA = Symbol.for('drizzle:Schema');
+
+/**
+ * The `<schema>.<name> as <alias>` FROM-list entry for a table made with `aliasedTable`.
+ *
+ * Built here rather than with drizzle's `getTableAsAliasSQL`, whose return shape is internal
+ * and changed between releases: rc.4 returns an `SQL`, rc.5 an array of chunks, which an `sql`
+ * template renders as a parenthesised, comma-separated list (`("app", ., "t",  as , "a")`).
+ * The alias proxy answers its original name and schema with the underlying table's — the same
+ * symbols drizzle itself reads. The alias is the aliased table itself, which every release
+ * renders as just its alias, rather than a bare identifier: a table chunk is how a statement
+ * records the tables it reads, which drizzle's query cache invalidates by and MySQL's
+ * self-referencing write check (`readsTable`) looks for.
+ */
+export const tableAsAliasSQL = (aliased: Table): SQL => {
+  const schema: string | undefined = (aliased as any)[TABLE_SCHEMA];
+  const name = sql.identifier((aliased as any)[TABLE_ORIGINAL_NAME]);
+  return schema ? sql`${sql.identifier(schema)}.${name} as ${aliased}` : sql`${name} as ${aliased}`;
 };
 
 /** The three ways a to-many relation can be required to match, plus the to-one shorthand. */
@@ -329,19 +345,19 @@ const buildRelationExists = (
       aliasedTarget,
       relationName,
     );
-    fromClause = sql`${getTableAsAliasSQL(aliasedTarget)} inner join ${getTableAsAliasSQL(aliasedThrough)} on ${junctionJoin}`;
+    fromClause = sql`${tableAsAliasSQL(aliasedTarget)} inner join ${tableAsAliasSQL(aliasedThrough)} on ${junctionJoin}`;
     joinCondition = correlation;
   } else {
-    fromClause = getTableAsAliasSQL(aliasedTarget);
+    fromClause = tableAsAliasSQL(aliasedTarget);
     joinCondition = buildRelationJoinCondition(parentTable, relation, aliasedTarget, relationName);
   }
 
   // A relation declared with its own `where` only ever exposes the rows it selects, so the
   // subquery has to honour it too — otherwise a filter could match a row the relation hides.
-  const ownWhere = relationOwnWhere(relation);
-  const relationWhere = ownWhere
-    ? relationsFilterToSQL(isRelationFilterReversed(relation) ? parentTable : aliasedTarget, ownWhere as any)
-    : undefined;
+  const relationWhere = relationsFilterSQL(
+    isRelationFilterReversed(relation) ? parentTable : aliasedTarget,
+    relationOwnWhere(relation),
+  );
 
   // The rows the relation field would return: the target's scope and soft-delete condition,
   // and through a junction the junction's too, so a filter can neither match nor be blocked

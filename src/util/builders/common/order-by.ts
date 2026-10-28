@@ -2,27 +2,15 @@
 // relation's columns, which compiles to a correlated scalar subquery.
 
 import type { Column, Relation, Table } from 'drizzle-orm';
-import {
-  aliasedTable,
-  and,
-  asc,
-  desc,
-  getColumns,
-  getTableAsAliasSQL,
-  is,
-  One,
-  relationsFilterToSQL,
-  type SQL,
-  sql,
-} from 'drizzle-orm';
+import { aliasedTable, and, asc, desc, getColumns, is, One, type SQL, sql } from 'drizzle-orm';
 import { MySqlEnumColumn, MySqlEnumObjectColumn } from 'drizzle-orm/mysql-core';
 import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
 import type { OrderByArgs, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
 import { lowerComparison } from './filters.ts';
 import type { RelationFilterContext } from './relation-filters.ts';
-import { buildRelationJoinCondition, relationTargetPolicy } from './relation-filters.ts';
-import { isFilterableRelation, isRelationFilterReversed, relationOwnWhere } from './relations.ts';
+import { buildRelationJoinCondition, relationTargetPolicy, tableAsAliasSQL } from './relation-filters.ts';
+import { isFilterableRelation, isRelationFilterReversed, relationOwnWhere, relationsFilterSQL } from './relations.ts';
 
 /** How NULLs are placed relative to non-NULL values in an ordered column. */
 export type OrderNullsOption = 'first' | 'last';
@@ -151,16 +139,16 @@ const extendRelationOrderChain = (
   const joinCondition = buildRelationJoinCondition(parentTable, relation, aliasedTarget, relationName);
   // A relation declared with its own `where` only ever exposes the rows it selects, so the
   // ordering subquery has to honour it too — mirroring the relation-filter subqueries.
-  const ownWhere = relationOwnWhere(relation);
-  const relationWhere = ownWhere
-    ? relationsFilterToSQL(isRelationFilterReversed(relation) ? parentTable : aliasedTarget, ownWhere as any)
-    : undefined;
+  const relationWhere = relationsFilterSQL(
+    isRelationFilterReversed(relation) ? parentTable : aliasedTarget,
+    relationOwnWhere(relation),
+  );
   // The target's scope and soft-delete condition, so a row the `author` field would hide sorts
   // as NULL instead of ranking its parent by a value the caller cannot read.
   const policy = relationTargetPolicy(ctx, relation, relEntry.targetTableName, aliasedTarget);
 
   return {
-    fromParts: [...(chain?.fromParts ?? []), getTableAsAliasSQL(aliasedTarget)],
+    fromParts: [...(chain?.fromParts ?? []), tableAsAliasSQL(aliasedTarget)],
     conditions: [
       ...(chain?.conditions ?? []),
       ...(joinCondition ? [joinCondition] : []),

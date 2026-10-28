@@ -1,19 +1,9 @@
 // Which nested operations each relation offers, decided once at build time from which side holds
 // the foreign key and whether that column is nullable.
 
-import {
-  and,
-  type Column,
-  getColumns,
-  inArray,
-  is,
-  One,
-  relationsFilterToSQL,
-  type SQL,
-  type Table,
-} from 'drizzle-orm';
+import { and, type Column, getColumns, inArray, is, One, type SQL, type Table } from 'drizzle-orm';
 import { drizzleError } from '../common/errors.ts';
-import { parentKeyChunks, parentKeyCondition, relationOwnWhere } from '../common/relations.ts';
+import { parentKeyChunks, parentKeyCondition, relationOwnWhere, relationsFilterSQL } from '../common/relations.ts';
 import type { NestedWriteOp } from '../common/write-hooks.ts';
 import {
   isRelationFilterReversed,
@@ -189,10 +179,7 @@ const ownWherePlan = (
         const found = (await executor
           .select(parentKeyColumns)
           .from(parentTable)
-          .where(and(match, relationsFilterToSQL(parentTable, relationOwnWhere(relation) as any)))) as Record<
-          string,
-          any
-        >[];
+          .where(and(match, relationsFilterSQL(parentTable, relationOwnWhere(relation))))) as Record<string, any>[];
         for (const row of found) {
           shown.add(keyOf(row));
         }

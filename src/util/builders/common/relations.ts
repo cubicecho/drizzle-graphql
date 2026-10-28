@@ -1,8 +1,20 @@
 // The named-relation map the builders work from, derived from drizzle-orm v1's relational
 // config, plus the factory signatures the dialect builders implement.
 
-import type { Relation, SQL, Table } from 'drizzle-orm';
-import { and, Column, eq, getColumns, getTableName, inArray, is, or, relationsFilterToSQL, sql } from 'drizzle-orm';
+import type { Relation, Table } from 'drizzle-orm';
+import {
+  and,
+  Column,
+  eq,
+  getColumns,
+  getTableName,
+  inArray,
+  is,
+  or,
+  relationsFilterToSQL,
+  SQL,
+  sql,
+} from 'drizzle-orm';
 import type { GraphQLFieldResolver, GraphQLObjectType } from 'graphql';
 import {
   mySqlDateTimeTextToIso,
@@ -201,6 +213,30 @@ const EMPTY_FILTER = Symbol.for('drizzle:EmptyFilter');
 export const relationOwnWhere = (relation: unknown): Record<string, unknown> | undefined => {
   const where = (relation as any)?.where;
   return where == null || where === EMPTY_FILTER ? undefined : where;
+};
+
+/**
+ * A relations-style filter object (a relation's own `where`) compiled against `table`, or
+ * `undefined` when it has no conditions.
+ *
+ * Wraps drizzle's `relationsFilterToSQL`, whose return shape changed between releases: rc.4
+ * returns an `SQL` (or `undefined`), rc.5 a `{ sql, hasRelationFilters }` record whose `sql` is
+ * an array of chunks — handed to `and()` or a template as is, that is no condition at all, or a
+ * parenthesised tuple. The chunks are wrapped in parentheses so the result composes like the
+ * rc.4 `SQL` does.
+ */
+export const relationsFilterSQL = (table: Table, filter: Record<string, unknown> | undefined): SQL | undefined => {
+  if (!filter) {
+    return undefined;
+  }
+  const built: unknown = relationsFilterToSQL(table as any, filter as any);
+  if (built === undefined || is(built, SQL)) {
+    return built as SQL | undefined;
+  }
+  // rc.5 reserves a leading slot for an opening paren and leaves it `undefined` when the filter
+  // has a single condition.
+  const chunks = ((built as { sql?: unknown[] }).sql ?? []).filter((chunk) => chunk !== undefined);
+  return chunks.length ? sql`(${sql.join(chunks as any[])})` : undefined;
 };
 
 /**
@@ -622,9 +658,9 @@ export const relationOwnCondition = (
     return undefined;
   }
   if (!isRelationFilterReversed(rel)) {
-    return relationsFilterToSQL(targetTable, ownWhere as any);
+    return relationsFilterSQL(targetTable, ownWhere);
   }
-  const parentFilter = relationsFilterToSQL(parentTable, ownWhere as any);
+  const parentFilter = relationsFilterSQL(parentTable, ownWhere);
   if (groupCols.length === 1) {
     return sql`${groupCols[0]} in (select ${parentKeyCols[0]} from ${parentTable} where ${parentFilter})`;
   }

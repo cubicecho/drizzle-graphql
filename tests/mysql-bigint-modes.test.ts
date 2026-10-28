@@ -288,17 +288,26 @@ const bigintValues = (value: unknown, path = ''): [string, unknown][] => {
 };
 
 describe("mysql: bigint({ mode: 'string' }) values", () => {
-  it('reach the library as JS numbers when they are safe integers (the driver behaviour worked around)', async () => {
+  // drizzle-orm rc.4 hands safe integers back as JS numbers, the behaviour the library works
+  // around; rc.5 decodes every value to a string itself. Either way the outputs below are exact.
+  it('reach the library as JS numbers when they are safe integers on rc.4, strings on rc.5', async () => {
     const selected = await db.select().from(Strs).orderBy(Strs.id);
     const queried = await db.query.Strs.findMany({ orderBy: { id: 'asc' } });
-    for (const rows of [selected, queried]) {
-      expect(rows.map((row: any) => [typeof row.big, typeof row.ubig])).toEqual([
-        ['number', 'number'],
-        ['string', 'string'],
-        ['string', 'number'],
-        ['number', 'object'],
-      ]);
-    }
+    const rc4 = [
+      ['number', 'number'],
+      ['string', 'string'],
+      ['string', 'number'],
+      ['number', 'object'],
+    ];
+    const rc5 = [
+      ['string', 'string'],
+      ['string', 'string'],
+      ['string', 'string'],
+      ['string', 'object'],
+    ];
+    const shapes = [selected, queried].map((rows) => rows.map((row: any) => [typeof row.big, typeof row.ubig]));
+    expect(shapes[1]).toEqual(shapes[0]);
+    expect([rc4, rc5]).toContainEqual(shapes[0]);
   });
 
   it('output as exact strings on every read path', async () => {
