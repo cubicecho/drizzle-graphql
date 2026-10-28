@@ -47,6 +47,14 @@ export const createHookSteps = (
 ) => {
   const steps = new Map<string, HookStep>();
   const keyOf = (op: NestedWriteOp, operation: NestedOperation) => `${op}:${operation}`;
+  // Every write the library runs hands its nested writes a queue; one called by hand without a
+  // request has nowhere to defer to.
+  const onCommit: WriteHookPayload['onCommit'] = (fn) => {
+    if (!request?.commits) {
+      throw new Error('Drizzle-GraphQL Error: payload.onCommit is not available outside a generated mutation.');
+    }
+    request.commits.add(fn);
+  };
 
   const payload = (step: HookStep): Omit<WriteHookPayload, 'position' | 'rows'> => ({
     table: step.tableName,
@@ -56,6 +64,7 @@ export const createHookSteps = (
     context: request?.context,
     info: request?.info,
     tx: executor,
+    onCommit,
     nested: { parentTable, relation: plan.relationName, op: step.op },
   });
 

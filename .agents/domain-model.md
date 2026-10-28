@@ -31,7 +31,7 @@ Dependency direction: `index.ts` → `build-config.ts` → `builders/{pg,sqlite,
 | GraphQL client | Whoever sends a document at request time | Generated queries and mutations | Rows only within the scope and soft-delete view; filter/order/page/cursor/distinct/deleted args; nested ops where offered; `hard` delete where opted in; never context-value or soft-delete marker columns |
 | Host server | Executes the schema (yoga, apollo, …) | GraphQL `context` object per request (may be reused; per-request state is keyed on the execution) | Which executor runs (`drizzleExecutorKey`) |
 | Row policies | Consumer functions run per request | `scope`, `contextValues`, `softDelete` (function form at build) | Which rows a read/write reaches; values stamped on insert |
-| Write hooks | Consumer `onWrite` functions, per table (or every table) and optionally per operation | `before` / `after` inside the mutation's executor, for the operations they are registered for | Anything via `tx`; can veto by throwing (rolls back when in a transaction) |
+| Write hooks | Consumer `onWrite` functions, per table (or every table) and optionally per operation | `before` / `after` inside the mutation's executor, for the operations they are registered for | Anything via `tx`; can veto by throwing (rolls back when in a transaction); defer work past the commit with `onCommit` |
 | Schema hooks | Consumer `describe*`, `deprecateColumn`, `enumNameMapper`, `enumValueNameMapper`, `mapColumnType`, `derivedTypeNameMapper` | Called at build time | Descriptions, deprecations, type and enum names, column scalars |
 | Overriding resolver | Consumer code over generated types | `entities`, `fieldResolvers`, `resolveSelection`, `selectionToWith`, `extensions.drizzle` | Its own reads, reusing the build's policies via the build registry |
 
@@ -46,6 +46,15 @@ pre-hooked --DB checks (Single match, nested connect/hidden rows), library--> st
 statement ready --statement, library--> written --after hook, consumer--> hooked
 hooked --withEagerRelations re-fetch, library--> enriched --remap--> answered
 any state --throw--> failed --toGraphQLError + onError mapper--> error response (rolled back only if a tx was open)
+```
+
+Commit callbacks (`payload.onCommit`) — owner `common/commit-callbacks.ts`, wired by `transactions.runMutation`; one queue per commit unit, a stage per field (and per guarded nested-entry savepoint, `nested-writes/entry.ts writeNestedEntry`):
+```
+hook --onCommit(fn)--> staged (the field's stage)
+staged --field succeeds--> queued in the unit   |   staged --field fails / savepoint rolled back--> dropped
+queued --unit commits, library--> run in order, field resolves after (a throw is console.error'd, the rest run)
+queued --unit rolls back (later field, timeout)--> dropped
+unit: forced tx | field on db with no tx | auto-transaction (after its one COMMIT, in the last field) | caller executor (keyed by context, WeakMap; run by runCommitCallbacks, dropped by discardCommitCallbacks)
 ```
 
 Auto-transaction per execution (`transactions: 'auto'`) — owner `transactions.ts runMutation / openSharedTx / runOnSharedTx`; state keyed by `executionKey`:
@@ -115,6 +124,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 | A write its arguments alone make invalid is refused before its `before` hook runs; checks that read the database run after it | every write body (`write-resolvers`, `update-many`, `mysql`, `mutation-helpers.generateWriteCount`), `nested.validate` |
 | A caller-supplied executor is used as-is; the library never nests its own shared tx in it | `transactions.runMutation` |
 | After a failure in the shared tx, later mutation fields do not run | `transactions.runOnSharedTx` |
+| An `onCommit` callback runs only after the commit that makes its write durable, and never after a rollback of it; a failed field's callbacks never run | `transactions.runMutation` / `runOnSharedTx` / `runAsOwnUnit`, `commit-callbacks.ts`, `entry.writeNestedEntry` |
 | `hard` only purges on a soft-delete table that opted in | `write-resolvers.generateDelete`, `mutation-helpers.generateWriteCount` |
 | `after` cannot combine with `distinct`; cursors need a primary key and a cursor-expressible ordering | `select-runtime.runRelationalSelect` |
 | A list with an ordering (asked or default) ends in the primary-key tiebreak the cursor uses (key columns not already ordered by, ascending), so tied rows come back in one order with or without `cursor`, `limit` or `offset`; a page or single read gets it even with no ordering | `cursor.primaryKeyTiebreak` / `primaryKeyTiebreakExprs`, used by `select-runtime.runRelationalSelect`, `relation-params.extractRelationsParams`, `relation-resolvers` (window and plain batch) |
@@ -229,6 +239,8 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 - **Hard delete (hard):** A real `DELETE` on a soft-delete table that opted in. Owner: `hardDeleteArg`.
 - **Policies:** The bundle of scope, context values, soft delete, hooks and default order for a build. Owner: `policies.ts TablePolicies` (as resolved from the config, and as `createRelationResolverFactory` takes them) and `ResolverPolicies` (scope and soft delete bound into `visibility(context)`). `bindPolicies` is the one place the first becomes the second; every resolver, aggregate and nested write reads the bound shape.
 - **Write hook (onWrite, before / after):** Consumer code run around a write on the same executor, looked up by table and operation (`WriteHookFor`). A registration holds positions for every operation and operation keys (`WriteOperation`) for one; where both cover an operation both run, the every-operation hook first, and `after` rows carry the union of their `columns`. Count mutations look up `update` / `delete`, a nested statement the operation it performs on the table it writes. Owner: `common/write-hooks.ts resolveTableWriteHooks`, `isEveryTableWriteHooks`, `runWriteHook`; `TableWriteHooks`, `WriteHooksByOperation`, `WriteHookPayload`, hook `columns`.
+- **Commit callback (payload.onCommit):** Work a write hook defers until its write is durable: queued per commit unit, run after the commit in registration order, dropped on rollback. Owner: `common/commit-callbacks.ts` (`createCommitUnit`, `CommitQueue.stage`, `callerCommitStage`, `runCommitCallbacks`, `discardCommitCallbacks`); threaded to nested writes as `NestedWriteRequest.commits`.
+- **Commit unit:** What a field's callbacks wait for: the transaction the library opened for the field, the field's own write when it ran on `db` with none, the execution's auto-transaction, or (caller-supplied executor) the caller's flush, keyed by the context object. Owner: `transactions.runMutation`.
 - **Auto transaction (transactions: 'auto'):** One transaction for a document with several mutation fields. Owner: `transactions.ts runMutation`; `MutationTxCtx`, shared tx.
 - **Error mapping (onError):** What a thrown error becomes before the client sees it. Owner: `common/errors.ts applyErrorMapper`, `defaultErrorMapper`, `drizzleError`; `DrizzleErrorCode`.
 

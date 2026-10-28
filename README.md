@@ -2617,6 +2617,10 @@ example a pooled connection bound to a tenant, or a logging proxy around `db`. B
 key is created with `Symbol.for`, the ESM and CJS builds of this package agree on it when
 both end up loaded in one process.
 
+The commit is yours, so a write hook's [`onCommit`](#side-effects-outside-the-database)
+callbacks wait on the context object until you call `runCommitCallbacks(contextValue)` after
+committing, or `discardCommitCallbacks(contextValue)` after rolling back.
+
 ## Write hooks
 
 `onWrite` runs a hook **inside the mutation's transaction**, so its writes commit or roll back
@@ -2851,8 +2855,74 @@ onWrite: {
 // Elsewhere: poll `outbox` (or LISTEN/NOTIFY, or a CDC stream), send, then mark each row sent.
 ```
 
-A hook that must call out directly can skip nested statements (`if (payload.nested) return`)
-and act from the root mutation's own hook, which narrows the window but does not close it.
+The outbox is the strongest option: the side effect is recorded atomically with the write, and
+a worker that crashes halfway retries it. When the effect does not need that guarantee, defer it
+with **`payload.onCommit(fn)`** instead, which every hook payload carries at both positions and
+on nested statements. `fn` runs **after the transaction commits** and is **dropped, never run,
+when it rolls back** — the hook throwing, a later hook or nested write failing, a parent-side
+`create` whose savepoint rolls back, a later mutation field failing under `transactions: 'auto'`,
+or that transaction timing out:
+
+```Typescript
+onWrite: {
+    orders: {
+        after: ({ operation, rows, onCommit }) => {
+            if (operation !== 'insert') return
+            onCommit(() => mailer.sendOrderConfirmation(rows.map((row) => row.id)))
+        },
+        columns: ['id'],
+    },
+}
+```
+
+Which commit a callback waits for depends on where the field ran:
+
+| The field ran on | Callbacks run |
+| --- | --- |
+| a transaction the library opened for it (every hooked field gets one) | once that transaction commits |
+| the [auto-transaction](#letting-the-library-open-one) of a multi-field document | once, after it commits, before the last mutation field resolves |
+| `db`, with no transaction of its own (a root without hooks whose nested write fires a hooked table's hooks, inside the nested write's own transaction) | once the field's write has returned |
+| an [executor you supplied](#supplying-your-own-executor) | when you call `runCommitCallbacks(context)` |
+
+-   **In registration order**, one after another: each starts once the one before has settled
+-   **The field resolves after they settle**, so the response is sent once the side effects
+    have run (and a serverless runtime is not frozen before they do). To not wait, start the
+    work without returning its promise: `onCommit(() => { void notify() })`
+-   **A callback that throws does not fail the mutation** — the commit has already happened.
+    The error is logged with `console.error` and the remaining callbacks still run. Catch
+    inside the callback to report it your own way
+-   Call `onCommit` while the hook runs; calling it later, once the write has committed or
+    rolled back, throws
+
+Under your own executor the library cannot see the commit, so the callbacks queue on the
+**context object** (the one handle both sides hold) until you run or discard them:
+
+```Typescript
+import { discardCommitCallbacks, drizzleExecutorKey, runCommitCallbacks } from '@vantreeseba/drizzle-graphql'
+
+const contextValue = { [drizzleExecutorKey]: undefined as unknown }
+try {
+    await db.transaction(async (tx) => {
+        contextValue[drizzleExecutorKey] = tx
+        const result = await graphql({ schema, source, contextValue })
+        if (result.errors?.length) throw new Error('rolling back')
+    })
+} catch (error) {
+    discardCommitCallbacks(contextValue)
+    throw error
+}
+await runCommitCallbacks(contextValue)
+```
+
+-   The queue collects every execution that ran with that context object until you flush it,
+    so several `graphql()` calls inside one transaction flush once. `runCommitCallbacks` clears
+    it before the first callback starts
+-   A mutation field that fails drops the callbacks it queued even here, since you will
+    normally roll back on its error
+-   `runCommitCallbacks` runs every callback, then rejects with an `AggregateError` of
+    whatever threw, so you decide how to report it
+-   The queue is held weakly by the context object: one you never flush is dropped with the
+    context, not kept forever
 
 
 ## Relations & N+1 handling

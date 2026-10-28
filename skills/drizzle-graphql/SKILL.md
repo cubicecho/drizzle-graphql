@@ -157,6 +157,6 @@ for the pattern, and the trap it avoids.
 | `limits` | default and maximum page size, global or per table |
 | `defaults` | per-table default `orderBy` |
 | `scope` / `contextValues` / `softDelete` | row scoping, server-owned columns, soft delete |
-| `onWrite` | hooks that run inside the mutation's transaction, per table and optionally per operation (`insert`, `update`, `delete`, …); put external side effects in an outbox row through `tx` |
+| `onWrite` | hooks that run inside the mutation's transaction, per table and optionally per operation (`insert`, `update`, `delete`, …); put external side effects in an outbox row through `tx`, or defer them with `payload.onCommit(fn)` (runs after the commit, dropped on rollback; under your own `drizzleExecutorKey` transaction call `runCommitCallbacks(context)` after committing / `discardCommitCallbacks(context)` after rolling back) |
 | `onError` | error logging and mapping |
 | `eagerLoadRelations` | which relations are fetched with the parent query |

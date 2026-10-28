@@ -75,11 +75,13 @@ export type { DrizzleErrorCode, DrizzleErrorContext, RelationResolverFactory } f
 export {
   createRelationResolverFactory,
   defaultErrorMapper,
+  discardCommitCallbacks,
   drizzleError,
   drizzleExecutorKey,
   extractFilters,
   extractOrderBy,
   extractRelationJoinColumns,
+  runCommitCallbacks,
 } from './util/builders/common.ts';
 export type { TableNamedRelations } from './util/builders/types.ts';
 export { singularizeMapper } from './util/case-ops/index.ts';

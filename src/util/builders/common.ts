@@ -4,6 +4,7 @@
 
 export { deletedArg, selectArrayArgs, selectSingleArgs } from './common/args.ts';
 export { generateColumnEnum, generateDistinctEnum } from './common/column-enums.ts';
+export { discardCommitCallbacks, runCommitCallbacks } from './common/commit-callbacks.ts';
 export type { ConflictBatch, ConflictPlan, OnConflictArg } from './common/conflict.ts';
 export {
   applyConflictPlan,

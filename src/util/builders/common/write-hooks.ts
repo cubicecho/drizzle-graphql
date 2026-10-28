@@ -80,6 +80,29 @@ export type WriteHookPayload = {
   info: any;
   /** The executor the mutation itself ran on. Throwing from the hook rolls it back. */
   tx: any;
+  /**
+   * Defers `fn` until the write is durable: it runs **after the transaction commits**, and is
+   * dropped, never run, when anything rolls that transaction back — this hook throwing, a later
+   * hook or nested write failing, or, under `transactions: 'auto'`, a later mutation field
+   * failing or the shared transaction timing out. The place for a side effect outside the
+   * database (email, queue message, webhook, cache write) that must not happen for a write
+   * that never landed.
+   *
+   * Callbacks run one after another in the order they were registered, across the whole
+   * transaction: a field the library opened a transaction for runs them once it commits; the
+   * auto-transaction once, after it commits, before the last mutation field resolves. In both
+   * cases the field resolves only after they have settled. A callback that throws is logged
+   * with `console.error` and the rest still run: the commit has already happened, so the
+   * mutation still succeeds.
+   *
+   * Under a caller-supplied executor (`drizzleExecutorKey`) the commit is the caller's, so the
+   * callbacks wait, keyed by the context object, until the caller calls `runCommitCallbacks(context)`
+   * after committing or `discardCommitCallbacks(context)` after rolling back. A field that
+   * fails drops the callbacks it registered either way.
+   *
+   * Call it while the hook runs; calling it once the write has committed or rolled back throws.
+   */
+  onCommit: (fn: () => void | Promise<void>) => void;
 };
 
 export type WriteHook = (payload: WriteHookPayload) => void | Promise<void>;

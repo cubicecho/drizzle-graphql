@@ -23,6 +23,7 @@ import {
   fragmentArgumentsInUse,
   isExcludedByDirectives,
 } from '../../graphql-variables.ts';
+import { type CommitQueue, type CommitUnit, callerCommitStage, createCommitUnit } from './commit-callbacks.ts';
 import { drizzleError } from './errors.ts';
 import {
   callerExecutor,
@@ -74,7 +75,12 @@ type SharedTxState = {
   suspendTimer: () => void;
   /** (Re)arm the inactivity timer while waiting for the next resolver call. */
   bumpTimer: () => void;
+  /** The `onCommit` callbacks of every field that succeeded so far; run after COMMIT. */
+  commits: CommitUnit;
 };
+
+/** What a mutation body runs with: its executor, and the queue `payload.onCommit` adds to. */
+export type MutationBody<T> = (executor: any, commits: CommitQueue) => Promise<T>;
 
 type RequestTxState = { kind: 'passthrough' } | SharedTxState;
 
@@ -216,11 +222,14 @@ const openSharedTx = (db: any, txCtx: MutationTxCtx, stateKey: object, expected:
     ready,
     settled,
     release,
+    commits: createCommitUnit(),
     abort: (e: unknown) => {
       if (!state.aborted) {
         state.aborted = true;
         state.failure = e;
       }
+      // Whatever rolls the transaction back takes every queued callback with it.
+      state.commits.drop();
       rejectLatch(e);
     },
     suspendTimer: clearTimer,
@@ -268,11 +277,7 @@ const openSharedTx = (db: any, txCtx: MutationTxCtx, stateKey: object, expected:
   return state;
 };
 
-const runOnSharedTx = async <T>(
-  state: SharedTxState,
-  timeoutMs: number,
-  body: (executor: any) => Promise<T>,
-): Promise<T> => {
+const runOnSharedTx = async <T>(state: SharedTxState, timeoutMs: number, body: MutationBody<T>): Promise<T> => {
   if (state.aborted) {
     // Fail fast: never run a later field against a transaction that already rolled back.
     await (state.settled as Promise<unknown>).catch(() => {});
@@ -280,28 +285,57 @@ const runOnSharedTx = async <T>(
   }
   state.suspendTimer();
   const tx = await state.ready;
+  // This field's callbacks join the transaction's only once the field has succeeded.
+  const stage = state.commits.stage();
+  let committed = false;
+  let result: T;
   try {
     if (state.aborted) {
       throw abortedBatchError(state, timeoutMs);
     }
-    const result = await body(tx);
+    result = await body(tx, stage);
+    stage.keep();
     state.completed += 1;
     if (state.completed >= state.expected) {
       state.release();
       // COMMIT before this (final) field resolves, so the data is durable — and a commit
       // failure surfaces as this field's error.
       await state.settled;
+      committed = true;
     } else {
       state.bumpTimer();
     }
-    return result;
   } catch (e) {
+    stage.drop();
     state.abort(e);
     // Wait for the ROLLBACK to finish before surfacing, so the caller never observes a
     // response produced while the transaction is still being unwound.
     await (state.settled as Promise<unknown>).catch(() => {});
     throw e;
   }
+  if (committed) {
+    // Every field's callbacks, after the one COMMIT, before the last field resolves.
+    await state.commits.run();
+  }
+  return result;
+};
+
+/**
+ * Runs a field that is its own commit unit — in a transaction opened for it, or straight on
+ * `db` — and its `onCommit` callbacks once `run` has resolved, which is once that commit has
+ * happened. A failure drops them.
+ */
+const runAsOwnUnit = async <T>(run: (commits: CommitQueue) => Promise<T>): Promise<T> => {
+  const unit = createCommitUnit();
+  let result: T;
+  try {
+    result = await run(unit);
+  } catch (e) {
+    unit.drop();
+    throw e;
+  }
+  await unit.run();
+  return result;
 };
 
 /**
@@ -320,7 +354,7 @@ export const runMutation = async <T>(
   context: any,
   info: any,
   txCtx: MutationTxCtx | undefined,
-  body: (executor: any) => Promise<T>,
+  body: MutationBody<T>,
   /**
    * Opens a transaction for a field that would otherwise have run straight on `db`. Set when
    * the field carries an `onWrite` hook, whose whole purpose is to write atomically with the
@@ -338,11 +372,21 @@ export const runMutation = async <T>(
     const callers = callerExecutor(context);
     if (callers) {
       // The caller already runs this request on its own transaction/executor — use it as-is.
-      return body(callers);
+      // Its commit is the caller's, so the callbacks wait on the context for the caller to
+      // run them; a field that fails takes its own with it.
+      const stage = callerCommitStage(context);
+      try {
+        const result = await body(callers, stage);
+        stage.keep();
+        return result;
+      } catch (e) {
+        stage.drop();
+        throw e;
+      }
     }
     // Without an execution to key on, no later field could find a shared transaction.
     if (!txCtx || !stateKey || info.operation.operation !== 'mutation') {
-      return forceTx ? db.transaction((tx: any) => body(tx)) : body(db);
+      return runAsOwnUnit((commits) => (forceTx ? db.transaction((tx: any) => body(tx, commits)) : body(db, commits)));
     }
     const keys = new Set<string>();
     const mutationFields = info.schema.getMutationType()?.getFields() ?? {};
@@ -378,7 +422,9 @@ export const runMutation = async <T>(
 
   if (state.kind === 'passthrough') {
     const executor = resolveExecutor(db, context, info);
-    return forceTx && executor === db ? db.transaction((tx: any) => body(tx)) : body(executor);
+    return runAsOwnUnit((commits) =>
+      forceTx && executor === db ? db.transaction((tx: any) => body(tx, commits)) : body(executor, commits),
+    );
   }
   return runOnSharedTx(state, txCtx!.timeoutMs, body);
 };
