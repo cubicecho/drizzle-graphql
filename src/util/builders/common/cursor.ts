@@ -18,19 +18,21 @@ import {
   sql,
 } from 'drizzle-orm';
 import {
+  MySqlBigInt53,
   MySqlColumn,
   MySqlDate,
   MySqlDateTime,
   MySqlEnumColumn,
   MySqlEnumObjectColumn,
+  MySqlSerial,
   MySqlTimestamp,
 } from 'drizzle-orm/mysql-core';
-import { PgColumn, PgDate, PgTimestamp } from 'drizzle-orm/pg-core';
+import { PgBigInt53, PgBigSerial53, PgColumn, PgDate, PgTimestamp } from 'drizzle-orm/pg-core';
 import { SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { dateToCalendarDate } from '../../scalars/index.ts';
 import { isDateOnlyColumn } from '../../type-converter/index.ts';
-import { cursorValueFormatFits, readsNumbersForStrings } from './cursor-value-formats.ts';
+import { cursorValueFormatFits, isInt64Text, readsNumbersForStrings } from './cursor-value-formats.ts';
 import { drizzleError } from './errors.ts';
 import { comparableOperand } from './filters.ts';
 import type { OrderNullsOption } from './order-by.ts';
@@ -129,38 +131,55 @@ export const cursorOrderExprs = (table: Table, entries: CursorOrderEntry[]): SQL
 };
 
 /**
- * Property a row carries an ordering column's database text under, when a JS Date cannot stand
- * for every value the column holds. Namespaced like {@link ROW_CURSOR_PROP}, and removed from
- * the row once its cursor is encoded.
+ * Property a row carries an ordering column's database text under, when the JS form the column
+ * reads into cannot stand for every value it holds. Namespaced like {@link ROW_CURSOR_PROP}, and
+ * removed from the row once its cursor is encoded.
  */
 const preciseTextProp = (column: string): string => `__drizzle_graphql_cursor_text_${column}`;
 
+/** The database text a {@link cursorTextForm} column's cursor value takes. */
+type CursorTextForm = 'timestamp' | 'date' | 'integer';
+
+/** 64-bit integer columns drizzle reads as JS numbers (`mode: 'number'`). */
+const NUMBER_MODE_INT64_COLUMNS = [PgBigInt53, PgBigSerial53, MySqlBigInt53, MySqlSerial] as const;
+
 /**
- * How a column whose `mode: 'date'` values a JS Date cannot always stand for keeps its cursor
- * position: as the database's own text of a timestamp or of a date-only value. That is every
- * `mode: 'date'` PostgreSQL `timestamp` / `timestamptz` / `date` and MySQL `datetime` /
- * `timestamp` / `date`:
+ * How a column whose values its JS form cannot always stand for keeps its cursor position: as
+ * the database's own text of a timestamp, of a date-only value, or of a 64-bit integer.
+ *
+ * Every `mode: 'date'` PostgreSQL `timestamp` / `timestamptz` / `date` and MySQL `datetime` /
+ * `timestamp` / `date` takes a timestamp or date text:
  * - a fraction finer than milliseconds (PostgreSQL's default precision 6, MySQL `fsp` above 3)
  *   would be truncated, and two rows a microsecond apart would share one position;
  * - a value outside a JS Date's range (a BC date, a year past 275760, PostgreSQL's infinities,
  *   MySQL's zero date) reads as an invalid Date, which has no position to encode at all — and
  *   drizzle reads `timestamp` (without time zone) infinity as an ordinary instant in 2000.
+ *
+ * Every `mode: 'number'` 64-bit integer — PostgreSQL `bigint` / `bigserial`, MySQL `bigint` /
+ * `serial` — takes an integer text. Past ±2^53 it reads as the nearest double, so neighbouring
+ * values share one position, and -2^63 reads as a number below every row (MySQL) or one
+ * PostgreSQL refuses as out of range.
+ *
  * String-mode columns already arrive as the database's own text, `time` is always a string, and
  * SQLite's integer timestamps hold no text form to compare by, so none of those need it.
  */
-const cursorTextForm = (column: Column): 'timestamp' | 'date' | undefined => {
+const cursorTextForm = (column: Column): CursorTextForm | undefined => {
   if (is(column, PgTimestamp) || is(column, MySqlDateTime) || is(column, MySqlTimestamp)) {
     return 'timestamp';
   }
-  return is(column, PgDate) || is(column, MySqlDate) ? 'date' : undefined;
+  if (is(column, PgDate) || is(column, MySqlDate)) {
+    return 'date';
+  }
+  return NUMBER_MODE_INT64_COLUMNS.some((type) => is(column, type)) ? 'integer' : undefined;
 };
 
 /**
  * Extra SQL expressions a cursor-computing query selects alongside the row: for each ordering
  * column with a {@link cursorTextForm}, the value as the database's own text. The cursor then
- * encodes that text rather than the Date, and `after` compares the column against it — so two
- * rows a microsecond apart stay distinct positions, and a row whose value a JS Date cannot hold
- * still has one. `table` may be the aliased RQB proxy. Empty when no ordering column needs it.
+ * encodes that text rather than the Date or number, and `after` compares the column against it —
+ * so two rows a microsecond (or one) apart stay distinct positions, and a row whose value a JS
+ * Date cannot hold still has one. `table` may be the aliased RQB proxy. Empty when no ordering
+ * column needs it.
  */
 export const cursorPreciseExtras = (table: Table, entries: CursorOrderEntry[]): Record<string, SQL> => {
   const cols = getColumns(table);
@@ -294,9 +313,10 @@ const cursorEncoder = (entries: CursorOrderEntry[]): ((row: Record<string, any>)
     const values = JSON.stringify(
       columns.map((column) => {
         const value = row[column] ?? null;
-        // The database's own text of a value a Date would truncate (see cursorPreciseExtras).
-        // It goes out as a plain string: both dialects' date-mode columns bind a string as-is,
-        // and the database parses it back at the column's own precision.
+        // The database's own text of a value a Date or number would round (see
+        // cursorPreciseExtras). It goes out as a plain string: both dialects' date-mode and
+        // number-mode bigint columns bind a string as-is, and the database parses it back
+        // exactly, at the column's own type.
         const precise = row[preciseTextProp(column)];
         return value !== null && typeof precise === 'string' ? precise : encodeCursorValue(value);
       }),
@@ -440,9 +460,13 @@ const TIMESTAMP_FIELD_RANGES: Readonly<Record<string, readonly [number, number]>
 /**
  * Whether a string is text in `form` as {@link cursorPreciseExtras} selects it — any form the
  * databases print, with each field in range. Day-of-month overflow (Feb 31) is left to the
- * database, which refuses it; it never prints one.
+ * database, which refuses it; it never prints one. An integer text is a whole number the column's
+ * 64 bits hold.
  */
-const isCursorText = (form: 'timestamp' | 'date', text: string): boolean => {
+const isCursorText = (col: Column, form: CursorTextForm, text: string): boolean => {
+  if (form === 'integer') {
+    return isInt64Text(col, text);
+  }
   if (NON_INSTANT_TEXT[form].test(text)) {
     return true;
   }
@@ -492,7 +516,7 @@ const cursorValueFits = (col: Column, value: unknown): boolean => {
   }
   const textForm = cursorTextForm(col);
   if (kind === 'string' && textForm) {
-    return isCursorText(textForm, value as string);
+    return isCursorText(col, textForm, value as string);
   }
   const kindFits = kind === expected || (kind === 'number' && readsNumbersForStrings(col));
   if (!kindFits) {

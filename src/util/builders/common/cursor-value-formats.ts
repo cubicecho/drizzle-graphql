@@ -72,7 +72,18 @@ const INTEGER_RANGES: Readonly<Record<string, readonly [bigint, bigint]>> = {
 /** Whether a whole number lies in its column's integer range; a column with no listed range takes any. */
 const inIntegerRange = (col: Column, value: bigint): boolean => {
   const range = INTEGER_RANGES[extractExtendedColumnType(col).constraint ?? ''];
-  return !range || (value >= range[0] && value <= range[1]);
+  return !range || inRange(value, range);
+};
+
+const inRange = (value: bigint, [min, max]: readonly [bigint, bigint]): boolean => value >= min && value <= max;
+
+/**
+ * Whether text is a whole number a number-mode 64-bit integer column (`int53` / `uint53`) holds,
+ * judged by its exact 64-bit range rather than the rounded one its JS numbers span.
+ */
+export const isInt64Text = (col: Column, text: string): boolean => {
+  const unsigned = extractExtendedColumnType(col).constraint === 'uint53';
+  return INTEGER_TEXT.test(text) && inRange(BigInt(text), INTEGER_RANGES[unsigned ? 'uint64' : 'int64']!);
 };
 
 /** A PostgreSQL `real` refuses a finite value float32 overflows to infinity or underflows to zero. */
