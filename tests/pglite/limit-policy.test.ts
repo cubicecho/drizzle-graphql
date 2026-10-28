@@ -389,5 +389,11 @@ describe.sequential('limit policy', () => {
         /config\.limits\.tables\.Posts\.defaultLimit must be a positive integer/,
       );
     });
+
+    it('rejects a table name that is not in the schema', () => {
+      expect(() => buildWith({ tables: { Post: { defaultLimit: 2 } } })).toThrow(
+        "config.limits.tables names 'Post', which is not a table in the Drizzle schema",
+      );
+    });
   });
 });

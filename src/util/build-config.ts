@@ -148,6 +148,12 @@ export const resolveBuildConfig = (
     };
     check(limitsConfig, '');
     for (const [tableName, policy] of Object.entries(limitsConfig.tables ?? {})) {
+      // A misspelled key would silently leave that table on the global policy.
+      if (!is(schema[tableName], Table)) {
+        throw new Error(
+          `Drizzle-GraphQL Error: config.limits.tables names '${tableName}', which is not a table in the Drizzle schema. Key it by the table's schema key (the key in the object you passed to the relations config).`,
+        );
+      }
       check(policy, `.tables.${tableName}`);
     }
     const relationsLimits = limitsConfig.relations;

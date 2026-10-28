@@ -56,6 +56,13 @@ The same goes for a schema stitched or merged with the generated one. A
 cannot see what you compose afterwards, so the duplicate is only reported by graphql when that
 schema is built.
 
+### `limits.tables` names are checked
+
+A `limits.tables` key that is not a table in the schema now fails the build, as an unknown name
+in `scope`, `softDelete`, `onWrite` or `exclude` already did. Before, a misspelled key (say
+`limits.tables.Post` for `Posts`) was silently ignored and that table stayed on the global policy.
+Fix the key to the table's schema key.
+
 ## Usage
 
 -   Pass your drizzle database instance into the builder to generate a `{ schema, entities }` object. The tables are read from the `relations` you gave the drizzle constructor (`drizzle({ client, relations })`), so a table missing from your relations config is not part of the generated schema
@@ -2316,7 +2323,7 @@ buildSchema(db, {
 | `defaultLimit` | The `limit` applied when the request passes none |
 | `maxLimit` | The largest `limit` a request may ask for |
 | `clampToMax` | `false` (default) rejects a `limit` above `maxLimit`; `true` reduces it |
-| `tables` | Per-table overrides, keyed by the table's key in your Drizzle schema |
+| `tables` | Per-table overrides, keyed by the table's key in your Drizzle schema; a name that is not a table fails the build |
 | `relations` | A policy for to-many relation fields apart from root lists — see [Relation fields](#relation-fields) |
 
 A per-table policy overrides the global one key by key, so `AuditLog` above still inherits
