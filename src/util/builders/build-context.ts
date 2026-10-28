@@ -20,7 +20,7 @@
 // flag MySQL accepted and never acted on, because MySQL carried its own copy.
 // =============================================================================
 
-import { is, One, type Table } from 'drizzle-orm';
+import { getColumns, is, One, type Table } from 'drizzle-orm';
 import type { GraphQLFieldConfig, GraphQLInputObjectType, GraphQLObjectType, GraphQLOutputType } from 'graphql';
 import { GraphQLList, GraphQLNonNull } from 'graphql';
 import {
@@ -53,6 +53,7 @@ import {
   type TypeNameMapper,
   tableUniqueKeyMap,
   type UniqueKeyMap,
+  unwrapRelationColumn,
 } from '../builders/common.ts';
 import { installSqliteBlobJsonDecoders } from '../data-mappers/index.ts';
 import { type DrizzleMutationMeta, type TableFieldExtensionFactory, tableFieldExtensions } from '../extensions.ts';
@@ -225,6 +226,40 @@ const listForWarning = (names: string[]): string =>
   names.length > MAX_LISTED_OMISSIONS
     ? `${names.slice(0, MAX_LISTED_OMISSIONS).join(', ')} and ${names.length - MAX_LISTED_OMISSIONS} more`
     : names.join(', ');
+
+/**
+ * For each of `tableNames` that is the junction of a many-to-many relation (its `.through()`
+ * table), a hint naming the key to give it: its join columns, by property name. One per table,
+ * from the first relation found that runs through it.
+ */
+const junctionKeyHints = (
+  tableNames: string[],
+  tables: Record<string, Table>,
+  namedRelations: Record<string, Record<string, TableNamedRelations>>,
+): string[] =>
+  tableNames.flatMap((junctionName) => {
+    const junction = tables[junctionName];
+    const propNameOf = new Map(Object.entries(getColumns(junction as Table)).map(([propName, col]) => [col, propName]));
+    for (const [tableName, tableRelations] of Object.entries(namedRelations)) {
+      for (const [relationName, relEntry] of Object.entries(tableRelations)) {
+        const rel = relEntry.relation as any;
+        if (!junction || rel.throughTable !== junction) {
+          continue;
+        }
+        const joinColumns = [...(rel.through?.source ?? []), ...(rel.through?.target ?? [])].map((entry: unknown) =>
+          propNameOf.get(unwrapRelationColumn(entry) as any),
+        );
+        if (!joinColumns.length || joinColumns.some((propName) => !propName)) {
+          continue;
+        }
+        const columns = [...new Set(joinColumns)].map((propName) => `t.${propName}`).join(', ');
+        return [
+          `${junctionName} is the junction of ${tableName}.${relationName}; give it primaryKey({ columns: [${columns}] })`,
+        ];
+      }
+    }
+    return [];
+  });
 
 /**
  * A fresh type cache for one build, so a second `buildSchema` never reuses the first one's
@@ -727,8 +762,9 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     }
 
     if (unkeyed.length) {
+      const hints = junctionKeyHints(unkeyed.slice(0, MAX_LISTED_OMISSIONS), ctx.tables, ctx.namedRelations);
       console.warn(
-        `Drizzle-GraphQL Warning: these tables have no primary key or unique key, so their Single update and delete cannot be pinned to the row they checked — a row that starts matching mid-write is written too: ${listForWarning(unkeyed)}.`,
+        `Drizzle-GraphQL Warning: these tables have no primary key or unique key, so their Single update and delete cannot be pinned to the row they checked — a row that starts matching mid-write is written too: ${listForWarning(unkeyed)}.${hints.map((hint) => ` ${hint}.`).join('')}`,
       );
     }
   };

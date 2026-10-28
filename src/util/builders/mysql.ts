@@ -287,7 +287,7 @@ const generateUpdate = (
 
       let query = executor.update(table).set(input);
       if (filters) {
-        query = query.where(mysqlWriteFilter(table, filters)) as any;
+        query = query.where(await mysqlWriteFilter(executor, table, filters)) as any;
       }
 
       await query;
@@ -368,7 +368,7 @@ const generateUpdateMany = (
         for (const entry of entries) {
           let query = tx.update(table).set(entry.set);
           if (entry.filters) {
-            query = query.where(mysqlWriteFilter(table, entry.filters)) as any;
+            query = query.where(await mysqlWriteFilter(tx, table, entry.filters)) as any;
           }
           await query;
         }
@@ -456,7 +456,7 @@ const generateDelete = (
               .set({ [softDelete.columnName]: restore ? softDelete.writeRestored : softDelete.writeDeleted() })
           : executor.delete(table);
       if (filters) {
-        query = query.where(mysqlWriteFilter(table, filters)) as any;
+        query = query.where(await mysqlWriteFilter(executor, table, filters)) as any;
       }
 
       await query;
@@ -513,26 +513,76 @@ const readsTable = (chunk: unknown, table: Table): boolean => {
  * The `where` of an UPDATE or DELETE, in a form MySQL accepts. MySQL refuses a statement whose
  * `where` reads the table it writes (error 1093, "You can't specify target table … for update
  * in FROM clause") — which a relation filter through a self-referencing relation, or a scope
- * written as one, does. Such a filter is resolved to the primary keys it matches first, through
- * a derived table MySQL materializes (`DISTINCT` keeps the optimizer from merging it back in),
- * and the write matches those keys. Any other filter is returned as it is.
+ * written as one, does. Such a filter is resolved to the keys of the rows it matches first,
+ * through a derived table MySQL materializes (`DISTINCT` keeps the optimizer from merging it
+ * back in), and the write matches those keys. Any other filter is returned as it is.
+ *
+ * The keys are the ones a `Single` write narrows by (`keys.getRowKeyCandidates`): the primary
+ * key, else a NOT NULL unique key, else the nullable unique keys. A row is matched through a
+ * nullable key only where it holds a value in every column, since `IN` never matches a NULL; if
+ * the filter matches a row holding NULL in every such key, nothing identifies it, and the
+ * statement is left for MySQL to refuse — as it is on a table with no key at all — rather than
+ * skipping that row. Run on `executor`, after the `before` hook, since that check reads rows.
  */
-const mysqlWriteFilter = (table: MySqlTable, filters: SQL | undefined): SQL | undefined => {
+const mysqlWriteFilter = async (
+  executor: any,
+  table: MySqlTable,
+  filters: SQL | undefined,
+): Promise<SQL | undefined> => {
   if (!filters || !readsTable(filters, table)) {
     return filters;
   }
   const columns = getColumns(table) as Record<string, Column>;
-  const keys = mysqlPrimaryKeyPropNames(table).map((name) => columns[name]!);
-  if (!keys.length) {
+  const keySets = mysqlRowKeyCandidates(table).map((set) => set.map((name) => columns[name]!));
+  if (!keySets.length) {
     // Nothing identifies a row to match by; the statement is left for MySQL to refuse.
     return filters;
   }
+  const allNotNull = (set: Column[]) => set.every((column) => column.notNull);
+  const [first] = keySets;
+  if (keySets.length === 1 && allNotNull(first!)) {
+    return matchKeysOf(table, filters, first!, false);
+  }
+  // Only nullable unique keys: a row holding NULL in each of them cannot be matched by key.
+  const held = (set: Column[]) =>
+    sql.join(
+      set.map((column) => sql`${column} is not null`),
+      sql` and `,
+    );
+  const unreachable = await executor
+    .select({ found: sql`1` })
+    .from(table)
+    .where(
+      sql`(${filters}) and not (${sql.join(
+        keySets.map((set) => sql`(${held(set)})`),
+        sql` or `,
+      )})`,
+    )
+    .limit(1);
+  if (unreachable.length) {
+    return filters;
+  }
+  return sql`(${sql.join(
+    keySets.map((set) => matchKeysOf(table, filters, set, !allNotNull(set))),
+    sql` or `,
+  )})`;
+};
+
+/** `keys in (select keys from (<rows matching filters>))`, skipping rows with a NULL key when `nullable`. */
+const matchKeysOf = (table: MySqlTable, filters: SQL, keys: Column[], nullable: boolean): SQL => {
   const keyList = sql.join(
     keys.map((column) => sql.identifier(column.name)),
     sql`, `,
   );
   const target = keys.length === 1 ? sql`${keys[0]}` : sql`(${sql.join(keys, sql`, `)})`;
-  return sql`${target} in (select ${keyList} from (select distinct ${sql.join(keys, sql`, `)} from ${table} where ${filters}) as ${sql.identifier('dgql_write_target')})`;
+  const derived = sql`(select distinct ${sql.join(keys, sql`, `)} from ${table} where ${filters}) as ${sql.identifier('dgql_write_target')}`;
+  const held = nullable
+    ? sql` where ${sql.join(
+        keys.map((column) => sql`${sql.identifier(column.name)} is not null`),
+        sql` and `,
+      )}`
+    : sql``;
+  return sql`${target} in (select ${keyList} from ${derived}${held})`;
 };
 
 // MySQL sorts NULLs as the smallest values (first in ASC), and its writes return no rows.
@@ -800,7 +850,8 @@ export const generateSchemaData = <
             txCtx: mutationTxCtx,
             policies,
             returnsRows: false,
-            writeFilter: (filters) => mysqlWriteFilter(schema[tableName] as MySqlTable, filters)!,
+            writeFilter: async (filters, executor) =>
+              (await mysqlWriteFilter(executor, schema[tableName] as MySqlTable, filters))!,
           })
         : undefined;
     const deleteCountGenerated =
@@ -817,7 +868,8 @@ export const generateSchemaData = <
             txCtx: mutationTxCtx,
             policies,
             returnsRows: false,
-            writeFilter: (filters) => mysqlWriteFilter(schema[tableName] as MySqlTable, filters)!,
+            writeFilter: async (filters, executor) =>
+              (await mysqlWriteFilter(executor, schema[tableName] as MySqlTable, filters))!,
           })
         : undefined;
     // Each mutation is paired with the identity it publishes on `extensions.drizzle`, so a

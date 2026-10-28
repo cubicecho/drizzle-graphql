@@ -109,7 +109,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 | Inserts stamp every `contextValues` column (and a NOT NULL soft-delete marker's restored value) | `policies.insertStamps`, `policies.applyContextValues` |
 | Updates never write a `contextValues` column | `policies.stripContextValues` |
 | Generated and identity-ALWAYS columns never appear in a write input | `writable-columns.isWritableColumn` |
-| A `Single` update/delete writes at most one row: refused before writing if its `where` matches more than one, then narrowed to the key of the row it checked (primary key, else a non-partial unique key — see "Claimed but not enforced") | `mutation-helpers.narrowToSingleMatch` |
+| A `Single` update/delete writes at most one row: refused before writing if its `where` matches more than one, then narrowed to the key of the row it checked (primary key, else a non-partial unique key — see "Claimed but not enforced"). A key is read in a form that binds back to the same value: raw, except a PostgreSQL `real` / `double precision` (hex of its binary form) and a MySQL single-precision `float` (`cast(… as double)`), whose printed form can round | `mutation-helpers.narrowToSingleMatch`, `keyAccess` |
 | `Single` writes and `requireWhere` writes refuse a `where` that matches every row (`{}`, `notInArray: []`, `NOT: { inArray: [] }`) | `mutation-helpers.extractRequiredFilters` (`DRIZZLE_WHERE_REQUIRED`) |
 | An update must write a column or carry nested ops | `write-resolvers.generateUpdate`, `update-many.createUpdateManyGenerator`, `mysql.ts` update |
 | A field-update input carries exactly one operation | `field-updates.remapUpdateInput` |
@@ -136,6 +136,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 | A nested write never matches rows by a key a JS Date cannot hold: every such value reads as one invalid Date, so matching on one is refused with `DRIZZLE_UNREPRESENTABLE_VALUE` (a link it only reads past is ignored) | `nested-writes/plans.keyString` |
 | A nested to-one `connect` matches exactly one row | `nested-writes/runtime.ts createNestedWriteRuntime` (`connectMatchError`) |
 | A to-one relation never has two attached rows through a nested write: a nullable key detaches the old row, a NOT NULL one refuses the attach | `nested-writes/runtime.ts createNestedWriteRuntime` (`detachAll`, `assertNothingElseAttached`) |
+| A MySQL update/delete whose `where` reads its own table (error 1093) matches the keys of the rows that `where` finds, through a materialized derived table: the same keys a `Single` write narrows by. Through nullable unique keys only when every matched row holds a value in one of them; otherwise, and on a table with no key, the statement is left for MySQL to refuse | `mysql.ts mysqlWriteFilter` |
 | Nested writes are rejected on MySQL; nested writes, `transactions: 'auto'` and `onWrite` are rejected on a sync SQLite driver | `mysql.ts` / `sqlite.ts` `preflight` |
 | Two enum columns mapped to one name must have the same values | `type-converter.generateEnumCached` |
 | An error the library did not raise reaches the client as `Internal server error` (unless `onError` says otherwise) | `errors.defaultErrorMapper` via `errors.applyErrorMapper` |
@@ -143,7 +144,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 
 ### Claimed but not enforced (findings)
 
-- `DRIZZLE_MULTI_ROW_MATCH` means nothing was written (`common/errors.ts`). The write is narrowed to the row the check found by its primary key, else by a non-partial unique key (`keys.getRowKeyCandidates`, `mutation-helpers.narrowToSingleMatch`). Still exposed — a row arriving between the check and the write is written too: tables with no primary key and no non-partial unique key (the build warns, listing them), and tables whose only unique keys are nullable when the checked row holds NULL in each. Tracked in #230.
+- `DRIZZLE_MULTI_ROW_MATCH` means nothing was written (`common/errors.ts`). The write is narrowed to the row the check found by its primary key, else by a non-partial unique key (`keys.getRowKeyCandidates`, `mutation-helpers.narrowToSingleMatch`). Still exposed — a row arriving between the check and the write is written too: tables with no primary key and no non-partial unique key (the build warns once, listing them and, for a many-to-many junction, the `primaryKey` to give it — `build-context.junctionKeyHints`), and tables whose only unique keys are nullable when the checked row holds NULL in each. Tracked in #230.
 
 ## Glossary
 

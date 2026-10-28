@@ -1,5 +1,5 @@
 import { type Client, createClient } from '@libsql/client';
-import { buildRelations, sql } from 'drizzle-orm';
+import { buildRelations, createRelationsHelper, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/libsql';
 import { integer, sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
 import { graphql } from 'graphql';
@@ -254,6 +254,44 @@ describe.sequential('SQLite: a Single write on a table without a primary key', (
       expect(messages[0]).toMatch(/: NoKey\.$/);
     } finally {
       warn.mockRestore();
+    }
+  });
+});
+
+// A many-to-many junction is the usual table left without a key, and its key is obvious: the two
+// join columns. The warning names them.
+const Members = sqliteTable('members', { id: integer('id').primaryKey() });
+const Groups = sqliteTable('groups', { id: integer('id').primaryKey() });
+const MembersToGroups = sqliteTable('members_to_groups', {
+  memberId: integer('member_id').notNull(),
+  groupId: integer('group_id').notNull(),
+});
+
+describe('SQLite: the keyless-table warning on a many-to-many junction', () => {
+  const junctionTables = { Members, Groups, MembersToGroups, NoKey };
+  const jr = createRelationsHelper(junctionTables);
+  const junctionRelations = buildRelations(junctionTables, {
+    Members: {
+      groups: jr.many.Groups({
+        from: jr.Members.id.through(jr.MembersToGroups.memberId),
+        to: jr.Groups.id.through(jr.MembersToGroups.groupId),
+      }),
+    },
+  });
+
+  it('names the junction and the key to give it, in the one warning', () => {
+    const junctionClient = createClient({ url: ':memory:' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      buildSchema((drizzle as any)({ client: junctionClient, relations: junctionRelations }));
+      const messages = warn.mock.calls.map(([message]) => String(message)).filter((m) => m.includes('no primary key'));
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatch(
+        /: MembersToGroups, NoKey\. MembersToGroups is the junction of Members\.groups; give it primaryKey\(\{ columns: \[t\.memberId, t\.groupId\] \}\)\.$/,
+      );
+    } finally {
+      warn.mockRestore();
+      junctionClient.close();
     }
   });
 });

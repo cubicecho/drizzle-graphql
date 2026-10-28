@@ -20,7 +20,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { Duplex } from 'node:stream';
 import { buildRelations, createRelationsHelper, eq, inArray, sql } from 'drizzle-orm';
-import { date, datetime, int, mysqlTable, text, timestamp, varchar } from 'drizzle-orm/mysql-core';
+import { date, datetime, float, int, mysqlTable, text, timestamp, varchar } from 'drizzle-orm/mysql-core';
 import { drizzle } from 'drizzle-orm/mysql2';
 import { type GraphQLSchema, graphql } from 'graphql';
 import * as mysql from 'mysql2/promise';
@@ -569,5 +569,204 @@ describe.sequential('mysql: write arguments are converted into a copy', () => {
       [1, null, 7],
       [2, 'w', 7],
     ]);
+  });
+});
+
+// A self-referencing filter is resolved to the keys of the rows it matches before the write
+// (error 1093). Without a primary key that key is a unique one — the same candidates a Single
+// write narrows by.
+const PeopleByCode = mysqlTable('people_by_code', {
+  code: varchar('code', { length: 8 }).notNull().unique(),
+  name: varchar('name', { length: 8 }).notNull(),
+  managerCode: varchar('manager_code', { length: 8 }),
+});
+const PeopleByNullableCode = mysqlTable('people_by_nullable_code', {
+  code: varchar('code', { length: 8 }).unique(),
+  name: varchar('name', { length: 8 }).notNull(),
+  managerName: varchar('manager_name', { length: 8 }),
+});
+const PeopleNoKey = mysqlTable('people_no_key', {
+  name: varchar('name', { length: 8 }).notNull(),
+  managerName: varchar('manager_name', { length: 8 }),
+});
+
+describe.sequential('mysql: self-referencing writes on a table without a primary key', () => {
+  const people = { PeopleByCode, PeopleByNullableCode, PeopleNoKey };
+  const pr = createRelationsHelper(people);
+  let peopleDb: any;
+  const buildPeople = (config: Partial<BuildSchemaConfig> = {}) =>
+    buildSchema(peopleDb, { onError: (error: unknown) => error as Error, ...config } as any).schema;
+  const namesIn = async (table: any) =>
+    (await peopleDb.select({ name: table.name }).from(table).orderBy(table.name)).map((row: any) => row.name);
+  /** The MySQL error number a failed write surfaced with. */
+  const errnoOf = (res: any) => {
+    let error = res.errors?.[0]?.originalError;
+    while (error && error.errno === undefined) {
+      error = error.originalError ?? error.cause;
+    }
+    return error?.errno;
+  };
+
+  beforeAll(async () => {
+    peopleDb = (drizzle as any)({
+      client: connection,
+      relations: buildRelations(people, {
+        PeopleByCode: {
+          manager: pr.one.PeopleByCode({ from: pr.PeopleByCode.managerCode, to: pr.PeopleByCode.code, alias: 'm' }),
+        },
+        PeopleByNullableCode: {
+          manager: pr.one.PeopleByNullableCode({
+            from: pr.PeopleByNullableCode.managerName,
+            to: pr.PeopleByNullableCode.name,
+            alias: 'm',
+          }),
+        },
+        PeopleNoKey: {
+          manager: pr.one.PeopleNoKey({ from: pr.PeopleNoKey.managerName, to: pr.PeopleNoKey.name, alias: 'm' }),
+        },
+      }),
+    });
+    await connection!.query(
+      'CREATE TABLE people_by_code (code varchar(8) NOT NULL UNIQUE, name varchar(8) NOT NULL, manager_code varchar(8))',
+    );
+    await connection!.query(
+      'CREATE TABLE people_by_nullable_code (code varchar(8) UNIQUE, name varchar(8) NOT NULL, manager_name varchar(8))',
+    );
+    await connection!.query('CREATE TABLE people_no_key (name varchar(8) NOT NULL, manager_name varchar(8))');
+  });
+
+  beforeEach(async () => {
+    for (const table of Object.values(people)) {
+      await peopleDb.delete(table);
+    }
+    await peopleDb.insert(PeopleByCode).values([
+      { code: 'b', name: 'boss' },
+      { code: 'w1', name: 'w1', managerCode: 'b' },
+      { code: 'w2', name: 'w2', managerCode: 'b' },
+      { code: 'o', name: 'other', managerCode: 'w1' },
+    ]);
+    await peopleDb.insert(PeopleNoKey).values([{ name: 'boss' }, { name: 'w1', managerName: 'boss' }]);
+  });
+
+  it('NOT NULL unique key: update, Single delete and the count mutation', async () => {
+    const schema = buildPeople({ features: { countMutations: true } });
+    const updated = await run(
+      schema,
+      'mutation { updatePeopleByCode(where: { manager: { name: { eq: "boss" } } }, set: { managerCode: "o" }) { isSuccess } }',
+    );
+    expect(errorsOf(updated)).toBeUndefined();
+    expect(
+      (await peopleDb.select().from(PeopleByCode).orderBy(PeopleByCode.code)).map((row: any) => row.managerCode),
+    ).toEqual([null, 'w1', 'o', 'o']);
+
+    const counted = await run(
+      schema,
+      'mutation { updatePeopleByCodeCount(where: { manager: { name: { eq: "other" } } }, set: { managerCode: "b" }) }',
+    );
+    expect(errorsOf(counted)).toBeUndefined();
+    expect((counted.data as any).updatePeopleByCodeCount).toBe(2);
+
+    const deleted = await run(
+      schema,
+      'mutation { deletePeopleByCodeSingle(where: { manager: { name: { eq: "w1" } } }) { isSuccess } }',
+    );
+    expect(errorsOf(deleted)).toBeUndefined();
+    expect(await namesIn(PeopleByCode)).toEqual(['boss', 'w1', 'w2']);
+  });
+
+  it('nullable unique key holding a value on every matched row', async () => {
+    await peopleDb.insert(PeopleByNullableCode).values([
+      { code: null, name: 'boss' },
+      { code: 'w1', name: 'w1', managerName: 'boss' },
+      { code: 'w2', name: 'w2', managerName: 'boss' },
+    ]);
+    const res = await run(
+      buildPeople(),
+      'mutation { deletePeopleByNullableCode(where: { manager: { name: { eq: "boss" } } }) { isSuccess } }',
+    );
+    expect(errorsOf(res)).toBeUndefined();
+    expect(await namesIn(PeopleByNullableCode)).toEqual(['boss']);
+  });
+
+  it('nullable unique key holding NULL on a matched row: nothing names it, so MySQL refuses (1093)', async () => {
+    await peopleDb.insert(PeopleByNullableCode).values([
+      { code: 'b', name: 'boss' },
+      { code: null, name: 'w1', managerName: 'boss' },
+      { code: 'w2', name: 'w2', managerName: 'boss' },
+    ]);
+    const res = await run(
+      buildPeople(),
+      'mutation { deletePeopleByNullableCode(where: { manager: { name: { eq: "boss" } } }) { isSuccess } }',
+    );
+    expect(errnoOf(res)).toBe(1093);
+    expect(await namesIn(PeopleByNullableCode)).toEqual(['boss', 'w1', 'w2']);
+  });
+
+  it('no key at all: MySQL refuses (1093)', async () => {
+    const res = await run(
+      buildPeople(),
+      'mutation { updatePeopleNoKeySingle(where: { manager: { name: { eq: "boss" } } }, set: { name: "x" }) { isSuccess } }',
+    );
+    expect(errnoOf(res)).toBe(1093);
+    expect(await namesIn(PeopleNoKey)).toEqual(['boss', 'w1']);
+  });
+});
+
+// A Single write reads the key of the row it checked and narrows the write to it. MySQL prints a
+// single-precision `float` with 6 significant digits and compares it with a bound value in double
+// precision, so the value read back (`0.1`) matched no row and nothing was written.
+const ByFloat = mysqlTable('by_float', {
+  k: float('k').primaryKey(),
+  label: varchar('label', { length: 8 }).notNull(),
+});
+const ByUniqueFloat = mysqlTable('by_unique_float', {
+  k: float('k').notNull().unique(),
+  label: varchar('label', { length: 8 }).notNull(),
+});
+
+describe.sequential('mysql: a Single write on a table keyed by a float column', () => {
+  const floats = { ByFloat, ByUniqueFloat };
+  let floatDb: any;
+  let schema: GraphQLSchema;
+  const labels = async (table: any) =>
+    (await floatDb.select({ label: table.label }).from(table).orderBy(table.label)).map((row: any) => row.label);
+
+  beforeAll(async () => {
+    floatDb = (drizzle as any)({ client: connection, relations: buildRelations(floats, {}) });
+    await connection!.query('CREATE TABLE by_float (k float PRIMARY KEY, label varchar(8) NOT NULL)');
+    await connection!.query('CREATE TABLE by_unique_float (k float NOT NULL UNIQUE, label varchar(8) NOT NULL)');
+    schema = buildSchema(floatDb).schema;
+  });
+
+  beforeEach(async () => {
+    await connection!.query('DELETE FROM by_float');
+    await connection!.query('DELETE FROM by_unique_float');
+    // 1.0000001 and 1.0000002 are distinct floats that both print as `1`.
+    await connection!.query("INSERT INTO by_float VALUES (0.1, 'a'), (1.0000001, 'b'), (1.0000002, 'c')");
+    await connection!.query("INSERT INTO by_unique_float VALUES (0.1, 'a'), (1.0000001, 'b'), (1.0000002, 'c')");
+  });
+
+  it('primary key: update writes the row the check found', async () => {
+    const res = await run(
+      schema,
+      'mutation { updateByFloatSingle(where: { label: { eq: "a" } }, set: { label: "z" }) { isSuccess } }',
+    );
+    expect(errorsOf(res)).toBeUndefined();
+    expect(await labels(ByFloat)).toEqual(['b', 'c', 'z']);
+  });
+
+  it('primary key: a value that prints like another names only its own row', async () => {
+    const res = await run(schema, 'mutation { deleteByFloatSingle(where: { label: { eq: "b" } }) { isSuccess } }');
+    expect(errorsOf(res)).toBeUndefined();
+    expect(await labels(ByFloat)).toEqual(['a', 'c']);
+  });
+
+  it('NOT NULL unique key: update writes the row the check found', async () => {
+    const res = await run(
+      schema,
+      'mutation { updateByUniqueFloatSingle(where: { label: { eq: "c" } }, set: { label: "z" }) { isSuccess } }',
+    );
+    expect(errorsOf(res)).toBeUndefined();
+    expect(await labels(ByUniqueFloat)).toEqual(['a', 'b', 'z']);
   });
 });
