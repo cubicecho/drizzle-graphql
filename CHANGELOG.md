@@ -1,3 +1,9 @@
+## [18.3.1](https://github.com/cubicecho/drizzle-graphql/compare/v18.3.0...v18.3.1) (2026-10-28)
+
+### Bug Fixes
+
+* compile relation filters on drizzle-orm rc.5 ([0ad49fa](https://github.com/cubicecho/drizzle-graphql/commit/0ad49faad6c9985aac7498ca8de8d4af4809c827)), closes [#201](https://github.com/cubicecho/drizzle-graphql/issues/201)
+
 ## [18.3.0](https://github.com/cubicecho/drizzle-graphql/compare/v18.2.0...v18.3.0) (2026-10-28)
 
 ### Features
