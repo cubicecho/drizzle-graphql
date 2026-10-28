@@ -324,3 +324,6 @@ are not undone). Filed as #232.
 | #232 | `after` hooks' external side effects survive a later rollback (outbox now, `onCommit` later) | Hook note (b) |
 | #233 | Per-operation hooks: config strictness and `restore` validation before shipping | `feat/per-operation-hooks` |
 | #234 | Per-build registries are module globals; move them onto the build context in a major | R8 |
+| #235 | Out-of-range `mode: 'date'` follow-ups (upstream PG infinity misread, NOT NULL list nulling, `DateTime` error code, `+0YYYYY` output, `dNaN` key, SQLite huge-integer cursor) | B35 |
+| #236 | Lists with tied order values have no deterministic order unless `cursor` is selected | B32 |
+| #237 | MySQL bigint: number-mode cursors past 2^53 repeat rows; string-mode values arrive as numbers | B32 |
