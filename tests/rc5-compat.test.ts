@@ -140,8 +140,8 @@ describe('relation helpers across rc.4 and rc.5 shapes', () => {
   it('relation filters and relation ordering compile to the same SQL in both shapes', () => {
     const compile = (relations: ReturnType<typeof makeRelations>, build: (ctx: any) => SQL | undefined) => {
       const db = dbWith(relations);
-      const relationMap = buildNamedRelations(db._.relations, Object.entries(tables));
-      return db.dialect.sqlToQuery(build(relationFilterCtx({ tables, relationMap, uniqueKeys: {} }, 'Posts'))!);
+      const namedRelations = buildNamedRelations(db._.relations, Object.entries(tables));
+      return db.dialect.sqlToQuery(build(relationFilterCtx({ tables, namedRelations, uniqueKeys: {} }, 'Posts'))!);
     };
     const filter = (ctx: any) => extractFilters(Posts, 'Posts', { author: { name: { eq: 'x' } } } as any, ctx);
     const order = (ctx: any) =>

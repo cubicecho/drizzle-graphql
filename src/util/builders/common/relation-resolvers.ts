@@ -236,7 +236,7 @@ export const createRelationResolverFactory =
       const columns = extractSelectedColumnsFromTreeSQLFormat(tree, targetTable, {
         tableName: targetTableName,
         tables,
-        namedRelations: filterCtx?.relationMap,
+        namedRelations: filterCtx?.namedRelations,
       });
 
       const targetColumns = getColumns(targetTable);

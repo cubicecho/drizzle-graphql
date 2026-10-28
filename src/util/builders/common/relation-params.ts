@@ -148,7 +148,7 @@ export const extractRelationsParams = (
       tableName: targetTableName,
       eagerRelations,
       tables,
-      namedRelations: filterCtx?.relationMap,
+      namedRelations: filterCtx?.namedRelations,
     });
 
     const thisRecord: Partial<ProcessedTableSelectArgs> = {};

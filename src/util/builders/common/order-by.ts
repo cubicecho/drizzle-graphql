@@ -233,7 +233,7 @@ const collectOrderEntries = (
   whereArgs: Record<string, any> | undefined,
 ): void => {
   const columns = getColumns(table);
-  const relations = ctx?.relationMap[tableKey];
+  const relations = ctx?.namedRelations[tableKey];
 
   for (const [key, config] of Object.entries(orderArgs)) {
     if (config === null || config === undefined) {

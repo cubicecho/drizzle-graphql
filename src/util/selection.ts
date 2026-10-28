@@ -106,7 +106,7 @@ const contextFor = (db: AnyDrizzleDB<any>): SelectionContext => {
   const context: SelectionContext = {
     tables,
     namedRelations,
-    filterCtx: { tables, relationMap: namedRelations, uniqueKeys },
+    filterCtx: { tables, namedRelations, uniqueKeys },
     primaryKeyOf,
     nullOrdering,
   };

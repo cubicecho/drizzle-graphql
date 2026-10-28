@@ -181,7 +181,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 
 ### Relations
 
-- **Relation:** A named link from one table to another, from Drizzle's relations config. Owner: `common/relations.ts buildRelationGraph` (over `buildNamedRelations` and `attachTargetPrimaryKeys`), used by both `prepareBuild` and the selection helpers; the whole graph is `namedRelations` everywhere, except the filter context's public key `filterCtx.relationMap`; `TableNamedRelations`, `relEntry`.
+- **Relation:** A named link from one table to another, from Drizzle's relations config. Owner: `common/relations.ts buildRelationGraph` (over `buildNamedRelations` and `attachTargetPrimaryKeys`), used by both `prepareBuild` and the selection helpers; the whole graph is `namedRelations` everywhere, the filter context's key included; `TableNamedRelations`, `relEntry`.
 - **To-one / to-many:** Whether a relation yields a row or a list. Owner: `is(relation, One)`; `isOne`.
 - **Junction (through, many-to-many):** A middle table linking two tables. Owner: `relations.ts extractJunctionColumns`; `NestedThroughPlan`, `junctionPolicy`.
 - **Relation's own where:** A filter declared on the relation itself, applied on every read and write through it. Owner: `relations.ts relationOwnCondition`, `relationOwnWhere`.

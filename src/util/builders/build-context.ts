@@ -389,7 +389,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     const eagerRelations = pruneNonEagerRelations(namedRelations, shouldEagerLoad);
 
     const uniqueKeys = buildUniqueKeys(tableEntries, featureOf, namedRelations);
-    const filterCtx: RelationFilterBase = { tables, relationMap: namedRelations, uniqueKeys };
+    const filterCtx: RelationFilterBase = { tables, namedRelations, uniqueKeys };
 
     // The row scope compiled against this build's relation graph, plus the columns whose value
     // the server supplies. Both stay undefined unless configured.

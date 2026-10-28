@@ -32,7 +32,7 @@ export interface RelationFilterContext {
   /** Every table in the schema, keyed by its schema key. */
   tables: Record<string, Table>;
   /** Relations keyed by table schema key, then relation name. */
-  relationMap: Record<string, Record<string, TableNamedRelations>>;
+  namedRelations: Record<string, Record<string, TableNamedRelations>>;
   /**
    * Schema key of the table being filtered. Not always the same as the `tableName` label
    * used in error messages (relation `where` callbacks pass the relation name there).
@@ -60,7 +60,7 @@ export interface RelationFilterContext {
  * The build-scoped half of {@link RelationFilterContext}. Created once per generated schema and
  * handed to every resolver, which adds the table it is filtering.
  */
-export type RelationFilterBase = Pick<RelationFilterContext, 'tables' | 'relationMap' | 'uniqueKeys'>;
+export type RelationFilterBase = Pick<RelationFilterContext, 'tables' | 'namedRelations' | 'uniqueKeys'>;
 
 /**
  * The narrowed contexts already handed out, keyed by the build-scoped base and then by
@@ -81,7 +81,7 @@ const aliasCounters = new WeakMap<RelationFilterBase, { n: number }>();
 /**
  * Narrows the build-scoped relation filter context to the table a resolver is filtering.
  *
- * Cached rather than rebuilt: the base carries the build's whole `tables` and `relationMap`,
+ * Cached rather than rebuilt: the base carries the build's whole `tables` and `namedRelations`,
  * and the spread copied both on every call — three per parent row in the lazy relation
  * resolver, one per parent row in the relation aggregate, and up to four per select, several
  * of them inside callbacks drizzle invokes lazily.
@@ -429,7 +429,7 @@ export const extractFilters = <TTable extends Table>(
   const entries = Object.entries(fieldFilters) as [string, FilterColumnOperatorsCore<any> | undefined][];
 
   const columns = getColumns(table);
-  const relations = relationCtx?.relationMap[relationCtx.tableKey];
+  const relations = relationCtx?.namedRelations[relationCtx.tableKey];
 
   const variants = [] as SQL[];
   for (const [fieldName, operators] of entries) {

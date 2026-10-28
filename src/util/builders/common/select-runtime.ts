@@ -162,7 +162,7 @@ export const runRelationalSelect = async (opts: {
       tableName,
       eagerRelations,
       tables,
-      namedRelations: filterCtx?.relationMap,
+      namedRelations: filterCtx?.namedRelations,
     }),
     offset: distinctRows ? undefined : offset,
     // drizzle-orm v1 RQB calls orderBy/where with the aliased table proxy — use it
