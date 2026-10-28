@@ -363,8 +363,8 @@ export const createRelationResolverFactory =
 
       const loader = getOrCreateLoader(execution, loaderKey, async (parentKeys: readonly (readonly unknown[])[]) => {
         // Loaders are cached per execution, so every call batched here shares this request's
-        // executor — the transaction on the context, when there is one.
-        const executor = resolveExecutor(db, context);
+        // executor — the caller's or this execution's auto-transaction, when there is one.
+        const executor = resolveExecutor(db, context, info);
         const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key, localCols), key])).values()];
         // Loaders are keyed per execution too, so the scope resolved here is this request's.
         const visibility = visibilityOf?.(context);
