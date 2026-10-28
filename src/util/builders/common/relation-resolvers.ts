@@ -210,8 +210,9 @@ export const createRelationResolverFactory =
       targetTableName,
       isOne && (relEntry.relation as any)?.optional === false,
     );
-    // A relation field is bounded by the policy of the table it reads, not the parent's.
-    const limitPolicy = isOne ? undefined : limits?.(targetTableName);
+    // A relation field is bounded by the policy of the table it reads, not the parent's, with
+    // `limits.relations` layered over it when configured.
+    const limitPolicy = isOne ? undefined : limits?.(targetTableName, { parent: tableName, name: relationName });
     // Resolved at build time (composite keys included) — used to tiebreak paginated batches.
     const targetPkNames = relEntry.targetPkNames ?? [];
     const errorCtx: DrizzleErrorContext = { table: targetTableName, operation: 'relation', relation: relationName };
