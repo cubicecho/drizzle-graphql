@@ -1,3 +1,9 @@
+## [18.3.0](https://github.com/cubicecho/drizzle-graphql/compare/v18.2.0...v18.3.0) (2026-10-28)
+
+### Features
+
+* give to-many relation fields their own limit policy ([93cddc8](https://github.com/cubicecho/drizzle-graphql/commit/93cddc83e0d75fe9d1788170ef2b66ea072096d9)), closes [#203](https://github.com/cubicecho/drizzle-graphql/issues/203)
+
 ## [18.2.0](https://github.com/cubicecho/drizzle-graphql/compare/v18.1.2...v18.2.0) (2026-10-28)
 
 ### Features
