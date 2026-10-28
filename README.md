@@ -1606,18 +1606,22 @@ supplies no `orderBy` and the table has no [default ordering](#default-ordering)
 -   to-many relation fields with `limit` and/or `offset`
 
 When the request does supply an `orderBy` (or the table has a default ordering), the primary
-key is appended to it as a tiebreak on those same queries. A non-unique ordering leaves the
-order of tied rows to the database, so without it a tie could straddle a page boundary and
-come back on both pages or neither. On a relation field the tiebreak goes on under
+key is appended to it, ascending, as a tiebreak — on every list query and to-many relation
+field, paginated or not. A non-unique ordering otherwise leaves the order of tied rows to the
+database, so a tie could straddle a page boundary and come back on both pages or neither, and
+the same query could return tied rows in one order without `cursor` and another with it. Key
+columns the `orderBy` already orders by are not appended again, and a table without a primary
+key gets no tiebreak. This is the same tiebreak a [cursor](#cursor-pagination) encodes, so tied
+rows come back in one order with or without `cursor`, `limit` or `offset`. On a relation field
+the tiebreak goes on under
 `orderBy: {}` too, so per-parent slices are deterministic and the eager and lazy paths return
 the same slice — the slice a root list page with the same arguments returns. A
 [`distinct`](#distinct) query is ordered by its `orderBy` plus the primary key whether or not it
 is paginated, on a root list and a relation field alike, and a [cursor](#cursor-pagination)
 page always is.
 
-Composite primary keys are ordered by every key column, and an unpaginated list query of a
-table with no `defaults` entry is left unordered (or ordered only as asked) so no sort is paid
-for.
+Composite primary keys are ordered by every key column, and an unpaginated list query with no
+`orderBy` of a table with no `defaults` entry is left unordered so no sort is paid for.
 
 `offset` works without `limit` on every dialect. SQLite and MySQL only accept `OFFSET` after a
 `LIMIT`, so there an offset-only page is sent with a limit meaning "no limit" (`-1` on SQLite,

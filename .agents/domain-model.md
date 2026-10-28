@@ -116,6 +116,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 | After a failure in the shared tx, later mutation fields do not run | `transactions.runOnSharedTx` |
 | `hard` only purges on a soft-delete table that opted in | `write-resolvers.generateDelete`, `mutation-helpers.generateWriteCount` |
 | `after` cannot combine with `distinct`; cursors need a primary key and a cursor-expressible ordering | `select-runtime.runRelationalSelect` |
+| A list with an ordering (asked or default) ends in the primary-key tiebreak the cursor uses (key columns not already ordered by, ascending), so tied rows come back in one order with or without `cursor`, `limit` or `offset`; a page or single read gets it even with no ordering | `cursor.primaryKeyTiebreak` / `primaryKeyTiebreakExprs`, used by `select-runtime.runRelationalSelect`, `relation-params.extractRelationsParams`, `relation-resolvers` (window and plain batch) |
 | A stored value a JS Date cannot hold (BC, year past 275760, infinity, zero date) never fails a read: output mapping leaves the invalid Date for the scalar to reject on that field alone, and a PostgreSQL / MySQL `mode: 'date'` ordering column's cursor carries the database's own text | `data-mappers.remapToGraphQLCore`, `cursor.cursorTextForm` / `cursorPreciseExtras` |
 | A nested to-one `connect` matches exactly one row | `nested-writes/runtime.ts createNestedWriteRuntime` (`connectMatchError`) |
 | A to-one relation never has two attached rows through a nested write: a nullable key detaches the old row, a NOT NULL one refuses the attach | `nested-writes/runtime.ts createNestedWriteRuntime` (`detachAll`, `assertNothingElseAttached`) |
@@ -151,7 +152,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 - **Scalar mapping (scalar override):** Which GraphQL scalar a column uses, built-in or overridden. Owner: `type-converter/index.ts drizzleColumnToGraphQLType`, `registerScalarOverrides`.
 - **Enum type:** A GraphQL enum for an enum column, shared per named `pgEnum`. Owner: `type-converter/index.ts generateEnumCached`.
 - **Value mapping (remap):** Converting values between database form and GraphQL form, both ways. Owner: `src/util/data-mappers/index.ts` (`remapToGraphQL*`, `remapFromGraphQL*`). Input remapping returns a converted copy and never changes the client's arguments, which the write hooks report and a shared variable hands to every field using it.
-- **Primary key (pkNames):** The columns identifying a row, composite-aware; also the default order and cursor tiebreak. Owner: `common/keys.ts getPrimaryKeyPropNamesFromConfig`; `primaryKeyPropNames`, `pkNames`, `targetPkNames`.
+- **Primary key (pkNames):** The columns identifying a row, composite-aware; also the default order and the tiebreak after any ordering, cursor or not. Owner: `common/keys.ts getPrimaryKeyPropNamesFromConfig`; tiebreak `common/cursor.ts primaryKeyTiebreak`; `primaryKeyPropNames`, `pkNames`, `targetPkNames`.
 - **Writable column:** A column a client may set through a create, update, upsert or nested-create input; generated-ALWAYS and identity-ALWAYS columns, `contextValues` columns and the soft-delete marker are not. Owner: `common/writable-columns.ts isWritableColumn` (`isDatabaseOwnedColumn` for the database-computed half).
 
 ### Reads
