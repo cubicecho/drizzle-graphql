@@ -2821,6 +2821,35 @@ onWrite: {
     table can roll the whole tree back, the parent row included, even when the root field has
     no hook of its own
 
+### Side effects outside the database
+
+An `after` hook runs **before the commit**, as soon as its statement returns. If anything later
+fails — a sibling nested write, another hook, a later mutation field under
+[`transactions: 'auto'`](#transactions), or the caller's own transaction — the database writes
+roll back, but an email sent, a message queued or a webhook called from the hook stays sent.
+Nested writes make this easy to hit: a parent-side nested `create` runs its `after` hook before
+the parent row is written, inside a savepoint that can still roll back.
+
+Write the side effect as a row through `tx` instead — an **outbox** — and deliver it from a
+worker that reads only committed rows:
+
+```Typescript
+onWrite: {
+    orders: {
+        after: async ({ operation, rows, tx }) => {
+            if (operation !== 'insert') return
+            // Commits or rolls back with the order itself.
+            await tx.insert(outbox).values(rows.map((row) => ({ kind: 'order-created', orderId: row.id })))
+        },
+        columns: ['id'],
+    },
+}
+// Elsewhere: poll `outbox` (or LISTEN/NOTIFY, or a CDC stream), send, then mark each row sent.
+```
+
+A hook that must call out directly can skip nested statements (`if (payload.nested) return`)
+and act from the root mutation's own hook, which narrows the window but does not close it.
+
 
 ## Relations & N+1 handling
 
