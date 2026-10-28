@@ -1,6 +1,6 @@
 // Primary keys and unique column sets, read off a table however its dialect stores them.
 
-import type { Table } from 'drizzle-orm';
+import type { Column, Table } from 'drizzle-orm';
 import { asc, getColumns, type SQL } from 'drizzle-orm';
 import { visibleColumns } from './exclusions.ts';
 
@@ -152,8 +152,14 @@ type UniqueTableConfig = {
 export const getUniqueTargets = <TTable extends Table>(
   table: TTable,
   getTableConfig: (table: TTable) => UniqueTableConfig,
+): UniqueTarget[] => uniqueTargetsOver(table, visibleColumns(table), getTableConfig);
+
+/** {@link getUniqueTargets} over the columns given: the visible ones for the schema, all of them for SQL. */
+const uniqueTargetsOver = <TTable extends Table>(
+  table: TTable,
+  cols: Record<string, Column>,
+  getTableConfig: (table: TTable) => UniqueTableConfig,
 ): UniqueTarget[] => {
-  const cols = visibleColumns(table);
   const propNameByColumnName = new Map(Object.entries(cols).map(([propName, col]) => [(col as any).name, propName]));
   // A set is usable only if every one of its columns maps back to a property on the table.
   const toPropNames = (columnNames: (string | undefined)[]): string[] | undefined => {
@@ -224,3 +230,34 @@ export const getUniqueColumnSets = <TTable extends Table>(
   getUniqueTargets(table, getTableConfig)
     .filter((target) => options.partial || !target.where)
     .map((target) => target.columns);
+
+/**
+ * The column sets a `Single` update or delete can pin its write to, in the order it tries them
+ * (`mutation-helpers.narrowToSingleMatch` uses the first whose values on the checked row are all
+ * non-null):
+ *
+ * - the primary key, when there is one;
+ * - otherwise the first unique set whose columns are all NOT NULL, which always names one row;
+ * - otherwise every unique set, since one with a nullable column still names one row when the
+ *   checked row holds a value in each of its columns. NULLs never collide in a unique
+ *   constraint, so a NULL names no row and `IS NULL` would match every row holding one.
+ *
+ * Partial unique indexes are left out: they only hold where their predicate does. Excluded
+ * columns are not: this decides what SQL to write, not what the schema shows. Empty when the
+ * table has no key at all, and then nothing narrows the write.
+ */
+export const getRowKeyCandidates = <TTable extends Table>(
+  table: TTable,
+  getTableConfig: (table: TTable) => UniqueTableConfig,
+): string[][] => {
+  const primaryKey = getPrimaryKeyPropNamesFromConfig(table, getTableConfig);
+  if (primaryKey.length) {
+    return [primaryKey];
+  }
+  const cols = getColumns(table) as Record<string, Column>;
+  const sets = uniqueTargetsOver(table, cols, getTableConfig)
+    .filter((target) => !target.where)
+    .map((target) => target.columns);
+  const notNull = sets.find((set) => set.every((name) => cols[name]!.notNull));
+  return notNull ? [notNull] : sets;
+};

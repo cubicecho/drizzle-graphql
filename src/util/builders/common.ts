@@ -52,6 +52,7 @@ export { innerOrderType, orderNullsType } from './common/input-order.ts';
 export {
   getPrimaryKeyPropNames,
   getPrimaryKeyPropNamesFromConfig,
+  getRowKeyCandidates,
   getUniqueColumnSets,
   getUniqueTargets,
   memoizeTableConfig,
@@ -168,14 +169,24 @@ export { tableUniqueKeyMap, type UniqueKeyMap, uniqueKeyFieldName } from './comm
 export type {
   NestedWriteOp,
   NestedWriteOrigin,
+  ResolvedTableWriteHooks,
   ResolvedWriteHooks,
+  TableWriteHooks,
   WriteHook,
   WriteHookFor,
   WriteHookPayload,
   WriteHookPositions,
   WriteHooks,
+  WriteHooksByOperation,
   WriteOperation,
 } from './common/write-hooks.ts';
-export { normalizeWriteHooks, runWriteHook } from './common/write-hooks.ts';
+export {
+  isEveryTableWriteHooks,
+  isWriteOperation,
+  normalizeWriteHooks,
+  resolveTableWriteHooks,
+  runWriteHook,
+  WRITE_OPERATIONS,
+} from './common/write-hooks.ts';
 export type { WriteBody, WriteHookEmitter, WriteResolverSpec } from './common/write-scaffold.ts';
 export { writeResolver } from './common/write-scaffold.ts';

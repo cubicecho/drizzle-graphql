@@ -19,6 +19,7 @@ import {
   generateOnConflictInput,
   generateUpdateManyInput,
   generateWriteCount,
+  getRowKeyCandidates,
   getUniqueTargets,
   type TablesRelationalConfig,
   type UniqueTarget,
@@ -59,7 +60,10 @@ export type DialectSchemaAdapter = SchemaBuildAdapter<true> & {
 export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
   const primaryKeyPropNames = adapter.primaryKeyPropNames;
   const uniqueTargets = (table: Table): UniqueTarget[] => getUniqueTargets(table, adapter.getTableConfig);
-  const { generateInsert, generateUpsert, generateUpdate, generateDelete } = buildWriteResolvers(primaryKeyPropNames);
+  const { generateInsert, generateUpsert, generateUpdate, generateDelete } = buildWriteResolvers(
+    primaryKeyPropNames,
+    (table) => getRowKeyCandidates(table, adapter.getTableConfig),
+  );
   // The three stretches of a build that have nothing to do with the dialect: everything up to
   // each table's types, the read fields in the middle, and the relation resolvers at the end.
   const { prepareBuild, forEachTable, finalizeBuild } = createSchemaBuilder(adapter);
