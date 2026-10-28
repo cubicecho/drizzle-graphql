@@ -1,5 +1,6 @@
 import { type Column, getColumns, is, One, type Table } from 'drizzle-orm';
 import { isJsonColumn } from '../builders/common/column-filters.ts';
+import { readsNumbersForStrings } from '../builders/common/cursor-value-formats.ts';
 import { drizzleError } from '../builders/common/errors.ts';
 import type { TableNamedRelations } from '../builders/index.ts';
 import { declarePerBuildRegistry } from '../per-build-registry.ts';
@@ -226,6 +227,13 @@ export const remapToGraphQLCore = (
 
   if (typeof value === 'bigint') {
     return value.toString();
+  }
+
+  // A MySQL `bigint({ mode: 'string' })` value that is a safe integer arrives as a JS number:
+  // mysql2 reads it so, and drizzle's codec passes it on everywhere but inside a nested
+  // relation's JSON (see `readsNumbersForStrings`). The column's string form is its decimal text.
+  if (typeof value === 'number' && readsNumbersForStrings(column)) {
+    return String(value);
   }
 
   if (Array.isArray(value)) {
