@@ -1,3 +1,65 @@
+## [18.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v17.0.2...v18.0.0) (2026-10-28)
+
+### ⚠ BREAKING CHANGES
+
+* a soft-deleting table whose `update` feature is off no
+longer gets `restore<Table>` / `restore<Table>Single` mutations. The
+README previously said they were generated regardless.
+* Postgres array columns' object-type fields change from `[T!]`
+to `[T]` (and `[[T!]!]` to `[[T]]` for two dimensions); create/update inputs
+and array filters are unchanged.
+* MySQL `decimal({ unsigned: true })` columns change from
+`String` to `Decimal` in object fields, inputs and aggregates; their filter is
+`DecimalFilter` instead of `StringFilter`, and with fieldUpdateOperations their
+update field is `DecimalFieldUpdate`.
+* `bigint({ mode: 'string' })` columns change from `String` to
+`BigInt` in object fields, inputs, aggregates and arguments; their filter is
+`BigIntFilter` instead of `StringFilter` (no `like`/`ilike`), and with
+fieldUpdateOperations their update field is `BigIntFieldUpdate`.
+* MySQL `int({ unsigned: true })` and `serial()` columns change
+from `Int` to `Float` in object fields, create/update inputs, key arguments,
+filters (`FloatFilter`), aggregates and field updates (`FloatFieldUpdate`).
+* generatedAlwaysAs columns (PG, MySQL, SQLite) and PG
+generatedAlwaysAsIdentity columns no longer appear in Create/Update/Upsert
+inputs, nested-create payloads or the <Type>UpdateColumn conflict enum; the
+soft-delete marker also leaves that conflict enum.
+
+### Bug Fixes
+
+* alias every column in the paginated many-to-many subquery ([88ab3e9](https://github.com/cubicecho/drizzle-graphql/commit/88ab3e9864875e55805b67ef55ab6e62431a610c))
+* compare MySQL float operands at single precision ([acc7090](https://github.com/cubicecho/drizzle-graphql/commit/acc7090f3b8512f6c007f1bd06ded7aaf8249420))
+* convert write arguments into a copy instead of in place ([e666285](https://github.com/cubicecho/drizzle-graphql/commit/e6662856eb84137a52e136fd4c3d9580caa740d7))
+* decide field-update operations afresh on every build ([9eed1bc](https://github.com/cubicecho/drizzle-graphql/commit/9eed1bcfd7bc424e3a1d9f26109e5e23b339ea1a))
+* detect relation orderBy entries when the target has a direction column ([8511ba5](https://github.com/cubicecho/drizzle-graphql/commit/8511ba55c819fa770eac2561ea3d4bedc8d00bc0))
+* drop generated and identity-ALWAYS columns from write inputs ([ccead9f](https://github.com/cubicecho/drizzle-graphql/commit/ccead9ff5c03947948c06ee3c0ff87ec4a149ec6))
+* fail a related row whose compared column is NULL in an every filter ([232a505](https://github.com/cubicecho/drizzle-graphql/commit/232a505a51069785ca1cb1cd8ace5704213c8dc0))
+* gate nested many-to-many links on a soft-deleting junction's update ([c39e16f](https://github.com/cubicecho/drizzle-graphql/commit/c39e16f58e7c2a88a1dc9f3815315024565ef2a2))
+* give resolveSelection's build-less read the dialect's NULL order and unique keys ([76d1b90](https://github.com/cubicecho/drizzle-graphql/commit/76d1b90e0be02eeab8f4f3062b85f1f0a09fd839))
+* keep a failed relation re-fetch from rolling back a Postgres write ([fd16029](https://github.com/cubicecho/drizzle-graphql/commit/fd1602990cd15fa0614ced645cb2df6a8945efe2))
+* keep NaN and Infinity in cursors ([cabdc7a](https://github.com/cubicecho/drizzle-graphql/commit/cabdc7ac6b4567c2b1a1db2afb97e16a53057310))
+* key auto-transaction state on the execution ([2b8f816](https://github.com/cubicecho/drizzle-graphql/commit/2b8f8168205b3401f9a2737a3b8047c302d39785))
+* key the per-request field memo and loaders on the execution ([b597f6f](https://github.com/cubicecho/drizzle-graphql/commit/b597f6fd3c6019d7396462797ab76a1d548a3190))
+* leave pgvector sparsevec columns out of min / max aggregates ([7ac56b9](https://github.com/cubicecho/drizzle-graphql/commit/7ac56b95ac10fbf6f26e66708e909a819e0947cd))
+* let Postgres array elements be null in output types ([ac71530](https://github.com/cubicecho/drizzle-graphql/commit/ac71530a9bbce67f015f15871c259931b51080cd))
+* list and page rows whose mode date values a JS Date cannot hold ([68fd73e](https://github.com/cubicecho/drizzle-graphql/commit/68fd73eabadeda11411587a2e5932c4aba223880))
+* match JSON path NUMBER and BOOLEAN reads only on that JSON type ([5e553b3](https://github.com/cubicecho/drizzle-graphql/commit/5e553b310c249bf5a07334ada16404b8e38a680e))
+* match re-read self-referencing parent rows by keyString ([e7bc621](https://github.com/cubicecho/drizzle-graphql/commit/e7bc621f44860a0690097c529276d3ee1b712344))
+* offer restore mutations only where the table allows updates ([77a94cb](https://github.com/cubicecho/drizzle-graphql/commit/77a94cb5c7c76729030a4408da85d98726cd85df))
+* rank case-insensitive inArray matches under matchFilterOrder ([319222d](https://github.com/cubicecho/drizzle-graphql/commit/319222d226928d52b4f2c6864b764dcb1f3861dc))
+* refuse a nested to-one attach that would leave two rows attached ([13bba3b](https://github.com/cubicecho/drizzle-graphql/commit/13bba3b6e29b1266c43767ac0fd46860de9bd894))
+* refuse cursor values their column cannot hold ([b4afb6b](https://github.com/cubicecho/drizzle-graphql/commit/b4afb6ba7da08a494237022147c09e03514aa18c))
+* refuse cursor values whose format their column cannot hold ([50a950a](https://github.com/cubicecho/drizzle-graphql/commit/50a950a561edb6ea648e0f4d0f8f8f6ed37b29f8))
+* refuse invalid write arguments before the before hook on every path ([173dc70](https://github.com/cubicecho/drizzle-graphql/commit/173dc70433cad571c7a5c54e8e09b975770a8695))
+* reject filters that match every row under requireWhere ([0104b4b](https://github.com/cubicecho/drizzle-graphql/commit/0104b4b867d0e64ec2d5bc69cd5941cdaf79685b))
+* reject forged cursor values as DRIZZLE_INVALID_CURSOR ([4f372f3](https://github.com/cubicecho/drizzle-graphql/commit/4f372f303e1999f5ada08852f1b19f3fa853dce1))
+* resolve a relation field's cursor to null under matchFilterOrder ([2c81c61](https://github.com/cubicecho/drizzle-graphql/commit/2c81c611524fdc602cbd76087bd5a07727573d0b))
+* round lt and gte operands up on SQLite second timestamps ([88794fd](https://github.com/cubicecho/drizzle-graphql/commit/88794fd6247a8c582574775474a49514167d6fac))
+* treat a null nested write operation as absent ([74edb4a](https://github.com/cubicecho/drizzle-graphql/commit/74edb4a144a9a227ce7c23e373cbfe6d3e94bd18))
+* type bigint string mode as BigInt with number filters ([5f62d9c](https://github.com/cubicecho/drizzle-graphql/commit/5f62d9cc302b2047299210e9578138e3e2ec86fd))
+* type MySQL unsigned decimal as Decimal ([ad64e04](https://github.com/cubicecho/drizzle-graphql/commit/ad64e04fd0d6e462706536413a72c3aa2c586ae0))
+* type MySQL unsigned int and serial as Float ([4bef4a2](https://github.com/cubicecho/drizzle-graphql/commit/4bef4a2e930cecfa80bcfc02d1050bcf3f838011))
+* write only the row a Single update/delete checked ([5dbb161](https://github.com/cubicecho/drizzle-graphql/commit/5dbb161720c707782a2f66abcb2cc02aa3f2ed7f))
+
 ## [17.0.2](https://github.com/cubicecho/drizzle-graphql/compare/v17.0.1...v17.0.2) (2026-10-27)
 
 ### Bug Fixes
