@@ -359,8 +359,11 @@ export const generateWriteCount = ({
   pkNames?: readonly string[];
   /** Whether the dialect has `RETURNING` (false on MySQL), which an `after` hook's rows need. */
   returnsRows: boolean;
-  /** Rewrites the `where` into a form the dialect accepts on a write (MySQL; see `mysqlWriteFilter`). */
-  writeFilter?: (filters: SQL) => SQL;
+  /**
+   * Rewrites the `where` into a form the dialect accepts on a write (MySQL; see
+   * `mysqlWriteFilter`). It may read the table, so it runs on the executor after `before`.
+   */
+  writeFilter?: (filters: SQL, executor: any) => Promise<SQL>;
 }): CreatedResolver => {
   const softDelete = kind === 'delete' ? policies?.softDelete?.(tableName) : undefined;
   // The plural delete's rule: only a soft-deleting table that opted in can purge.
@@ -439,11 +442,11 @@ export const generateWriteCount = ({
         // A hard delete reads at INCLUDE, so it reaches the rows that are already marked.
         deleted: hard ? 'INCLUDE' : undefined,
       });
-      if (filters) {
-        query = query.where(writeFilter ? writeFilter(filters) : filters);
-      }
       // Every check above reads only the arguments, so a rejected request never reaches the hook.
       await before();
+      if (filters) {
+        query = query.where(writeFilter ? await writeFilter(filters, executor) : filters);
+      }
 
       if (!readsRows) {
         const result = await query;

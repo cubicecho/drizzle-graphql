@@ -124,6 +124,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 | A nested write never matches rows by a key a JS Date cannot hold: every such value reads as one invalid Date, so matching on one is refused with `DRIZZLE_UNREPRESENTABLE_VALUE` (a link it only reads past is ignored) | `nested-writes/plans.keyString` |
 | A nested to-one `connect` matches exactly one row | `nested-writes/runtime.ts createNestedWriteRuntime` (`connectMatchError`) |
 | A to-one relation never has two attached rows through a nested write: a nullable key detaches the old row, a NOT NULL one refuses the attach | `nested-writes/runtime.ts createNestedWriteRuntime` (`detachAll`, `assertNothingElseAttached`) |
+| A MySQL update/delete whose `where` reads its own table (error 1093) matches the keys of the rows that `where` finds, through a materialized derived table: the same keys a `Single` write narrows by. Through nullable unique keys only when every matched row holds a value in one of them; otherwise, and on a table with no key, the statement is left for MySQL to refuse | `mysql.ts mysqlWriteFilter` |
 | Nested writes are rejected on MySQL; nested writes, `transactions: 'auto'` and `onWrite` are rejected on a sync SQLite driver | `mysql.ts` / `sqlite.ts` `preflight` |
 | Two enum columns mapped to one name must have the same values | `type-converter.generateEnumCached` |
 | An error the library did not raise reaches the client as `Internal server error` (unless `onError` says otherwise) | `errors.defaultErrorMapper` via `errors.applyErrorMapper` |
