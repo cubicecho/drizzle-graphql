@@ -66,9 +66,9 @@ Follow-ups found while fixing:
 | ID | Kind | What it does | Buys | Needs | Status |
 |---|---|---|---|---|---|
 | B30 | Bug | Close the `…Single` race on MySQL and sync SQLite | B3 holds on every dialect | — | done (in B3) |
-| B32 | Bug | Check a decoded cursor value fits its column's type (B21 checks only that it is well formed) | Cleaner `DRIZZLE_INVALID_CURSOR` | — | done |
+| B32 | Bug | Check a decoded cursor value fits its column's type (B21 checks only that it is well formed): kind, then format and range (uuid, numeric/decimal, string-mode bigint, integer widths, PG real, native enums, inet/cidr/macaddr, NUL in PG text) | Cleaner `DRIZZLE_INVALID_CURSOR` | — | done |
 | B34 | Bug (question) | Root `restore` mutations are generated for every soft-deleting table, ignoring feature flags (unverified) | Feature switches honoured | — | done (breaking) |
-| B35 | Bug | A `mode: 'date'` timestamp outside JS Date's range (BC, year > 275760) makes the whole read throw `RangeError: Invalid time value`, even when the column is not selected (it is fetched for ordering) | Such rows can be listed | — | open |
+| B35 | Bug | A `mode: 'date'` timestamp outside JS Date's range (BC, year > 275760) makes the whole read throw `RangeError: Invalid time value`, even when the column is not selected (it is fetched for ordering) | Such rows can be listed | — | done (field-level error; date cursors carry database text) |
 | B33 | Bug (question) | Postgres array *inputs* still require non-null elements (`[T!]`); B16 relaxed only outputs | Your call | — | declined (inputs stay `[T!]`) |
 
 ## Model changes
