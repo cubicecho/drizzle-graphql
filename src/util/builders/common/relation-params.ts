@@ -171,7 +171,7 @@ export const extractRelationsParams = (
     // single row by definition, so it is left alone.
     const limit = is(relEntry.relation, One)
       ? (relationArgs?.limit ?? undefined)
-      : applyLimitPolicy(relationArgs?.limit, limits?.(targetTableName), {
+      : applyLimitPolicy(relationArgs?.limit, limits?.(targetTableName, { parent: tableName, name: relName }), {
           table: targetTableName,
           operation: 'relation',
           relation: relName,

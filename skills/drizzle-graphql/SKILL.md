@@ -52,9 +52,9 @@ const yoga = createYoga({ schema });
 **Every config key that names a table or column uses the Drizzle schema key**: the property
 name in your schema object (`users`, `createdAt`). It is not the database name
 (`created_at`) and not the generated GraphQL name (`User`). This applies to `exclude`,
-`scope`, `contextValues`, `softDelete`, `limits.tables`, `defaults`, `features` predicates,
-`eagerLoadRelations` and every `describe*` hook. Names in `exclude`, `scope` and
-`contextValues` that match nothing throw at build time.
+`scope`, `contextValues`, `softDelete`, `limits.tables`, `limits.relations.tables`, `defaults`,
+`features` predicates, `eagerLoadRelations` and every `describe*` hook. Names in `exclude`,
+`scope`, `contextValues` and `limits.relations.tables` that match nothing throw at build time.
 
 **Naming.** By default the table key `tasks` gives type `Tasks` and queries `tasks` /
 `tasksSingle`. Most projects want `typeNameMapper: 'singularize'`, which gives type `Task`,
@@ -89,7 +89,11 @@ With both `upsert` and `nestedWrites`, a table with writable relations is upsert
 **Public endpoints need bounds the library does not add for you:**
 
 - `limits: { defaultLimit: 25, maxLimit: 100 }`. With no limit a list query returns every
-  row.
+  row. A to-many relation field uses the policy of the table it reads unless you give
+  relations their own page: `relations: { defaultLimit: 10, tables: { clients: { apis: {
+  defaultLimit: 50 } } } }` (keyed by the parent table, then the relation name). Without it a
+  nested list is priced at a full root page per parent, so `defaultLimit: 500` makes one
+  nested list cost about 500².
 - Fields carry `complexity` hints for `graphql-query-complexity`'s
   `fieldExtensionsEstimator`. They do nothing until you install that rule.
 - Depth, aliases and tokens are not bounded. Put GraphQL Armor (`maxDepth`, `maxAliases`,
@@ -154,7 +158,7 @@ for the pattern, and the trap it avoids.
 | `conflictDoNothing` | PostgreSQL only: `ON CONFLICT DO NOTHING` on insert |
 | `complexity` | cost hints; `false` turns them off |
 | `transactions` | `'auto'` for multi-mutation atomicity |
-| `limits` | default and maximum page size, global or per table |
+| `limits` | default and maximum page size, global, per table, or for relation fields (`relations`) |
 | `defaults` | per-table default `orderBy` |
 | `scope` / `contextValues` / `softDelete` | row scoping, server-owned columns, soft delete |
 | `onWrite` | hooks that run inside the mutation's transaction, per table and optionally per operation (`insert`, `update`, `delete`, …); put external side effects in an outbox row through `tx`, or defer them with `payload.onCommit(fn)` (runs after the commit, dropped on rollback; under your own `drizzleExecutorKey` transaction call `runCommitCallbacks(context)` after committing / `discardCommitCallbacks(context)` after rolling back) |

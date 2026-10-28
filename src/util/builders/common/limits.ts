@@ -57,11 +57,18 @@ export type ResolvedLimitPolicy = {
   clampToMax: boolean;
 };
 
+/** The to-many relation a {@link LimitPolicyFor} lookup is for: its parent table's schema key and its name. */
+export type LimitPolicyRelation = { parent: string; name: string };
+
 /**
  * Looks up the limit policy for a table by its Drizzle schema key. Built once per schema by
  * `buildSchema`; `undefined` for a table the caller left unbounded.
+ *
+ * A to-many relation field passes the table it *reads* plus `relation`, which names the field:
+ * `limits.relations` (and its per-relation overrides) is layered over the target table's policy
+ * for it. Without `limits.relations` the answer is the target table's policy, as for a root list.
  */
-export type LimitPolicyFor = (tableName: string) => ResolvedLimitPolicy | undefined;
+export type LimitPolicyFor = (tableName: string, relation?: LimitPolicyRelation) => ResolvedLimitPolicy | undefined;
 
 /**
  * {@link BuildSchemaConfig.defaults} resolved for one table: the `orderBy` a read falls back

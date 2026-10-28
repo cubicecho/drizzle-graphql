@@ -212,7 +212,12 @@ const generateSelectFields = (
         extensions: {
           drizzle: relationExtensionFor(relEntry, tableName, relationName, false),
           ...(cacheCtx.complexity
-            ? { complexity: listFieldComplexity(cacheCtx.complexity, cacheCtx.limits?.(targetTableName)) }
+            ? {
+                complexity: listFieldComplexity(
+                  cacheCtx.complexity,
+                  cacheCtx.limits?.(targetTableName, { parent: tableName, name: relationName }),
+                ),
+              }
             : {}),
         },
       },

@@ -981,7 +981,9 @@ export type SchemaFeatures = {
 export type ComplexityConfig = {
   /**
    * Rows a list field is assumed to return when the query passes no `limit`. Raise it if your
-   * tables are large and clients routinely omit `limit`.
+   * tables are large and clients routinely omit `limit`. Only used for a list no `limits`
+   * policy bounds: a bounded list (or relation field, see `limits.relations`) is priced at its
+   * effective default page instead.
    *
    * @default 10
    */
@@ -1033,10 +1035,33 @@ export type TableDefaults = {
 /** {@link BuildSchemaConfig.defaults} — per-table defaults, keyed by the Drizzle schema key. */
 export type DefaultsConfig = Record<string, TableDefaults>;
 
-/** {@link BuildSchemaConfig.limits} — a global policy plus per-table overrides. */
+/**
+ * {@link LimitsConfig.relations} — the limit policy of to-many relation fields, apart from root
+ * lists. Every key it sets wins over the target table's policy for a relation field; a
+ * per-relation entry in `tables` wins over both.
+ */
+export type RelationLimitsConfig = TableLimitPolicy & {
+  /**
+   * Per-relation overrides, keyed by the Drizzle schema key of the table the relation is
+   * declared on (the *parent*), then by the relation's name: `{ clients: { apis: { defaultLimit: 50 } } }`
+   * is `clients { apis }`. Only to-many relations take a limit.
+   */
+  tables?: Record<string, Record<string, TableLimitPolicy>>;
+};
+
+/** {@link BuildSchemaConfig.limits} — a global policy plus per-table and relation overrides. */
 export type LimitsConfig = TableLimitPolicy & {
-  /** Per-table overrides, keyed by the table's key in the Drizzle schema. */
+  /**
+   * Per-table overrides, keyed by the table's key in the Drizzle schema. They apply to the
+   * table's root list, and to every relation field that reads the table unless `relations`
+   * says otherwise.
+   */
   tables?: Record<string, TableLimitPolicy>;
+  /**
+   * The policy of to-many relation fields, apart from root lists. Without it a relation field
+   * takes the policy of the table it reads, the same one that table's root list has.
+   */
+  relations?: RelationLimitsConfig;
 };
 
 /**
@@ -1404,10 +1429,20 @@ export type BuildSchemaConfig = {
    *   `maxLimit` if both are set.
    * - `tables` overrides per table, keyed by the Drizzle schema key. A table's entry replaces
    *   the top-level value for whichever keys it sets.
+   * - `relations` gives to-many relation fields a policy of their own, so a table can have a
+   *   large root page and a small nested one: `relations: { defaultLimit: 20 }`. Its `tables`
+   *   overrides one relation, keyed by the *parent* table's schema key and then the relation
+   *   name: `relations: { tables: { clients: { apis: { defaultLimit: 50 } } } }`. Each key is
+   *   resolved on its own, first match wins: that relation's entry, then `relations`, then the
+   *   target table's `tables` entry, then the top level. Without `relations`, a relation field
+   *   is bounded exactly like the root list of the table it reads. A name that is not a table,
+   *   not one of its relations, or a to-one relation fails the build.
    * - Cursor pagination inherits the same policy — a keyset page needs a limit to be
    *   meaningful, and `defaultLimit` is what makes `after`-only pagination well-formed.
    * - The complexity hints price the *effective* limit, so cost estimation and enforcement
-   *   agree.
+   *   agree: a relation field without `limit` is priced at its resolved relation default,
+   *   not the target's root page. `complexity.defaultListSize` only prices a list that no
+   *   policy bounds at all.
    */
   limits?: LimitsConfig;
   /**
