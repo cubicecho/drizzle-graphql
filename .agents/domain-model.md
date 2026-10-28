@@ -118,9 +118,10 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 | `hard` only purges on a soft-delete table that opted in | `write-resolvers.generateDelete`, `mutation-helpers.generateWriteCount` |
 | `after` cannot combine with `distinct`; cursors need a primary key and a cursor-expressible ordering | `select-runtime.runRelationalSelect` |
 | A list with an ordering (asked or default) ends in the primary-key tiebreak the cursor uses (key columns not already ordered by, ascending), so tied rows come back in one order with or without `cursor`, `limit` or `offset`; a page or single read gets it even with no ordering | `cursor.primaryKeyTiebreak` / `primaryKeyTiebreakExprs`, used by `select-runtime.runRelationalSelect`, `relation-params.extractRelationsParams`, `relation-resolvers` (window and plain batch) |
-| A stored value a JS Date cannot hold (BC, year past 275760, infinity, zero date) never fails a read: output mapping leaves the invalid Date for the scalar to reject on that field alone, and a PostgreSQL / MySQL `mode: 'date'` ordering column's cursor carries the database's own text | `data-mappers.remapToGraphQLCore`, `cursor.cursorTextForm` / `cursorPreciseExtras` |
+| A stored value a JS Date cannot hold (BC, year past 275760, infinity, zero date) never fails a read: output mapping leaves the invalid Date for the scalar to reject on that field alone, and a PostgreSQL / MySQL `mode: 'date'` ordering column's cursor carries the database's own text, a SQLite integer timestamp's the number it stores (only where the Date is invalid) | `data-mappers.remapToGraphQLCore`, `cursor.cursorTextForm` / `isStoredNumberTimestamp` / `cursorPreciseExtras` |
 | A cursor over a `mode: 'number'` 64-bit integer (PostgreSQL `bigint` / `bigserial`, MySQL `bigint` / `serial`) carries the database's own text, so values past ±2^53 that read as one double stay distinct positions; the output value stays the lossy number | `cursor.cursorTextForm` / `cursorPreciseExtras`, `cursor-value-formats.isInt64Text` |
 | A MySQL `bigint({ mode: 'string' })` value leaves output mapping as a string, though mysql2 reads a safe integer as a JS number on every path but nested relation JSON | `data-mappers.remapToGraphQLCore`, `cursor-value-formats.readsNumbersForStrings` |
+| A nested write never matches rows by a key a JS Date cannot hold: every such value reads as one invalid Date, so matching on one is refused with `DRIZZLE_UNREPRESENTABLE_VALUE` (a link it only reads past is ignored) | `nested-writes/plans.keyString` |
 | A nested to-one `connect` matches exactly one row | `nested-writes/runtime.ts createNestedWriteRuntime` (`connectMatchError`) |
 | A to-one relation never has two attached rows through a nested write: a nullable key detaches the old row, a NOT NULL one refuses the attach | `nested-writes/runtime.ts createNestedWriteRuntime` (`detachAll`, `assertNothingElseAttached`) |
 | Nested writes are rejected on MySQL; nested writes, `transactions: 'auto'` and `onWrite` are rejected on a sync SQLite driver | `mysql.ts` / `sqlite.ts` `preflight` |
@@ -130,7 +131,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 
 ### Claimed but not enforced (findings)
 
-- `DRIZZLE_MULTI_ROW_MATCH` means nothing was written (`common/errors.ts`). On a table without a primary key the write cannot be narrowed to the row checked, so a row arriving between the check and the write is still written (`mutation-helpers.narrowToSingleMatch`). Tracked in #230.
+- `DRIZZLE_MULTI_ROW_MATCH` means nothing was written (`common/errors.ts`). The write is narrowed to the row the check found by its primary key, else by a non-partial unique key (`keys.getRowKeyCandidates`, `mutation-helpers.narrowToSingleMatch`). Still exposed — a row arriving between the check and the write is written too: tables with no primary key and no non-partial unique key (the build warns, listing them), and tables whose only unique keys are nullable when the checked row holds NULL in each. Tracked in #230.
 
 ## Glossary
 

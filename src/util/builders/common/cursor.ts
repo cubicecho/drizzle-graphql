@@ -28,7 +28,7 @@ import {
   MySqlTimestamp,
 } from 'drizzle-orm/mysql-core';
 import { PgBigInt53, PgBigSerial53, PgColumn, PgDate, PgTimestamp } from 'drizzle-orm/pg-core';
-import { SQLiteColumn } from 'drizzle-orm/sqlite-core';
+import { SQLiteColumn, SQLiteTimestamp } from 'drizzle-orm/sqlite-core';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { dateToCalendarDate } from '../../scalars/index.ts';
 import { isDateOnlyColumn } from '../../type-converter/index.ts';
@@ -159,9 +159,10 @@ export const cursorOrderExprs = (table: Table, entries: CursorOrderEntry[]): SQL
 };
 
 /**
- * Property a row carries an ordering column's database text under, when the JS form the column
- * reads into cannot stand for every value it holds. Namespaced like {@link ROW_CURSOR_PROP}, and
- * removed from the row once its cursor is encoded.
+ * Property a row carries an ordering column's database text — or, for a SQLite integer
+ * timestamp, its stored number — under, when the JS form the column reads into cannot stand for
+ * every value it holds. Namespaced like {@link ROW_CURSOR_PROP}, and removed from the row once its
+ * cursor is encoded.
  */
 const preciseTextProp = (column: string): string => `__drizzle_graphql_cursor_text_${column}`;
 
@@ -188,8 +189,8 @@ const NUMBER_MODE_INT64_COLUMNS = [PgBigInt53, PgBigSerial53, MySqlBigInt53, MyS
  * values share one position, and -2^63 reads as a number below every row (MySQL) or one
  * PostgreSQL refuses as out of range.
  *
- * String-mode columns already arrive as the database's own text, `time` is always a string, and
- * SQLite's integer timestamps hold no text form to compare by, so none of those need it.
+ * String-mode columns already arrive as the database's own text and `time` is always a string,
+ * so neither needs it. SQLite's integer timestamps have no text form; see {@link isStoredNumberTimestamp}.
  */
 const cursorTextForm = (column: Column): CursorTextForm | undefined => {
   if (is(column, PgTimestamp) || is(column, MySqlDateTime) || is(column, MySqlTimestamp)) {
@@ -202,12 +203,20 @@ const cursorTextForm = (column: Column): CursorTextForm | undefined => {
 };
 
 /**
+ * Whether a column is a SQLite integer `timestamp` / `timestamp_ms`. It can hold a number too
+ * large for a JS Date (past about 8.64e12 seconds or 8.64e15 milliseconds), which drizzle reads
+ * as an invalid Date. Such a row's cursor carries the stored number instead, which `after`
+ * binds as it is; every other row's keeps the Date, so its cursor is what it always was.
+ */
+const isStoredNumberTimestamp = (column: Column): boolean => is(column, SQLiteTimestamp);
+
+/**
  * Extra SQL expressions a cursor-computing query selects alongside the row: for each ordering
- * column with a {@link cursorTextForm}, the value as the database's own text. The cursor then
- * encodes that text rather than the Date or number, and `after` compares the column against it —
- * so two rows a microsecond (or one) apart stay distinct positions, and a row whose value a JS
- * Date cannot hold still has one. `table` may be the aliased RQB proxy. Empty when no ordering
- * column needs it.
+ * column with a {@link cursorTextForm}, the value as the database's own text, and for a
+ * {@link isStoredNumberTimestamp} column, the number it stores. The cursor then encodes that
+ * rather than the Date or number, and `after` compares the column against it — so two rows a
+ * microsecond (or one) apart stay distinct positions, and a row whose value a JS Date cannot hold
+ * still has one. `table` may be the aliased RQB proxy. Empty when no ordering column needs it.
  */
 export const cursorPreciseExtras = (table: Table, entries: CursorOrderEntry[]): Record<string, SQL> => {
   const cols = getColumns(table);
@@ -216,6 +225,8 @@ export const cursorPreciseExtras = (table: Table, entries: CursorOrderEntry[]): 
     const column = cols[name];
     if (column && cursorTextForm(column)) {
       extras[preciseTextProp(name)] = is(column, PgColumn) ? sql`${column}::text` : sql`cast(${column} as char)`;
+    } else if (column && isStoredNumberTimestamp(column)) {
+      extras[preciseTextProp(name)] = sql`${column}`;
     }
   }
   return extras;
@@ -346,7 +357,14 @@ const cursorEncoder = (entries: CursorOrderEntry[]): ((row: Record<string, any>)
         // number-mode bigint columns bind a string as-is, and the database parses it back
         // exactly, at the column's own type.
         const precise = row[preciseTextProp(column)];
-        return value !== null && typeof precise === 'string' ? precise : encodeCursorValue(value);
+        if (value !== null && typeof precise === 'string') {
+          return precise;
+        }
+        // A SQLite integer timestamp a Date cannot hold goes out as the number it stores. A
+        // driver that reads integers as bigints hands back a bigint, sent as a number when exact.
+        const holdsNoInstant = value instanceof Date && Number.isNaN(value.getTime());
+        const stored = typeof precise === 'bigint' && Number.isSafeInteger(Number(precise)) ? Number(precise) : precise;
+        return encodeCursorValue(holdsNoInstant && typeof stored === 'number' ? stored : value);
       }),
     );
     return Buffer.from(`{"o":${spec},"v":${values}}`, 'utf8').toString('base64url');
@@ -440,6 +458,11 @@ const boundCursorValue = (col: Column, value: unknown): unknown => {
     // SQLite drivers refuse to bind a non-finite number; an overflowing literal parses to it.
     return sql.raw(value > 0 ? SQLITE_INFINITY_LITERAL : `-${SQLITE_INFINITY_LITERAL}`);
   }
+  // A stored number (see isStoredNumberTimestamp) is bound as it is: the column's own encoder
+  // takes a Date.
+  if (typeof value === 'number' && isStoredNumberTimestamp(col)) {
+    return sql`${value}`;
+  }
   return value;
 };
 
@@ -529,7 +552,8 @@ const columnCursorKind = (col: Column): CursorValueKind | undefined => {
 /**
  * Whether a decoded cursor value is one its column's rows can produce: NULL only for a nullable
  * column, otherwise the column's kind — or, for a column with a {@link cursorTextForm}, its
- * database text. SQLite stores any number in an integer column, so only other dialects require a whole one.
+ * database text, and for a {@link isStoredNumberTimestamp} column, the number it stores. SQLite
+ * stores any number in an integer column, so only other dialects require a whole one.
  * A value of the right kind must also be in its column's format and range
  * ({@link cursorValueFormatFits}): a uuid, a numeric, an enum label, an integer that fits.
  */
@@ -545,6 +569,9 @@ const cursorValueFits = (col: Column, value: unknown): boolean => {
   const textForm = cursorTextForm(col);
   if (kind === 'string' && textForm) {
     return isCursorText(col, textForm, value as string);
+  }
+  if (kind === 'number' && isStoredNumberTimestamp(col)) {
+    return true;
   }
   const kindFits = kind === expected || (kind === 'number' && readsNumbersForStrings(col));
   if (!kindFits) {
