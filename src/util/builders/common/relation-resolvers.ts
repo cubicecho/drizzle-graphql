@@ -6,6 +6,7 @@ import type { Column, Table } from 'drizzle-orm';
 import { and, eq, getColumns, gt, lte, type SQL, sql } from 'drizzle-orm';
 import { getOrCreateLoader, getOrCreateRequestValue } from '../../batch-loader/index.ts';
 import { remapToGraphQLArrayOutput } from '../../data-mappers/index.ts';
+import { executionKey } from '../../execution.ts';
 import { relationFieldExtension } from '../../extensions.ts';
 import { requestValueNodes } from '../../graphql-variables.ts';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
@@ -19,7 +20,7 @@ import {
   cursorOrderingEntries,
   cursorPreciseSelection,
   decodeCursor,
-  orderByHasRelationEntry,
+  orderByCursorObstacle,
   selectsCursorField,
 } from './cursor.ts';
 import { distinctRowsCondition } from './distinct.ts';
@@ -87,8 +88,9 @@ const batchedPaginatedRelationQuery = async (
   // Partitioned by the whole parent key: every join column, or the junction's source column.
   const rowNumber = sql`row_number() over (partition by ${sql.join([...partitionCols], sql`, `)}${orderClause})`.as(RN);
 
-  // Subquery: every target column plus a per-partition row number. Each column has to come
-  // out under its own name, since the outer select reads it back by that name.
+  // Subquery: every target column (and a junction's parent key) plus a per-partition row
+  // number. Each comes out aliased to its key, since the outer select reads it back by key and
+  // a target column can share a database name with the junction's source column.
   const sub = withJunction(
     db.select({ ...subquerySafeSelection(cols), [RN]: rowNumber }).from(targetTable),
     junction,
@@ -263,8 +265,11 @@ export const createRelationResolverFactory =
       // identical for every parent row the batch fetches. Resolvers run once per parent row, so it
       // is computed once per field per request and reused, rather than re-reading the selection and
       // re-stringifying the loader key N times.
+      // The memo and the loader below belong to this execution, so a reused context or document
+      // never serves one execution another's args.
+      const execution = executionKey(context, info);
       const { orderByArg, limit, distinct, cursorEntries, cursorValues, columns, loaderKey } = getOrCreateRequestValue(
-        context,
+        execution,
         requestValueNodes(info),
         `relation:${tableName}::${relationName}`,
         () => {
@@ -288,14 +293,13 @@ export const createRelationResolverFactory =
             if (after != null && distinct) {
               throw drizzleError("'after' cannot be combined with 'distinct'.", { code: 'DRIZZLE_INVALID_CURSOR' });
             }
-            if (orderByHasRelationEntry(orderByArg)) {
+            const cursorObstacle = orderByCursorObstacle(orderByArg);
+            if (cursorObstacle) {
               if (after != null) {
-                throw drizzleError(
-                  "'after' cannot be combined with an orderBy that orders through a relation — a related row's value cannot be encoded into a cursor.",
-                  { code: 'DRIZZLE_INVALID_CURSOR' },
-                );
+                throw drizzleError(cursorObstacle, { code: 'DRIZZLE_INVALID_CURSOR' });
               }
-              // `cursor` was selected under a relation ordering — the field resolves to null.
+              // `cursor` was selected under an ordering a cursor cannot express — the field
+              // resolves to null and the ordering itself still applies.
             } else if (!targetPkNames.length) {
               if (after != null) {
                 throw drizzleError(
@@ -350,12 +354,12 @@ export const createRelationResolverFactory =
         );
       }
 
-      const loader = getOrCreateLoader(context, loaderKey, async (parentKeys: readonly (readonly unknown[])[]) => {
-        // Loaders are cached per context, so every call batched here shares this request's
+      const loader = getOrCreateLoader(execution, loaderKey, async (parentKeys: readonly (readonly unknown[])[]) => {
+        // Loaders are cached per execution, so every call batched here shares this request's
         // executor — the transaction on the context, when there is one.
         const executor = resolveExecutor(db, context);
         const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key, localCols), key])).values()];
-        // Loaders are keyed per context too, so the scope resolved here is this request's.
+        // Loaders are keyed per execution too, so the scope resolved here is this request's.
         const scope = resolveScope(policies, context, filterCtx);
 
         // One query over a group of parents, returning each parent's result by its key. Every

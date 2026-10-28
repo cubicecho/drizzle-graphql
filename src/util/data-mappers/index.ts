@@ -194,8 +194,12 @@ export const remapToGraphQLCore = (
     return Number.isNaN(instant.getTime()) ? value : instant.toISOString();
   }
 
+  // A value a JS Date cannot hold (a BC date, a year past 275760, PostgreSQL's infinities) arrives
+  // as an invalid Date. It is left as one: `toISOString` would throw a `RangeError` that fails the
+  // whole read, even for a row whose column is only fetched (a cursor's ordering key). Selected,
+  // the `DateTime` scalar rejects it as an error on that one field.
   if (value instanceof Date) {
-    return value.toISOString();
+    return Number.isNaN(value.getTime()) ? value : value.toISOString();
   }
 
   // A MySQL `timestamp` / `datetime` read in `'string'` mode arrives as MySQL's offset-less text,
@@ -356,8 +360,8 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
   // A SQLite integer timestamp takes the `Date`, which drizzle's `mapToDriverValue` turns into
   // the stored integer: milliseconds for `'timestamp_ms'`, and for `'timestamp'` whole seconds,
   // floored — `…T10:00:00.999Z` is stored, and read back, as `…T10:00:00Z`. Filter operands go
-  // through here and the same encoder, so they are floored exactly as a write would be: `eq`
-  // matches the row that input would have written.
+  // through here and the same encoder, so `eq` matches the row that input would have written;
+  // `filters.ts` (`secondsBoundOperand`) rounds `lt` / `gte` operands up instead.
   const columnType: string = (column as any).columnType ?? '';
   if (isDateTimeColumn(column)) {
     // `timestamp().array()` keeps the timestamp column type with a `dimensions` count, so an
@@ -484,17 +488,21 @@ export const remapFromGraphQLCore = (value: any, column: Column, columnName: str
  */
 export type RemapInputOperation = 'insert' | 'update';
 
+/**
+ * Converts one row of write input into database form, returning a new object. The input is
+ * left as it is: it is the client's argument, which the write hooks report and a shared
+ * variable hands to every field that uses it.
+ */
 export const remapFromGraphQLSingleInput = (
   queryInput: Record<string, any>,
   table: Table,
   operation: RemapInputOperation = 'insert',
-) => {
+): Record<string, any> => {
   const columns = getColumns(table);
+  const remapped: Record<string, any> = {};
 
   for (const [key, value] of Object.entries(queryInput)) {
-    if (value === undefined) {
-      delete queryInput[key];
-    } else {
+    if (value !== undefined) {
       const column = columns[key];
       if (!column) {
         throw drizzleError(`Unknown column: ${key}`, { code: 'DRIZZLE_UNKNOWN_COLUMN' });
@@ -519,25 +527,19 @@ export const remapFromGraphQLSingleInput = (
         if (operation === 'update') {
           throw drizzleError(`Column '${key}' cannot be set to null.`, { code: 'DRIZZLE_NOT_NULL' });
         }
-        delete queryInput[key];
         continue;
       }
 
-      queryInput[key] = remapFromGraphQLCore(value, column, key);
+      remapped[key] = remapFromGraphQLCore(value, column, key);
     }
   }
 
-  return queryInput;
+  return remapped;
 };
 
+/** {@link remapFromGraphQLSingleInput} over a batch, returning new rows. */
 export const remapFromGraphQLArrayInput = (
   queryInput: Record<string, any>[],
   table: Table,
   operation: RemapInputOperation = 'insert',
-) => {
-  for (const entry of queryInput) {
-    remapFromGraphQLSingleInput(entry, table, operation);
-  }
-
-  return queryInput;
-};
+): Record<string, any>[] => queryInput.map((entry) => remapFromGraphQLSingleInput(entry, table, operation));

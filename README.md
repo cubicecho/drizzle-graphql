@@ -147,7 +147,7 @@ const { schema } = buildSchema(db, {
         relationAggregates: false, // <relation>Aggregate fields on object types
         distinct: false,          // the `distinct` argument on list queries
         insert: false,            // create<Table> / create<Table>Single mutations
-        update: false,            // update<Table> / update<Table>Single mutations
+        update: false,            // update<Table> / update<Table>Single mutations (and restore<Table>)
         updateMany: false,        // update<Table>Many batch mutation (needs `update`)
         delete: false,            // delete<Table> / delete<Table>Single mutations
         upsert: true,             // upsert<Table> / upsert<Table>Single mutations (off by default)
@@ -169,9 +169,11 @@ const { schema } = buildSchema(db, {
     turns the group-by queries off with it
 -   Turning off `insert` or `update` also drops the input type that only that mutation
     used (`Create<Type>Input` / `Update<Type>Input`)
+-   A soft-deleting table's `restore` mutations follow `update`, since a restore is an
+    `UPDATE` of the marker column: turning `update` off drops them, while `delete` keeps
+    soft-deleting
 -   Turning off every mutation feature omits the `Mutation` type entirely, the same as
-    `mutations: false` — unless a table has `softDelete`, whose `restore` mutations are
-    generated regardless
+    `mutations: false`
 -   List and single queries are always generated, so `Query` is never empty
 
 ### Per-table operations
@@ -492,7 +494,7 @@ What a declared table gets:
 | Path | Effect |
 | --- | --- |
 | `deletePosts`, `deletePostsSingle` | UPDATE that writes the marker; returns the rows as they now stand — or a real DELETE under [`hard: true`](#purging-a-row), where the table opted in |
-| `restorePosts`, `restorePostsSingle` | the inverse — matches **only** marked rows and clears the marker |
+| `restorePosts`, `restorePostsSingle` | the inverse — matches **only** marked rows and clears the marker; generated only where the table's `update` feature is on |
 | `posts`, `postsSingle`, cursor pages | marked rows are not returned |
 | `postsAggregate`, `postsGroupBy` | counted over unmarked rows only |
 | `user.posts`, `user.postsAggregate` | hidden on both the batched and the eager (`with:`) path |
@@ -657,12 +659,12 @@ generated SDL says what a field actually holds instead of falling back to `Strin
 | Drizzle column                             | GraphQL type | Transported as                       |
 | ------------------------------------------ | ------------ | ------------------------------------ |
 | `json` / `jsonb` (and `mode: 'json'`)       | `JSON`       | the parsed value                     |
-| `bigint` (and `mode: 'bigint'`)             | `BigInt`     | a decimal string                     |
+| `bigint` (`mode: 'bigint'` or `'string'`)   | `BigInt`     | a decimal string                     |
 | `uuid`                                      | `UUID`       | a validated UUID string              |
 | `timestamp` / `datetime` (either `mode`)    | `DateTime`   | an ISO-8601 string                   |
 | SQLite `integer({ mode: 'timestamp' })` / `'timestamp_ms'` | `DateTime` | an ISO-8601 string       |
 | `date` (either `mode`)                      | `Date`       | a `YYYY-MM-DD` string                |
-| `numeric` / `decimal`                       | `Decimal`    | a decimal string                     |
+| `numeric` / `decimal` (MySQL: signed or `unsigned`) | `Decimal` | a decimal string               |
 
 ```graphql
 mutation {
@@ -678,7 +680,8 @@ mutation {
     variable rather than a string of JSON
 -   **`BigInt`** is always a decimal string in both directions, so values past
     `Number.MAX_SAFE_INTEGER` survive the round-trip. Integer literals are accepted on input;
-    floats and non-numeric strings are rejected
+    floats and non-numeric strings are rejected. Filters on it are `BigIntFilter` (number
+    operators, no `like`)
 -   **`UUID`** validates the format on the way in, including inside `where` filters
 -   **`Decimal`** is a decimal string in both directions, so the precision the column declares
     is not lost to a JS float. Non-numeric and non-finite input is rejected
@@ -704,13 +707,16 @@ mutation {
     mode cannot hold a fraction, so it is floored (never rounded) on write —
     `2026-09-15T10:00:00.999Z` is stored as `1789466400` and reads back as
     `2026-09-15T10:00:00.000Z` — and filter operands on such a column are floored the same way,
-    so `eq` with the value you wrote finds the row you wrote it to
+    so `eq` with the value you wrote finds the row you wrote it to. The exceptions are `lt` and
+    `gte`, which bound at the next whole second: `lt: "…T10:00:00.500Z"` includes the row stored
+    at `…T10:00:00Z` and `gte` excludes it
 
 Some columns map to built-in GraphQL types rather than a custom scalar:
 
 | Drizzle column | GraphQL type | Transported as |
 | --- | --- | --- |
 | SQLite `integer()` (number mode) | `Float` | a JS number, exact up to 2^53 |
+| MySQL `int({ unsigned: true })`, `serial()`; `bigint({ mode: 'number' })` (every dialect) | `Float` | a JS number, exact up to 2^53 |
 | Postgres `bytea`, SQLite `blob({ mode: 'buffer' })` | `[Int!]` | the bytes, each 0–255 |
 | Postgres `point` / `line` (tuple mode), PostGIS `geometry` (tuple mode), `vector`, `halfvec` | `[Float!]` | the tuple or vector |
 | Postgres `point({ mode: 'xy' })`, `line({ mode: 'abc' })` | `JSON` | the object, `{ x, y }` / `{ a, b, c }` |
@@ -724,7 +730,9 @@ Some columns map to built-in GraphQL types rather than a custom scalar:
     rejected
 -   An **array column** (`bigint().array()`, `timestamp().array()`, …) is a list of its element
     type, and each element is converted as a single value would be, in writes and in the `has` /
-    `hasSome` / `hasEvery` operands alike
+    `hasSome` / `hasEvery` operands alike. On output the elements are nullable at every depth
+    (`integer().array()` reads as `[Int]`), since a Postgres array can hold `NULL` elements; inputs
+    and filter operands keep non-null elements (`[Int!]`)
 
 > **Upgrading — SQLite `integer()` columns.** A SQLite `integer()` column in number mode (the
 > default) used to be `Int`, and reading a value past 2^31 failed with "Int cannot represent
@@ -735,6 +743,21 @@ Some columns map to built-in GraphQL types rather than a custom scalar:
 > the values themselves are unchanged. `integer({ mode: 'boolean' })` and the timestamp modes are
 > not affected. A SQLite `blob({ mode: 'buffer' })` column, which used to be `JSON` and could
 > not be written, is now `[Int!]`.
+
+> **Upgrading — Postgres array elements.** An `.array()` column's object field used to declare
+> non-null elements (`[Int!]`), so reading `{1,NULL,3}` errored the field. Its output type is
+> now `[Int]` (`[[Int]]` for two dimensions); inputs and filters are unchanged. Client code
+> generated from the schema sees the element type become nullable.
+
+> **Upgrading — `bigint({ mode: 'string' })`.** A Postgres or MySQL bigint in string mode used
+> to be `String` with a `StringFilter`, whose `like` / `ilike` failed in the database. It is now
+> `BigInt` in every position, with `BigIntFilter` and `BigIntFieldUpdate`, like the other bigint
+> modes. The values are the same decimal strings; variables typed `String` become `BigInt`.
+
+> **Upgrading — MySQL unsigned `int` and `serial`.** `int({ unsigned: true })` (up to 2^32 - 1)
+> and `serial()` (`BIGINT UNSIGNED`) used to be `Int`, so a value past 2^31 - 1 failed to read or
+> write. Both are now `Float` in every position, with the same consequences as for SQLite
+> `integer()` above. Unsigned `tinyint`, `smallint` and `mediumint` still fit `Int` and keep it.
 
 The scalars are exported if you need them in a hand-written schema:
 
@@ -1037,6 +1060,9 @@ A **to-many** relation takes a `some` / `none` / `every` wrapper
 -   They're accepted anywhere a filter is — list and single queries, aggregate queries,
     `update`/`delete` mutations, and the `where` argument on a relation field
 -   `some: {}` means "at least one related row exists"; `none: {}` means "none exist"
+-   `every` passes a related row only when its condition is true. A row whose compared column
+    is NULL fails it, the same as it fails to match `some`: `every: { title: { eq: "x" } }`
+    drops a user with a post whose title is NULL
 -   Several modes may be given at once and are `AND`ed together
 -   A relation whose name collides with a column name is skipped — the column keeps the field
 -   Many-to-many relations declared with `.through()` are filterable too: the `EXISTS`
@@ -1182,8 +1208,8 @@ ordinary value: `active: { eq: false }` matches the rows that are false, `ne: fa
 that are true, and `has: false` the arrays holding a `false`. Only the flag operators —
 `isNull`, `isNotNull` and `isEmpty` — read `false` as "add no condition".
 
-A filter that adds no condition — `{}`, `{ name: { isNull: false } }`, a relation's
-`every: {}` — restricts nothing, so it matches every row, and the boolean branches `AND` /
+A filter that adds no condition — `{}`, `{ name: { isNull: false } }`, `{ id: { notInArray: [] } }`,
+`NOT: { id: { inArray: [] } }`, a relation's `every: {}` — restricts nothing, so it matches every row, and the boolean branches `AND` /
 `OR` / `NOT` read it that way, at table and column level alike:
 
 -   in `AND`, it drops out: `AND: [X, {}]` is `X`
@@ -1270,6 +1296,8 @@ that column's `inArray` list instead of by the column's value:
         works on relation fields as well as root lists
 -   It compiles to a `CASE` ladder over the list values, so it behaves identically on all
         three dialects and every value stays a bound parameter
+-   With `insensitive: true` on that filter, the ladder compares `lower()` of both sides as the
+        filter does, so `inArray: ["ALICE"]` ranks the row holding `alice` first
 -   It cannot be combined with `after` or `distinct`: a row's position in the request's own
         filter list is not a value of the row, so it cannot be encoded into a cursor or rebuilt
         against a subquery. Selecting `cursor` under it yields `null` rather than an error
@@ -1325,16 +1353,20 @@ against a `String` variable, say:
 }
 ```
 
-A value of the wrong shape never matches rather than failing the query: `gt: 0` against a
-document whose path holds `"admin"` returns no rows on every dialect. That takes a guard on
-each one — Postgres errors outright on a bad `::numeric`, MySQL quietly casts a non-numeric
-string to `0`, and SQLite's cross-type ordering would otherwise sort every string above every
-number.
+A number or boolean read only sees a value of that JSON type, and a value of any other type
+never matches rather than failing the query, on every dialect:
 
-SQLite has no boolean type, and its `json_extract` hands a JSON `true` / `false` back as `1` /
-`0`, so its path reads check `json_type` as well: `eq: true` matches only a JSON `true`, never
-the number `1`, a number operand never matches a boolean, and a text read sees `"true"` /
-`"false"`, as PostgreSQL's does.
+-   `as: NUMBER` (or a number operand) matches a JSON number only. The string `"3"` does not
+    equal `3`, and `gt: 0` against `"admin"` returns no rows
+-   `as: BOOLEAN` (or a boolean operand) matches a JSON `true` / `false` only, never the string
+    `"true"` or the number `1`
+-   `as: TEXT` (or a string operand) reads any scalar as its text, so `eq: "3"` matches both the
+    number `3` and the string `"3"`, and `eq: "true"` matches a JSON `true`
+
+The type comes from `jsonb_typeof` / `json_typeof` on PostgreSQL, `JSON_TYPE` on MySQL and
+`json_type` on SQLite. Each read also keeps its own dialect from comparing by some unrelated
+rule: SQLite's cross-type ordering would otherwise sort every string above every number, and
+its `json_extract` hands a JSON boolean back as `1` / `0`.
 
 **Whole-document `eq` / `ne`** compare documents, not their text. Object key order and
 whitespace do not matter; array order does, and so does the difference between `1` and `true`.
@@ -1394,7 +1426,8 @@ following the same naming rules as the other generated queries:
     places
 -   `min` / `max` — one field per orderable column (numbers, strings, enums, dates, bigints),
     typed exactly like that column is in the table's own type. PostgreSQL `uuid`, `macaddr`,
-    `macaddr8` and `bit` columns are left out, because PostgreSQL has no `min` / `max` for them,
+    `macaddr8`, `bit` and pgvector `sparsevec` columns are left out, because PostgreSQL has no
+    `min` / `max` for them,
     and so is a SQLite `blob({ mode: 'bigint' })` column, whose bytes compare as text (`9` above
     `10`)
 -   `countNonNull` — `Int!` per column: how many matching rows have a non-null value there.
@@ -1886,7 +1919,11 @@ mutation {
 -   A to-one relation takes one operation at a time (`connect` **or** `disconnect` **or**
     `create`), and attaching to it detaches whatever was there
 -   `disconnect` and `set` only exist where the foreign key is nullable; there is no way to
-    detach a row whose key is `NOT NULL`
+    detach a row whose key is `NOT NULL`. So on a to-one whose `NOT NULL` key lives on the
+    target, `connect` and `create` fail with `DRIZZLE_NESTED_WRITE_INVALID`, changing nothing,
+    while a different row is attached: delete that row or move it to another parent first.
+    Connecting the row already attached is a no-op, and connecting a row another parent holds
+    moves it, as long as this parent has none
 -   A column the relation fills in becomes nullable on the create input — with
     `author: { create: … }` available, `authorId` is one of two ways to supply it
 -   Nesting is one level deep: the row a nested `create` inserts takes columns only, and the
@@ -1997,9 +2034,9 @@ root field's:
     | `create` | the target's `insert` (and its `update` too on a to-one whose nullable key lives on the target, since attaching detaches the previous row) |
     | `connect` / `disconnect` / `set`, key on the target | the target's `update` |
     | `connect` / `disconnect`, key on the parent | nothing — only the parent's own row changes |
-    | many-to-many `connect` | the junction's `insert` |
+    | many-to-many `connect` | the junction's `insert` (and its `update` too when the junction soft-deletes, since linking again restores a marked link row) |
     | many-to-many `disconnect` | the junction's `delete` |
-    | many-to-many `set` | the junction's `insert` and `delete` |
+    | many-to-many `set` | the junction's `insert` and `delete` (and `update`, as for `connect`) |
 
     An excluded junction table takes its relation's inputs with it. A table whose writes are
     reserved for a hand-written mutation (`insert: false`) can therefore no longer be written
@@ -2188,7 +2225,8 @@ deliberate rather than accidental:
 
 The plural mutations still accept a missing `where` (a full-table write) by default. To rule
 that out at the type level, `features: { requireWhere: true }` makes `where` non-null on
-`update<Table>` / `delete<Table>` and rejects a `where` with no filters, exactly like the
+`update<Table>` / `delete<Table>` and rejects a `where` with no filters (or only filters that
+match every row, such as `notInArray: []`), exactly like the
 Single variants. It also covers `update<Table>Many`: an entry without a `where`, or with one
 that has no filters, rejects the whole batch with `DRIZZLE_WHERE_REQUIRED` before any entry
 runs. It defaults to `false` for backwards compatibility.
@@ -2475,6 +2513,12 @@ and they let the default apply, which is what makes `id: $id` with a null variab
 row. A `NOT NULL` column with nothing to fill it is rejected while GraphQL coerces the request.
 Upserts take the create input, so they follow the insert rule.
 
+A column the database always computes — `generatedAlwaysAs(...)` (stored or virtual, on every
+dialect) or PostgreSQL's `generatedAlwaysAsIdentity()` — is in no write input: not create,
+update, upsert, `onConflict.update`, field-update operations or a nested `create`. It still reads,
+filters and orders like any other column. An identity `generatedByDefaultAsIdentity()` column stays
+writable, and optional on create.
+
 The `drizzle` block is only on errors raised from inside a field. An argument rejected while
 GraphQL coerces the request — a `BigInt` variable that is not an integer, say — is rejected
 before any resolver runs, so it carries its `code` but no `drizzle` and no `path`.
@@ -2516,8 +2560,10 @@ are untouched.
 -   The driver must support `db.transaction()` — `neon-http` does not. For SQLite only an
     asynchronous driver can hold a transaction open across resolvers, and `buildSchema`
     throws for a synchronous one rather than failing at request time
--   The GraphQL context value must be a fresh object per request (every mainstream server
-    does this) — it keys the per-request transaction state
+-   The transaction state belongs to one execution, so a reused context object, a cached
+    document or no context at all never carries it into the next request. Two executions must
+    not share one context object at the same time: the open transaction is published on it
+    (under `drizzleExecutorKey`) for the reads nested under the mutations
 -   `timeoutMs` (default `30000`) rolls back an abandoned transaction, e.g. when the host
     server stopped calling resolvers because of a non-null completion error, instead of
     leaking the connection. It must be a positive integer up to `2147483647` (the longest
@@ -2664,6 +2710,11 @@ The payload:
     not have to know which.
 -   **Throwing rolls the mutation back.** A hook that can only log is what a logging plugin
     already does.
+-   **`before` runs once the arguments have passed.** A request its arguments alone make
+    invalid — no values, a missing or match-everything `where`, an unknown column, a bad field
+    update operation, nested input or `onConflict` — is refused without calling it, on every
+    write. Checks that read the database (a `Single` write's one-row match, a nested
+    `connect`'s match) run after it, since the hook may write first.
 -   **SQLite needs an asynchronous driver** (libsql, D1). A synchronous one (better-sqlite3,
     `node:sqlite`) commits before an awaited hook runs, so a throw could not roll anything
     back; `buildSchema` throws for `onWrite` on one, as it does for `nestedWrites` and

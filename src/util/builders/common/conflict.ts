@@ -10,6 +10,7 @@ import { drizzleError } from './errors.ts';
 import type { UniqueTarget } from './keys.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
 import { sharedType, type TypeNameResolver } from './type-names.ts';
+import { isWritableColumn } from './writable-columns.ts';
 
 /** Shared by every table's `${typeName}OnConflict` input, so it is created once per name. */
 export const conflictActionEnumType = (typeName: TypeNameResolver): GraphQLEnumType =>
@@ -34,8 +35,8 @@ export const conflictActionEnumType = (typeName: TypeNameResolver): GraphQLEnumT
  * `ON DUPLICATE KEY UPDATE` fires on any unique key and takes no predicate, so offering
  * either there would mean silently ignoring it.
  *
- * `update` never offers a `contextValues` column: the server owns it, and the conflict
- * branch is an update, which must not hand the row to another owner.
+ * `update` offers only writable columns (`isWritableColumn`): the conflict branch is an
+ * update, and a column no input can supply has no value to copy over anyway.
  *
  * Returns `undefined` when the table has nothing to conflict on (`withTarget` dialects
  * only) — the caller then generates no upsert mutations for that table at all, rather than
@@ -52,7 +53,11 @@ export const generateOnConflictInput = (params: {
 }): GraphQLInputObjectType | undefined => {
   const { table, tableName, typeName, uniqueSets, tableFilters, withTarget, cacheCtx } = params;
   const resolveName = cacheCtx.typeName;
-  const serverOwned = Object.keys(cacheCtx.contextValuesOf?.(tableName) ?? {}).sort();
+  // The predicate varies per build only through the policies, so they name the cached variant.
+  const policyVariant = [
+    ...Object.keys(cacheCtx.contextValuesOf?.(tableName) ?? {}).sort(),
+    cacheCtx.softDeleteOf?.(tableName)?.columnName ?? '',
+  ].join(',');
 
   const updateEnum = generateColumnEnum(
     table,
@@ -63,8 +68,8 @@ export const generateOnConflictInput = (params: {
       operation: 'conflictUpdate',
     }),
     `Columns of ${typeName} that an upsert can overwrite`,
-    (_column, columnName) => !serverOwned.includes(columnName),
-    serverOwned.join(','),
+    (column, columnName) => isWritableColumn(cacheCtx, tableName, columnName, column),
+    policyVariant,
   );
   if (!updateEnum) {
     return undefined;

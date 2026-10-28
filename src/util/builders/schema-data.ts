@@ -245,7 +245,9 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             selectionCtx: { tableName, relationMap: namedRelations, tables },
           })
         : undefined;
-      const restoreGenerated = softDeleteInfo
+      // A restore is an UPDATE of the marker, so it follows the table's `update` switch.
+      const offersRestore = !!softDeleteInfo && tableFeatures.update;
+      const restoreGenerated = offersRestore
         ? generateDelete(writeBuild, {
             tableName,
             table: schema[tableName] as Table,
@@ -258,7 +260,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             selectionCtx: { tableName, relationMap: namedRelations, tables },
           })
         : undefined;
-      const restoreSingleGenerated = softDeleteInfo
+      const restoreSingleGenerated = offersRestore
         ? generateDelete(writeBuild, {
             tableName,
             table: schema[tableName] as Table,
@@ -349,8 +351,8 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
           type: new GraphQLNonNull(new GraphQLList(singleTableItemOutput)),
           meta: { operation: 'updateMany', single: false, targetArg: 'updates' },
           // The nullable element is deliberate, and the reason this mutation's return type
-          // differs from every sibling's: the result is aligned with the input, one slot per
-          // entry, so an entry that matched nothing has to be able to say so.
+          // differs from every sibling's: an entry that matched nothing contributes a `null`,
+          // so it can say so. An entry that matched several rows contributes each of them.
           description:
             "Each entry's updated rows, in entry order. An entry whose `where` matched no rows contributes `null` in its slot; an entry that matched several contributes each of its rows.",
         },

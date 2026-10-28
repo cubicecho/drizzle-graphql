@@ -1,0 +1,164 @@
+// Columns the database computes — generated ALWAYS (stored or virtual) and identity ALWAYS —
+// used to appear in the write inputs: a SQLite generated `notNull` column was required on
+// create (and the value silently dropped), and an update offering it failed in the database.
+// Identity BY DEFAULT stays writable and optional on create.
+import { PGlite } from '@electric-sql/pglite';
+import { createClient } from '@libsql/client';
+import { defineRelations, sql } from 'drizzle-orm';
+import { drizzle as sqliteDrizzle } from 'drizzle-orm/libsql';
+import { int as myInt, mysqlTable, varchar } from 'drizzle-orm/mysql-core';
+import { drizzle as mysqlDrizzle } from 'drizzle-orm/mysql2';
+import { integer as pgInteger, pgTable, text as pgText } from 'drizzle-orm/pg-core';
+import { drizzle as pgDrizzle } from 'drizzle-orm/pglite';
+import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { type GraphQLInputObjectType, type GraphQLSchema, graphql, isNonNullType } from 'graphql';
+import { createPool } from 'mysql2';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { buildSchema } from '@/index';
+
+const inputFields = (schema: GraphQLSchema, name: string) =>
+  (schema.getType(name) as GraphQLInputObjectType).getFields();
+
+const enumValues = (schema: GraphQLSchema, name: string) =>
+  (schema.getType(name) as any)
+    .getValues()
+    .map((value: { name: string }) => value.name)
+    .sort();
+
+describe('sqlite generated columns', () => {
+  const Items = sqliteTable('items', {
+    id: integer('id').primaryKey(),
+    name: text('name').notNull(),
+    upper: text('upper').generatedAlwaysAs(sql`upper(name)`).notNull(),
+    stored: text('stored').generatedAlwaysAs(sql`lower(name)`, { mode: 'stored' }),
+    tags: text('tags'),
+  });
+  const Tags = sqliteTable('tags', {
+    id: integer('id').primaryKey(),
+    itemId: integer('item_id').notNull(),
+    label: text('label').notNull(),
+    shout: text('shout').generatedAlwaysAs(sql`upper(label)`),
+  });
+  const relations = defineRelations({ Items, Tags }, (r) => ({
+    Items: { tagRows: r.many.Tags({ from: r.Items.id, to: r.Tags.itemId }) },
+    Tags: { item: r.one.Items({ from: r.Tags.itemId, to: r.Items.id }) },
+  }));
+  let schema: GraphQLSchema;
+
+  beforeAll(async () => {
+    const client = createClient({ url: ':memory:' });
+    const db = (sqliteDrizzle as any)({ client, relations });
+    await db.run(
+      sql`CREATE TABLE items (id integer PRIMARY KEY, name text NOT NULL, upper text GENERATED ALWAYS AS (upper(name)) NOT NULL, stored text GENERATED ALWAYS AS (lower(name)) STORED, tags text)`,
+    );
+    await db.run(
+      sql`CREATE TABLE tags (id integer PRIMARY KEY, item_id integer NOT NULL, label text NOT NULL, shout text GENERATED ALWAYS AS (upper(label)))`,
+    );
+    schema = buildSchema(db, { features: { upsert: true, nestedWrites: true } }).schema;
+  });
+
+  it('leaves generated columns out of the create, update, upsert and nested-create inputs', () => {
+    for (const name of ['CreateItemsInput', 'UpdateItemsInput', 'UpsertItemsInput']) {
+      expect(Object.keys(inputFields(schema, name))).not.toContain('upper');
+      expect(Object.keys(inputFields(schema, name))).not.toContain('stored');
+    }
+    expect(Object.keys(inputFields(schema, 'ItemsTagRowsNestedCreatePayloadInput'))).not.toContain('shout');
+    expect(enumValues(schema, 'ItemsUpdateColumn')).toEqual(['id', 'name', 'tags']);
+  });
+
+  it('creates and reads back a row without the generated values', async () => {
+    const res = await graphql({
+      schema,
+      source: 'mutation { createItemsSingle(values: { id: 1, name: "abc" }) { id upper stored } }',
+      contextValue: {},
+    });
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.['createItemsSingle']).toEqual({ id: 1, upper: 'ABC', stored: 'abc' });
+  });
+
+  it('rejects a generated column on update at validation, not in the database', async () => {
+    const res = await graphql({
+      schema,
+      source: 'mutation { updateItems(set: { upper: "zzz" }) { id } }',
+      contextValue: {},
+    });
+    expect(res.errors?.[0]?.message).not.toMatch(/generated column/i);
+    expect(res.errors?.[0]?.message).toMatch(/upper/);
+  });
+});
+
+describe('pg identity columns', () => {
+  const Always = pgTable('always_things', {
+    id: pgInteger('id').primaryKey().generatedAlwaysAsIdentity(),
+    name: pgText('name'),
+  });
+  const ByDefault = pgTable('default_things', {
+    id: pgInteger('id').primaryKey().generatedByDefaultAsIdentity(),
+    name: pgText('name'),
+  });
+  let pglite: PGlite;
+  let schema: GraphQLSchema;
+
+  beforeAll(async () => {
+    pglite = new PGlite();
+    const db = (pgDrizzle as any)({ client: pglite, relations: defineRelations({ Always, ByDefault }) });
+    await pglite.exec(`
+      CREATE TABLE always_things (id integer PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name text);
+      CREATE TABLE default_things (id integer PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY, name text);
+      INSERT INTO always_things (name) VALUES ('a');
+    `);
+    schema = buildSchema(db).schema;
+  });
+  afterAll(async () => {
+    await pglite.close();
+  });
+
+  it('leaves identity ALWAYS out of the create and update inputs', () => {
+    expect(Object.keys(inputFields(schema, 'CreateAlwaysInput'))).toEqual(['name']);
+    expect(Object.keys(inputFields(schema, 'UpdateAlwaysInput'))).toEqual(['name']);
+  });
+
+  it('keeps identity BY DEFAULT writable and optional on create', async () => {
+    const id = inputFields(schema, 'CreateByDefaultInput')['id'];
+    expect(id).toBeDefined();
+    expect(isNonNullType(id!.type)).toBe(false);
+    expect(Object.keys(inputFields(schema, 'UpdateByDefaultInput'))).toContain('id');
+
+    const res = await graphql({
+      schema,
+      source: 'mutation { createByDefaultSingle(values: { id: 50, name: "a" }) { id } }',
+      contextValue: {},
+    });
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.['createByDefaultSingle']).toEqual({ id: 50 });
+  });
+
+  it('updates an identity ALWAYS table through its other columns', async () => {
+    const res = await graphql({
+      schema,
+      source: 'mutation { updateAlways(set: { name: "b" }) { id name } }',
+      contextValue: {},
+    });
+    expect(res.errors).toBeUndefined();
+    expect(res.data?.['updateAlways']).toEqual([{ id: 1, name: 'b' }]);
+  });
+});
+
+describe('mysql generated columns', () => {
+  const Rows = mysqlTable('rows', {
+    id: myInt('id').primaryKey(),
+    name: varchar('name', { length: 20 }).notNull(),
+    upper: varchar('upper', { length: 20 }).generatedAlwaysAs(sql`upper(name)`),
+    stored: varchar('stored', { length: 20 }).generatedAlwaysAs(sql`lower(name)`, { mode: 'stored' }),
+  });
+
+  it('leaves them out of the create and update inputs', async () => {
+    // The pool drizzle opens connects lazily, and building the schema runs no query.
+    const pool = createPool({ host: '127.0.0.1', port: 1 });
+    const db = (mysqlDrizzle as any)({ client: pool, relations: defineRelations({ Rows }) });
+    const { schema } = buildSchema(db);
+    expect(Object.keys(inputFields(schema, 'CreateRowsInput'))).toEqual(['id', 'name']);
+    expect(Object.keys(inputFields(schema, 'UpdateRowsInput'))).toEqual(['id', 'name']);
+    pool.end();
+  });
+});

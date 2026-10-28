@@ -5,12 +5,10 @@ import {
   MySqlDateString,
   MySqlDateTime,
   MySqlDateTimeString,
-  MySqlInt,
-  MySqlSerial,
   MySqlTimestamp,
   MySqlTimestampString,
 } from 'drizzle-orm/mysql-core';
-import { PgDate, PgDateString, PgInteger, PgSerial, PgTimestamp, PgTimestampString, PgUUID } from 'drizzle-orm/pg-core';
+import { PgDate, PgDateString, PgTimestamp, PgTimestampString, PgUUID } from 'drizzle-orm/pg-core';
 import { SQLiteTimestamp } from 'drizzle-orm/sqlite-core';
 import {
   GraphQLBoolean,
@@ -56,6 +54,12 @@ const smallIntegerConstraints = new Set<string>([
   'int32',
   'year',
 ]);
+
+/** drizzle's `string` constraints of a numeric / decimal column in string mode; MySQL unsigned is `unumeric`. */
+const decimalStringConstraints = new Set<string>(['numeric', 'unumeric']);
+
+/** drizzle's `string` constraints of a bigint column in string mode (PG and MySQL). */
+const bigIntStringConstraints = new Set<string>(['int64', 'uint64']);
 
 /** A GraphQL `Name` that is also allowed as an enum value — the spec reserves the three literals. */
 const validEnumValueName = (name: string): boolean =>
@@ -319,6 +323,15 @@ export const isDateTimeColumn = (column: Column): boolean =>
   isSQLiteTimestampColumn(column);
 
 /**
+ * Whether the column is a numeric / decimal in string mode (PG, MySQL signed or unsigned,
+ * SQLite): transported as text, but a number.
+ */
+export const isDecimalStringColumn = (column: Column): boolean => {
+  const { type, constraint } = extractExtendedColumnType(column);
+  return type === 'string' && constraint !== undefined && decimalStringConstraints.has(constraint);
+};
+
+/**
  * Whether the column holds raw bytes: Postgres `bytea` and SQLite `blob({ mode: 'buffer' })`,
  * both `object buffer` in drizzle v1. Their values are `[Int!]` lists of the bytes.
  */
@@ -362,10 +375,13 @@ const columnToGraphQLCore = (
     const inner = columnBaseToGraphQLCore(column, columnName, tableName, isInput);
     const innerLabel = inner.typeLabel ?? (inner.type as GraphQLScalarType).name;
 
+    // A Postgres array may hold NULL elements at any depth, so output elements are nullable.
+    // Inputs keep non-null elements: a write or filter operand has no use for a null element.
     let type: ConvertedColumn<boolean>['type'] = inner.type;
     let typeLabel = innerLabel;
     for (let i = 0; i < dimensions; i++) {
-      type = new GraphQLList(new GraphQLNonNull(type as GraphQLScalarType));
+      const element = type as GraphQLScalarType;
+      type = isInput ? new GraphQLList(new GraphQLNonNull(element)) : new GraphQLList(element);
       typeLabel = `Array<${typeLabel}>`;
     }
 
@@ -412,8 +428,14 @@ const columnBaseToGraphQLCore = (
       // strings, but they are numbers — give them the named Decimal scalar so the SDL says
       // so and non-numeric input is rejected. Array-typed numeric columns (dimensions > 0)
       // keep their existing mapping.
-      if (constraint === 'numeric' && !(column as any).dimensions) {
+      if (isDecimalStringColumn(column) && !(column as any).dimensions) {
         return { type: GraphQLDecimalString, typeLabel: 'Decimal' };
+      }
+
+      // `bigint({ mode: 'string' })` is a 64-bit integer transported as text, so it gets the
+      // same `BigInt` scalar (and number filters) as the other bigint modes.
+      if (constraint !== undefined && bigIntStringConstraints.has(constraint)) {
+        return { type: GraphQLBigIntString, typeLabel: 'BigInt' };
       }
 
       if (isDateTimeColumn(column)) {
@@ -430,21 +452,11 @@ const columnBaseToGraphQLCore = (
     case 'bigint':
       return { type: GraphQLBigIntString, typeLabel: 'BigInt' };
     case 'number': {
-      // Every integer kind that fits GraphQL's 32-bit signed Int: smallint / tinyint /
-      // mediumint / smallserial and MySQL `year` report these constraints in drizzle v1, and
-      // used to fall through to Float. Wider kinds (int53, uint32, uint53) are matched only
-      // through the column classes below, as before.
-      //
-      // A SQLite `integer()` in number mode is not among them: SQLite stores any 64-bit integer
-      // in it (a rowid primary key included), and drizzle reads it as a JS number, so values
-      // past 2^31 are ordinary. `Float` carries every integer up to 2^53 exactly; `Int` would
-      // fail to serialize them. Its `'boolean'` and `'timestamp'` modes are other classes and
-      // keep `Boolean` and `DateTime`.
-      return (constraint !== undefined && smallIntegerConstraints.has(constraint)) ||
-        is(column, PgInteger) ||
-        is(column, PgSerial) ||
-        is(column, MySqlInt) ||
-        is(column, MySqlSerial)
+      // Only integer kinds whose range fits GraphQL's 32-bit signed Int get `Int`, decided by
+      // drizzle's constraint alone. Wider kinds — MySQL unsigned `int` (uint32) and `serial`
+      // (uint53), bigint number mode (int53/uint53) and SQLite `integer()` (int53, any 64-bit
+      // value) — get `Float`, which carries every integer up to 2^53 exactly.
+      return constraint !== undefined && smallIntegerConstraints.has(constraint)
         ? { type: GraphQLInt, typeLabel: 'Integer' }
         : { type: GraphQLFloat, typeLabel: 'Float' };
     }

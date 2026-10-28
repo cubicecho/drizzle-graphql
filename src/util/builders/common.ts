@@ -21,7 +21,7 @@
 
 export { deletedArg, selectArrayArgs, selectSingleArgs } from './common/args.ts';
 export { generateColumnEnum, generateDistinctEnum } from './common/column-enums.ts';
-export type { ConflictPlan, OnConflictArg } from './common/conflict.ts';
+export type { ConflictBatch, ConflictPlan, OnConflictArg } from './common/conflict.ts';
 export {
   applyConflictPlan,
   conflictActionEnumType,
@@ -37,6 +37,7 @@ export {
   CURSOR_FIELD_NAME,
   cursorOrderExprs,
   cursorOrderingEntries,
+  DIALECT_NULL_ORDERING,
   decodeCursor,
   encodeCursor,
   isCursorFieldSelected,
@@ -89,12 +90,12 @@ export {
   withDefaultOrderBy,
 } from './common/limits.ts';
 export {
-  assertSingleMatch,
   extractRequiredFilters,
   generateUpdateManyInput,
   generateWriteCount,
   hardDeleteArg,
   mutationSelection,
+  narrowToSingleMatch,
   prepareMutationRelationColumns,
   rowsAffected,
   scopedWhere,
@@ -174,7 +175,7 @@ export type {
   TypeNameResolver,
 } from './common/type-names.ts';
 export { resolveGeneratedTypeNames, sharedType } from './common/type-names.ts';
-export { buildUniqueKeyMap, type UniqueKeyMap, uniqueKeyFieldName } from './common/unique-keys.ts';
+export { tableUniqueKeyMap, type UniqueKeyMap, uniqueKeyFieldName } from './common/unique-keys.ts';
 export type {
   NestedWriteOp,
   NestedWriteOrigin,

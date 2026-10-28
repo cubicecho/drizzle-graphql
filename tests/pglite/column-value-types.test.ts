@@ -125,7 +125,8 @@ describe.sequential('bytea', () => {
   it('is typed as a list of bytes', () => {
     expect(fieldType('Bytes', 'data')).toBe('[Int!]');
     expect(inputFieldType('CreateBytesInput', 'data')).toBe('[Int!]');
-    expect(fieldType('Bytes', 'chunks')).toBe('[[Int!]!]');
+    // An element of a bytea[] may be NULL; the bytes of one never are.
+    expect(fieldType('Bytes', 'chunks')).toBe('[[Int!]]');
   });
 
   it('round-trips through create, read and update', async () => {

@@ -6,11 +6,13 @@ import {
   and,
   arrayContains,
   arrayOverlaps,
+  bindIfParam,
   eq,
   gt,
   gte,
   ilike,
   inArray,
+  is,
   isNotNull,
   isNull,
   like,
@@ -25,6 +27,8 @@ import {
   type SQL,
   sql,
 } from 'drizzle-orm';
+import { MySqlFloat } from 'drizzle-orm/mysql-core';
+import { SQLiteTimestamp } from 'drizzle-orm/sqlite-core';
 import { remapFromGraphQLCore } from '../../data-mappers/index.ts';
 import type { FilterColumnOperators, FilterColumnOperatorsCore } from '../types.ts';
 import { columnDialect, isJsonColumn } from './column-filters.ts';
@@ -177,7 +181,7 @@ const COMPARISON_SQL: Record<string, string> = { eq: '=', ne: '<>', lt: '<', lte
  * `lower()` the case-insensitive LIKE operators already fall back to on the dialects without
  * a native `ILIKE`, so it adds no dialect surface.
  */
-const lowerComparison = (column: Column, operatorName: string, value: unknown): SQL =>
+export const lowerComparison = (column: Column, operatorName: string, value: unknown): SQL =>
   sql`lower(${column}) ${sql.raw(COMPARISON_SQL[operatorName]!)} lower(${value})`;
 
 /** `lower(column) IN (lower($1), …)` / `NOT IN` — the case-insensitive `inArray`/`notInArray`. */
@@ -251,34 +255,119 @@ const jsonEquality = (column: Column, columnName: string, value: unknown, negate
   }
 };
 
+/** The largest `FLOAT(p)` precision MySQL still stores in single precision; above it is DOUBLE. */
+const MYSQL_SINGLE_PRECISION_MAX = 24;
+
+/** Whether a MySQL `float` column stores single-precision values (`float`, `float(p,s)`, `float(p ≤ 24)`). */
+const isMySqlSingleFloat = (column: Column): boolean =>
+  is(column, MySqlFloat) &&
+  (column.precision === undefined || column.scale !== undefined || column.precision <= MYSQL_SINGLE_PRECISION_MAX);
+
 /**
- * Constant predicates, used where an operator's operand list is empty and the answer is
- * therefore known without touching the column. Written as `1 = 0` / `1 = 1` rather than the
- * `FALSE` / `TRUE` keywords so they compile identically on all three dialects. Built fresh
- * per call because a `SQL` object is spliced into whatever query consumes it.
+ * A value bound for comparison against `column`. MySQL compares a single-precision `float` with a
+ * bound double in double precision, so `0.1` never equals the stored `0.1` and a cursor never gets
+ * past its own row. There the operand is cast to `float` (MySQL 8.0.17+) so both sides round alike.
  */
-const sqlFalse = (): SQL => sql`1 = 0`;
-const sqlTrue = (): SQL => sql`1 = 1`;
+export const comparableOperand = (column: Column, value: unknown): unknown =>
+  isMySqlSingleFloat(column) ? sql`cast(${bindIfParam(value, column)} as float)` : value;
+
+const MS_PER_SECOND = 1000;
+
+/**
+ * Whether `value` is an instant between two whole seconds compared against a SQLite
+ * `integer({ mode: 'timestamp' })` column, which stores whole seconds. Its driver encoder floors
+ * the operand, which is the right bound for every operator but `lt` / `gte`.
+ */
+const isBetweenStoredSeconds = (column: Column, value: unknown): value is Date =>
+  is(column, SQLiteTimestamp) &&
+  column.mode === 'timestamp' &&
+  value instanceof Date &&
+  value.getTime() % MS_PER_SECOND !== 0;
+
+/** Operators whose bound is the next whole second when the operand lies between two stored seconds. */
+const CEILED_SECOND_OPERATORS: ReadonlySet<string> = new Set(['lt', 'gte']);
+
+/**
+ * The operand a comparison binds on a seconds-mode SQLite timestamp. `lt` / `gte` take the next
+ * whole second, so `lt: "…10:00:00.500Z"` keeps the row stored at `…10:00:00Z` and `gte` drops
+ * it. Every other operator keeps the floored operand, so `eq` finds the row that value would
+ * have written.
+ */
+const secondsBoundOperand = (column: Column, operatorName: string, value: unknown): unknown => {
+  const roundsUp = CEILED_SECOND_OPERATORS.has(operatorName) && isBetweenStoredSeconds(column, value);
+  if (!roundsUp) {
+    return value;
+  }
+  return new Date(Math.ceil(value.getTime() / MS_PER_SECOND) * MS_PER_SECOND);
+};
+
+/**
+ * A compiled filter. `undefined` is the **matches every row** result ({@link MATCHES_EVERY_ROW}):
+ * the filter restricts nothing, so a read adds no condition and a write that requires a `where`
+ * refuses it. It is never spelled as an always-true SQL predicate, which would hide it.
+ */
+export type CompiledFilter = SQL | undefined;
+
+/** The compiled filter that restricts nothing — see {@link CompiledFilter}. */
+export const MATCHES_EVERY_ROW = undefined;
+
+/** Every predicate built by {@link matchesNoRow}, so the boolean groups can fold it. */
+const noRowPredicates = new WeakSet<SQL>();
+
+/**
+ * The constant "no row matches" predicate, for an operator whose operand list is empty
+ * (`inArray: []`). Written as `1 = 0` rather than `FALSE` so it compiles on all three dialects,
+ * and remembered so `NOT` of it can become {@link MATCHES_EVERY_ROW}. Built fresh per call
+ * because a `SQL` object is spliced into whatever query consumes it.
+ */
+const matchesNoRow = (): SQL => {
+  const predicate = sql`1 = 0`;
+  noRowPredicates.add(predicate);
+  return predicate;
+};
+
+const isMatchesNoRow = (filter: CompiledFilter): boolean => filter !== undefined && noRowPredicates.has(filter);
+
+/**
+ * True when `condition` is FALSE or NULL. `NOT condition` is NULL for a NULL condition, so a row
+ * it should select drops out. `1 = 0` stands in for FALSE, which older SQLite cannot spell.
+ */
+export const isNotTrue = (condition: SQL): SQL => sql`not coalesce(${condition}, 1 = 0)`;
+
+/**
+ * ANDs the conditions of one filter object together. A "no row matches" condition decides the
+ * whole conjunction (`x AND false` is false even when `x` is NULL), so it is kept recognisable
+ * rather than buried in an `and(...)`.
+ */
+export const allOf = (variants: SQL[]): CompiledFilter => {
+  if (variants.some(isMatchesNoRow)) {
+    return matchesNoRow();
+  }
+  return variants.length > 1 ? and(...variants) : variants[0];
+};
 
 /**
  * Compiles the `AND` / `NOT` / `OR` branches of one filter object onto `variants`, the
- * conditions its sibling keys already produced (all of which are ANDed together).
+ * conditions its sibling keys already produced (all of which are ANDed together, see
+ * {@link allOf}).
  *
- * A branch that compiles to no condition — `{}`, `{ c: { isNull: false } }`, a relation
- * `every: {}` — is a filter that restricts nothing, so it matches every row, and each branch
- * reads it that way:
+ * A branch that compiles to {@link MATCHES_EVERY_ROW} — `{}`, `{ c: { isNull: false } }`,
+ * `{ c: { notInArray: [] } }`, a relation `every: {}` — restricts nothing, and each branch reads
+ * it that way:
  *
  * - in `AND`, it drops out, as `x AND true` is `x`;
  * - under `NOT`, it matches no row, as `NOT true` is false;
  * - in `OR`, it makes the whole group match every row, as `x OR true` is true — so the group
  *   adds no condition, rather than being narrowed to its other branches.
  *
- * An empty `AND` or `OR` list is treated as absent.
+ * A branch that matches no row is the mirror image: `NOT` of it matches every row, and in `OR`
+ * it drops out (an `OR` of nothing but such branches matches no row). An empty `AND` or `OR`
+ * list is treated as absent.
  */
 export const compileBooleanBranches = <TBranch>(
   variants: SQL[],
   branches: { AND?: TBranch[] | null; NOT?: TBranch | null; OR?: TBranch[] | null },
-  compile: (branch: TBranch) => SQL | undefined,
+  compile: (branch: TBranch) => CompiledFilter,
 ): void => {
   const { AND, NOT, OR } = branches;
 
@@ -293,8 +382,12 @@ export const compileBooleanBranches = <TBranch>(
 
   if (NOT) {
     const extracted = compile(NOT);
-    // `not()` is typed `SQL | undefined` from drizzle-orm rc.5 on, `SQL` before it.
-    variants.push((extracted ? not(extracted) : undefined) ?? sqlFalse());
+    if (extracted === MATCHES_EVERY_ROW) {
+      variants.push(matchesNoRow());
+    } else if (!isMatchesNoRow(extracted)) {
+      // `not()` is typed `SQL | undefined` from drizzle-orm rc.5 on, `SQL` before it.
+      variants.push(not(extracted) ?? matchesNoRow());
+    }
   }
 
   if (OR?.length) {
@@ -302,16 +395,16 @@ export const compileBooleanBranches = <TBranch>(
     let matchesAll = false;
     for (const branch of OR) {
       const extracted = compile(branch);
-      if (!extracted) {
+      if (extracted === MATCHES_EVERY_ROW) {
         // Still compiled the rest: an invalid filter in a later branch is an error either way.
         matchesAll = true;
-      } else {
+      } else if (!isMatchesNoRow(extracted)) {
         orVariants.push(extracted);
       }
     }
 
-    if (!matchesAll && orVariants.length) {
-      variants.push(orVariants.length > 1 ? or(...orVariants)! : orVariants[0]!);
+    if (!matchesAll) {
+      variants.push(orVariants.length ? (orVariants.length > 1 ? or(...orVariants)! : orVariants[0]!) : matchesNoRow());
     }
   }
 };
@@ -339,29 +432,36 @@ const jsonPathString = (path: string[], dialect: 'mysql' | 'sqlite'): string =>
     .join('')}`;
 
 /**
- * Matches the text forms a database will accept as a number. Used to guard both numeric casts —
- * Postgres has no TRY_CAST and errors outright on a bad `::numeric`, while MySQL quietly casts
- * a non-numeric string to 0; neither is what a non-matching row should do.
+ * The names each dialect's JSON type function gives a JSON number and a JSON boolean. A
+ * `NUMBER` or `BOOLEAN` read only sees a value of that JSON type, so the string `"3"` never
+ * equals 3 and `"true"` never equals true, on any dialect.
  */
-const NUMERIC_TEXT_PATTERN = '^\\s*-?(\\d+\\.?\\d*|\\.\\d+)([eE][-+]?\\d+)?\\s*$';
+const JSON_VALUE_TYPE_NAMES: Record<'pg' | 'mysql' | 'sqlite', { number: string[]; boolean: string[] }> = {
+  pg: { number: ['number'], boolean: ['boolean'] },
+  mysql: { number: ['INTEGER', 'UNSIGNED INTEGER', 'DOUBLE', 'DECIMAL'], boolean: ['BOOLEAN'] },
+  sqlite: { number: ['integer', 'real'], boolean: ['true', 'false'] },
+};
+
+/** `type in ('a', 'b')`, with the fixed type names written as string literals. */
+const typeIsOneOf = (type: SQL, names: string[]): SQL =>
+  sql`${type} in (${sql.raw(names.map((name) => `'${name}'`).join(', '))})`;
 
 /**
  * The value at a JSON path, as the expressions a comparison can be built on: read as text,
- * read as a number, and read as the dialect spells a boolean. Each dialect extracts
- * differently, and each needs its own guard so a value of the wrong shape answers "no match"
- * rather than erroring or comparing by some unrelated rule:
+ * read as a number, and read as the dialect spells a boolean. The number and boolean reads
+ * check the value's JSON type first (see {@link JSON_VALUE_TYPE_NAMES}) and are NULL for any
+ * other type, so a value of the wrong shape answers "no match" rather than erroring or being
+ * converted:
  *
- * - **Postgres** — `#>>` with a bound `text[]` path, which works on `json` and `jsonb` alike.
- *   `::numeric` on a non-numeric string is a hard error, so the numeric read is guarded by a
- *   pattern test.
+ * - **Postgres** — `#>>` with a bound `text[]` path, which works on `json` and `jsonb` alike;
+ *   the type comes from `json_typeof` / `jsonb_typeof` on `#>`, whichever the column is.
  * - **MySQL** — `JSON_UNQUOTE(JSON_EXTRACT(col, ?))`, so a JSON string arrives without its
  *   quotes. Unquoting a JSON *null* would otherwise yield the string `'null'`, so it is mapped
- *   back to SQL NULL first. `CAST` quietly turns a non-numeric string into 0, hence the same
- *   pattern guard.
+ *   back to SQL NULL first. The type comes from `JSON_TYPE`.
  * - **SQLite** — `json_extract` returns the value in SQLite's own type, so the reads cast
  *   explicitly: without that, SQLite's cross-type ordering puts every string above every
- *   number and `'admin' > 0` would be true. A JSON boolean comes back as 1 / 0, so every read
- *   also checks `json_type` to keep booleans and numbers apart.
+ *   number and `'admin' > 0` would be true. A JSON boolean comes back as 1 / 0, and
+ *   `json_type` still tells `true` apart from `1`.
  */
 const jsonPathExprs = (
   column: Column,
@@ -374,32 +474,36 @@ const jsonPathExprs = (
         sql`, `,
       )}]::text[]`;
       const text = sql`(${column} #>> ${pathArray})`;
+      const typeOf = (column as any).columnType === 'PgJson' ? sql.raw('json_typeof') : sql.raw('jsonb_typeof');
+      const type = sql`${typeOf}(${column} #> ${pathArray})`;
+      const names = JSON_VALUE_TYPE_NAMES.pg;
       return {
         text,
-        number: sql`(case when ${text} ~ ${NUMERIC_TEXT_PATTERN} then ${text}::numeric end)`,
-        boolean: text,
+        number: sql`(case when ${typeIsOneOf(type, names.number)} then ${text}::numeric end)`,
+        boolean: sql`(case when ${typeIsOneOf(type, names.boolean)} then ${text} end)`,
         encodeBoolean: (value) => String(value),
       };
     }
     case 'mysql': {
       const extracted = sql`json_extract(${column}, ${jsonPathString(path, 'mysql')})`;
-      const text = sql`(case when json_type(${extracted}) = 'NULL' then null else json_unquote(${extracted}) end)`;
+      const type = sql`json_type(${extracted})`;
+      const text = sql`(case when ${type} = 'NULL' then null else json_unquote(${extracted}) end)`;
+      const names = JSON_VALUE_TYPE_NAMES.mysql;
       return {
         text,
-        number: sql`(case when ${text} regexp ${NUMERIC_TEXT_PATTERN} then cast(${text} as decimal(65, 30)) end)`,
-        boolean: text,
+        number: sql`(case when ${typeIsOneOf(type, names.number)} then cast(${text} as decimal(65, 30)) end)`,
+        boolean: sql`(case when ${typeIsOneOf(type, names.boolean)} then ${text} end)`,
         encodeBoolean: (value) => String(value),
       };
     }
     default: {
       const extracted = sql`json_extract(${column}, ${jsonPathString(path, 'sqlite')})`;
-      // SQLite has no boolean type: `json_extract` returns a JSON `true` as the integer 1, so
-      // each read checks `json_type`, which still tells `true` apart from `1`.
       const type = sql`json_type(${column}, ${jsonPathString(path, 'sqlite')})`;
+      const names = JSON_VALUE_TYPE_NAMES.sqlite;
       return {
         text: sql`(case ${type} when 'true' then 'true' when 'false' then 'false' else cast(${extracted} as text) end)`,
-        number: sql`(case when ${type} in ('integer', 'real') then ${extracted} end)`,
-        boolean: sql`(case when ${type} in ('true', 'false') then ${extracted} end)`,
+        number: sql`(case when ${typeIsOneOf(type, names.number)} then ${extracted} end)`,
+        boolean: sql`(case when ${typeIsOneOf(type, names.boolean)} then ${extracted} end)`,
         encodeBoolean: (value) => (value ? 1 : 0),
       };
     }
@@ -510,7 +614,7 @@ export const extractFiltersColumn = <TColumn extends Column>(
   column: TColumn,
   columnName: string,
   operators: FilterColumnOperators<TColumn>,
-): SQL | undefined => {
+): CompiledFilter => {
   // Boolean branches compose with sibling operators: siblings and the AND list are ANDed
   // together, NOT negates its whole branch, and the OR group is ANDed with the rest.
   const { OR, AND, NOT, insensitive, ...restOperators } = operators;
@@ -537,11 +641,15 @@ export const extractFiltersColumn = <TColumn extends Column>(
     if ((operatorName === 'eq' || operatorName === 'ne') && isJsonColumn(column)) {
       variants.push(jsonEquality(column, columnName, operatorValue, operatorName === 'ne'));
     } else if (operatorName in singleValueOps) {
-      const singleValue = remapFromGraphQLCore(operatorValue, column, columnName);
+      const singleValue = secondsBoundOperand(
+        column,
+        operatorName,
+        remapFromGraphQLCore(operatorValue, column, columnName),
+      );
       variants.push(
         foldCase
           ? lowerComparison(column, operatorName, singleValue)
-          : singleValueOps[operatorName]!(column, singleValue),
+          : singleValueOps[operatorName]!(column, comparableOperand(column, singleValue)),
       );
     } else if (operatorName in stringValueOps) {
       // Under `insensitive`, `like`/`notLike` compile the same way their `i` counterparts
@@ -579,17 +687,22 @@ export const extractFiltersColumn = <TColumn extends Column>(
       variants.push(safeLikeCondition(column, operatorValue as string, op, op.insensitive || foldCase));
     } else if (operatorName in arrayValueOps) {
       // An empty candidate list is a well-formed question with a known answer — nothing is
-      // `IN ()`, everything is `NOT IN ()` — so it resolves to a constant predicate rather
-      // than an error. SQL has no empty-list literal, hence the constant rather than `IN ()`.
+      // `IN ()`, everything is `NOT IN ()` — so it resolves to "no row" or "every row" rather
+      // than an error. SQL has no empty-list literal, hence no `IN ()`.
       if (!(operatorValue as any[]).length) {
-        variants.push(operatorName === 'inArray' ? sqlFalse() : sqlTrue());
+        if (operatorName === 'inArray') {
+          variants.push(matchesNoRow());
+        }
         continue;
       }
       const arrayValue = (operatorValue as any[]).map((val) => remapFromGraphQLCore(val, column, columnName));
       variants.push(
         foldCase
           ? lowerMembership(column, arrayValue, operatorName === 'notInArray')
-          : arrayValueOps[operatorName]!(column, arrayValue),
+          : arrayValueOps[operatorName]!(
+              column,
+              arrayValue.map((value) => comparableOperand(column, value)),
+            ),
       );
     } else if (operatorName === 'has') {
       // Single-element membership: containment with a one-element array (`col @> ARRAY[value]`).
@@ -600,7 +713,9 @@ export const extractFiltersColumn = <TColumn extends Column>(
       // Same reasoning as inArray/notInArray: overlapping with no elements is never true,
       // and every array contains all zero of them.
       if (!(operatorValue as any[]).length) {
-        variants.push(operatorName === 'hasSome' ? sqlFalse() : sqlTrue());
+        if (operatorName === 'hasSome') {
+          variants.push(matchesNoRow());
+        }
         continue;
       }
       variants.push(
@@ -624,5 +739,5 @@ export const extractFiltersColumn = <TColumn extends Column>(
 
   compileBooleanBranches(variants, { AND, NOT, OR }, (branch) => extractFiltersColumn(column, columnName, branch));
 
-  return variants.length ? (variants.length > 1 ? and(...variants) : variants[0]) : undefined;
+  return allOf(variants);
 };

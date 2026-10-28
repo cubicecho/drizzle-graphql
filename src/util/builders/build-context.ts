@@ -28,7 +28,6 @@ import {
   attachTargetPrimaryKeys,
   bindPolicies,
   buildNamedRelations,
-  buildUniqueKeyMap,
   computeResolverFieldNames,
   createMutationTxCtx,
   createRelationResolverFactory,
@@ -52,8 +51,8 @@ import {
   type TablesRelationalConfig,
   type TypeCacheCtx,
   type TypeNameMapper,
+  tableUniqueKeyMap,
   type UniqueKeyMap,
-  visibleColumns,
 } from '../builders/common.ts';
 import { installSqliteBlobJsonDecoders } from '../data-mappers/index.ts';
 import { type DrizzleMutationMeta, type TableFieldExtensionFactory, tableFieldExtensions } from '../extensions.ts';
@@ -70,6 +69,7 @@ import {
   resetAggregateColumnCache,
 } from './aggregates.ts';
 import { registerBuildRuntime } from './common/build-registry.ts';
+import { resetFieldUpdateCaches } from './field-updates.ts';
 import {
   buildNestedWritePlans,
   createNestedWriteRuntime,
@@ -264,6 +264,8 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     // Column classifications for the aggregates are cached across the tables of one build, and
     // hold that build's types and exclusions — so they are dropped here for the same reason.
     resetAggregateColumnCache();
+    // Which columns take a `…FieldUpdate` input depends on this build's scalar overrides.
+    resetFieldUpdateCaches();
 
     // Flatten drizzle-orm v1 TablesRelationalConfig into the canonical shape
     // used throughout common.ts: Record<tableName, Record<relName, TableNamedRelations>>
@@ -292,8 +294,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       }
       // Whatever the filter input already offers under a name keeps it — columns are added
       // first, then relations, and a key field last.
-      const taken = new Set([...Object.keys(visibleColumns(table)), ...Object.keys(namedRelations[tableName] ?? {})]);
-      const map = buildUniqueKeyMap(uniqueColumnSets(table), taken);
+      const map = tableUniqueKeyMap(table, Object.keys(namedRelations[tableName] ?? {}), uniqueColumnSets(table));
       if (Object.keys(map).length) {
         uniqueKeys[tableName] = map;
       }
@@ -364,7 +365,12 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     // A nested write is a write to the target (or junction) table, so it obeys that table's
     // features: an input whose write is turned off there is left out of the schema.
     if (nestedPlans) {
-      const omitted = gateNestedWritePlans(nestedPlans, featureOf, (tableName) => excludedTables.has(tableName));
+      const omitted = gateNestedWritePlans(
+        nestedPlans,
+        featureOf,
+        (tableName) => excludedTables.has(tableName),
+        (tableName) => !!softDeleteOf?.(tableName),
+      );
       if (omitted.length) {
         const listed =
           omitted.length > 5 ? `${omitted.slice(0, 5).join(', ')} and ${omitted.length - 5} more` : omitted.join(', ');

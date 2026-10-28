@@ -429,11 +429,11 @@ export const bindPolicies = (
     : undefined;
 
 /**
- * Merges a table's context-derived values into one row's insert values. The hooks run per
- * row — a value may depend on the row's own contents through the closure the caller built —
- * and they overwrite whatever was there: the columns are not in the create input, so nothing
- * legitimate can be lost, but a stitched-in input could still carry the key and the server's
- * value has to win.
+ * Returns one row's insert values with a table's context-derived values merged in, leaving
+ * `values` as it is. The hooks run per row — a value may depend on the row's own contents
+ * through the closure the caller built — and they overwrite whatever was there: the columns
+ * are not in the create input, so nothing legitimate can be lost, but a stitched-in input
+ * could still carry the key and the server's value has to win.
  */
 export const applyContextValues = (
   values: Record<string, any>,
@@ -443,10 +443,11 @@ export const applyContextValues = (
   if (!hooks) {
     return values;
   }
+  const stamped = { ...values };
   for (const [columnName, hook] of Object.entries(hooks)) {
-    values[columnName] = hook(context);
+    stamped[columnName] = hook(context);
   }
-  return values;
+  return stamped;
 };
 
 /**
@@ -484,26 +485,26 @@ export const applyContextValuesAll = (
   if (!hooks) {
     return rows;
   }
-  for (const row of rows) {
-    applyContextValues(row, hooks, context);
-  }
-  return rows;
+  return rows.map((row) => applyContextValues(row, hooks, context));
 };
 
 /**
- * Drops context-derived columns from an update's `set`. They are not in the update input
- * either, so this only matters when the key arrives some other way — and reassigning one is
- * exactly the ownership transfer the feature exists to prevent.
+ * Returns an update's `set` without its context-derived columns, leaving `values` as it is.
+ * They are not in the update input either, so this only matters when the key arrives some
+ * other way — and reassigning one is exactly the ownership transfer the feature exists to
+ * prevent.
  */
 export const stripContextValues = (
   values: Record<string, any>,
   hooks: Record<string, ContextValueHook> | undefined,
 ): Record<string, any> => {
-  if (!hooks) {
+  const carriesContextColumn = !!hooks && Object.keys(hooks).some((columnName) => columnName in values);
+  if (!carriesContextColumn) {
     return values;
   }
+  const stripped = { ...values };
   for (const columnName of Object.keys(hooks)) {
-    delete values[columnName];
+    delete stripped[columnName];
   }
-  return values;
+  return stripped;
 };

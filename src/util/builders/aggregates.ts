@@ -33,6 +33,7 @@ import {
 import { getOrCreateLoader, getOrCreateRequestValue } from '../batch-loader/index.ts';
 import { capitalize } from '../case-ops/index.ts';
 import { remapToGraphQLCore } from '../data-mappers/index.ts';
+import { executionKey } from '../execution.ts';
 import { requestValueNodes } from '../graphql-variables.ts';
 import type { ResolveTree } from '../parse-resolve-info.ts';
 import { parseResolveInfo } from '../parse-resolve-info.ts';
@@ -143,15 +144,16 @@ const SELECT_OP_FNS: Record<AggregateOp, (col: Column) => any> = {
 const SEP = '__';
 
 /**
- * Column types PostgreSQL can test for equality but has no `min`/`max` aggregate for, plus the
- * SQLite bigint blob, whose bytes compare as text (`max(9, 10)` is 9). They still count
- * distinct values and group.
+ * Column types PostgreSQL can test for equality but has no `min`/`max` aggregate for (pgvector's
+ * `bit` and `sparsevec` among them), plus the SQLite bigint blob, whose bytes compare as text
+ * (`max(9, 10)` is 9). They still count distinct values and group.
  */
 const NO_MIN_MAX_COLUMN_TYPES: ReadonlySet<string> = new Set([
   'PgUUID',
   'PgMacaddr',
   'PgMacaddr8',
   'PgBinaryVector',
+  'PgSparseVector',
   'SQLiteBigInt',
 ]);
 
@@ -648,8 +650,9 @@ export const createRelationAggregateFactory = (
         // This resolver runs once per parent row, and the resolve-info walk and the loader key
         // depend on the field alone, not on the row — so they are derived once per field per
         // request and reused by every sibling the batch serves.
+        const execution = executionKey(context, info);
         const { request, loaderKey } = getOrCreateRequestValue(
-          context,
+          execution,
           requestValueNodes(info),
           `aggregate:${tableName}::${relationName}`,
           () => {
@@ -677,8 +680,8 @@ export const createRelationAggregateFactory = (
         const whereArg = args?.where;
         const deleted = args?.deleted;
 
-        const loader = getOrCreateLoader(context, loaderKey, async (parentKeys: readonly (readonly unknown[])[]) => {
-          // Loaders are cached per context, so the whole batch shares this request's executor.
+        const loader = getOrCreateLoader(execution, loaderKey, async (parentKeys: readonly (readonly unknown[])[]) => {
+          // Loaders are cached per execution, so the whole batch shares this request's executor.
           const executor = resolveExecutor(db, context);
           const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key, localCols), key])).values()];
           // An aggregate over a relation counts the same rows the relation itself returns,

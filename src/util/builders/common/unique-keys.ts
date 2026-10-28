@@ -52,6 +52,16 @@ export const buildUniqueKeyMap = (sets: readonly string[][], taken: ReadonlySet<
 };
 
 /**
+ * {@link buildUniqueKeyMap} for one table, with the names its filter input already offers taken:
+ * its visible columns and its relations. Empty when no constraint gets a field.
+ */
+export const tableUniqueKeyMap = (
+  table: Table,
+  relationNames: Iterable<string>,
+  sets: readonly string[][],
+): UniqueKeyMap => buildUniqueKeyMap(sets, new Set([...Object.keys(visibleColumns(table)), ...relationNames]));
+
+/**
  * The `where` fields for a table's compound unique constraints, one input type per constraint.
  *
  * Every member is non-null, which is the whole point: a half-supplied key is a query-validation

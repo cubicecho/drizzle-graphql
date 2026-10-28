@@ -3,7 +3,7 @@
 // types PostgreSQL has no such aggregate for.
 import { PGlite } from '@electric-sql/pglite';
 import { buildRelations, createRelationsHelper, sql } from 'drizzle-orm';
-import { bit, integer, json, jsonb, macaddr, macaddr8, pgTable, text, uuid } from 'drizzle-orm/pg-core';
+import { bit, integer, json, jsonb, macaddr, macaddr8, pgTable, sparsevec, text, uuid } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pglite';
 import { type GraphQLEnumType, type GraphQLInputObjectType, type GraphQLObjectType, graphql } from 'graphql';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -146,5 +146,22 @@ describe('pg: min / max over types without those aggregates', () => {
     expect(data.devicesAggregate.countDistinct).toEqual({ u: 1, m: 2, m8: 2, bt: 2 });
     const grouped = await run('{ devicesGroupBy(groupBy: [u]) { count } }');
     expect(grouped.devicesGroupBy).toEqual([{ count: 2 }]);
+  });
+});
+
+// PGlite has no pgvector, so this is checked on the schema alone: pgvector compares `sparsevec`
+// values but defines no `min` / `max` for them.
+describe('pg: min / max over pgvector sparsevec', () => {
+  const Embeddings = pgTable('embeddings', { id: integer('id').primaryKey(), sv: sparsevec('sv', { dimensions: 3 }) });
+  const vectorSchema = buildSchema(
+    (drizzle as any)({ client: new PGlite(), relations: buildRelations({ Embeddings }, {}) }),
+  ).schema;
+  const fieldsOf = (name: string) =>
+    Object.keys((vectorSchema.getType(name) as GraphQLObjectType | GraphQLInputObjectType).getFields());
+
+  it('leaves sparsevec out of min / max, but still counts its distinct values', () => {
+    expect(fieldsOf('EmbeddingsMinAggregate')).toEqual(['id']);
+    expect(fieldsOf('EmbeddingsMaxAggregate')).toEqual(['id']);
+    expect(fieldsOf('EmbeddingsCountDistinctAggregate')).toEqual(['id', 'sv']);
   });
 });

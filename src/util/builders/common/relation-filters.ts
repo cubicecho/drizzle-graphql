@@ -10,7 +10,6 @@ import {
   getColumns,
   getTableAsAliasSQL,
   is,
-  not,
   One,
   relationsFilterToSQL,
   type SQL,
@@ -18,7 +17,7 @@ import {
 } from 'drizzle-orm';
 import type { FilterColumnOperatorsCore, Filters, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
-import { compileBooleanBranches, extractFiltersColumn } from './filters.ts';
+import { allOf, type CompiledFilter, compileBooleanBranches, extractFiltersColumn, isNotTrue } from './filters.ts';
 import type { ScopeResolver } from './policies.ts';
 import { isRelationFilterReversed, relationColumns, relationOwnWhere, unwrapRelationColumn } from './relations.ts';
 import type { UniqueKeyMap } from './unique-keys.ts';
@@ -281,9 +280,8 @@ const buildThroughJoinConditions = (
  * inside the subquery, correlated to the parent on the relation's source keys.
  *
  * `some` / the to-one shorthand match when a related row satisfies the inner filters, `none`
- * when none does, and `every` is expressed as "no related row fails the inner filters".
- * Because `every` negates the inner condition, a related row whose compared column is NULL
- * counts as matching (SQL three-valued logic) — the same caveat Prisma carries.
+ * when none does, and `every` is expressed as "no related row fails the inner filters". A row
+ * fails unless the inner condition is TRUE, so one whose compared column is NULL fails too.
  */
 const buildRelationExists = (
   parentTable: Table,
@@ -360,7 +358,7 @@ const buildRelationExists = (
       return undefined;
     }
 
-    return sql`not exists (select 1 from ${fromClause} where ${and(joinCondition, relationWhere, policy, not(inner))})`;
+    return sql`not exists (select 1 from ${fromClause} where ${and(joinCondition, relationWhere, policy, isNotTrue(inner))})`;
   }
 
   const condition = and(joinCondition, relationWhere, policy, inner);
@@ -418,7 +416,7 @@ export const extractFilters = <TTable extends Table>(
   tableName: string,
   filters: Filters<TTable>,
   relationCtx?: RelationFilterContext,
-): SQL | undefined => {
+): CompiledFilter => {
   // Boolean branches compose with sibling fields: siblings and the AND list are ANDed
   // together, NOT negates its whole branch, and the OR group is ANDed with the rest —
   // `{ a: …, OR: [{ b: … }, { c: … }] }` reads as `a AND (b OR c)`. Every branch is the
@@ -465,7 +463,7 @@ export const extractFilters = <TTable extends Table>(
 
   compileBooleanBranches(variants, { AND, NOT, OR }, (branch) => extractFilters(table, tableName, branch, relationCtx));
 
-  return variants.length ? (variants.length > 1 ? and(...variants) : variants[0]) : undefined;
+  return allOf(variants);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

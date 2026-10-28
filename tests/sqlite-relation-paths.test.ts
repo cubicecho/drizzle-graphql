@@ -119,4 +119,25 @@ describe.sequential('SQLite relation read paths agree', () => {
     expect(result.errors).toBeUndefined();
     expect(summarise((result.data as any).users)).toEqual(EXPECTED);
   });
+
+  // A position in the request's own `inArray` list cannot be encoded into a cursor, so the
+  // field resolves to null under `matchFilterOrder`, as it does on the root list.
+  it.each([
+    ['eager', true],
+    ['lazy', false],
+  ])('%s: a relation cursor under matchFilterOrder resolves to null', async (_label, eagerLoadRelations) => {
+    const { schema } = buildSchema(db, { eagerLoadRelations });
+    const result = await graphql({
+      schema,
+      source: `{ users(where: { id: { eq: 1 } }) {
+        roles(where: { id: { inArray: [2, 1] } }, orderBy: { id: { direction: asc, priority: 1, matchFilterOrder: true } }) { id cursor }
+      } }`,
+      contextValue: {},
+    });
+    expect(result.errors).toBeUndefined();
+    expect((result.data as any).users[0].roles).toEqual([
+      { id: 2, cursor: null },
+      { id: 1, cursor: null },
+    ]);
+  });
 });

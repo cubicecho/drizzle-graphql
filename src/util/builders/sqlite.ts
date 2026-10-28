@@ -3,6 +3,7 @@ import { type SQLiteAsyncDatabase, SQLiteTable, getTableConfig as sqliteTableCon
 
 import type { GeneratedEntities } from '../../types.ts';
 import {
+  DIALECT_NULL_ORDERING,
   getPrimaryKeyPropNamesFromConfig,
   memoizeTableConfig,
   type TablesRelationalConfig,
@@ -105,7 +106,7 @@ const sqliteSchemaData = createSchemaDataGenerator({
   getTableConfig,
   primaryKeyPropNames: sqlitePrimaryKeyPropNames,
   // SQLite sorts NULLs as the smallest values (first in ASC).
-  nullOrdering: 'nulls-smallest',
+  nullOrdering: DIALECT_NULL_ORDERING.sqlite,
   // Writes come back with their rows, so the table types carry the `${Table}Item` outputs.
   returnsRows: true,
   // A synchronous driver (e.g. better-sqlite3) commits the moment its transaction callback

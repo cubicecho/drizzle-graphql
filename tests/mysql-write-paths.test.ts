@@ -26,6 +26,7 @@ import { type GraphQLSchema, graphql } from 'graphql';
 import * as mysql from 'mysql2/promise';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { type BuildSchemaConfig, buildSchema } from '@/index';
+import { withRowArrivingBeforeWrite } from './util/write-race';
 
 const Users = mysqlTable('users', {
   id: int('id').primaryKey(),
@@ -364,5 +365,75 @@ describe.sequential('mysql: requireWhere on updateMany', () => {
     );
     expect((res.errors?.[0] as any)?.extensions?.code).toBe('DRIZZLE_WHERE_REQUIRED');
     expect((await users()).map((u) => u.name)).toEqual(['boss']);
+  });
+});
+
+describe.sequential('mysql: a row that starts matching during a Single write', () => {
+  // The Single write checks that one row matches, then writes. Another writer's row landing
+  // between the two must not be written: the write is narrowed to the row the check found.
+  const racing = () =>
+    buildSchema(
+      withRowArrivingBeforeWrite(db, (executor) => executor.insert(Users).values({ id: 2, name: 'boss', orgId: 7 })),
+    ).schema;
+
+  beforeEach(async () => {
+    await db.execute(sql`DELETE FROM users`);
+    await db.insert(Users).values([{ id: 1, name: 'boss', orgId: 7 }]);
+  });
+
+  it('update writes only the row the check found', async () => {
+    const res = await run(
+      racing(),
+      'mutation { updateUsersSingle(where: { orgId: { eq: 7 } }, set: { name: "x" }) { isSuccess } }',
+    );
+    expect(errorsOf(res)).toBeUndefined();
+    expect((await users()).map((u) => u.name)).toEqual(['x', 'boss']);
+  });
+
+  it('delete removes only the row the check found', async () => {
+    const res = await run(racing(), 'mutation { deleteUsersSingle(where: { orgId: { eq: 7 } }) { isSuccess } }');
+    expect(errorsOf(res)).toBeUndefined();
+    expect((await users()).map((u) => u.id)).toEqual([2]);
+  });
+});
+
+describe.sequential('mysql: write arguments are converted into a copy', () => {
+  beforeEach(async () => {
+    await db.execute(sql`DELETE FROM users`);
+  });
+
+  it('a variable shared by two insert fields reaches both hooks as sent', async () => {
+    const seen: unknown[] = [];
+    const schema = build({
+      features: { upsert: true },
+      contextValues: { Users: { orgId: (ctx: any) => ctx.org } },
+      onWrite: {
+        Users: {
+          before: (payload: any) => {
+            seen.push(structuredClone(payload.args));
+          },
+        },
+      },
+    });
+    const res = await graphql({
+      schema,
+      source: `mutation($v: CreateUsersInput!, $w: CreateUsersInput!) {
+        a: createUsersSingle(values: $v) { isSuccess }
+        b: createUsers(values: [$w]) { isSuccess }
+        c: upsertUsersSingle(values: $v) { isSuccess }
+      }`,
+      variableValues: { v: { id: 1, name: null }, w: { id: 2, name: 'w' } },
+      contextValue: { org: 7 },
+    });
+    expect(errorsOf(res)).toBeUndefined();
+    expect(seen).toEqual([
+      { values: { id: 1, name: null } },
+      { values: [{ id: 2, name: 'w' }] },
+      { values: { id: 1, name: null } },
+    ]);
+    expect((await db.select().from(Users).orderBy(Users.id)).map((u: any) => [u.id, u.name, u.orgId])).toEqual([
+      [1, null, 7],
+      [2, 'w', 7],
+    ]);
   });
 });

@@ -155,7 +155,6 @@ export const createUpdateManyGenerator = (
         if (!updates.length) {
           throw drizzleError('No updates were provided!', { code: 'DRIZZLE_NO_VALUES' });
         }
-        await before();
         const scope = policies?.scope?.(context);
         const contextColumns = policies?.contextValues?.(tableName);
 
@@ -174,7 +173,7 @@ export const createUpdateManyGenerator = (
           defaultOrderBy: policies?.defaultOrderBy,
         });
 
-        // Remap and validate every entry before the transaction opens, so a malformed
+        // Remap and validate every entry before the hook and the transaction, so a malformed
         // entry rejects the request instead of rolling back mid-batch.
         const entries: UpdateManyEntry[] = updates.map(({ where, set }) => {
           const split = nested?.enabled(tableName) ? nested.split(tableName, set) : undefined;
@@ -186,6 +185,9 @@ export const createUpdateManyGenerator = (
           // An entry that only writes through a relation still has work to do.
           if (!Object.keys(input).length && !ops) {
             throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
+          }
+          if (ops) {
+            nested!.validate(tableName, ops, { context, args, info });
           }
           return {
             set: input,
@@ -202,6 +204,8 @@ export const createUpdateManyGenerator = (
             }),
           };
         });
+
+        await before();
 
         const anyNested = entries.some((entry) => entry.ops);
         const returning = withHookReturning(

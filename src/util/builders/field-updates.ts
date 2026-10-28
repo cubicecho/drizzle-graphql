@@ -57,7 +57,12 @@ const NUMERIC_SCALARS = new Set<GraphQLInputType>([
  */
 const isNonListArrayColumn = (column: Column): boolean => isFloatTupleColumn(column) || isBufferColumn(column);
 
-const kindCache = new WeakMap<Column, FieldUpdateKind>();
+/**
+ * Per-build caches: a column's kind depends on this build's scalar overrides, so both are
+ * dropped by {@link resetFieldUpdateCaches} at the start of every build, alongside the
+ * scalar-override registry they read.
+ */
+let kindCache = new WeakMap<Column, FieldUpdateKind>();
 
 /**
  * Whether a column takes an operations input, and which one.
@@ -88,7 +93,13 @@ export const fieldUpdateKind = (column: Column, columnName: string, tableName: s
 };
 
 /** `${Scalar}FieldUpdate` / `${Scalar}ListFieldUpdate`, shared by every column of that type. */
-const inputCache = new Map<string, GraphQLInputObjectType>();
+let inputCache = new Map<string, GraphQLInputObjectType>();
+
+/** Drops the kinds and inputs cached for the previous build. Called once per build. */
+export const resetFieldUpdateCaches = (): void => {
+  kindCache = new WeakMap();
+  inputCache = new Map();
+};
 
 const namedFieldUpdateInput = (
   name: string,

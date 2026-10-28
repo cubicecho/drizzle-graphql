@@ -21,8 +21,9 @@ import { omitHookColumns, runWriteHook, type WriteOperation, withHookColumns } f
 
 /**
  * The table's `onWrite` hooks, bound to this field and this request. A body calls `before()`
- * ahead of its statement and `after(rows)` once the statement has returned; both are no-ops
- * when the table registered no hook.
+ * once every check its arguments alone can fail has passed, ahead of any read or statement,
+ * and `after(rows)` once the statement has returned; both are no-ops when the table registered
+ * no hook.
  */
 export type WriteHookEmitter = {
   before: () => Promise<void> | undefined;

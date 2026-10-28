@@ -1,10 +1,11 @@
 // A relation resolver runs once per parent row, so the plan it derives from its own field — the
 // loader key included — would otherwise be rebuilt for every row of a batch. These pin that the
-// cache hands the first value back, that it separates fields, nodes and requests, and that it
-// stays correct when there is no context to cache on.
+// cache hands the first value back, that it separates fields, nodes and executions, and that it
+// stays correct when there is no execution to cache on. `{}` stands in for an execution key.
 
 import { describe, expect, it } from 'vitest';
 import { getOrCreateRequestValue } from '@/util/batch-loader/index.ts';
+import { executionKey } from '@/util/execution.ts';
 
 const node = () => ({ kind: 'Field' as const });
 // `info.fieldNodes`: one node, unless graphql merged several selections into the field.
@@ -124,5 +125,22 @@ describe('getOrCreateRequestValue', () => {
     expect(() => getOrCreateRequestValue(context, field, 'k', compute)).toThrow('nope');
     expect(() => getOrCreateRequestValue(context, field, 'k', compute)).toThrow('nope');
     expect(calls).toBe(2);
+  });
+
+  it('keeps executions that share a context object apart', () => {
+    const context: any = {};
+    const field = fieldNodes();
+
+    const first = getOrCreateRequestValue(executionKey(context, { variableValues: {} }), field, 'k', () => ({}));
+    const second = getOrCreateRequestValue(executionKey(context, { variableValues: {} }), field, 'k', () => ({}));
+
+    expect(second).not.toBe(first);
+  });
+
+  it('falls back to the context object when there is no resolve info', () => {
+    const context: any = {};
+
+    expect(executionKey(context, undefined)).toBe(context);
+    expect(executionKey('not an object', undefined)).toBeUndefined();
   });
 });

@@ -2,21 +2,39 @@
 // decode pair, and the predicate that resumes a query from one.
 
 import type { Column, Table } from 'drizzle-orm';
-import { and, bindIfParam, eq, getColumns, gt, is, isNotNull, isNull, lt, or, type SQL, sql } from 'drizzle-orm';
+import {
+  and,
+  bindIfParam,
+  eq,
+  extractExtendedColumnType,
+  getColumns,
+  gt,
+  is,
+  isNotNull,
+  isNull,
+  lt,
+  or,
+  type SQL,
+  sql,
+} from 'drizzle-orm';
 import {
   MySqlColumn,
+  MySqlDate,
   MySqlDateTime,
   MySqlEnumColumn,
   MySqlEnumObjectColumn,
   MySqlTimestamp,
 } from 'drizzle-orm/mysql-core';
-import { PgTimestamp } from 'drizzle-orm/pg-core';
+import { PgColumn, PgDate, PgTimestamp } from 'drizzle-orm/pg-core';
+import { SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { dateToCalendarDate } from '../../scalars/index.ts';
 import { isDateOnlyColumn } from '../../type-converter/index.ts';
+import { cursorValueFormatFits, readsNumbersForStrings } from './cursor-value-formats.ts';
 import { drizzleError } from './errors.ts';
+import { comparableOperand } from './filters.ts';
 import type { OrderNullsOption } from './order-by.ts';
-import { orderByEntries, orderExpressions } from './order-by.ts';
+import { isRelationOrderEntry, orderByEntries, orderExpressions } from './order-by.ts';
 
 /** Name of the field on generated select types that exposes a row's opaque pagination cursor. */
 export const CURSOR_FIELD_NAME = 'cursor';
@@ -36,6 +54,13 @@ const ROW_CURSOR_PROP = '__drizzle_graphql_cursor';
  */
 export type NullOrdering = 'nulls-largest' | 'nulls-smallest';
 
+/** Each dialect's {@link NullOrdering}, declared once for its schema builder and the selection helpers. */
+export const DIALECT_NULL_ORDERING = {
+  pg: 'nulls-largest',
+  mysql: 'nulls-smallest',
+  sqlite: 'nulls-smallest',
+} as const satisfies Record<string, NullOrdering>;
+
 /**
  * One key of the total order a cursor is defined over: column property name + direction,
  * plus the request's `nulls: first | last` override when it carries one (absent/null means
@@ -51,8 +76,7 @@ export type CursorOrderEntry = [string, 'asc' | 'desc', (OrderNullsOption | null
  * still applies.
  */
 export const orderByHasRelationEntry = (orderBy: Record<string, any> | undefined): boolean =>
-  !!orderBy &&
-  Object.values(orderBy).some((config) => config && typeof config === 'object' && config.direction === undefined);
+  !!orderBy && Object.values(orderBy).some(isRelationOrderEntry);
 
 /**
  * Why the given `orderBy` cannot back a cursor, as the message to raise — or `undefined`
@@ -105,43 +129,46 @@ export const cursorOrderExprs = (table: Table, entries: CursorOrderEntry[]): SQL
 };
 
 /**
- * Property a row carries an ordering column's full-precision text under, when the column holds
- * more than a JS Date can. Namespaced like {@link ROW_CURSOR_PROP}, and removed from the row
- * once its cursor is encoded.
+ * Property a row carries an ordering column's database text under, when a JS Date cannot stand
+ * for every value the column holds. Namespaced like {@link ROW_CURSOR_PROP}, and removed from
+ * the row once its cursor is encoded.
  */
 const preciseTextProp = (column: string): string => `__drizzle_graphql_cursor_text_${column}`;
 
 /**
- * Whether a column reads into a JS Date (milliseconds) while the database keeps finer
- * fractional seconds: a PostgreSQL `timestamp` / `timestamptz` in `mode: 'date'` (precision 6
- * unless it says otherwise) or a MySQL `datetime` / `timestamp` in `mode: 'date'` with
- * `fsp` above 3. String-mode columns already arrive as the database's own text, and `time` is
- * always a string, so neither loses anything.
+ * How a column whose `mode: 'date'` values a JS Date cannot always stand for keeps its cursor
+ * position: as the database's own text of a timestamp or of a date-only value. That is every
+ * `mode: 'date'` PostgreSQL `timestamp` / `timestamptz` / `date` and MySQL `datetime` /
+ * `timestamp` / `date`:
+ * - a fraction finer than milliseconds (PostgreSQL's default precision 6, MySQL `fsp` above 3)
+ *   would be truncated, and two rows a microsecond apart would share one position;
+ * - a value outside a JS Date's range (a BC date, a year past 275760, PostgreSQL's infinities,
+ *   MySQL's zero date) reads as an invalid Date, which has no position to encode at all — and
+ *   drizzle reads `timestamp` (without time zone) infinity as an ordinary instant in 2000.
+ * String-mode columns already arrive as the database's own text, `time` is always a string, and
+ * SQLite's integer timestamps hold no text form to compare by, so none of those need it.
  */
-const outgrowsJsDate = (column: Column): boolean => {
-  if (is(column, PgTimestamp)) {
-    return column.precision === undefined || column.precision > 3;
+const cursorTextForm = (column: Column): 'timestamp' | 'date' | undefined => {
+  if (is(column, PgTimestamp) || is(column, MySqlDateTime) || is(column, MySqlTimestamp)) {
+    return 'timestamp';
   }
-  if (is(column, MySqlDateTime) || is(column, MySqlTimestamp)) {
-    return (column.fsp ?? 0) > 3;
-  }
-  return false;
+  return is(column, PgDate) || is(column, MySqlDate) ? 'date' : undefined;
 };
 
 /**
  * Extra SQL expressions a cursor-computing query selects alongside the row: for each ordering
- * column whose values a JS Date would truncate, the value as the database's own text. The
- * cursor then encodes that text rather than the Date, and `after` compares the column against
- * it — so two rows a microsecond apart stay distinct positions. `table` may be the aliased RQB
- * proxy. Empty when no ordering column needs it.
+ * column with a {@link cursorTextForm}, the value as the database's own text. The cursor then
+ * encodes that text rather than the Date, and `after` compares the column against it — so two
+ * rows a microsecond apart stay distinct positions, and a row whose value a JS Date cannot hold
+ * still has one. `table` may be the aliased RQB proxy. Empty when no ordering column needs it.
  */
 export const cursorPreciseExtras = (table: Table, entries: CursorOrderEntry[]): Record<string, SQL> => {
   const cols = getColumns(table);
   const extras: Record<string, SQL> = {};
   for (const [name] of entries) {
     const column = cols[name];
-    if (column && outgrowsJsDate(column)) {
-      extras[preciseTextProp(name)] = is(column, PgTimestamp) ? sql`${column}::text` : sql`cast(${column} as char)`;
+    if (column && cursorTextForm(column)) {
+      extras[preciseTextProp(name)] = is(column, PgColumn) ? sql`${column}::text` : sql`cast(${column} as char)`;
     }
   }
   return extras;
@@ -157,30 +184,90 @@ export const cursorPreciseSelection = (table: Table, entries: CursorOrderEntry[]
   );
 
 /**
- * Serializes one ordering-tuple value into a JSON-safe shape. Dates and bigints don't survive
- * JSON.stringify losslessly (bigint throws, Date turns into an untagged string), so they are
- * tagged; decimals already arrive from the driver as strings, which are lossless as-is.
+ * What a cursor value is in the JS form the driver read it in — the form decoding restores.
+ * Encoding tags a value by its kind and a decoded value is checked against its column by its
+ * kind, so the two sides classify values by this one rule.
  */
-const encodeCursorValue = (value: any): any => {
-  if (value instanceof Date) {
-    return { $type: 'date', value: value.toISOString() };
-  }
-  if (typeof value === 'bigint') {
-    return { $type: 'bigint', value: value.toString() };
-  }
-  return value;
+type CursorValueKind = 'null' | 'boolean' | 'number' | 'string' | 'bigint' | 'date';
+
+/** `typeof` results, and drizzle column data types, that name a cursor value kind directly. */
+const SCALAR_CURSOR_KINDS: Readonly<Partial<Record<string, CursorValueKind>>> = {
+  boolean: 'boolean',
+  number: 'number',
+  string: 'string',
+  bigint: 'bigint',
 };
 
-const decodeCursorValue = (value: any): any => {
-  if (value && typeof value === 'object' && typeof value.$type === 'string') {
-    if (value.$type === 'date') {
-      return new Date(value.value);
-    }
-    if (value.$type === 'bigint') {
-      return BigInt(value.value);
-    }
+/** A value's {@link CursorValueKind}, or `undefined` for anything else (an object, an array). */
+const cursorValueKind = (value: unknown): CursorValueKind | undefined => {
+  if (value === null || value === undefined) {
+    return 'null';
   }
-  return value;
+  if (value instanceof Date) {
+    return 'date';
+  }
+  return SCALAR_CURSOR_KINDS[typeof value];
+};
+
+/**
+ * How each kind JSON.stringify cannot carry losslessly is tagged: bigint throws, a Date turns
+ * into an untagged string, and `NaN` / `±Infinity` into `null`. Decimals already arrive from the
+ * driver as strings, which are lossless as-is.
+ */
+const CURSOR_VALUE_ENCODERS: Readonly<Partial<Record<CursorValueKind, (value: any) => unknown>>> = {
+  date: (value: Date) => ({ $type: 'date', value: value.toISOString() }),
+  bigint: (value: bigint) => ({ $type: 'bigint', value: value.toString() }),
+  // `String` spells them `NaN` / `Infinity` / `-Infinity`, which `Number` reads back.
+  number: (value: number) => (Number.isFinite(value) ? value : { $type: 'float', value: String(value) }),
+};
+
+/** Serializes one ordering-tuple value into a JSON-safe shape (see {@link CURSOR_VALUE_ENCODERS}). */
+const encodeCursorValue = (value: any): any => {
+  const kind = cursorValueKind(value);
+  const encode = kind && CURSOR_VALUE_ENCODERS[kind];
+  return encode ? encode(value) : value;
+};
+
+/** The text forms a `bigint`-tagged cursor value may take. */
+const BIGINT_TEXT = /^-?\d+$/;
+/** The text forms a `float`-tagged cursor value may take: what `String` makes of a non-finite number. */
+const NON_FINITE_TEXTS: ReadonlySet<string> = new Set(['NaN', 'Infinity', '-Infinity']);
+
+const invalidCursorValue = () =>
+  drizzleError('Invalid cursor: it holds a value no page issues. Pass a cursor returned by a previous page.', {
+    code: 'DRIZZLE_INVALID_CURSOR',
+  });
+
+/**
+ * Reverses {@link encodeCursorValue}, refusing anything it never produces: a cursor is client
+ * input, and a forged value would otherwise bind as an invalid date (a silently empty page) or
+ * fail in the driver (an internal error).
+ */
+const decodeCursorValue = (value: unknown): unknown => {
+  const isPlainScalar =
+    value === null || typeof value === 'string' || typeof value === 'boolean' || Number.isFinite(value);
+  if (isPlainScalar) {
+    return value;
+  }
+  const { $type: type, value: text } = (value ?? {}) as { $type?: unknown; value?: unknown };
+  const isTagged = typeof value === 'object' && !Array.isArray(value) && typeof text === 'string';
+  if (!isTagged) {
+    throw invalidCursorValue();
+  }
+  if (type === 'date') {
+    const date = new Date(text);
+    if (Number.isNaN(date.getTime())) {
+      throw invalidCursorValue();
+    }
+    return date;
+  }
+  if (type === 'bigint' && BIGINT_TEXT.test(text)) {
+    return BigInt(text);
+  }
+  if (type === 'float' && NON_FINITE_TEXTS.has(text)) {
+    return Number(text);
+  }
+  throw invalidCursorValue();
 };
 
 /**
@@ -280,8 +367,12 @@ const strictComparison = (col: Column, direction: 'asc' | 'desc', value: unknown
       return direction === 'asc' ? sql`${position} > ${index + 1}` : sql`${position} < ${index + 1}`;
     }
   }
-  return direction === 'asc' ? gt(col, value) : lt(col, value);
+  const operand = comparableOperand(col, value);
+  return direction === 'asc' ? gt(col, operand) : lt(col, operand);
 };
+
+/** A real literal too large for a double, which SQLite reads as `Infinity`. */
+const SQLITE_INFINITY_LITERAL = '9e999';
 
 /**
  * A decoded cursor value in the form it is bound against its column. A date-only column's
@@ -290,9 +381,143 @@ const strictComparison = (col: Column, direction: 'asc' | 'desc', value: unknown
  * cursor row still sorts after itself, and every page repeats it. The calendar day the cursor
  * encodes is bound instead, as the data mappers bind a `Date` filter on the same column: a
  * `YYYY-MM-DD` string no timezone can shift, which every dialect's date column reads as is.
+ * `±Infinity` on SQLite is spliced as a literal, since its drivers will not bind it.
  */
-const boundCursorValue = (col: Column, value: unknown): unknown =>
-  value instanceof Date && isDateOnlyColumn(col) ? (dateToCalendarDate(value) ?? value) : value;
+const boundCursorValue = (col: Column, value: unknown): unknown => {
+  if (value instanceof Date && isDateOnlyColumn(col)) {
+    return dateToCalendarDate(value) ?? value;
+  }
+  const isInfinity = value === Number.POSITIVE_INFINITY || value === Number.NEGATIVE_INFINITY;
+  if (isInfinity && is(col, SQLiteColumn)) {
+    // SQLite drivers refuse to bind a non-finite number; an overflowing literal parses to it.
+    return sql.raw(value > 0 ? SQLITE_INFINITY_LITERAL : `-${SQLITE_INFINITY_LITERAL}`);
+  }
+  return value;
+};
+
+/** Number constraints whose columns hold whole numbers only. */
+const INTEGER_CONSTRAINTS: ReadonlySet<string> = new Set([
+  'int8',
+  'int16',
+  'int24',
+  'int32',
+  'int53',
+  'uint8',
+  'uint16',
+  'uint24',
+  'uint32',
+  'uint53',
+  'year',
+]);
+
+/**
+ * Every timestamp text {@link cursorPreciseExtras} can select: PostgreSQL's `::text` of a
+ * `timestamp` / `timestamptz` (ISO DateStyle — years of four or more digits, any fraction, an
+ * offset of `±HH`, `±HH:MM` or local mean time's `±HH:MM:SS`, and a trailing ` BC`) and MySQL's
+ * `cast(… as char)` of a `datetime` / `timestamp`, which is the same shape without the offset.
+ */
+const TIMESTAMP_TEXT =
+  /^(?<year>\d{4,6})-(?<month>\d{2})-(?<day>\d{2}) (?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?:\.\d+)?(?:[+-]\d{2}(?::\d{2}){0,2})?(?<bc> BC)?$/;
+/** The same for a `date`: PostgreSQL's ISO `YYYY-MM-DD`, with a trailing ` BC`, and MySQL's, without. */
+const DATE_TEXT = /^(?<year>\d{4,7})-(?<month>\d{2})-(?<day>\d{2})(?<bc> BC)?$/;
+/** Texts that name no day or instant but that the database stores: PostgreSQL's infinities, MySQL's zero date. */
+const NON_INSTANT_TEXT = {
+  timestamp: /^(-?infinity|0000-00-00 00:00:00(\.0+)?)$/,
+  date: /^(-?infinity|0000-00-00)$/,
+} as const;
+/** PostgreSQL's range, which contains MySQL's: 4713 BC to 294276 AD for a timestamp, 5874897 AD for a date. */
+const MAX_AD_YEAR = { timestamp: 294276, date: 5874897 } as const;
+const MAX_BC_YEAR = 4714;
+/** The values each field of {@link TIMESTAMP_TEXT} can print, inclusive; PostgreSQL prints `24:00:00` and leap second 60. */
+const TIMESTAMP_FIELD_RANGES: Readonly<Record<string, readonly [number, number]>> = {
+  month: [1, 12],
+  day: [1, 31],
+  hour: [0, 24],
+  minute: [0, 59],
+  second: [0, 60],
+};
+
+/**
+ * Whether a string is text in `form` as {@link cursorPreciseExtras} selects it — any form the
+ * databases print, with each field in range. Day-of-month overflow (Feb 31) is left to the
+ * database, which refuses it; it never prints one.
+ */
+const isCursorText = (form: 'timestamp' | 'date', text: string): boolean => {
+  if (NON_INSTANT_TEXT[form].test(text)) {
+    return true;
+  }
+  const fields = (form === 'timestamp' ? TIMESTAMP_TEXT : DATE_TEXT).exec(text)?.groups;
+  if (!fields) {
+    return false;
+  }
+  const year = Number(fields['year']);
+  const maxYear = fields['bc'] ? MAX_BC_YEAR : MAX_AD_YEAR[form];
+  const fieldsInRange = Object.entries(TIMESTAMP_FIELD_RANGES).every(([field, [min, max]]) => {
+    const value = fields[field];
+    return value === undefined || (Number(value) >= min && Number(value) <= max);
+  });
+  return fieldsInRange && year >= 1 && year <= maxYear;
+};
+
+/**
+ * The kind a column's values read into, from drizzle's data type — or `undefined` when no
+ * cursor value kind describes them (JSON, buffers, custom types, arrays), and none is checked.
+ */
+const columnCursorKind = (col: Column): CursorValueKind | undefined => {
+  if ((col as any).dimensions) {
+    return undefined;
+  }
+  const { type, constraint } = extractExtendedColumnType(col);
+  if (type === 'object') {
+    return constraint === 'date' ? 'date' : undefined;
+  }
+  return SCALAR_CURSOR_KINDS[type];
+};
+
+/**
+ * Whether a decoded cursor value is one its column's rows can produce: NULL only for a nullable
+ * column, otherwise the column's kind — or, for a column with a {@link cursorTextForm}, its
+ * database text. SQLite stores any number in an integer column, so only other dialects require a whole one.
+ * A value of the right kind must also be in its column's format and range
+ * ({@link cursorValueFormatFits}): a uuid, a numeric, an enum label, an integer that fits.
+ */
+const cursorValueFits = (col: Column, value: unknown): boolean => {
+  const kind = cursorValueKind(value);
+  if (kind === 'null') {
+    return col.notNull !== true;
+  }
+  const expected = columnCursorKind(col);
+  if (expected === undefined) {
+    return true;
+  }
+  const textForm = cursorTextForm(col);
+  if (kind === 'string' && textForm) {
+    return isCursorText(textForm, value as string);
+  }
+  const kindFits = kind === expected || (kind === 'number' && readsNumbersForStrings(col));
+  if (!kindFits) {
+    return false;
+  }
+  const holdsWholeNumbers =
+    INTEGER_CONSTRAINTS.has(extractExtendedColumnType(col).constraint ?? '') && !is(col, SQLiteColumn);
+  if (kind === 'number' && holdsWholeNumbers && !Number.isInteger(value)) {
+    return false;
+  }
+  return cursorValueFormatFits(col, value);
+};
+
+/**
+ * Refuses a cursor value its column cannot hold. A forged one would otherwise fail in drizzle's
+ * encoder or the database (an internal error), or compare under the wrong type.
+ */
+const assertCursorValueFits = (col: Column, column: string, value: unknown): void => {
+  if (!cursorValueFits(col, value)) {
+    throw drizzleError(
+      `Invalid cursor: its value for '${column}' is not one that column holds. Pass a cursor returned by a previous page.`,
+      { code: 'DRIZZLE_INVALID_CURSOR' },
+    );
+  }
+};
 
 /** One key of a cursor's total order, resolved against the queried table. */
 interface CursorKey {
@@ -381,6 +606,7 @@ export const buildCursorCondition = (
     if (!col) {
       throw drizzleError(`Invalid cursor: unknown column '${column}'.`, { code: 'DRIZZLE_INVALID_CURSOR' });
     }
+    assertCursorValueFits(col, column, values[i]);
     return { col, direction, nulls, value: boundCursorValue(col, values[i]) };
   });
 
@@ -409,7 +635,7 @@ export const buildCursorCondition = (
     if (strictlyAfter) {
       disjuncts.push(equalities.length ? and(...equalities, strictlyAfter)! : strictlyAfter);
     }
-    equalities.push(value === null || value === undefined ? isNull(col) : eq(col, value));
+    equalities.push(value === null || value === undefined ? isNull(col) : eq(col, comparableOperand(col, value)));
   }
 
   if (!disjuncts.length) {
