@@ -1,3 +1,37 @@
+## [19.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v18.3.1...v19.0.0) (2026-10-28)
+
+### ⚠ BREAKING CHANGES
+
+* a limits.tables key that is not a table in the Drizzle schema now throws at build time. Fix the key to the table's schema key.
+* extractFilters and extractOrderBy called without a
+context, and createRelationResolverFactory called without a filter
+context, convert values by the built-in rules and no longer apply the
+most recent build's scalar overrides. Compile the where / orderBy through
+resolveSelection (which finds the build through the resolve info), or
+convert the operand yourself. resolveSelection and selectionToWith given a
+parsed selection tree over a database with several builds now throw when
+any of those builds has scalar overrides, as they already did for row
+policies; pass the resolver's info instead.
+* the exported GraphQLUUID is no longer graphql-scalars' instance. A schema composed by hand around the generated entities that also uses graphql-scalars' GraphQLUUID holds two UUID types and graphql refuses it; import GraphQLUUID from @vantreeseba/drizzle-graphql instead.
+* the exported GraphQLDateTime is no longer the same
+instance as graphql-scalars' GraphQLDateTime. A hand-composed schema
+that uses graphql-scalars' instance alongside the generated types now
+fails with "Schema must contain uniquely named types but contains
+multiple types named "DateTime"". Import GraphQLDateTime from
+@vantreeseba/drizzle-graphql instead of graphql-scalars. Overrides in
+scalars / mapColumnType that name graphql-scalars' instance keep
+working unchanged.
+
+### Features
+
+* code DateTime scalar errors as DRIZZLE_UNREPRESENTABLE_VALUE / DRIZZLE_INVALID_INPUT_VALUE ([1cf162d](https://github.com/cubicecho/drizzle-graphql/commit/1cf162d67e3a7660f14cbb2ad3d90efee6508536)), closes [#247](https://github.com/cubicecho/drizzle-graphql/issues/247)
+* code UUID scalar errors the same way as DateTime ([1705757](https://github.com/cubicecho/drizzle-graphql/commit/170575781ba8b5e276c5e7aad9ffe214a2b4bcea)), closes [#247](https://github.com/cubicecho/drizzle-graphql/issues/247)
+* fail the build on a limits.tables name that is not a table ([37a767d](https://github.com/cubicecho/drizzle-graphql/commit/37a767d0aec3b300775c73a81e14dc8e2ad5bd27))
+
+### Code Refactoring
+
+* give each schema build its own registries ([305cbda](https://github.com/cubicecho/drizzle-graphql/commit/305cbdaabe14be8f8e7677055bf403da550f5b1f))
+
 ## [18.3.1](https://github.com/cubicecho/drizzle-graphql/compare/v18.3.0...v18.3.1) (2026-10-28)
 
 ### Bug Fixes
