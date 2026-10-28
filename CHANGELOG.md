@@ -1,3 +1,9 @@
+## [18.1.1](https://github.com/cubicecho/drizzle-graphql/compare/v18.1.0...v18.1.1) (2026-10-28)
+
+### Bug Fixes
+
+* keep the auto-transaction per execution, off the context ([264dd71](https://github.com/cubicecho/drizzle-graphql/commit/264dd71292465a65ec5302143de5fbc963cd2b08)), closes [#231](https://github.com/cubicecho/drizzle-graphql/issues/231)
+
 ## [18.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v18.0.0...v18.1.0) (2026-10-28)
 
 ### Features
