@@ -53,6 +53,7 @@ export type {
   SoftDeleteConfig,
   TableDefaults,
   TableLimitPolicy,
+  TableWriteHooks,
   TypeNameMapper,
   UpdateManyArgs,
   UpdateManyEntry,
@@ -67,6 +68,7 @@ export type {
   WriteHookPayload,
   WriteHookPositions,
   WriteHooks,
+  WriteHooksByOperation,
   WriteOperation,
 } from './types.ts';
 export type { DrizzleErrorCode, DrizzleErrorContext, RelationResolverFactory } from './util/builders/common.ts';

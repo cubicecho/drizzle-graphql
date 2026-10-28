@@ -14,19 +14,21 @@ import { isOrderableColumn } from './builders/common/column-filters.ts';
 import {
   DEFAULT_TRANSACTION_TIMEOUT_MS,
   type DefaultOrderByFor,
+  isEveryTableWriteHooks,
+  isWriteOperation,
   type LimitPolicyFor,
   MAX_TIMER_MS,
-  normalizeWriteHooks,
   type ResolvedLimitPolicy,
-  type ResolvedWriteHooks,
+  type ResolvedTableWriteHooks,
   resolveGeneratedTypeNames,
   resolveLimitPolicy,
   resolveSoftDeleteInfo,
+  resolveTableWriteHooks,
   type SoftDeleteInfo,
   type TablePolicies,
+  type TableWriteHooks,
   type WriteHookFor,
-  type WriteHookPositions,
-  type WriteHooks,
+  type WriteOperation,
 } from './builders/common.ts';
 import type { SchemaGeneratorOptions } from './builders/types.ts';
 import { singularizeMapper } from './case-ops/index.ts';
@@ -281,54 +283,68 @@ export const resolveBuildConfig = (
   }
 
   // Write hooks are resolved the same way: a table name that matches nothing fails the build,
-  // and the two registration shapes collapse into one per-table lookup here rather than in
-  // every resolver.
+  // and every registration shape collapses into one per-table, per-operation lookup here
+  // rather than in every resolver.
   const onWriteConfig = config?.onWrite;
-  const writeHooks = new Map<string, ResolvedWriteHooks | undefined>();
+  const writeHooks = new Map<string, ResolvedTableWriteHooks>();
   if (onWriteConfig) {
-    // A bare function, or an object naming the positions, applies to every table; anything
-    // else is a table map. `before`/`after` are reserved as position names for that reason.
-    const isGlobal =
-      typeof onWriteConfig === 'function' ||
-      typeof (onWriteConfig as WriteHookPositions).before === 'function' ||
-      typeof (onWriteConfig as WriteHookPositions).after === 'function';
-    if (isGlobal) {
+    const tableNames = new Set(tableKeys);
+    const isEveryTable = isEveryTableWriteHooks(onWriteConfig, tableNames);
+    if (isEveryTable) {
+      const everyTable = onWriteConfig as TableWriteHooks;
+      const namedTable = typeof everyTable === 'object' && Object.keys(everyTable).find((key) => tableNames.has(key));
+      if (namedTable) {
+        throw new Error(
+          `Drizzle-GraphQL Error: config.onWrite is the every-table form (it has 'before', 'after' or 'columns', or only operation keys), so it cannot also name table '${namedTable}'. Register per table instead: config.onWrite.${namedTable} = { … }, giving each table its own entry.`,
+        );
+      }
       // Resolved per table rather than once, because a hook's `columns` resolve to that
       // table's own column objects — and a named column every table must actually have.
       for (const tableName of featureTables) {
         writeHooks.set(
           tableName,
-          normalizeWriteHooks(
-            onWriteConfig as WriteHooks,
+          resolveTableWriteHooks(
+            everyTable,
             getColumns(schema[tableName] as Table),
-            `config.onWrite (on table '${tableName}')`,
+            (path) => `config.onWrite${path} (on table '${tableName}')`,
           ),
         );
       }
     } else {
-      const tableNames = new Set(tableKeys);
-      for (const [tableName, hooks] of Object.entries(onWriteConfig as Record<string, WriteHooks>)) {
+      for (const [tableName, hooks] of Object.entries(onWriteConfig as Record<string, TableWriteHooks>)) {
         if (!tableNames.has(tableName)) {
+          const operationHint = isWriteOperation(tableName)
+            ? ` '${tableName}' is an operation: operation keys go inside a table's entry (config.onWrite.<table>.${tableName}), or at the top level only in the every-table form, which names no tables.`
+            : '';
           throw new Error(
-            `Drizzle-GraphQL Error: config.onWrite names '${tableName}', which is not a table in the Drizzle schema.`,
+            `Drizzle-GraphQL Error: config.onWrite names '${tableName}', which is not a table in the Drizzle schema.${operationHint}`,
           );
         }
-        if (typeof hooks !== 'function' && typeof hooks !== 'object') {
+        // A restore hook on a table that cannot be restored would never fire.
+        const restoreHooks = typeof hooks === 'object' && hooks !== null ? hooks.restore : undefined;
+        const restoreWithoutSoftDelete =
+          restoreHooks !== undefined && restoreHooks !== null && !softDeleteInfos.has(tableName);
+        if (restoreWithoutSoftDelete) {
           throw new Error(
-            `Drizzle-GraphQL Error: config.onWrite.${tableName} must be a function or an object with 'before' and/or 'after'.`,
+            `Drizzle-GraphQL Error: config.onWrite.${tableName}.restore is registered, but '${tableName}' does not soft-delete, so it has no restore to hook. Declare it in config.softDelete, or remove the key.`,
           );
         }
         writeHooks.set(
           tableName,
-          normalizeWriteHooks(hooks, getColumns(schema[tableName] as Table), `config.onWrite.${tableName}`),
+          resolveTableWriteHooks(
+            hooks,
+            getColumns(schema[tableName] as Table),
+            (path) => `config.onWrite.${tableName}${path}`,
+          ),
         );
       }
     }
   }
   // Only installed when some table actually resolved a hook, so the SQLite preflight can tell
   // whether a synchronous driver would be asked to roll one back.
-  const onWrite: WriteHookFor | undefined = [...writeHooks.values()].some(Boolean)
-    ? (tableName: string) => writeHooks.get(tableName)
+  const hasAnyHook = [...writeHooks.values()].some((byOperation) => Object.keys(byOperation).length > 0);
+  const onWrite: WriteHookFor | undefined = hasAnyHook
+    ? (tableName: string, operation: WriteOperation) => writeHooks.get(tableName)?.[operation]
     : undefined;
 
   const policies: TablePolicies | undefined =

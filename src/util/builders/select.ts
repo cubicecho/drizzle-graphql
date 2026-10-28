@@ -122,7 +122,13 @@ export const createSelectGenerators = (
         const args = withDefaultOrderBy(rawArgs, tableName, policies?.defaultOrderBy);
         try {
           const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
-          const { executor, queryBase: requestQueryBase } = resolveQueryExecutor(db, context, tableName, queryBase);
+          const { executor, queryBase: requestQueryBase } = resolveQueryExecutor(
+            db,
+            context,
+            info,
+            tableName,
+            queryBase,
+          );
           return await runRelationalSelect({
             queryBase: requestQueryBase,
             tables,
@@ -171,7 +177,13 @@ export const createSelectGenerators = (
         const args = withDefaultOrderBy(rawArgs, tableName, policies?.defaultOrderBy);
         try {
           const parsedInfo = parseResolveInfo(info, { deep: true }) as ResolveTree;
-          const { executor, queryBase: requestQueryBase } = resolveQueryExecutor(db, context, tableName, queryBase);
+          const { executor, queryBase: requestQueryBase } = resolveQueryExecutor(
+            db,
+            context,
+            info,
+            tableName,
+            queryBase,
+          );
           return await runRelationalSelect({
             queryBase: requestQueryBase,
             tables,

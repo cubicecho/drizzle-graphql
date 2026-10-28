@@ -1,5 +1,8 @@
 // `drizzleExecutorKey` — the context slot a caller can park a transaction (or any other
-// executor) in — and the lookups every generated resolver does through it.
+// executor) in — the auto-transaction each execution may open (`transactions: 'auto'`), and the
+// lookups every generated resolver does through them.
+
+import { executionKey } from '../../execution.ts';
 
 /**
  * Key on the GraphQL context object under which a caller can place a Drizzle transaction
@@ -20,17 +23,38 @@
 export const drizzleExecutorKey: unique symbol = Symbol.for('drizzle-graphql:executor') as any;
 
 /**
- * The executor a resolver should run on: the request's transaction when the context
- * carries one, otherwise the database the schema was built from.
+ * The auto-transaction each execution has open, keyed by `executionKey`. It is kept off the
+ * context object on purpose: the context slot belongs to the caller, and a host may hand one
+ * context to several executions at once, which must not find each other's transaction.
  */
-export const resolveExecutor = <T>(db: T, context: any): T => {
-  if (context && typeof context === 'object') {
-    const executor = context[drizzleExecutorKey];
-    if (executor) {
-      return executor as T;
-    }
+const autoTransactions = new WeakMap<object, unknown>();
+
+/** Makes `tx` the executor of every resolver of the execution `key` names, until withdrawn. */
+export const publishAutoTransaction = (key: object, tx: unknown): void => {
+  autoTransactions.set(key, tx);
+};
+
+export const withdrawAutoTransaction = (key: object): void => {
+  autoTransactions.delete(key);
+};
+
+/** The executor the caller put on the context under `drizzleExecutorKey`, if any. */
+export const callerExecutor = (context: any): unknown =>
+  context !== null && (typeof context === 'object' || typeof context === 'function')
+    ? context[drizzleExecutorKey] || undefined
+    : undefined;
+
+/**
+ * The executor a resolver should run on: the caller's executor when the context carries one,
+ * else the auto-transaction this execution has open, else the database the schema was built from.
+ */
+export const resolveExecutor = <T>(db: T, context: any, info: any): T => {
+  const callers = callerExecutor(context);
+  if (callers) {
+    return callers as T;
   }
-  return db;
+  const key = executionKey(context, info);
+  return ((key && autoTransactions.get(key)) || db) as T;
 };
 
 /**
@@ -44,10 +68,11 @@ export const resolveExecutor = <T>(db: T, context: any): T => {
 export const resolveQueryExecutor = (
   db: any,
   context: any,
+  info: any,
   tableName: string,
   buildTimeQueryBase: any,
 ): { executor: any; queryBase: any } => {
-  const executor = resolveExecutor(db, context);
+  const executor = resolveExecutor(db, context, info);
   return {
     executor,
     queryBase: buildTimeQueryBase ? (executor?.query?.[tableName] ?? buildTimeQueryBase) : buildTimeQueryBase,

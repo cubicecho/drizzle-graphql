@@ -8,6 +8,7 @@
 // `info.operation`: when the document selects more than one root mutation
 // field, it opens `db.transaction()` once, parks the transaction on a
 // per-request state object (WeakMap keyed by the execution, see `executionKey`),
+// publishes it for that execution's reads (`executor.ts publishAutoTransaction`),
 // and every later mutation resolver of the same request runs on that transaction. The
 // transaction callback awaits a latch; the last field to complete resolves it
 // (COMMIT) and the first failure rejects it (ROLLBACK).
@@ -23,7 +24,13 @@ import {
   isExcludedByDirectives,
 } from '../../graphql-variables.ts';
 import { drizzleError } from './errors.ts';
-import { drizzleExecutorKey, resolveExecutor } from './executor.ts';
+import {
+  callerExecutor,
+  drizzleExecutorKey,
+  publishAutoTransaction,
+  resolveExecutor,
+  withdrawAutoTransaction,
+} from './executor.ts';
 
 /** How long a shared transaction may sit idle between resolver calls before it is rolled back. */
 export const DEFAULT_TRANSACTION_TIMEOUT_MS = 30_000;
@@ -160,13 +167,7 @@ const abortedBatchError = (state: SharedTxState, timeoutMs: number): GraphQLErro
   );
 
 /** Opens the request-wide transaction and wires up latch, inactivity timer and cleanup. */
-const openSharedTx = (
-  db: any,
-  context: any,
-  txCtx: MutationTxCtx,
-  stateKey: object,
-  expected: number,
-): SharedTxState => {
+const openSharedTx = (db: any, txCtx: MutationTxCtx, stateKey: object, expected: number): SharedTxState => {
   let release!: () => void;
   let rejectLatch!: (e: unknown) => void;
   const latch = new Promise<void>((resolve, reject) => {
@@ -184,15 +185,12 @@ const openSharedTx = (
   // unhandled rejection; each resolver still observes it through its own `await`.
   ready.catch(() => {});
 
-  const canStash = context !== null && typeof context === 'object' && !Object.isFrozen(context);
-
   const settled: Promise<unknown> = db.transaction(async (tx: any) => {
-    if (canStash) {
-      // Publish our transaction under the caller-facing key so nested resolvers (lazy
-      // relation fields, relation aggregates) selected under a mutation read through it
-      // and see its uncommitted rows — the same wrapper a caller-supplied transaction uses.
-      context[drizzleExecutorKey] = tx;
-    }
+    // Publish our transaction for this execution, so nested resolvers (lazy relation fields,
+    // relation aggregates) selected under a mutation read through it and see its uncommitted
+    // rows. It is keyed by the execution, not put on the context: another execution handed the
+    // same context object must neither run on it nor mistake it for a caller-supplied one.
+    publishAutoTransaction(stateKey, tx);
     readyResolve(tx);
     // Held open across resolver calls: the last mutation field to complete resolves the
     // latch (COMMIT); the first failure — or the inactivity timeout — rejects it (ROLLBACK).
@@ -253,9 +251,7 @@ const openSharedTx = (
   const cleanup = () => {
     state.done = true;
     clearTimer();
-    if (canStash) {
-      delete context[drizzleExecutorKey];
-    }
+    withdrawAutoTransaction(stateKey);
     // An aborted state stays so late-arriving fields of THIS execution keep failing fast. It is
     // keyed by the execution, so the next one starts without it.
     if (!state.aborted) {
@@ -332,18 +328,17 @@ export const runMutation = async <T>(
    */
   forceTx?: boolean,
 ): Promise<T> => {
-  const contextIsObject = context !== null && (typeof context === 'object' || typeof context === 'function');
-  // Check our own request state FIRST: once the shared transaction is stashed on the
-  // context it is indistinguishable from a caller-supplied one, but its completion still
-  // has to be accounted here. The state belongs to this execution, never to the context or
-  // the document, which a host may reuse across requests.
+  // The state belongs to this execution, never to the context or the document, which a host
+  // may reuse across requests or share between concurrent ones. Our own transaction is never
+  // put on the context, so whatever sits under `drizzleExecutorKey` is the caller's.
   const stateKey = executionKey(context, info);
   let state = stateKey ? txCtx?.states.get(stateKey) : undefined;
 
   if (!state) {
-    if (contextIsObject && context[drizzleExecutorKey]) {
+    const callers = callerExecutor(context);
+    if (callers) {
       // The caller already runs this request on its own transaction/executor — use it as-is.
-      return body(context[drizzleExecutorKey]);
+      return body(callers);
     }
     // Without an execution to key on, no later field could find a shared transaction.
     if (!txCtx || !stateKey || info.operation.operation !== 'mutation') {
@@ -377,13 +372,12 @@ export const runMutation = async <T>(
       },
       undefined,
     );
-    state =
-      !allKnown || keys.size <= 1 ? { kind: 'passthrough' } : openSharedTx(db, context, txCtx, stateKey, keys.size);
+    state = !allKnown || keys.size <= 1 ? { kind: 'passthrough' } : openSharedTx(db, txCtx, stateKey, keys.size);
     txCtx.states.set(stateKey, state);
   }
 
   if (state.kind === 'passthrough') {
-    const executor = resolveExecutor(db, context);
+    const executor = resolveExecutor(db, context, info);
     return forceTx && executor === db ? db.transaction((tx: any) => body(tx)) : body(executor);
   }
   return runOnSharedTx(state, txCtx!.timeoutMs, body);

@@ -350,6 +350,15 @@ export const buildWriteResolvers = (
         // A plain upsert's plan depends on its arguments alone, so a bad `onConflict` is refused
         // before the hook runs.
         const plainBatches = nestedEntries ? undefined : conflictBatches(input);
+        // A nested entry's row only gains its parent-side keys during the write, so its plan is
+        // checked here against a row that counts every key those operations may set, and built
+        // for real per row later. Every other check reads the argument alone, so this refuses
+        // exactly the requests the real plan would, without firing the hook first.
+        for (const entry of nestedEntries ?? []) {
+          const fillable = [...Object.keys(contextColumns ?? {}), ...nested!.parentSideColumns(tableName, entry.ops)];
+          const values = remapFromGraphQLSingleInput(entry.columns, table);
+          conflictBatches([{ ...Object.fromEntries(fillable.map((name) => [name, null])), ...values }]);
+        }
         await before();
 
         const runUpsert = async (target: any, batches: ConflictBatch[], ops?: NestedOps) => {
