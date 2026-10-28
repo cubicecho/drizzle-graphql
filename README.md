@@ -4,6 +4,32 @@ Automatically create GraphQL schema or customizable schema config fields from Dr
 
 Site: [cubicecho.github.io/drizzle-graphql](https://cubicecho.github.io/drizzle-graphql/)
 
+## Migrating to 19
+
+### Each schema keeps its own config
+
+Every `buildSchema` call now owns its scalar overrides, enum naming, column exclusions and
+`fieldUpdateOperations` state. Before 19 these were process-wide and reinstalled by each build,
+so when two schemas were built over the same tables (a multi-tenant server, a test suite) the
+earlier schema mapped request values by the *later* build's config: a column the later build
+overrode or stopped overriding came back in the wrong form, and an atomic
+`{ increment: 1 }` could stop being read as an operation. Each schema now behaves by its own
+config however many are built after it. A single schema per process behaves exactly as
+before, and the generated SDL is unchanged.
+
+Two places had no build to read the config from, and change:
+
+-   **`extractFilters` and `extractOrderBy` called without a context**, and
+    **`createRelationResolverFactory` without a filter context**, convert values by the
+    built-in rules only. They used to apply the most recent build's scalar overrides. If a
+    column's override scalar produces a value the built-in conversion would change, compile the
+    `where` / `orderBy` through `resolveSelection` instead (it finds the build through the
+    resolve info and applies its overrides), or convert the operand yourself.
+-   **`resolveSelection` / `selectionToWith` with a parsed selection tree**, over a database
+    with several builds, now throw when any of those builds has scalar overrides, as they
+    already did when one has row policies. Pass the resolver's `info`, which identifies the
+    build.
+
 ## Usage
 
 -   Pass your drizzle database instance into the builder to generate a `{ schema, entities }` object. The tables are read from the `relations` you gave the drizzle constructor (`drizzle({ client, relations })`), so a table missing from your relations config is not part of the generated schema
@@ -3091,8 +3117,9 @@ build is found through each type's `extensions.drizzle`. Two things follow:
     reading unscoped. Soft delete, limits and default ordering need no context.
 -   **Pass `info`, not a parsed tree, when one database has several builds.** A parsed
     selection tree carries no type to find the build by. Over a database with exactly one
-    build, that build's policies apply. With several builds, the call throws if any of them
-    has policies, since picking one could apply the wrong policies.
+    build, that build's policies and scalar overrides apply. With several builds, the call
+    throws if any of them has policies or scalar overrides, since picking one could apply the
+    wrong ones.
 
 Both take the naming options the build used — `typeNameMapper`, `derivedTypeNameMapper`,
 `typeNamePrefix` and `typeNameSuffix`. The translation matches selections against the

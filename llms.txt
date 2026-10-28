@@ -192,7 +192,7 @@ The generated schema carries no authorization and no document-level limits — `
 
 From `drizzle-graphql`:
 - `buildSchema(db, config?)` — main entry point.
-- `createRelationResolverFactory(db, tables, nullOrdering, filterCtx?)`, `extractFilters`, `extractOrderBy`, `extractRelationJoinColumns` — helpers for custom relation resolvers. `nullOrdering` is the dialect's native `ORDER BY` placement for `NULL` — `'nulls-largest'` for PostgreSQL, `'nulls-smallest'` for MySQL and SQLite — and the keyset predicate behind a relation's `after` argument must match it.
+- `createRelationResolverFactory(db, tables, nullOrdering, filterCtx?)`, `extractFilters`, `extractOrderBy`, `extractRelationJoinColumns` — helpers for custom relation resolvers. Without a filter context they map values by the built-in rules, not a build's scalar overrides (every build owns its own config, so there is no process-wide one to fall back on). `nullOrdering` is the dialect's native `ORDER BY` placement for `NULL` — `'nulls-largest'` for PostgreSQL, `'nulls-smallest'` for MySQL and SQLite — and the keyset predicate behind a relation's `after` argument must match it.
 - `selectionToWith(info, options)`, `resolveSelection(info, options)` — selection-set translation for a hand-written resolver over a generated type.
 - `drizzleExtension(fieldOrType)`, `isDrizzleFieldExtension(value)`, `identifyRows(field, args)` — read the `extensions.drizzle` identity block.
 - `singularizeMapper(tableName)` — the `typeNameMapper: 'singularize'` preset, exported for wrapping.
