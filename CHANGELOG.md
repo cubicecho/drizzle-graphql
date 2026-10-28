@@ -1,3 +1,14 @@
+## [18.1.2](https://github.com/cubicecho/drizzle-graphql/compare/v18.1.1...v18.1.2) (2026-10-28)
+
+### Bug Fixes
+
+* hand MySQL string-mode bigint values to resolvers as strings ([baf20d9](https://github.com/cubicecho/drizzle-graphql/commit/baf20d93df8b0b4006edc377f0b108160949485b)), closes [#237](https://github.com/cubicecho/drizzle-graphql/issues/237)
+* narrow Single writes on tables without a primary key by a unique key ([652ad2e](https://github.com/cubicecho/drizzle-graphql/commit/652ad2ec4467dedfd3619dbb93c39015c2d4f2c2)), closes [#230](https://github.com/cubicecho/drizzle-graphql/issues/230)
+* page number-mode bigint columns by their exact value past 2^53 ([1374eef](https://github.com/cubicecho/drizzle-graphql/commit/1374eefd984e4af68be63bea687176e4068b726d)), closes [#237](https://github.com/cubicecho/drizzle-graphql/issues/237)
+* page past a SQLite integer timestamp too large for a JS Date ([207ff47](https://github.com/cubicecho/drizzle-graphql/commit/207ff47eefe260337899a009f1566b7d4a1a51f4)), closes [#235](https://github.com/cubicecho/drizzle-graphql/issues/235)
+* refuse a nested write that must match on a key a JS Date cannot hold ([a793737](https://github.com/cubicecho/drizzle-graphql/commit/a793737f35680c9bb31d443f3a593d0a7cb45ebb)), closes [#235](https://github.com/cubicecho/drizzle-graphql/issues/235)
+* tiebreak every ordered list by primary key, not only cursor pages ([1b4c172](https://github.com/cubicecho/drizzle-graphql/commit/1b4c1720d3238dce00ac8d2102fe9ae6dc7a17bb)), closes [#236](https://github.com/cubicecho/drizzle-graphql/issues/236)
+
 ## [18.1.1](https://github.com/cubicecho/drizzle-graphql/compare/v18.1.0...v18.1.1) (2026-10-28)
 
 ### Bug Fixes
