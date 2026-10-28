@@ -1606,18 +1606,22 @@ supplies no `orderBy` and the table has no [default ordering](#default-ordering)
 -   to-many relation fields with `limit` and/or `offset`
 
 When the request does supply an `orderBy` (or the table has a default ordering), the primary
-key is appended to it as a tiebreak on those same queries. A non-unique ordering leaves the
-order of tied rows to the database, so without it a tie could straddle a page boundary and
-come back on both pages or neither. On a relation field the tiebreak goes on under
+key is appended to it, ascending, as a tiebreak — on every list query and to-many relation
+field, paginated or not. A non-unique ordering otherwise leaves the order of tied rows to the
+database, so a tie could straddle a page boundary and come back on both pages or neither, and
+the same query could return tied rows in one order without `cursor` and another with it. Key
+columns the `orderBy` already orders by are not appended again, and a table without a primary
+key gets no tiebreak. This is the same tiebreak a [cursor](#cursor-pagination) encodes, so tied
+rows come back in one order with or without `cursor`, `limit` or `offset`. On a relation field
+the tiebreak goes on under
 `orderBy: {}` too, so per-parent slices are deterministic and the eager and lazy paths return
 the same slice — the slice a root list page with the same arguments returns. A
 [`distinct`](#distinct) query is ordered by its `orderBy` plus the primary key whether or not it
 is paginated, on a root list and a relation field alike, and a [cursor](#cursor-pagination)
 page always is.
 
-Composite primary keys are ordered by every key column, and an unpaginated list query of a
-table with no `defaults` entry is left unordered (or ordered only as asked) so no sort is paid
-for.
+Composite primary keys are ordered by every key column, and an unpaginated list query with no
+`orderBy` of a table with no `defaults` entry is left unordered so no sort is paid for.
 
 `offset` works without `limit` on every dialect. SQLite and MySQL only accept `OFFSET` after a
 `LIMIT`, so there an offset-only page is sent with a limit meaning "no limit" (`-1` on SQLite,
@@ -2560,10 +2564,10 @@ are untouched.
 -   The driver must support `db.transaction()` — `neon-http` does not. For SQLite only an
     asynchronous driver can hold a transaction open across resolvers, and `buildSchema`
     throws for a synchronous one rather than failing at request time
--   The transaction state belongs to one execution, so a reused context object, a cached
-    document or no context at all never carries it into the next request. Two executions must
-    not share one context object at the same time: the open transaction is published on it
-    (under `drizzleExecutorKey`) for the reads nested under the mutations
+-   The transaction belongs to one execution, so a reused context object, a cached document
+    or no context at all never carries it into the next request, and two executions handed one
+    context object at the same time each get their own. It is kept off the context:
+    `drizzleExecutorKey` only ever holds an executor you put there yourself
 -   `timeoutMs` (default `30000`) rolls back an abandoned transaction, e.g. when the host
     server stopped calling resolvers because of a non-null completion error, instead of
     leaking the connection. It must be a positive integer up to `2147483647` (the longest
@@ -2653,6 +2657,54 @@ onWrite: {
 Registering a bare function (or a positions object) at the top level applies it to every table;
 anything else is read as a table map keyed by the **Drizzle schema key**, and a name that
 matches nothing throws at build time.
+
+### Hooks per operation
+
+A registration can also hold **operation keys** — `insert`, `update`, `updateMany`, `upsert`,
+`delete`, `restore` — each taking the same shape as a table does (a bare `after` function, or
+`{ before, after, columns }`), for that operation only:
+
+```Typescript
+onWrite: {
+    posts: {
+        after: audit,                                       // every operation
+        delete: { before: refuseIfPublished },              // deletes only
+        update: { after: stampUpdatedBy, columns: ['id'] }, // updates only
+    },
+    // Top level, operation keys alone: every table, deletes only.
+    // onWrite: { delete: auditDelete },
+}
+```
+
+-   **Both levels run.** Positions beside the operation keys (`after: audit` above) still apply
+    to every operation. Where both cover an operation, the every-operation hook runs first and
+    the operation's own second, at each position — so a delete above runs `refuseIfPublished`
+    before the statement and `audit` after it, and an update runs `audit` then
+    `stampUpdatedBy`. Hooks are side effects, not
+    settings, so a narrower key adds to the shared one rather than replacing it: an audit hook
+    cannot be switched off for one operation by accident.
+-   **`payload.operation`** is always the operation that ran, so it equals the key a hook was
+    registered under. The [count mutations](#row-counts-instead-of-rows) run the `update` /
+    `delete` keys; a [nested write](#nested-writes-and-hooks) runs the key for the operation
+    its statement performs on the table it writes (`insert` for a nested `create`, `update`
+    for a key moved on the target, `insert` / `delete` / `restore` on a junction).
+-   **`columns` belongs to the `after` beside it.** An operation's `columns` needs that
+    operation's `after`; a table-level `columns` needs the table-level `after`. Both are added
+    to the operation's `RETURNING`, so each `after` that runs is handed the union.
+-   **The top level** reads an object of operation keys alone as the every-table form
+    (`{ delete: auditDelete }`), and positions with operation keys likewise (`{ after: audit,
+    delete: { before: guard } }`). If any key names a table, it stays a table map, so a table
+    whose schema key happens to be `update` still means that table. An every-table form cannot
+    also name a table: register per table instead.
+-   **An operation with no hook has none.** It runs as an unhooked write, and is not forced into
+    a transaction for a hook that only covers other operations.
+-   **The build fails** for a key that is neither a position nor an operation, an operation key
+    nested inside another, an operation value that is not a function or positions object,
+    `columns` without an `after` beside it, an unknown column, and a `restore` key on a table
+    that does not [soft-delete](#soft-delete) (it has no restore to hook). The every-table form
+    skips `restore` on tables that cannot restore.
+-   **`null` means no hook**, wherever a hook, `columns` or an operation key goes, so
+    `before: isProduction ? check : null` works.
 
 ### Which columns `rows` holds
 
@@ -2772,6 +2824,35 @@ onWrite: {
     returned, and both inside the transaction every nested write opens — so a hook on a child
     table can roll the whole tree back, the parent row included, even when the root field has
     no hook of its own
+
+### Side effects outside the database
+
+An `after` hook runs **before the commit**, as soon as its statement returns. If anything later
+fails — a sibling nested write, another hook, a later mutation field under
+[`transactions: 'auto'`](#transactions), or the caller's own transaction — the database writes
+roll back, but an email sent, a message queued or a webhook called from the hook stays sent.
+Nested writes make this easy to hit: a parent-side nested `create` runs its `after` hook before
+the parent row is written, inside a savepoint that can still roll back.
+
+Write the side effect as a row through `tx` instead — an **outbox** — and deliver it from a
+worker that reads only committed rows:
+
+```Typescript
+onWrite: {
+    orders: {
+        after: async ({ operation, rows, tx }) => {
+            if (operation !== 'insert') return
+            // Commits or rolls back with the order itself.
+            await tx.insert(outbox).values(rows.map((row) => ({ kind: 'order-created', orderId: row.id })))
+        },
+        columns: ['id'],
+    },
+}
+// Elsewhere: poll `outbox` (or LISTEN/NOTIFY, or a CDC stream), send, then mark each row sent.
+```
+
+A hook that must call out directly can skip nested statements (`if (payload.nested) return`)
+and act from the root mutation's own hook, which narrows the window but does not close it.
 
 
 ## Relations & N+1 handling

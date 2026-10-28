@@ -538,7 +538,7 @@ export const generateAggregate = (
           return {};
         }
 
-        let query = resolveExecutor(db, context).select(request.selection).from(table);
+        let query = resolveExecutor(db, context, info).select(request.selection).from(table);
         const visibility = policies?.visibility?.(context);
         const where = withRowVisibility(
           visibility,
@@ -684,7 +684,7 @@ export const createRelationAggregateFactory = (
 
         const loader = getOrCreateLoader(execution, loaderKey, async (parentKeys: readonly (readonly unknown[])[]) => {
           // Loaders are cached per execution, so the whole batch shares this request's executor.
-          const executor = resolveExecutor(db, context);
+          const executor = resolveExecutor(db, context, info);
           const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key, localCols), key])).values()];
           // An aggregate over a relation counts the same rows the relation itself returns,
           // so it is narrowed by the target table's scope too.
@@ -1032,7 +1032,7 @@ export const generateGroupBy = (
           ...request.selection,
         };
 
-        let query = resolveExecutor(db, context).select(selection).from(table);
+        let query = resolveExecutor(db, context, info).select(selection).from(table);
         const visibility = policies?.visibility?.(context);
         const where = withRowVisibility(
           visibility,

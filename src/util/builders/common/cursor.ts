@@ -18,21 +18,24 @@ import {
   sql,
 } from 'drizzle-orm';
 import {
+  MySqlBigInt53,
   MySqlColumn,
   MySqlDate,
   MySqlDateTime,
   MySqlEnumColumn,
   MySqlEnumObjectColumn,
+  MySqlSerial,
   MySqlTimestamp,
 } from 'drizzle-orm/mysql-core';
-import { PgColumn, PgDate, PgTimestamp } from 'drizzle-orm/pg-core';
+import { PgBigInt53, PgBigSerial53, PgColumn, PgDate, PgTimestamp } from 'drizzle-orm/pg-core';
 import { SQLiteColumn, SQLiteTimestamp } from 'drizzle-orm/sqlite-core';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { dateToCalendarDate } from '../../scalars/index.ts';
 import { isDateOnlyColumn } from '../../type-converter/index.ts';
-import { cursorValueFormatFits, readsNumbersForStrings } from './cursor-value-formats.ts';
+import { cursorValueFormatFits, isInt64Text, readsNumbersForStrings } from './cursor-value-formats.ts';
 import { drizzleError } from './errors.ts';
 import { comparableOperand } from './filters.ts';
+import { primaryKeyOrderExprs } from './keys.ts';
 import type { OrderNullsOption } from './order-by.ts';
 import { isRelationOrderEntry, orderByEntries, orderExpressions } from './order-by.ts';
 
@@ -98,23 +101,50 @@ export const orderByCursorObstacle = (orderBy: Record<string, any> | undefined):
 };
 
 /**
+ * The primary-key columns that break ties after an `orderBy`, each sorted ascending: the key
+ * columns the `orderBy` does not already order by value. Shared by the cursor's total order and
+ * by every list that orders without a cursor, so a list returns tied rows in one order whether
+ * or not `cursor` is selected. Entries through a relation or under `matchFilterOrder` do not
+ * sort by the row's own value, so they never stand in for a key column.
+ */
+export const primaryKeyTiebreak = (orderBy: Record<string, any> | undefined, pkNames: readonly string[]): string[] => {
+  const ordered = new Set(
+    Object.entries(orderBy ?? {})
+      .filter(([, config]) => config && !isRelationOrderEntry(config) && !config.matchFilterOrder)
+      .map(([column]) => column),
+  );
+  return pkNames.filter((pk) => !ordered.has(pk));
+};
+
+/**
+ * ORDER BY expressions for the {@link primaryKeyTiebreak} on `table` (which may be the aliased
+ * RQB proxy), to follow the request's own ordering. Added when the `orderBy` orders by
+ * anything, or always when `always` is set (a page or a single read, which need a stable order
+ * even under none); empty for a table without a primary key.
+ */
+export const primaryKeyTiebreakExprs = (
+  table: Table,
+  orderBy: Record<string, any> | undefined,
+  pkNames: readonly string[] | undefined,
+  always = false,
+): SQL[] => {
+  const ordered = !!orderBy && Object.values(orderBy).some(Boolean);
+  return (always || ordered) && pkNames?.length
+    ? primaryKeyOrderExprs(table, primaryKeyTiebreak(orderBy, pkNames))
+    : [];
+};
+
+/**
  * The total order a list query's rows follow when cursor pagination is in play: the request's
- * `orderBy` entries (highest priority first), then the primary key ascending as a tiebreak —
- * skipping PK columns the `orderBy` already names, so no key appears twice.
+ * `orderBy` entries (highest priority first), then the {@link primaryKeyTiebreak}.
  */
 export const cursorOrderingEntries = (
   orderBy: Record<string, any> | undefined,
   pkNames: readonly string[],
-): CursorOrderEntry[] => {
-  const entries: CursorOrderEntry[] = orderBy ? orderByEntries(orderBy) : [];
-  const seen = new Set(entries.map(([column]) => column));
-  for (const pk of pkNames) {
-    if (!seen.has(pk)) {
-      entries.push([pk, 'asc']);
-    }
-  }
-  return entries;
-};
+): CursorOrderEntry[] => [
+  ...(orderBy ? orderByEntries(orderBy) : []),
+  ...primaryKeyTiebreak(orderBy, pkNames).map((pk): CursorOrderEntry => [pk, 'asc']),
+];
 
 /**
  * ORDER BY expressions realizing a cursor's total order on `table` (which may be the aliased
@@ -130,30 +160,46 @@ export const cursorOrderExprs = (table: Table, entries: CursorOrderEntry[]): SQL
 
 /**
  * Property a row carries an ordering column's database text — or, for a SQLite integer
- * timestamp, its stored number — under, when a JS Date cannot stand for every value the column
- * holds. Namespaced like {@link ROW_CURSOR_PROP}, and removed from the row once its cursor is
- * encoded.
+ * timestamp, its stored number — under, when the JS form the column reads into cannot stand for
+ * every value it holds. Namespaced like {@link ROW_CURSOR_PROP}, and removed from the row once its
+ * cursor is encoded.
  */
 const preciseTextProp = (column: string): string => `__drizzle_graphql_cursor_text_${column}`;
 
+/** The database text a {@link cursorTextForm} column's cursor value takes. */
+type CursorTextForm = 'timestamp' | 'date' | 'integer';
+
+/** 64-bit integer columns drizzle reads as JS numbers (`mode: 'number'`). */
+const NUMBER_MODE_INT64_COLUMNS = [PgBigInt53, PgBigSerial53, MySqlBigInt53, MySqlSerial] as const;
+
 /**
- * How a column whose `mode: 'date'` values a JS Date cannot always stand for keeps its cursor
- * position: as the database's own text of a timestamp or of a date-only value. That is every
- * `mode: 'date'` PostgreSQL `timestamp` / `timestamptz` / `date` and MySQL `datetime` /
- * `timestamp` / `date`:
+ * How a column whose values its JS form cannot always stand for keeps its cursor position: as
+ * the database's own text of a timestamp, of a date-only value, or of a 64-bit integer.
+ *
+ * Every `mode: 'date'` PostgreSQL `timestamp` / `timestamptz` / `date` and MySQL `datetime` /
+ * `timestamp` / `date` takes a timestamp or date text:
  * - a fraction finer than milliseconds (PostgreSQL's default precision 6, MySQL `fsp` above 3)
  *   would be truncated, and two rows a microsecond apart would share one position;
  * - a value outside a JS Date's range (a BC date, a year past 275760, PostgreSQL's infinities,
  *   MySQL's zero date) reads as an invalid Date, which has no position to encode at all — and
  *   drizzle reads `timestamp` (without time zone) infinity as an ordinary instant in 2000.
+ *
+ * Every `mode: 'number'` 64-bit integer — PostgreSQL `bigint` / `bigserial`, MySQL `bigint` /
+ * `serial` — takes an integer text. Past ±2^53 it reads as the nearest double, so neighbouring
+ * values share one position, and -2^63 reads as a number below every row (MySQL) or one
+ * PostgreSQL refuses as out of range.
+ *
  * String-mode columns already arrive as the database's own text and `time` is always a string,
  * so neither needs it. SQLite's integer timestamps have no text form; see {@link isStoredNumberTimestamp}.
  */
-const cursorTextForm = (column: Column): 'timestamp' | 'date' | undefined => {
+const cursorTextForm = (column: Column): CursorTextForm | undefined => {
   if (is(column, PgTimestamp) || is(column, MySqlDateTime) || is(column, MySqlTimestamp)) {
     return 'timestamp';
   }
-  return is(column, PgDate) || is(column, MySqlDate) ? 'date' : undefined;
+  if (is(column, PgDate) || is(column, MySqlDate)) {
+    return 'date';
+  }
+  return NUMBER_MODE_INT64_COLUMNS.some((type) => is(column, type)) ? 'integer' : undefined;
 };
 
 /**
@@ -168,9 +214,9 @@ const isStoredNumberTimestamp = (column: Column): boolean => is(column, SQLiteTi
  * Extra SQL expressions a cursor-computing query selects alongside the row: for each ordering
  * column with a {@link cursorTextForm}, the value as the database's own text, and for a
  * {@link isStoredNumberTimestamp} column, the number it stores. The cursor then encodes that
- * rather than the Date, and `after` compares the column against it — so two rows a microsecond
- * apart stay distinct positions, and a row whose value a JS Date cannot hold still has one.
- * `table` may be the aliased RQB proxy. Empty when no ordering column needs it.
+ * rather than the Date or number, and `after` compares the column against it — so two rows a
+ * microsecond (or one) apart stay distinct positions, and a row whose value a JS Date cannot hold
+ * still has one. `table` may be the aliased RQB proxy. Empty when no ordering column needs it.
  */
 export const cursorPreciseExtras = (table: Table, entries: CursorOrderEntry[]): Record<string, SQL> => {
   const cols = getColumns(table);
@@ -306,9 +352,10 @@ const cursorEncoder = (entries: CursorOrderEntry[]): ((row: Record<string, any>)
     const values = JSON.stringify(
       columns.map((column) => {
         const value = row[column] ?? null;
-        // The database's own text of a value a Date would truncate (see cursorPreciseExtras).
-        // It goes out as a plain string: both dialects' date-mode columns bind a string as-is,
-        // and the database parses it back at the column's own precision.
+        // The database's own text of a value a Date or number would round (see
+        // cursorPreciseExtras). It goes out as a plain string: both dialects' date-mode and
+        // number-mode bigint columns bind a string as-is, and the database parses it back
+        // exactly, at the column's own type.
         const precise = row[preciseTextProp(column)];
         if (value !== null && typeof precise === 'string') {
           return precise;
@@ -464,9 +511,13 @@ const TIMESTAMP_FIELD_RANGES: Readonly<Record<string, readonly [number, number]>
 /**
  * Whether a string is text in `form` as {@link cursorPreciseExtras} selects it — any form the
  * databases print, with each field in range. Day-of-month overflow (Feb 31) is left to the
- * database, which refuses it; it never prints one.
+ * database, which refuses it; it never prints one. An integer text is a whole number the column's
+ * 64 bits hold.
  */
-const isCursorText = (form: 'timestamp' | 'date', text: string): boolean => {
+const isCursorText = (col: Column, form: CursorTextForm, text: string): boolean => {
+  if (form === 'integer') {
+    return isInt64Text(col, text);
+  }
   if (NON_INSTANT_TEXT[form].test(text)) {
     return true;
   }
@@ -517,7 +568,7 @@ const cursorValueFits = (col: Column, value: unknown): boolean => {
   }
   const textForm = cursorTextForm(col);
   if (kind === 'string' && textForm) {
-    return isCursorText(textForm, value as string);
+    return isCursorText(col, textForm, value as string);
   }
   if (kind === 'number' && isStoredNumberTimestamp(col)) {
     return true;

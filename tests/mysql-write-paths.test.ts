@@ -397,6 +397,140 @@ describe.sequential('mysql: a row that starts matching during a Single write', (
   });
 });
 
+// Without a primary key the write is narrowed by a unique key instead, when the table has one
+// that can name the checked row: every column NOT NULL, or every column non-null on that row
+// (NULLs never collide in a unique index, so a NULL names no single row).
+const NotNullUnique = mysqlTable('not_null_unique', {
+  code: varchar('code', { length: 8 }).notNull().unique(),
+  name: varchar('name', { length: 8 }).notNull(),
+  orgId: int('org_id'),
+});
+const NullableUnique = mysqlTable('nullable_unique', {
+  code: varchar('code', { length: 8 }).unique(),
+  name: varchar('name', { length: 8 }).notNull(),
+  orgId: int('org_id'),
+});
+const NoKey = mysqlTable('no_key', {
+  name: varchar('name', { length: 8 }).notNull(),
+  orgId: int('org_id'),
+});
+
+describe.sequential('mysql: a Single write on a table without a primary key', () => {
+  const keyless = { NotNullUnique, NullableUnique, NoKey };
+  let keylessDb: any;
+
+  beforeAll(async () => {
+    keylessDb = (drizzle as any)({ client: connection, relations: buildRelations(keyless, {}) });
+    await connection!.query(
+      'CREATE TABLE not_null_unique (code varchar(8) NOT NULL UNIQUE, name varchar(8) NOT NULL, org_id int)',
+    );
+    await connection!.query(
+      'CREATE TABLE nullable_unique (code varchar(8) UNIQUE, name varchar(8) NOT NULL, org_id int)',
+    );
+    await connection!.query('CREATE TABLE no_key (name varchar(8) NOT NULL, org_id int)');
+  });
+
+  beforeEach(async () => {
+    for (const table of Object.values(keyless)) {
+      await keylessDb.delete(table);
+    }
+  });
+
+  /** Seeds `first`, builds a schema on which `second` lands just before the write, and runs `source`. */
+  const race = async (
+    table: any,
+    first: Record<string, unknown> | undefined,
+    second: Record<string, unknown>,
+    source: string,
+  ) => {
+    if (first) {
+      await keylessDb.insert(table).values(first);
+    }
+    const { schema } = buildSchema(
+      withRowArrivingBeforeWrite(keylessDb, (executor) => executor.insert(table).values(second)),
+    );
+    const res = await run(schema, `mutation { ${source} }`);
+    const rows = await keylessDb.select({ name: table.name, orgId: table.orgId }).from(table).orderBy(table.name);
+    return { res, rows };
+  };
+
+  it('NOT NULL unique column: update writes only the row the check found', async () => {
+    const { res, rows } = await race(
+      NotNullUnique,
+      { code: 'a', name: 'first', orgId: 7 },
+      { code: 'b', name: 'second', orgId: 7 },
+      'updateNotNullUniqueSingle(where: { orgId: { eq: 7 } }, set: { orgId: 8 }) { isSuccess }',
+    );
+    expect(errorsOf(res)).toBeUndefined();
+    expect(rows).toEqual([
+      { name: 'first', orgId: 8 },
+      { name: 'second', orgId: 7 },
+    ]);
+  });
+
+  it('NOT NULL unique column: delete removes only the row the check found', async () => {
+    const { res, rows } = await race(
+      NotNullUnique,
+      { code: 'a', name: 'first', orgId: 7 },
+      { code: 'b', name: 'second', orgId: 7 },
+      'deleteNotNullUniqueSingle(where: { orgId: { eq: 7 } }) { isSuccess }',
+    );
+    expect(errorsOf(res)).toBeUndefined();
+    expect(rows).toEqual([{ name: 'second', orgId: 7 }]);
+  });
+
+  it('nullable unique column holding a value: the write is narrowed to the row the check found', async () => {
+    const { res, rows } = await race(
+      NullableUnique,
+      { code: 'a', name: 'first', orgId: 7 },
+      { code: null, name: 'second', orgId: 7 },
+      'updateNullableUniqueSingle(where: { orgId: { eq: 7 } }, set: { orgId: 8 }) { isSuccess }',
+    );
+    expect(errorsOf(res)).toBeUndefined();
+    expect(rows).toEqual([
+      { name: 'first', orgId: 8 },
+      { name: 'second', orgId: 7 },
+    ]);
+  });
+
+  it('nullable unique column holding NULL: nothing names the row, so the arriving row is written too', async () => {
+    // MySQL returns no rows from a write, so nothing reports the second row either.
+    const { res, rows } = await race(
+      NullableUnique,
+      { code: null, name: 'first', orgId: 7 },
+      { code: null, name: 'second', orgId: 7 },
+      'updateNullableUniqueSingle(where: { orgId: { eq: 7 } }, set: { orgId: 8 }) { isSuccess }',
+    );
+    expect(errorsOf(res)).toBeUndefined();
+    expect(rows).toEqual([
+      { name: 'first', orgId: 8 },
+      { name: 'second', orgId: 8 },
+    ]);
+  });
+
+  it('no key at all: the arriving row is written too (documented limitation)', async () => {
+    const { res, rows } = await race(
+      NoKey,
+      { name: 'first', orgId: 7 },
+      { name: 'second', orgId: 7 },
+      'deleteNoKeySingle(where: { orgId: { eq: 7 } }) { isSuccess }',
+    );
+    expect(errorsOf(res)).toBeUndefined();
+    expect(rows).toEqual([]);
+  });
+
+  it('no key at all: a row arriving after the check found none is not written', async () => {
+    const { res, rows } = await race(
+      NoKey,
+      undefined,
+      { name: 'second', orgId: 7 },
+      'updateNoKeySingle(where: { orgId: { eq: 7 } }, set: { orgId: 8 }) { isSuccess }',
+    );
+    expect(errorsOf(res)).toBeUndefined();
+    expect(rows).toEqual([{ name: 'second', orgId: 7 }]);
+  });
+});
+
 describe.sequential('mysql: write arguments are converted into a copy', () => {
   beforeEach(async () => {
     await db.execute(sql`DELETE FROM users`);

@@ -193,9 +193,11 @@ describe('sqlite: primary-key tiebreak', () => {
     expect(ids(root.data.tags)).toEqual(['a', 'c', 'b']);
   });
 
-  it('leaves an unpaginated list ordered only as asked', async () => {
-    await run(eager, '{ tags(orderBy: { grp: { direction: asc, priority: 1 } }) { id } }');
-    expect(queries.join('\n')).not.toMatch(/"id" asc/);
+  it('tiebreaks an unpaginated list too, as a cursor would (#236)', async () => {
+    queries.length = 0;
+    const res = await run(eager, '{ tags(orderBy: { grp: { direction: asc, priority: 1 } }) { id } }');
+    expect(ids(res.data.tags)).toEqual(['b', 'd', 'a', 'c']);
+    expect(queries.join('\n')).toMatch(/order by "d0"\."grp" asc, "d0"\."id" asc$/);
   });
 
   it('orders a relation field distinct without pagination as the root distinct does', async () => {

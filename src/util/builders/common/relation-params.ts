@@ -5,9 +5,8 @@ import type { Table } from 'drizzle-orm';
 import { is, One } from 'drizzle-orm';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import type { ProcessedTableSelectArgs, TableNamedRelations, TableSelectArgs } from '../types.ts';
-import { isCursorFieldSelected } from './cursor.ts';
+import { isCursorFieldSelected, primaryKeyTiebreakExprs } from './cursor.ts';
 import { drizzleError } from './errors.ts';
-import { primaryKeyOrderExprs } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import {
   applyLimitPolicy,
@@ -214,18 +213,16 @@ export const extractRelationsParams = (
               ),
           }
         : undefined;
-    // When a relation is paginated (limit/offset), the target's primary key is appended as a
-    // tiebreak to whatever ordering applies — the client's, the default, or none (`orderBy: {}`
-    // included) — so the per-parent slice is deterministic and the same slice the batched
-    // resolver's window picks. Drizzle's RQB calls orderBy with the aliased table proxy, so
-    // resolve the PK columns from it. targetPkNames is resolved at build time and includes
-    // composite keys.
+    // The target's primary key is appended as a tiebreak to any ordering that applies — the
+    // client's or the default — and, when the relation is paginated (limit/offset), even to none
+    // (`orderBy: {}` included). Tied rows then come back in the cursor's order, and a page is
+    // the same slice the batched resolver's window picks. Drizzle's RQB calls orderBy with the
+    // aliased table proxy, so resolve the PK columns from it. targetPkNames is resolved at build
+    // time and includes composite keys.
     const hasPagination = offset != null || limit != null;
-    const pkNames = targetPkNames ?? [];
-    const tiebreak = hasPagination && pkNames.length > 0;
     const requestOrder = relationArgs?.orderBy;
     thisRecord.orderBy =
-      requestOrder || tiebreak
+      requestOrder || (hasPagination && targetPkNames?.length)
         ? (aliasedTable: Table) => [
             ...(requestOrder
               ? extractOrderBy(
@@ -235,7 +232,7 @@ export const extractRelationsParams = (
                   relWhere,
                 )
               : []),
-            ...(tiebreak ? primaryKeyOrderExprs(aliasedTable, pkNames) : []),
+            ...primaryKeyTiebreakExprs(aliasedTable, requestOrder, targetPkNames, hasPagination),
           ]
         : undefined;
     thisRecord.offset = offset;

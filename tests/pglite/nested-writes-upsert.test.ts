@@ -394,6 +394,49 @@ describe.sequential('nested upsert: hooks and soft delete', () => {
     ]);
   });
 
+  it('refuses a bad onConflict before the before hook runs', async () => {
+    const positions: string[] = [];
+    const hooked = buildSchema(db, {
+      ...(config as any),
+      onWrite: { Posts: { before: () => void positions.push('before') } },
+    }).schema;
+
+    // `authorId` is neither in the values nor set by a parent-side operation (`tags` is
+    // child-side), so no row could supply it.
+    const res = await run(
+      `mutation { upsertPostsSingle(values: { id: 1, title: "t", tags: { connect: [{ id: { eq: 1 } }] } }, onConflict: { update: [authorId] }) { id } }`,
+      undefined,
+      hooked,
+    );
+
+    expect(res.errors?.[0]?.extensions?.['code']).toBe('DRIZZLE_INVALID_ON_CONFLICT');
+    expect(positions).toEqual([]);
+    expect(await posts()).toEqual([]);
+  });
+
+  it('accepts onConflict.update naming a key a parent-side connect supplies', async () => {
+    await db.insert(Authors).values([
+      { id: 1, name: 'a' },
+      { id: 2, name: 'b' },
+    ]);
+    await db.insert(Posts).values({ id: 1, authorId: 1, title: 'old' });
+    const positions: string[] = [];
+    const hooked = buildSchema(db, {
+      ...(config as any),
+      onWrite: { Posts: { before: () => void positions.push('before') } },
+    }).schema;
+
+    const res = await run(
+      `mutation { upsertPostsSingle(values: { id: 1, title: "new", author: { connect: { id: { eq: 2 } } } }, onConflict: { update: [authorId] }) { id } }`,
+      undefined,
+      hooked,
+    );
+
+    expect(res.errors).toBeUndefined();
+    expect(positions).toEqual(['before']);
+    expect(await posts()).toEqual([{ id: 1, authorId: 2, title: 'old' }]);
+  });
+
   it('leaves a soft-deleted row and its relations alone, as update does', async () => {
     await db.insert(Authors).values({ id: 1, name: 'gone', deletedAt: new Date() });
     await db.insert(Posts).values({ id: 1, authorId: 1, title: 'kept' });

@@ -91,6 +91,11 @@ export type NestedWriteRuntime = {
   /** Whether the operations insert a target row before the parent row is written. */
   createsParentSide: (tableName: string, ops: NestedOps) => boolean;
   /**
+   * The parent columns the parent-side operations in `ops` may set — a superset of the keys
+   * {@link NestedWriteRuntime.applyParentSide} can put in its patch, known before it runs.
+   */
+  parentSideColumns: (tableName: string, ops: NestedOps) => string[];
+  /**
    * The parent rows as they stand after the child-side statements. Those statements write the
    * target table, which on a self-referencing relation is the parent's own — so the rows the
    * parent write returned can be stale. Returned unchanged when no operation targets the
@@ -723,6 +728,12 @@ export const createNestedWriteRuntime = (params: {
       }
       return columns;
     },
+
+    parentSideColumns: (tableName, ops) =>
+      Object.keys(ops).flatMap((relationName) => {
+        const plan = plans[tableName]?.[relationName];
+        return plan?.fkSide === 'parent' ? [plan.localColPropName] : [];
+      }),
 
     createsParentSide: (tableName, ops) =>
       Object.entries(ops).some(

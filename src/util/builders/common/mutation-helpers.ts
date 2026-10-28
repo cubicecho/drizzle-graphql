@@ -255,26 +255,32 @@ export const rowsAffected = (result: any): number => {
   });
 };
 
-/** Alias prefix for the primary-key columns {@link narrowToSingleMatch} reads. */
+/** Alias prefix for the key columns {@link narrowToSingleMatch} reads. */
 const KEY_ALIAS_PREFIX = '__single_key_';
 
 /**
  * The `where` a `Single` update or delete runs with. It checks that `filters` matches at most
- * one row and narrows it to that row's primary key, so a row that starts matching between the
- * check and the write is never written. A table without a primary key keeps `filters`.
+ * one row and narrows it to that row's key, so a row that starts matching between the check and
+ * the write is never written.
+ *
+ * `keySets` are the table's candidates from `keys.getRowKeyCandidates`: the primary key, else a
+ * NOT NULL unique key, else the nullable unique keys. The first set the checked row holds a
+ * value in every column of is used — a NULL names no single row. When none does (or the table
+ * has no key), the write keeps `filters`, and a row arriving between check and write is written
+ * too. A check that found nothing writes nothing, key or not.
  */
 export const narrowToSingleMatch = async (
   executor: any,
   table: Table,
   filters: SQL,
-  keyNames: readonly string[],
+  keySets: readonly (readonly string[])[],
 ): Promise<SQL> => {
   const columns = getColumns(table) as Record<string, Column>;
-  const keyColumns = keyNames.map((name) => columns[name]!);
-  const hasKey = keyColumns.length > 0;
+  const keyNames = [...new Set(keySets.flat())];
+  const aliasOf = (name: string) => `${KEY_ALIAS_PREFIX}${keyNames.indexOf(name)}`;
   // Each key is read raw (no `mapWith`), so it binds back exactly as the database holds it.
-  const probe = hasKey
-    ? Object.fromEntries(keyColumns.map((column, index) => [`${KEY_ALIAS_PREFIX}${index}`, sql`${column}`]))
+  const probe = keyNames.length
+    ? Object.fromEntries(keyNames.map((name) => [aliasOf(name), sql`${columns[name]!}`]))
     : { found: sql`1` };
   const matched = await executor.select(probe).from(table).where(filters).limit(2);
   if (matched.length > 1) {
@@ -282,16 +288,16 @@ export const narrowToSingleMatch = async (
       code: 'DRIZZLE_MULTI_ROW_MATCH',
     });
   }
-  if (!hasKey) {
-    return filters;
-  }
   const [found] = matched;
   if (!found) {
     // Nothing matched when checked, so a row arriving afterwards is not written either.
     return sql`1 = 0`;
   }
-  const keyMatches = keyColumns.map((column, index) => sql`${column} = ${found[`${KEY_ALIAS_PREFIX}${index}`]}`);
-  return and(filters, ...keyMatches)!;
+  const keySet = keySets.find((set) => set.every((name) => found[aliasOf(name)] != null));
+  if (!keySet) {
+    return filters;
+  }
+  return and(filters, ...keySet.map((name) => sql`${columns[name]!} = ${found[aliasOf(name)]}`))!;
 };
 
 /**

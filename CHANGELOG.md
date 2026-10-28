@@ -1,3 +1,20 @@
+## [18.1.1](https://github.com/cubicecho/drizzle-graphql/compare/v18.1.0...v18.1.1) (2026-10-28)
+
+### Bug Fixes
+
+* keep the auto-transaction per execution, off the context ([264dd71](https://github.com/cubicecho/drizzle-graphql/commit/264dd71292465a65ec5302143de5fbc963cd2b08)), closes [#231](https://github.com/cubicecho/drizzle-graphql/issues/231)
+
+## [18.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v18.0.0...v18.1.0) (2026-10-28)
+
+### Features
+
+* accept null as no hook in onWrite ([92e6b78](https://github.com/cubicecho/drizzle-graphql/commit/92e6b780b39c37d038eb605210b6adc38180965d))
+* register write hooks per operation ([efcf251](https://github.com/cubicecho/drizzle-graphql/commit/efcf2518b13ee81c190b0d8f078a8ef7872dad63))
+
+### Bug Fixes
+
+* refuse a nested upsert's bad onConflict before its before hook ([afec2cc](https://github.com/cubicecho/drizzle-graphql/commit/afec2ccbd2463d2b570efa69da991c5a1dbc7448))
+
 ## [18.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v17.0.2...v18.0.0) (2026-10-28)
 
 ### ⚠ BREAKING CHANGES
