@@ -19,6 +19,13 @@ on:
         type: string
         required: false
         default: ''
+      drizzle-orm:
+        description: >-
+          Version to install over the lockfile's, so the peer range can be checked against a
+          drizzle-orm release the lockfile does not pin. Empty means use the lockfile.
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -57,6 +64,10 @@ jobs:
       - name: Install graphql-scalars ${{ inputs.graphql-scalars }}
         if: inputs.graphql-scalars != ''
         run: npm install --no-save graphql-scalars@"${{ inputs.graphql-scalars }}"
+
+      - name: Install drizzle-orm ${{ inputs.drizzle-orm }}
+        if: inputs.drizzle-orm != ''
+        run: npm install --no-save drizzle-orm@"${{ inputs.drizzle-orm }}"
 
       - name: Lint
         run: npx biome check .

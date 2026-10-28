@@ -30,3 +30,13 @@ jobs:
     uses: ./.github/workflows/checks.yaml
     with:
       graphql: ^17.0.0
+
+  # `drizzle-orm` is still on release candidates, and the peer range `^1.0.0-rc.4` admits every
+  # later one — whose internals the library reads (table symbols, relation shapes) and which
+  # change between candidates: rc.5 reshaped `getTableAsAliasSQL` and `relationsFilterToSQL`
+  # and broke every relation filter (#201) while the rc.4 lockfile stayed green. This runs the
+  # same checks against the newer candidate, type-check included.
+  checks-drizzle-orm-rc5:
+    uses: ./.github/workflows/checks.yaml
+    with:
+      drizzle-orm: 1.0.0-rc.5
