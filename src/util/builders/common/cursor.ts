@@ -29,7 +29,7 @@ import {
   MySqlTimestamp,
 } from 'drizzle-orm/mysql-core';
 import { PgBigInt53, PgBigSerial53, PgColumn, PgDate, PgNumericNumber, PgTimestamp } from 'drizzle-orm/pg-core';
-import { SQLiteColumn, SQLiteTimestamp } from 'drizzle-orm/sqlite-core';
+import { SQLiteColumn, SQLiteInteger, SQLiteNumericNumber, SQLiteTimestamp } from 'drizzle-orm/sqlite-core';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { dateToCalendarDate } from '../../scalars/index.ts';
 import { isDateOnlyColumn } from '../../type-converter/index.ts';
@@ -220,9 +220,29 @@ const cursorTextForm = (column: Column): CursorTextForm | undefined => {
 const isStoredNumberTimestamp = (column: Column): boolean => is(column, SQLiteTimestamp);
 
 /**
+ * Whether a column is a SQLite `integer({ mode: 'number' })` or `numeric({ mode: 'number' })`.
+ * Either can store any 64-bit integer, and past ±2^53 a driver reads one as the nearest double
+ * (better-sqlite3, bun:sqlite, sql.js), or as a bigint the numeric column's decoder rounds — so
+ * neighbouring values share one position. (libsql and node:sqlite refuse to read such a value by
+ * default, which fails the read before any cursor.) Such a row's cursor carries the stored
+ * integer's text instead. `after` binds it as text, and SQLite applies the column's integer or
+ * numeric affinity to it, comparing the exact integer. Every other row — a safe integer, or a
+ * real or text the column's dynamic typing let it hold — keeps the cursor it always had.
+ */
+const isSQLiteNumberInteger = (column: Column): boolean => is(column, SQLiteInteger) || is(column, SQLiteNumericNumber);
+
+/**
+ * The text of a {@link isSQLiteNumberInteger} column's value when it is an integer a double
+ * cannot hold, and NULL otherwise.
+ */
+const sqliteUnsafeIntegerText = (column: Column): SQL =>
+  sql`case when typeof(${column}) = 'integer' and ${column} not between ${sql.raw(String(-Number.MAX_SAFE_INTEGER))} and ${sql.raw(String(Number.MAX_SAFE_INTEGER))} then cast(${column} as text) end`;
+
+/**
  * Extra SQL expressions a cursor-computing query selects alongside the row: for each ordering
- * column with a {@link cursorTextForm}, the value as the database's own text, and for a
- * {@link isStoredNumberTimestamp} column, the number it stores. The cursor then encodes that
+ * column with a {@link cursorTextForm}, the value as the database's own text, for a
+ * {@link isStoredNumberTimestamp} column, the number it stores, and for a
+ * {@link isSQLiteNumberInteger} column, the text of an integer past ±2^53. The cursor then encodes that
  * rather than the Date or number, and `after` compares the column against it — so two rows a
  * microsecond (or one) apart stay distinct positions, and a row whose value a JS Date cannot hold
  * still has one. `table` may be the aliased RQB proxy. Empty when no ordering column needs it.
@@ -236,6 +256,8 @@ export const cursorPreciseExtras = (table: Table, entries: CursorOrderEntry[]): 
       extras[preciseTextProp(name)] = is(column, PgColumn) ? sql`${column}::text` : sql`cast(${column} as char)`;
     } else if (column && isStoredNumberTimestamp(column)) {
       extras[preciseTextProp(name)] = sql`${column}`;
+    } else if (column && isSQLiteNumberInteger(column)) {
+      extras[preciseTextProp(name)] = sqliteUnsafeIntegerText(column);
     }
   }
   return extras;
@@ -547,6 +569,26 @@ const isCursorText = (col: Column, form: CursorTextForm, text: string): boolean 
 };
 
 /**
+ * Text SQLite's numeric affinity turns into a number: optional whitespace and sign, digits with an
+ * optional point, and an optional exponent. An integer column never stores such text as text.
+ */
+const SQLITE_NUMERIC_TEXT = /^\s*[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?\s*$/i;
+
+/**
+ * Whether a string or bigint cursor value is one a {@link isSQLiteNumberInteger} column's row
+ * issues: the text of a 64-bit integer, or — for a driver that reads integers as bigints — the
+ * bigint itself. An `integer` column also stores, and its driver hands back as is, any text that
+ * does not look like a number, which compares against the column as the same text.
+ */
+const sqliteIntegerCursorValueFits = (col: Column, kind: CursorValueKind, value: unknown): boolean => {
+  if (kind === 'bigint') {
+    return isInt64Text(col, String(value));
+  }
+  const text = value as string;
+  return isInt64Text(col, text) || (is(col, SQLiteInteger) && !SQLITE_NUMERIC_TEXT.test(text));
+};
+
+/**
  * The kind a column's values read into, from drizzle's data type — or `undefined` when no
  * cursor value kind describes them (JSON, buffers, custom types, arrays), and none is checked.
  */
@@ -564,8 +606,10 @@ const columnCursorKind = (col: Column): CursorValueKind | undefined => {
 /**
  * Whether a decoded cursor value is one its column's rows can produce: NULL only for a nullable
  * column, otherwise the column's kind — or, for a column with a {@link cursorTextForm}, its
- * database text, and for a {@link isStoredNumberTimestamp} column, the number it stores. SQLite
- * stores any number in an integer column, so only other dialects require a whole one.
+ * database text, for a {@link isStoredNumberTimestamp} column, the number it stores, and for a
+ * {@link isSQLiteNumberInteger} column, the text or bigint it issues
+ * ({@link sqliteIntegerCursorValueFits}). SQLite stores any number in an integer column, so only
+ * other dialects require a whole one.
  * A value of the right kind must also be in its column's format and range
  * ({@link cursorValueFormatFits}): a uuid, a numeric, an enum label, an integer that fits.
  */
@@ -584,6 +628,9 @@ const cursorValueFits = (col: Column, value: unknown): boolean => {
   }
   if (kind === 'number' && isStoredNumberTimestamp(col)) {
     return true;
+  }
+  if ((kind === 'string' || kind === 'bigint') && isSQLiteNumberInteger(col)) {
+    return sqliteIntegerCursorValueFits(col, kind, value);
   }
   const kindFits = kind === expected || (kind === 'number' && readsNumbersForStrings(col));
   if (!kindFits) {
