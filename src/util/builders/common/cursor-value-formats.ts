@@ -164,8 +164,9 @@ const INT64_COLUMNS = [PgBigInt64, PgBigSerial64, MySqlBigInt64] as const;
 /**
  * Whether a string-mode column also reads some of its values as JS numbers. mysql2 (run with
  * `supportBigNumbers` by drizzle) returns a BIGINT that fits a double as a number and only a
- * larger one as a string, and drizzle's relational queries pass either on, so a cursor issued
- * from a `bigint({ mode: 'string' })` column carries whichever the row held.
+ * larger one as a string, and drizzle's `select()` and relational queries pass either on (only a
+ * nested relation's JSON reads it as text), so a cursor issued from a `bigint({ mode: 'string' })`
+ * column carries whichever the row held. Output mapping turns such a number into its text.
  */
 export const readsNumbersForStrings = (col: Column): boolean => is(col, MySqlBigIntString);
 
