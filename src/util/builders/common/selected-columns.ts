@@ -16,14 +16,15 @@ const rqbCrashTypes = ['SQLiteBigInt', 'SQLiteBlobJson', 'SQLiteBlobBuffer'];
  */
 export interface SelectionCtx {
   tableName: string;
-  relationMap: Record<string, Record<string, TableNamedRelations>>;
   tables: Record<string, Table>;
   /**
-   * Every relation on the table, including those `relationMap` omits because they are not
-   * eager-loaded. A lazily-resolved relation still correlates on a join column, so the
-   * column extractors need to see it even when the eager map doesn't.
+   * Every relation on the table, eager-loaded or not. A lazily-resolved relation still
+   * correlates on a join column, so the column extractors need to see it even when the eager
+   * map doesn't.
    */
-  allRelations?: Record<string, Record<string, TableNamedRelations>>;
+  namedRelations?: Record<string, Record<string, TableNamedRelations>>;
+  /** The relations the read loads through `with:`, consulted for a table `namedRelations` lacks. */
+  eagerRelations?: Record<string, Record<string, TableNamedRelations>>;
 }
 
 const AGGREGATE_FIELD_SUFFIX = 'Aggregate';
@@ -50,8 +51,7 @@ const relationJoinColumns = (
     return [];
   }
   const relations =
-    (selectionCtx.allRelations ?? selectionCtx.relationMap)[selectionCtx.tableName] ??
-    selectionCtx.relationMap[selectionCtx.tableName];
+    selectionCtx.namedRelations?.[selectionCtx.tableName] ?? selectionCtx.eagerRelations?.[selectionCtx.tableName];
   if (!relations) {
     return [];
   }

@@ -2,7 +2,7 @@
 // type-name mapper have been applied.
 
 import { capitalize, uncapitalize } from '../../case-ops/index.ts';
-import type { TypeNameMapper } from './naming.ts';
+import type { TypeNameMapper } from './type-names.ts';
 
 /** The query and mutation field names one table generates. */
 export type ResolverFieldNames = {
@@ -43,7 +43,7 @@ export const computeResolverFieldNames = (
   const aggregateFieldName = `${mapped?.plural ?? uncapitalize(tableName)}Aggregate`;
   const groupByFieldName = `${mapped?.plural ?? uncapitalize(tableName)}GroupBy`;
   const pluralNoun = mapped ? capitalize(mapped.plural) : capitalize(tableName);
-  const singularNoun = mapped ? capitalize(mapped.singular) : capitalize(tableName);
+  const singularNoun = typeName;
   // The write mutations take the same two suffixes the queries do, and in the same places:
   // `list` on the form that operates on a set of rows, `single` on the one that operates on
   // one. They used to take only `single`, so a build that renamed the list side got

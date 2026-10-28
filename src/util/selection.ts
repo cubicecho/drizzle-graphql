@@ -1,21 +1,14 @@
 import { is, Table } from 'drizzle-orm';
-import { MySqlAsyncDatabase, getTableConfig as mysqlTableConfig } from 'drizzle-orm/mysql-core';
-import { PgAsyncDatabase, getTableConfig as pgTableConfig } from 'drizzle-orm/pg-core';
-import { SQLiteAsyncDatabase, getTableConfig as sqliteTableConfig } from 'drizzle-orm/sqlite-core';
 import { type GraphQLResolveInfo, getNamedType } from 'graphql';
 import type { AnyDrizzleDB } from '../types.ts';
 import { type BuildRuntime, runtimeForDb, runtimeForType } from './builders/common/build-registry.ts';
-import type { DeletedMode, ScopeResolver } from './builders/common/policies.ts';
+import type { DeletedMode, RowVisibility } from './builders/common/policies.ts';
 import {
   applyLimitPolicy,
-  attachTargetPrimaryKeys,
-  buildNamedRelations,
+  buildRelationGraph,
   type DerivedTypeNameMapper,
-  DIALECT_NULL_ORDERING,
   extractRelationsParams,
-  getPrimaryKeyPropNamesFromConfig,
   getUniqueColumnSets,
-  memoizeTableConfig,
   type NullOrdering,
   type RelationFilterBase,
   resolveGeneratedTypeNames,
@@ -23,10 +16,12 @@ import {
   runRelationalSelect,
   type TypeNameMapper,
   type TypeNameResolver,
+  tablesOfRelations,
   tableUniqueKeyMap,
   type UniqueKeyMap,
   withDefaultOrderBy,
 } from './builders/common.ts';
+import { type Dialect, dialectOf } from './builders/dialects.ts';
 import type { TableNamedRelations } from './builders/types.ts';
 import { parseResolveInfo, type ResolveTree } from './parse-resolve-info.ts';
 
@@ -39,7 +34,7 @@ import { parseResolveInfo, type ResolveTree } from './parse-resolve-info.ts';
  */
 type SelectionContext = {
   tables: Record<string, Table>;
-  relationMap: Record<string, Record<string, TableNamedRelations>>;
+  namedRelations: Record<string, Record<string, TableNamedRelations>>;
   filterCtx: RelationFilterBase;
   primaryKeyOf: (tableName: string) => readonly string[];
   /** The dialect's NULL placement, for a read no build identifies. */
@@ -48,33 +43,15 @@ type SelectionContext = {
 
 const contextCache = new WeakMap<object, SelectionContext>();
 
-type TableConfigLookup = Parameters<typeof getUniqueColumnSets<Table>>[1];
-
-type Dialect = keyof typeof DIALECT_NULL_ORDERING;
-
-/**
- * Each dialect's `getTableConfig`, the only place a composite primary key or a unique constraint
- * shows up. Cached per table, and bound at module scope so the cache is shared with every
- * selection this process translates — the same memoization each dialect builder applies.
- */
-const TABLE_CONFIG: Record<Dialect, TableConfigLookup> = {
-  mysql: memoizeTableConfig(mysqlTableConfig as unknown as TableConfigLookup),
-  pg: memoizeTableConfig(pgTableConfig as unknown as TableConfigLookup),
-  sqlite: memoizeTableConfig(sqliteTableConfig as unknown as TableConfigLookup),
-};
-
-/** Which dialect a drizzle instance speaks, by the same `is()` checks `buildSchema` dispatches on. */
-const dialectOf = (db: AnyDrizzleDB<any>): Dialect => {
-  if (is(db, MySqlAsyncDatabase)) {
-    return 'mysql';
+/** The dialect a drizzle instance speaks, or an error when it is none this library supports. */
+const dialectFor = (db: AnyDrizzleDB<any>): Dialect => {
+  const dialect = dialectOf(db);
+  if (!dialect) {
+    throw new Error(
+      'Drizzle-GraphQL Error: unsupported database instance — expected a PostgreSQL, MySQL or SQLite one.',
+    );
   }
-  if (is(db, PgAsyncDatabase)) {
-    return 'pg';
-  }
-  if (is(db, SQLiteAsyncDatabase)) {
-    return 'sqlite';
-  }
-  throw new Error('Drizzle-GraphQL Error: unsupported database instance — expected a PostgreSQL, MySQL or SQLite one.');
+  return dialect;
 };
 
 const contextFor = (db: AnyDrizzleDB<any>): SelectionContext => {
@@ -84,18 +61,10 @@ const contextFor = (db: AnyDrizzleDB<any>): SelectionContext => {
   }
 
   const relations = (db as any)._.relations ?? {};
-  // Same reconstruction `buildSchema` does: the relations config is the only table map a v1
-  // handle carries, and each of its entries carries its table.
-  const schema = Object.fromEntries(
-    Object.entries(relations as Record<string, any>)
-      .filter(([, config]) => config?.table != null)
-      .map(([key, config]) => [key, config.table]),
-  );
+  // The same table map `buildSchema` reads.
+  const schema = tablesOfRelations(relations);
 
-  const tableEntries = Object.entries(schema as Record<string, unknown>).filter(([, value]) => is(value, Table)) as [
-    string,
-    Table,
-  ][];
+  const tableEntries = Object.entries(schema).filter(([, value]) => is(value, Table)) as [string, Table][];
   if (!tableEntries.length) {
     throw new Error(
       'Drizzle-GraphQL Error: Schema not found in drizzle instance. Pass relations (from buildRelations/defineRelations) to the drizzle constructor so drizzle-graphql can read your tables.',
@@ -103,23 +72,20 @@ const contextFor = (db: AnyDrizzleDB<any>): SelectionContext => {
   }
 
   const tables = Object.fromEntries(tableEntries);
-  const dialect = dialectOf(db);
-  const getTableConfig = TABLE_CONFIG[dialect];
+  const { primaryKeyPropNames, getTableConfig, nullOrdering } = dialectFor(db);
   const primaryKeyCache = new Map<string, readonly string[]>();
   const primaryKeyOf = (tableName: string): readonly string[] => {
     let pk = primaryKeyCache.get(tableName);
     if (!pk) {
       const table = tables[tableName];
-      pk = table ? getPrimaryKeyPropNamesFromConfig(table, getTableConfig) : [];
+      pk = table ? primaryKeyPropNames(table) : [];
       primaryKeyCache.set(tableName, pk);
     }
     return pk;
   };
 
-  const relationMap = buildNamedRelations(relations, tableEntries);
-  // Paginated relations fall back to a primary-key order, which is resolved once per target
-  // and hung off the relation entry — exactly as the generated schema does it.
-  attachTargetPrimaryKeys(relationMap, tables, (table) => [...primaryKeyOf(tableNameOf(tables, table))]);
+  // Derived exactly as the generated schema derives it, minus the build's excluded tables.
+  const namedRelations = buildRelationGraph(relations, tableEntries, primaryKeyPropNames);
 
   // Every table's unique-key `where` fields, for a read no build identifies: which tables enabled
   // them is per build. A client cannot spell a field its schema did not generate, so offering
@@ -128,25 +94,25 @@ const contextFor = (db: AnyDrizzleDB<any>): SelectionContext => {
     tableEntries
       .map(([tableName, table]): [string, UniqueKeyMap] => [
         tableName,
-        tableUniqueKeyMap(table, Object.keys(relationMap[tableName] ?? {}), getUniqueColumnSets(table, getTableConfig)),
+        tableUniqueKeyMap(
+          table,
+          Object.keys(namedRelations[tableName] ?? {}),
+          getUniqueColumnSets(table, getTableConfig),
+        ),
       ])
       .filter(([, map]) => Object.keys(map).length),
   );
 
   const context: SelectionContext = {
     tables,
-    relationMap,
-    filterCtx: { tables, relationMap, uniqueKeys },
+    namedRelations,
+    filterCtx: { tables, namedRelations, uniqueKeys },
     primaryKeyOf,
-    nullOrdering: DIALECT_NULL_ORDERING[dialect],
+    nullOrdering,
   };
   contextCache.set(db as object, context);
   return context;
 };
-
-/** Reverse lookup for `attachTargetPrimaryKeys`, which hands back the table, not its key. */
-const tableNameOf = (tables: Record<string, Table>, table: Table): string =>
-  Object.keys(tables).find((name) => tables[name] === table) ?? '';
 
 /** Options shared by {@link selectionToWith} and {@link resolveSelection}. */
 export type SelectionOptions = {
@@ -216,20 +182,20 @@ const runtimeFor = (
  * with `scope` hooks cannot be read without that context: the hooks would be called with
  * nothing, and running the read unscoped is the leak the option exists to prevent.
  */
-const scopeFor = (
+const visibilityFor = (
   runtime: BuildRuntime | undefined,
   options: SelectionOptions,
   helper: string,
-): ScopeResolver | undefined => {
-  if (!runtime?.policies?.scope) {
+): RowVisibility | undefined => {
+  if (!runtime?.policies?.visibility) {
     return undefined;
   }
-  if (runtime.scoped && !('context' in options)) {
+  if (runtime.hasRowScope && !('context' in options)) {
     throw new Error(
       `Drizzle-GraphQL Error: the schema this selection belongs to configures \`scope\`, so ${helper} needs the request context to apply it. Pass the resolver's context as the \`context\` option.`,
     );
   }
-  return runtime.policies.scope(options.context);
+  return runtime.policies.visibility(options.context);
 };
 
 /**
@@ -275,23 +241,23 @@ export const selectionToWith = (
 ): Record<string, any> | undefined => {
   const { db, table, typeNameMapper } = options;
   const resolveName = namingRuleOf(options);
-  const { tables, relationMap, filterCtx } = contextFor(db);
+  const { tables, namedRelations, filterCtx } = contextFor(db);
   if (!tables[table]) {
     throw new Error(`Drizzle-GraphQL Error: '${table}' is not a table in the Drizzle schema.`);
   }
-  if (!relationMap[table]) {
+  if (!namedRelations[table]) {
     return undefined;
   }
 
   const typeName = resolveObjectTypeName(table, typeNameMapper, resolveName);
   const runtime = runtimeFor(info, db, typeName, 'selectionToWith');
   const parsed = parseInfo(info);
-  const params = extractRelationsParams(relationMap, tables, table, parsed, typeName, {
+  const params = extractRelationsParams(namedRelations, tables, table, parsed, typeName, {
     typeNameMapper,
     filterCtx: runtime?.filterCtx ?? filterCtx,
     resolveName,
     // The nested relations get the same policies the generated `with:` clause applies.
-    scope: scopeFor(runtime, options, 'selectionToWith'),
+    visibility: visibilityFor(runtime, options, 'selectionToWith'),
     limits: runtime?.limits,
     defaultOrderBy: runtime?.policies?.defaultOrderBy,
   });
@@ -358,7 +324,7 @@ export const resolveSelection = async (
     deleted,
   } = options;
   const resolveName = namingRuleOf(options);
-  const { tables, relationMap, filterCtx, primaryKeyOf, nullOrdering } = contextFor(db);
+  const { tables, namedRelations, filterCtx, primaryKeyOf, nullOrdering } = contextFor(db);
   const table = tables[tableName];
   if (!table) {
     throw new Error(`Drizzle-GraphQL Error: '${tableName}' is not a table in the Drizzle schema.`);
@@ -382,7 +348,7 @@ export const resolveSelection = async (
   // default ordering on the root list and on every relation.
   const typeName = resolveObjectTypeName(tableName, typeNameMapper, resolveName);
   const runtime = runtimeFor(info, db, typeName, 'resolveSelection');
-  const scope = scopeFor(runtime, options, 'resolveSelection');
+  const visibility = visibilityFor(runtime, options, 'resolveSelection');
   const defaultOrderBy = runtime?.policies?.defaultOrderBy;
 
   return runRelationalSelect({
@@ -390,7 +356,8 @@ export const resolveSelection = async (
     tables,
     tableName,
     table,
-    relationMap,
+    // The helpers load every selected relation, so the whole graph is the eager map.
+    eagerRelations: namedRelations,
     typeName,
     typeNameMapper,
     resolveName,
@@ -404,7 +371,7 @@ export const resolveSelection = async (
     filterCtx: runtime?.filterCtx ?? filterCtx,
     pkNames: primaryKeyOf(tableName),
     db: source,
-    scope,
+    visibility,
     deleted,
     limits: runtime?.limits,
     defaultOrderBy,

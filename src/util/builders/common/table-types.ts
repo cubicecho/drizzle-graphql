@@ -16,17 +16,15 @@ import { tableTypeExtension } from '../../extensions.ts';
 import { drizzleColumnToGraphQLType } from '../../type-converter/index.ts';
 import type { ConvertedRelationColumnWithArgs } from '../../type-converter/types.ts';
 import { fieldUpdateInputType } from '../field-updates.ts';
-// Type-only: the nested-write module imports this one at runtime, so the dependency has to
-// stay one-directional. The implementation is injected by the dialect builder.
-import type { NestedWriteTypes } from '../nested-writes.ts';
+// Type-only: nested-writes imports this module at runtime through common.ts, so its input
+// types arrive as a `generateTableTypes` parameter from `prepareBuild` instead.
+import type { NestedWriteTypes } from '../nested-writes/input-types.ts';
 import type { GeneratedTableTypes, GeneratedTableTypesOutputs, SelectData, TableNamedRelations } from '../types.ts';
 import { deletedArg } from './args.ts';
 import { generateDistinctEnum } from './column-enums.ts';
 import { inputFieldDocs } from './docs.ts';
 import { visibleColumns } from './exclusions.ts';
 import { aggregateFieldComplexity, listFieldComplexity } from './limits.ts';
-import type { TypeNameMapper } from './naming.ts';
-import { resolveTypeName } from './naming.ts';
 import { relationExtensionFor } from './relation-resolvers.ts';
 import type { RelationAggregateFactory, RelationResolverFactory } from './relations.ts';
 import {
@@ -35,6 +33,8 @@ import {
   generateTableSelectTypeFieldsCached,
 } from './table-inputs.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
+import type { TypeNameMapper } from './type-names.ts';
+import { resolveTypeName } from './type-names.ts';
 import { isWritableColumn } from './writable-columns.ts';
 
 /**
@@ -65,7 +65,7 @@ const objectTypeShell = (
   // The thunk runs when the schema is assembled, by which point the table's own
   // generateSelectFields call has filled the container in.
   const shell = new GraphQLObjectType({
-    name: cacheCtx.typeName({
+    name: cacheCtx.resolveName({
       kind: 'object',
       defaultName: resolveTypeName(tableName, typeNameMapper),
       table: tableName,
@@ -92,7 +92,7 @@ const objectTypeShell = (
 const generateSelectFields = (
   tables: Record<string, Table>,
   tableName: string,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
+  namedRelations: Record<string, Record<string, TableNamedRelations>>,
   relationsDepthLimit: number | undefined,
   cacheCtx: TypeCacheCtx,
   typeNameMapper: TypeNameMapper | undefined,
@@ -100,8 +100,8 @@ const generateSelectFields = (
   relationAggregateFactory?: RelationAggregateFactory,
 ): SelectData<true> => {
   const table = tables[tableName]!;
-  const order = generateTableOrderTypeCached(table, tableName, typeNameMapper, cacheCtx, relationMap, tables);
-  const filters = generateTableFilterTypeCached(table, tableName, cacheCtx, typeNameMapper, relationMap, tables);
+  const order = generateTableOrderTypeCached(table, tableName, typeNameMapper, cacheCtx, namedRelations, tables);
+  const filters = generateTableFilterTypeCached(table, tableName, cacheCtx, typeNameMapper, namedRelations, tables);
   const tableFields = generateTableSelectTypeFieldsCached(table, tableName, cacheCtx);
 
   // relationsDepthLimit: 0 → no relation fields on any type (a flat, columns-only schema).
@@ -120,7 +120,7 @@ const generateSelectFields = (
   objectTypeShell(tables, tableName, cacheCtx, typeNameMapper);
   const container = cacheCtx.relationFieldContainers.get(tableName)!;
 
-  const relationsForTable = relationMap[tableName];
+  const relationsForTable = namedRelations[tableName];
   const relationEntries: [string, TableNamedRelations][] = relationsForTable ? Object.entries(relationsForTable) : [];
   const rawRelationFields: [string, ConvertedRelationColumnWithArgs][] = [];
 
@@ -136,12 +136,12 @@ const generateSelectFields = (
       targetTableName,
       cacheCtx,
       typeNameMapper,
-      relationMap,
+      namedRelations,
       tables,
     );
     const targetOrder = isOne
       ? undefined
-      : generateTableOrderTypeCached(targetTable, targetTableName, typeNameMapper, cacheCtx, relationMap, tables);
+      : generateTableOrderTypeCached(targetTable, targetTableName, typeNameMapper, cacheCtx, namedRelations, tables);
 
     // The target table's own type, shared by every relation field that points at it.
     const relType = objectTypeShell(tables, targetTableName, cacheCtx, typeNameMapper);
@@ -164,7 +164,7 @@ const generateSelectFields = (
           type: isRequired ? new GraphQLNonNull(relType) : relType,
           args: {
             where: { type: targetFilters },
-            ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.typeName),
+            ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.resolveName),
           },
           resolve,
           ...relationDocs,
@@ -183,7 +183,7 @@ const generateSelectFields = (
       ? generateDistinctEnum(
           tables[targetTableName]!,
           resolveTypeName(targetTableName, typeNameMapper),
-          cacheCtx.typeName,
+          cacheCtx.resolveName,
           targetTableName,
         )
       : undefined;
@@ -197,7 +197,7 @@ const generateSelectFields = (
           ...(targetOrder ? { orderBy: { type: targetOrder } } : {}),
           offset: { type: GraphQLInt },
           limit: { type: GraphQLInt },
-          ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.typeName),
+          ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.resolveName),
           after: {
             type: GraphQLString,
             description:
@@ -235,7 +235,7 @@ const generateSelectFields = (
             type: new GraphQLNonNull(relationAggregate.type),
             args: {
               where: { type: targetFilters },
-              ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.typeName),
+              ...deletedArg(cacheCtx.softDeleteOf, targetTableName, cacheCtx.resolveName),
             },
             resolve: relationAggregate.resolve,
             extensions: {
@@ -260,7 +260,7 @@ const generateSelectFields = (
 export const generateTableTypes = <WithReturning extends boolean>(
   tableName: string,
   tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
+  namedRelations: Record<string, Record<string, TableNamedRelations>>,
   withReturning: WithReturning,
   relationsDepthLimit: number | undefined,
   cacheCtx: TypeCacheCtx,
@@ -275,7 +275,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   const { tableFields, relationFields, filters, order } = generateSelectFields(
     tables,
     tableName,
-    relationMap,
+    namedRelations,
     relationsDepthLimit,
     cacheCtx,
     typeNameMapper,
@@ -321,7 +321,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
       // A numeric or array column takes an operations input instead of the bare scalar, so
       // it can be changed relative to its current value rather than only replaced.
       const operations = cacheCtx.featureOf(tableName).fieldUpdateOperations
-        ? fieldUpdateInputType(column, columnName, tableName, cacheCtx.typeName)
+        ? fieldUpdateInputType(column, columnName, tableName, cacheCtx.resolveName)
         : undefined;
       const field = operations ? { ...converted, type: operations } : converted;
       return [columnName, { ...field, ...inputFieldDocs(cacheCtx.docs, column, tableName, columnName, field.type) }];
@@ -334,7 +334,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   // With nested writes on, the fields are thunked: a relation field's operand is the target
   // table's filter input, which does not exist yet while this table is being generated.
   const insertInput = new GraphQLInputObjectType({
-    name: cacheCtx.typeName({
+    name: cacheCtx.resolveName({
       kind: 'createInput',
       defaultName: `${capitalize(insertPrefix)}${typeName}Input`,
       table: tableName,
@@ -345,7 +345,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   });
 
   const updateInput = new GraphQLInputObjectType({
-    name: cacheCtx.typeName({
+    name: cacheCtx.resolveName({
       kind: 'updateInput',
       defaultName: `${capitalize(updatePrefix)}${typeName}Input`,
       table: tableName,
@@ -360,7 +360,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   // every other table's upsert takes the create input, which would be identical.
   const upsertInput = nestedWrites?.hasRelations(tableName)
     ? new GraphQLInputObjectType({
-        name: cacheCtx.typeName({
+        name: cacheCtx.resolveName({
           kind: 'upsertInput',
           defaultName: `${capitalize(upsertPrefix)}${typeName}Input`,
           table: tableName,
@@ -374,7 +374,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   const selectSingleOutput =
     cacheCtx.objectTypeCache.get(tableName) ??
     new GraphQLObjectType({
-      name: cacheCtx.typeName({
+      name: cacheCtx.resolveName({
         kind: 'object',
         defaultName: resolveTypeName(tableName, typeNameMapper),
         table: tableName,

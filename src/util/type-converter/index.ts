@@ -25,6 +25,7 @@ import {
   GraphQLString,
 } from 'graphql';
 import { capitalize, constantCase } from '../case-ops/index.ts';
+import { declarePerBuildRegistry } from '../per-build-registry.ts';
 import {
   GraphQLBigIntString,
   GraphQLDate,
@@ -112,6 +113,7 @@ const enumValueNamesKey = (names: readonly string[]): string => JSON.stringify(n
 let enumNamesInUse = new Map<string, { type: GraphQLEnumType; valuesKey: string; namesKey: string }>();
 let enumNameMapper: EnumNameMapper | undefined;
 let enumValueNameMapper: EnumValueNameMapper | undefined;
+const enumConfigInstalled = declarePerBuildRegistry('enum config');
 
 /** The value-name presets, by the string a config passes for them. */
 const enumValueNamePresets: Record<string, EnumValueNameMapper> = {
@@ -128,6 +130,7 @@ export const registerEnumConfig = (config: {
   enumNameMapper?: EnumNameMapper;
   enumValueNameMapper?: 'constant' | EnumValueNameMapper;
 }): void => {
+  enumConfigInstalled();
   enumNameMapper = config.enumNameMapper;
   const valueMapper = config.enumValueNameMapper;
   if (typeof valueMapper === 'string') {
@@ -487,6 +490,7 @@ const columnBaseToGraphQLCore = (
  * with different scalar configs, the most recent build wins for runtime value mapping.
  */
 const columnScalarOverrides = new WeakMap<Column, { output?: GraphQLScalarType; input?: GraphQLScalarType }>();
+const scalarOverridesInstalled = declarePerBuildRegistry('scalar overrides');
 
 /** The scalar overriding this column in the given direction, if one was registered. */
 export const getColumnScalarOverride = (column: Column, isInput: boolean): GraphQLScalarType | undefined => {
@@ -517,7 +521,7 @@ const normalizeScalarOverride = (
 
 /**
  * Resolves the scalar-override config against every column of the given tables and stores
- * the result in the override registry. Called once per schema build, before any types are
+ * the result in the override registry. Called by `installBuildRegistries`, before any types are
  * generated — and always, even with no config, so a rebuild clears overrides left behind
  * by a previous build against the same table objects.
  *
@@ -528,6 +532,7 @@ export const registerScalarOverrides = (
   tables: Record<string, Table>,
   config: { scalars?: ScalarOverridesConfig; mapColumnType?: ColumnTypeMapper },
 ): void => {
+  scalarOverridesInstalled();
   for (const [tableName, table] of Object.entries(tables)) {
     for (const [columnName, column] of Object.entries(getColumns(table))) {
       const declared = config.scalars?.[tableName]?.[columnName];

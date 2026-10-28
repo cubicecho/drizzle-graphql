@@ -37,6 +37,7 @@ import { executionKey } from '../execution.ts';
 import { requestValueNodes } from '../graphql-variables.ts';
 import type { ResolveTree } from '../parse-resolve-info.ts';
 import { parseResolveInfo } from '../parse-resolve-info.ts';
+import { declarePerBuildRegistry } from '../per-build-registry.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type { ConvertedColumn } from '../type-converter/types.ts';
 import { columnDialect } from './common/column-filters.ts';
@@ -59,15 +60,14 @@ import {
   parentKeyCondition,
   type RelationAggregateFactory,
   type RelationFilterBase,
+  type ResolverPolicies,
   relatedRowParents,
   relationDeletedDefault,
   relationFilterCtx,
   relationOwnCondition,
   resolveExecutor,
-  resolveScope,
   resolveTypeName,
   sharedType,
-  type TablePolicies,
   type TypeCacheCtx,
   type TypeNameMapper,
   type TypeNameResolver,
@@ -75,7 +75,7 @@ import {
   visibleColumns,
   warnUnresolvedJoin,
   withErrorContext,
-  withScope,
+  withRowVisibility,
 } from './common.ts';
 import type { CreatedResolver, Filters } from './types.ts';
 
@@ -189,9 +189,11 @@ interface AggregateColumnSets {
  * second build the first build's enum instances, which is a schema with two types of one name.
  */
 let aggregateColumnSetsCache = new WeakMap<Table, Map<string, AggregateColumnSets>>();
+const aggregateCacheInstalled = declarePerBuildRegistry('aggregate column sets');
 
-/** Drops the classifications cached for the previous build. Called once per `generateSchemaData`. */
+/** Drops the classifications cached for the previous build. Called by `installBuildRegistries`. */
 export const resetAggregateColumnCache = (): void => {
+  aggregateCacheInstalled();
   aggregateColumnSetsCache = new WeakMap();
 };
 
@@ -273,7 +275,7 @@ export const generateAggregateTypes = (
 
   const { numeric, orderable, comparable, all } = classifyAggregateColumns(table, tableName);
   const nameOf = (op: string) =>
-    cacheCtx?.typeName({
+    cacheCtx?.resolveName({
       kind: 'aggregate',
       defaultName: `${typeName}${capitalize(op)}Aggregate`,
       table: tableName,
@@ -331,7 +333,7 @@ export const generateAggregateTypes = (
 
   const aggregateType = new GraphQLObjectType({
     name:
-      cacheCtx?.typeName({ kind: 'aggregate', defaultName: `${typeName}Aggregate`, table: tableName }) ??
+      cacheCtx?.resolveName({ kind: 'aggregate', defaultName: `${typeName}Aggregate`, table: tableName }) ??
       `${typeName}Aggregate`,
     fields,
   });
@@ -516,7 +518,7 @@ export const generateAggregate = (
   fieldName: string,
   filterArgs: GraphQLInputObjectType,
   filterCtx?: RelationFilterBase,
-  policies?: TablePolicies,
+  policies?: ResolverPolicies,
   resolveName?: TypeNameResolver,
 ): CreatedResolver => {
   const target = aggregateTarget(table, tableName, typeName, resolveName);
@@ -537,13 +539,13 @@ export const generateAggregate = (
         }
 
         let query = resolveExecutor(db, context).select(request.selection).from(table);
-        const scope = resolveScope(policies, context, filterCtx);
-        const where = withScope(
-          scope,
+        const visibility = policies?.visibility?.(context);
+        const where = withRowVisibility(
+          visibility,
           tableName,
           table,
           args.where
-            ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName, scope))
+            ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName, visibility))
             : undefined,
           args.deleted,
         );
@@ -580,7 +582,7 @@ export const createRelationAggregateFactory = (
   cacheCtx: TypeCacheCtx,
   typeNameMapper?: TypeNameMapper,
   filterCtx?: RelationFilterBase,
-  policies?: TablePolicies,
+  policies?: ResolverPolicies,
 ): RelationAggregateFactory => {
   // The factory can be asked for the same relation more than once in a build; warn once.
   const warned = new Set<string>();
@@ -633,7 +635,7 @@ export const createRelationAggregateFactory = (
 
     const targetTypeName = resolveTypeName(targetTableName, typeNameMapper);
     const type = generateAggregateTypes(targetTable, targetTableName, targetTypeName, cacheCtx);
-    const target = aggregateTarget(targetTable, targetTableName, targetTypeName, cacheCtx.typeName);
+    const target = aggregateTarget(targetTable, targetTableName, targetTypeName, cacheCtx.resolveName);
     const errorCtx: DrizzleErrorContext = {
       table: targetTableName,
       operation: 'relationAggregate',
@@ -686,27 +688,27 @@ export const createRelationAggregateFactory = (
           const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key, localCols), key])).values()];
           // An aggregate over a relation counts the same rows the relation itself returns,
           // so it is narrowed by the target table's scope too.
-          const scope = resolveScope(policies, context, filterCtx);
+          const visibility = policies?.visibility?.(context);
           const groupSelection = Object.fromEntries(groupAliases.map((alias, i) => [alias, groupCols[i]!]));
 
           // A large batch is read in groups so that no query binds more parent keys than the
           // dialects accept; each parent's group row comes from the one query its key is in.
           const byKey = new Map<string, any>();
           for (const chunk of parentKeyChunks(uniqueKeys, groupCols.length)) {
-            const whereCondition = withScope(
-              scope,
+            const whereCondition = withRowVisibility(
+              visibility,
               targetTableName,
               targetTable,
               and(
                 parentKeyCondition(groupCols, chunk),
                 ownCondition,
-                junction ? junctionPolicy(scope, junctionName, junction.table) : undefined,
+                junction ? junctionPolicy(visibility, junctionName, junction.table) : undefined,
                 whereArg
                   ? extractFilters(
                       targetTable,
                       targetTableName,
                       whereArg,
-                      relationFilterCtx(filterCtx, targetTableName, scope),
+                      relationFilterCtx(filterCtx, targetTableName, visibility),
                     )
                   : undefined,
               ),
@@ -790,16 +792,16 @@ export const generateGroupByEnum = (
 
   return generateColumnEnum(
     table,
-    cacheCtx?.typeName({ kind: 'columnEnum', defaultName, table: tableName, operation: 'groupBy' }) ?? defaultName,
+    cacheCtx?.resolveName({ kind: 'columnEnum', defaultName, table: tableName, operation: 'groupBy' }) ?? defaultName,
     `Columns of ${typeName} that a query can group by`,
     (_column, columnName) => Boolean(groupable[columnName]),
   );
 };
 
 /** Shared by every `having` clause, so it is created once per name rather than per table. */
-export const aggregateNumberFilterType = (typeName: TypeNameResolver): GraphQLInputObjectType =>
+export const aggregateNumberFilterType = (resolveName: TypeNameResolver): GraphQLInputObjectType =>
   sharedType(
-    typeName,
+    resolveName,
     { kind: 'shared', defaultName: 'AggregateNumberFilter' },
     (name) =>
       new GraphQLInputObjectType({
@@ -824,7 +826,7 @@ export const generateHavingInput = (
   cacheCtx?: TypeCacheCtx,
 ): GraphQLInputObjectType => {
   const { numeric, comparable, all } = classifyAggregateColumns(table, tableName);
-  const resolveName = cacheCtx?.typeName ?? ((info: GeneratedTypeInfo) => info.defaultName);
+  const resolveName = cacheCtx?.resolveName ?? ((info: GeneratedTypeInfo) => info.defaultName);
   const numberFilter = aggregateNumberFilterType(resolveName);
 
   const fields: Record<string, { type: any; description?: string }> = {
@@ -886,7 +888,7 @@ export const generateGroupByType = (
 
   const keysType = new GraphQLObjectType({
     name:
-      cacheCtx?.typeName({ kind: 'groupKeys', defaultName: `${typeName}GroupKeys`, table: tableName }) ??
+      cacheCtx?.resolveName({ kind: 'groupKeys', defaultName: `${typeName}GroupKeys`, table: tableName }) ??
       `${typeName}GroupKeys`,
     description: `The grouped column values of one ${typeName} group. A column the query did not group by is null.`,
     fields: Object.fromEntries(
@@ -907,7 +909,7 @@ export const generateGroupByType = (
 
   return new GraphQLObjectType({
     name:
-      cacheCtx?.typeName({ kind: 'groupBy', defaultName: `${typeName}GroupBy`, table: tableName }) ??
+      cacheCtx?.resolveName({ kind: 'groupBy', defaultName: `${typeName}GroupBy`, table: tableName }) ??
       `${typeName}GroupBy`,
     fields: { group: { type: new GraphQLNonNull(keysType) }, ...aggregateFields },
   });
@@ -978,7 +980,7 @@ export const generateGroupBy = (
   groupByEnum: GraphQLEnumType,
   havingInput: GraphQLInputObjectType,
   filterCtx?: RelationFilterBase,
-  policies?: TablePolicies,
+  policies?: ResolverPolicies,
   resolveName?: TypeNameResolver,
 ): CreatedResolver => {
   const target = aggregateTarget(table, tableName, typeName, resolveName);
@@ -1031,13 +1033,13 @@ export const generateGroupBy = (
         };
 
         let query = resolveExecutor(db, context).select(selection).from(table);
-        const scope = resolveScope(policies, context, filterCtx);
-        const where = withScope(
-          scope,
+        const visibility = policies?.visibility?.(context);
+        const where = withRowVisibility(
+          visibility,
           tableName,
           table,
           args.where
-            ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName, scope))
+            ? extractFilters(table, tableName, args.where, relationFilterCtx(filterCtx, tableName, visibility))
             : undefined,
           args.deleted,
         );

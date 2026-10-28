@@ -34,42 +34,44 @@ import { parseResolveInfo } from '../parse-resolve-info.ts';
 import { missingQueryBuilderError } from './errors.ts';
 import type { CreatedResolver, TableNamedRelations, TableSelectArgs } from './types.ts';
 
+/**
+ * What a read generator gets from the build rather than from the table — the same for every
+ * table, as `WriteBuildOptions` is for the write generators.
+ */
+export interface ReadBuildOptions {
+  db: any;
+  tables: Record<string, Table>;
+  eagerRelations: Record<string, Record<string, TableNamedRelations>>;
+  typeNameMapper?: TypeNameMapper;
+  filterCtx?: RelationFilterBase;
+  limits?: LimitPolicyFor;
+  policies?: ResolverPolicies;
+  /** The build's type-naming rule, which names the `distinct` and `deleted` enums. */
+  resolveName?: TypeNameResolver;
+}
+
+/** The half of a read generator's options that changes from table to table. */
+export interface SelectOptions {
+  tableName: string;
+  orderArgs: GraphQLInputObjectType | undefined;
+  filterArgs: GraphQLInputObjectType;
+  /** The field's name, already run through the build's naming rules. */
+  fieldName: string;
+}
+
+/** {@link SelectOptions} for the list field, which can also take a `distinct` argument. */
+export interface SelectArrayOptions extends SelectOptions {
+  /** The table's default type name, which names its `distinct` enum. */
+  typeName: string;
+  /** Whether the field takes a `distinct` argument. */
+  distinct: boolean;
+}
+
 /** `<table>` — the list field. */
-export type SelectArrayGenerator = (
-  db: any,
-  tableName: string,
-  tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  orderArgs: GraphQLInputObjectType | undefined,
-  filterArgs: GraphQLInputObjectType,
-  fieldName: string,
-  typeName: string,
-  typeNameMapper?: TypeNameMapper,
-  filterCtx?: RelationFilterBase,
-  distinctEnabled?: boolean,
-  limits?: LimitPolicyFor,
-  policies?: ResolverPolicies,
-  /** The build's type-naming rule, which names the `distinct` enum. */
-  resolveName?: TypeNameResolver,
-) => CreatedResolver;
+export type SelectArrayGenerator = (build: ReadBuildOptions, opts: SelectArrayOptions) => CreatedResolver;
 
 /** `<table>Single` — the same read, capped at one row. */
-export type SelectSingleGenerator = (
-  db: any,
-  tableName: string,
-  tables: Record<string, Table>,
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
-  orderArgs: GraphQLInputObjectType | undefined,
-  filterArgs: GraphQLInputObjectType,
-  fieldName: string,
-  typeName: string,
-  typeNameMapper?: TypeNameMapper,
-  filterCtx?: RelationFilterBase,
-  limits?: LimitPolicyFor,
-  policies?: ResolverPolicies,
-  /** The build's type-naming rule, which names the `deleted` argument's enum. */
-  resolveName?: TypeNameResolver,
-) => CreatedResolver;
+export type SelectSingleGenerator = (build: ReadBuildOptions, opts: SelectOptions) => CreatedResolver;
 
 /** The table's entry in `db.query`, which is what a relational read runs through. */
 const queryBaseFor = (db: any, tableName: string): RelationalQueryBuilder<any, any, any> => {
@@ -91,22 +93,9 @@ export const createSelectGenerators = (
   primaryKeyPropNames: (table: any) => string[],
   nullOrdering: NullOrdering,
 ): { generateSelectArray: SelectArrayGenerator; generateSelectSingle: SelectSingleGenerator } => {
-  const generateSelectArray: SelectArrayGenerator = (
-    db,
-    tableName,
-    tables,
-    relationMap,
-    orderArgs,
-    filterArgs,
-    fieldName,
-    typeName,
-    typeNameMapper,
-    filterCtx,
-    distinctEnabled = true,
-    limits,
-    policies,
-    resolveName,
-  ): CreatedResolver => {
+  const generateSelectArray: SelectArrayGenerator = (build, opts): CreatedResolver => {
+    const { db, tables, eagerRelations, typeNameMapper, filterCtx, limits, policies, resolveName } = build;
+    const { tableName, orderArgs, filterArgs, fieldName, typeName, distinct: distinctEnabled } = opts;
     const queryBase = queryBaseFor(db, tableName);
 
     const table = tables[tableName]!;
@@ -139,7 +128,7 @@ export const createSelectGenerators = (
             tables,
             tableName,
             table,
-            relationMap,
+            eagerRelations,
             typeName: objectTypeName,
             typeNameMapper,
             resolveName,
@@ -152,7 +141,7 @@ export const createSelectGenerators = (
             defaultOrderBy: policies?.defaultOrderBy,
             pkNames,
             db: executor,
-            scope: policies?.scope?.(context),
+            visibility: policies?.visibility?.(context),
             nullOrdering,
           });
         } catch (e) {
@@ -163,24 +152,9 @@ export const createSelectGenerators = (
     };
   };
 
-  const generateSelectSingle: SelectSingleGenerator = (
-    db,
-    tableName,
-    tables,
-    relationMap,
-    orderArgs,
-    filterArgs,
-    fieldName,
-    // The list field's only use for the default type name is naming its `distinct` enum,
-    // and a single-row read has no `distinct` argument. The slot stays so the two
-    // generators keep one positional shape at the call site in `build-context.ts`.
-    _typeName,
-    typeNameMapper,
-    filterCtx,
-    limits,
-    policies,
-    resolveName,
-  ): CreatedResolver => {
+  const generateSelectSingle: SelectSingleGenerator = (build, opts): CreatedResolver => {
+    const { db, tables, eagerRelations, typeNameMapper, filterCtx, limits, policies, resolveName } = build;
+    const { tableName, orderArgs, filterArgs, fieldName } = opts;
     const queryBase = queryBaseFor(db, tableName);
 
     const queryArgs = selectSingleArgs(orderArgs, filterArgs, policies?.softDelete, tableName, resolveName);
@@ -203,7 +177,7 @@ export const createSelectGenerators = (
             tables,
             tableName,
             table,
-            relationMap,
+            eagerRelations,
             typeName: objectTypeName,
             typeNameMapper,
             resolveName,
@@ -215,7 +189,7 @@ export const createSelectGenerators = (
             defaultOrderBy: policies?.defaultOrderBy,
             pkNames,
             db: executor,
-            scope: policies?.scope?.(context),
+            visibility: policies?.visibility?.(context),
             nullOrdering,
           });
         } catch (e) {

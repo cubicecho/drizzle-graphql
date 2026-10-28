@@ -161,8 +161,8 @@ describe('relations in drizzle-orm rc.5 shape', () => {
   it('compile relation filters, direct and through a junction, to the same SQL', () => {
     const sqlFor = (relations: ReturnType<typeof makeRelations>, table: 'Authors' | 'Posts', filter: any) => {
       const db = dbWith(relations);
-      const relationMap = buildNamedRelations(db._.relations, Object.entries(tables));
-      const ctx = relationFilterCtx({ tables, relationMap, uniqueKeys: {} }, table);
+      const namedRelations = buildNamedRelations(db._.relations, Object.entries(tables));
+      const ctx = relationFilterCtx({ tables, namedRelations, uniqueKeys: {} }, table);
       return db.dialect.sqlToQuery(extractFilters(tables[table], table, filter, ctx)!);
     };
 

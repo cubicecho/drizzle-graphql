@@ -1,5 +1,9 @@
 import type { Table } from 'drizzle-orm';
-import { type SQLiteAsyncDatabase, SQLiteTable, getTableConfig as sqliteTableConfig } from 'drizzle-orm/sqlite-core';
+import {
+  type SQLiteAsyncDatabase,
+  SQLiteTable,
+  getTableConfig as sqliteTableConfigUncached,
+} from 'drizzle-orm/sqlite-core';
 
 import type { GeneratedEntities } from '../../types.ts';
 import {
@@ -8,35 +12,31 @@ import {
   memoizeTableConfig,
   type TablesRelationalConfig,
 } from '../builders/common.ts';
-import { writeNestedEntry } from './nested-writes.ts';
+import { isSyncDriver, runInOrder } from './common/sync-driver.ts';
 import { createSchemaDataGenerator } from './schema-data.ts';
 import type { SchemaGeneratorOptions } from './types.ts';
-import { createUpdateManyGenerator, type UpdateManyBatchRunner, type UpdateManyEntry } from './update-many.ts';
+import {
+  createUpdateManyGenerator,
+  type UpdateManyBatchRunner,
+  type UpdateManyEntry,
+  writeEntriesInOrder,
+} from './update-many.ts';
 
 /** The dialect's table config, cached per table — see {@link memoizeTableConfig}. */
-const getTableConfig = memoizeTableConfig(sqliteTableConfig);
+export const sqliteTableConfig = memoizeTableConfig(sqliteTableConfigUncached);
 
 /** Primary-key property names for a SQLite table, including table-level composite keys. */
-const sqlitePrimaryKeyPropNames = (table: SQLiteTable): string[] =>
-  getPrimaryKeyPropNamesFromConfig(table, getTableConfig);
+export const sqlitePrimaryKeyPropNames = (table: SQLiteTable): string[] =>
+  getPrimaryKeyPropNamesFromConfig(table, sqliteTableConfig);
 
 /**
- * SQLite's batch runner. A synchronous driver (better-sqlite3) commits the moment its
- * transaction callback returns, so that callback must not be async — an awaited statement
- * would run after the COMMIT. The driver kind is probed from the first statement's result
- * rather than declared, so the same resolver serves both driver families.
+ * SQLite's batch runner. A sync driver commits the moment its transaction callback returns, so
+ * that callback must not be async: {@link runInOrder} runs the entries and tells the driver
+ * families apart from the first statement's result, so one resolver serves both.
  */
-const runSqliteUpdateManyBatch: UpdateManyBatchRunner = ({
-  executor,
-  entries,
-  table,
-  returning,
-  anyNested,
-  nested,
-  tableName,
-  request,
-}) => {
-  const runEntry = (tx: any, entry: UpdateManyEntry) => {
+const runSqliteUpdateManyBatch: UpdateManyBatchRunner = (ctx) => {
+  const { executor, entries, table, returning, anyNested } = ctx;
+  const runEntry = (tx: any, entry: UpdateManyEntry): Record<string, any>[] => {
     let query = tx.update(table).set(entry.set);
     if (entry.filters) {
       query = query.where(entry.filters);
@@ -46,56 +46,16 @@ const runSqliteUpdateManyBatch: UpdateManyBatchRunner = ({
     return query.returning(returning).all();
   };
 
-  // Nested writes need statements interleaved with awaited reads, which only an async driver
-  // can do inside a transaction — `features.nestedWrites` rejects a sync driver at build
-  // time, so this path is always on one.
-  const runNestedEntry = async (tx: any, entry: UpdateManyEntry) => {
-    const write = async (target: any, patch: Record<string, any>) => {
-      const values = { ...entry.set, ...patch };
-      // Same as the single update: an entry with no column values reads the rows its `where`
-      // matched so the nested operations have something to attach to.
-      const writes = Object.keys(values).length > 0;
-      let query = writes ? target.update(table).set(values) : target.select(returning).from(table);
-      if (entry.filters) {
-        query = query.where(entry.filters);
-      }
-      return (await (writes ? query.returning(returning) : query)) as Record<string, any>[];
-    };
-    return entry.ops
-      ? writeNestedEntry({ executor: tx, runtime: nested!, tableName, ops: entry.ops, write, request, existing: true })
-      : write(tx, {});
-  };
-
   // On a caller-supplied transaction — or the shared multi-mutation transaction opened by
   // `runMutation` — this opens a savepoint, so the batch stays atomic without breaking the
   // outer transaction.
   return executor.transaction((tx: any) => {
+    // Nested writes interleave statements with awaited reads, which only an async driver can
+    // do inside a transaction; `features.nestedWrites` rejects a sync driver at build time.
     if (anyNested) {
-      return (async () => {
-        const results: Record<string, any>[][] = [];
-        for (const entry of entries) {
-          results.push(await runNestedEntry(tx, entry));
-        }
-        return results;
-      })();
+      return writeEntriesInOrder(tx, ctx);
     }
-
-    const first = runEntry(tx, entries[0]!);
-    if (typeof (first as any)?.then === 'function') {
-      // Async driver: await sequentially so the entries apply in input order.
-      return (async () => {
-        const results: Record<string, any>[][] = [await first];
-        for (let i = 1; i < entries.length; i++) {
-          results.push(await runEntry(tx, entries[i]!));
-        }
-        return results;
-      })();
-    }
-    const results: Record<string, any>[][] = [first];
-    for (let i = 1; i < entries.length; i++) {
-      results.push(runEntry(tx, entries[i]!));
-    }
-    return results;
+    return runInOrder(entries, (entry) => runEntry(tx, entry));
   });
 };
 
@@ -103,7 +63,7 @@ const generateUpdateMany = createUpdateManyGenerator(sqlitePrimaryKeyPropNames, 
 
 const sqliteSchemaData = createSchemaDataGenerator({
   tableClass: SQLiteTable,
-  getTableConfig,
+  getTableConfig: sqliteTableConfig,
   primaryKeyPropNames: sqlitePrimaryKeyPropNames,
   // SQLite sorts NULLs as the smallest values (first in ASC).
   nullOrdering: DIALECT_NULL_ORDERING.sqlite,
@@ -113,19 +73,19 @@ const sqliteSchemaData = createSchemaDataGenerator({
   // returns, so it can neither interleave awaited statements inside one transaction nor hold
   // one open across resolver calls — which is what all three of these features require.
   preflight: (db, options) => {
-    if (options.features.nestedWrites && (db as any).resultKind === 'sync') {
+    if (options.features.nestedWrites && isSyncDriver(db)) {
       throw new Error(
         'Drizzle-GraphQL Error: features.nestedWrites requires an asynchronous SQLite driver (e.g. libsql). Synchronous drivers cannot run the multi-statement transaction a nested write needs.',
       );
     }
-    if (options.transactions && (db as any).resultKind === 'sync') {
+    if (options.transactions && isSyncDriver(db)) {
       throw new Error(
         "Drizzle-GraphQL Error: transactions: 'auto' requires an asynchronous SQLite driver (e.g. libsql). Synchronous drivers cannot hold a transaction open across resolvers.",
       );
     }
     // A hook may be async, and it has to run inside the mutation's transaction so a throw can
     // roll the write back. A synchronous driver would commit before the awaited hook ran.
-    if (options.policies?.onWrite && (db as any).resultKind === 'sync') {
+    if (options.policies?.onWrite && isSyncDriver(db)) {
       throw new Error(
         'Drizzle-GraphQL Error: onWrite requires an asynchronous SQLite driver (e.g. libsql). Synchronous drivers commit before an awaited hook runs, so a throwing hook could not roll the mutation back.',
       );

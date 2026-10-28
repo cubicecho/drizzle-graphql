@@ -83,14 +83,14 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
     const writeBuild: WriteBuildOptions = {
       db,
       tables,
-      relationMap: eagerRelations,
+      eagerRelations,
       typeNameMapper,
       filterCtx,
       txCtx: mutationTxCtx,
       nested: nestedRuntime,
       limits,
       policies,
-      resolveName: cacheCtx.typeName,
+      resolveName: cacheCtx.resolveName,
     };
 
     forEachTable(ctx, ({ tableName, tableFeatures, names, types, softDeleteInfo }) => {
@@ -229,7 +229,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             single: false,
             requireWhere: tableFeatures.requireWhere,
             restore: false,
-            selectionCtx: { tableName, relationMap: namedRelations, tables },
+            selectionCtx: { tableName, namedRelations, tables },
           })
         : undefined;
       const deleteSingleGenerated = tableFeatures.delete
@@ -242,7 +242,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             single: true,
             requireWhere: tableFeatures.requireWhere,
             restore: false,
-            selectionCtx: { tableName, relationMap: namedRelations, tables },
+            selectionCtx: { tableName, namedRelations, tables },
           })
         : undefined;
       // A restore is an UPDATE of the marker, so it follows the table's `update` switch.
@@ -257,7 +257,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             single: false,
             requireWhere: tableFeatures.requireWhere,
             restore: true,
-            selectionCtx: { tableName, relationMap: namedRelations, tables },
+            selectionCtx: { tableName, namedRelations, tables },
           })
         : undefined;
       const restoreSingleGenerated = offersRestore
@@ -270,7 +270,7 @@ export const createSchemaDataGenerator = (adapter: DialectSchemaAdapter) => {
             single: true,
             requireWhere: tableFeatures.requireWhere,
             restore: true,
-            selectionCtx: { tableName, relationMap: namedRelations, tables },
+            selectionCtx: { tableName, namedRelations, tables },
           })
         : undefined;
       // The count variants are the plural write with its payload left off, so each follows the

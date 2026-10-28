@@ -1,5 +1,5 @@
 import type { Table } from 'drizzle-orm';
-import { type PgAsyncDatabase, PgTable, getTableConfig as pgTableConfig } from 'drizzle-orm/pg-core';
+import { type PgAsyncDatabase, PgTable, getTableConfig as pgTableConfigUncached } from 'drizzle-orm/pg-core';
 import type { GeneratedEntities } from '../../types.ts';
 import {
   DIALECT_NULL_ORDERING,
@@ -12,16 +12,17 @@ import type { SchemaGeneratorOptions } from './types.ts';
 import { createUpdateManyGenerator } from './update-many.ts';
 
 /** The dialect's table config, cached per table — see {@link memoizeTableConfig}. */
-const getTableConfig = memoizeTableConfig(pgTableConfig);
+export const pgTableConfig = memoizeTableConfig(pgTableConfigUncached);
 
 /** Primary-key property names for a PG table, including table-level composite keys. */
-const pgPrimaryKeyPropNames = (table: PgTable): string[] => getPrimaryKeyPropNamesFromConfig(table, getTableConfig);
+export const pgPrimaryKeyPropNames = (table: PgTable): string[] =>
+  getPrimaryKeyPropNamesFromConfig(table, pgTableConfig);
 
 const generateUpdateMany = createUpdateManyGenerator(pgPrimaryKeyPropNames);
 
 const pgSchemaData = createSchemaDataGenerator({
   tableClass: PgTable,
-  getTableConfig,
+  getTableConfig: pgTableConfig,
   primaryKeyPropNames: pgPrimaryKeyPropNames,
   // PostgreSQL sorts NULLs as the largest values (last in ASC).
   nullOrdering: DIALECT_NULL_ORDERING.pg,

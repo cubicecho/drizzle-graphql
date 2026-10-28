@@ -16,9 +16,9 @@ import { drizzleColumnToGraphQLType } from '../../type-converter/index.ts';
 import type { ConvertedInputColumn, NullableConvertedColumnType } from '../../type-converter/types.ts';
 import { drizzleError } from './errors.ts';
 import { visibleColumns } from './exclusions.ts';
-import type { TypeNameMapper } from './naming.ts';
-import { resolveTypeName } from './naming.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
+import type { TypeNameMapper } from './type-names.ts';
+import { resolveTypeName } from './type-names.ts';
 
 /** A table's unique-key `where` fields: field name → the constraint's member property names. */
 export type UniqueKeyMap = Record<string, readonly string[]>;
@@ -81,7 +81,7 @@ export const generateUniqueKeyFilterFields = (
   for (const [fieldName, members] of Object.entries(uniqueKeys)) {
     fields[fieldName] = {
       type: new GraphQLInputObjectType({
-        name: cacheCtx.typeName({
+        name: cacheCtx.resolveName({
           kind: 'uniqueKey',
           defaultName: `${typeName}${members.map((member) => capitalize(member)).join('')}Key`,
           table: tableName,

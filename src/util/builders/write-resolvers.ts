@@ -22,6 +22,7 @@ import {
 } from '../data-mappers/index.ts';
 import type { ResolveTree } from '../parse-resolve-info.ts';
 import { parseResolveInfo } from '../parse-resolve-info.ts';
+import { runInOrder } from './common/sync-driver.ts';
 import {
   applyConflictPlan,
   applyContextValues,
@@ -44,24 +45,20 @@ import {
   relationFilterCtx,
   resolveConflictPlan,
   type SelectionCtx,
-  scopedWhere,
   stripContextValues,
   type TypeNameMapper,
   type TypeNameResolver,
   type UniqueTarget,
+  visibleWhere,
   type WriteOperation,
   withEagerRelations,
-  withScope,
+  withRowVisibility,
   writeResolver,
 } from './common.ts';
 import { remapUpdateInput } from './field-updates.ts';
-import {
-  mergedOps,
-  type NestedOps,
-  type NestedWriteRuntime,
-  updateWithNestedOps,
-  writeWithNestedOps,
-} from './nested-writes.ts';
+import { updateWithNestedOps, writeWithNestedOps } from './nested-writes/entry.ts';
+import { mergedOps, type NestedOps } from './nested-writes/ops.ts';
+import type { NestedWriteRuntime } from './nested-writes/runtime.ts';
 import type { CreatedResolver, Filters, TableNamedRelations } from './types.ts';
 
 /** Every database handle these resolvers can run on. `runMutation` takes `any`, so this is purely a call-site guard. */
@@ -81,7 +78,7 @@ export interface WriteBuildOptions {
   db: WriteDatabase;
   /** Every table in the build — the relation columns a selection can reach live here. */
   tables: Record<string, Table>;
-  relationMap: Record<string, Record<string, TableNamedRelations>>;
+  eagerRelations: Record<string, Record<string, TableNamedRelations>>;
   typeNameMapper?: TypeNameMapper;
   filterCtx?: RelationFilterBase;
   txCtx?: MutationTxCtx;
@@ -146,7 +143,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
    * one-element list.
    */
   const generateInsert = (build: WriteBuildOptions, opts: InsertOptions): CreatedResolver => {
-    const { db, tables, relationMap, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } = build;
+    const { db, tables, eagerRelations, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } =
+      build;
     const { tableName, table, baseType, fieldName, typeName, single, conflictDoNothing = false } = opts;
     const queryArgs: GraphQLFieldConfigArgumentMap = {
       values: {
@@ -183,7 +181,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           nested!.validate(tableName, entry.ops, { context, args, info });
         }
         const contextColumns = insertStamps(policies, tableName);
-        const scope = policies?.scope?.(context);
+        const visibility = policies?.visibility?.(context);
         const input = nestedEntries
           ? []
           : applyContextValuesAll(
@@ -193,7 +191,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             );
 
         const { columns, hasRelations, withParams } = mutationSelection(info, {
-          relationMap,
+          eagerRelations,
           filterCtx,
           tables,
           tableName,
@@ -203,7 +201,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           table,
           pkNames,
           limits,
-          scope,
+          visibility,
           defaultOrderBy: policies?.defaultOrderBy,
         });
 
@@ -250,8 +248,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         const enriched = await withEagerRelations(executor, tableName, result, pkNames, withParams, hasRelations);
 
         return single
-          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
-          : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
+          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, eagerRelations)
+          : remapToGraphQLArrayOutput(enriched, tableName, table, eagerRelations);
       },
     });
   };
@@ -263,7 +261,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
    * Shares the insert input: an upsert supplies a whole row, same as a create.
    */
   const generateUpsert = (build: WriteBuildOptions, opts: UpsertOptions): CreatedResolver => {
-    const { db, tables, relationMap, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } = build;
+    const { db, tables, eagerRelations, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } =
+      build;
     const { tableName, table, baseType, onConflictType, uniqueSets, fieldName, typeName, single } = opts;
     const queryArgs: GraphQLFieldConfigArgumentMap = {
       values: {
@@ -300,7 +299,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           nested!.validate(tableName, entry.ops, { context, args, info });
         }
         const contextColumns = insertStamps(policies, tableName);
-        const scope = policies?.scope?.(context);
+        const visibility = policies?.visibility?.(context);
         const input = nestedEntries
           ? []
           : applyContextValuesAll(
@@ -310,7 +309,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             );
 
         const { columns, hasRelations, withParams } = mutationSelection(info, {
-          relationMap,
+          eagerRelations,
           filterCtx,
           tables,
           tableName,
@@ -320,7 +319,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           table,
           pkNames,
           limits,
-          scope,
+          visibility,
           defaultOrderBy: policies?.defaultOrderBy,
         });
 
@@ -342,7 +341,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             withTarget: true,
             serverOwned: Object.keys(contextColumns ?? {}),
             buildWhere: (where) =>
-              extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, scope)),
+              extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, visibility)),
           });
         // A plain upsert's plan depends on its arguments alone, so a bad `onConflict` is refused
         // before the hook runs.
@@ -355,7 +354,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
             // On conflict the statement updates a row that already exists, so the scope applies
             // to it exactly as it would to `update<Table>`: a conflicting row the caller cannot
             // see is left alone rather than taken over.
-            const setWhere = withScope(scope, tableName, table, plan.setWhere);
+            const setWhere = withRowVisibility(visibility, tableName, table, plan.setWhere);
             // A parent-side key the nested operations set is written as an update writes it.
             const guarded = ops && nested ? { ...plan, set: nested.guardConflictSet(tableName, ops, plan.set) } : plan;
             return applyConflictPlan(query, table, guarded, setWhere);
@@ -366,30 +365,16 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           if (batches.length === 1) {
             return (await batchQuery(target, batches[0]!)) as Record<string, any>[];
           }
-          // The callback is not async: a synchronous SQLite driver (better-sqlite3, node:sqlite)
-          // commits the moment it returns, so every statement has to run before then. A SQLite
-          // statement is run with `.all()`, which executes at once on a sync driver; whether the
-          // first one returned a promise tells the two driver families apart, as `updateMany` does.
+          // The callback is not async, so a sync driver runs every statement before it commits
+          // (see `runInOrder`). A SQLite statement is run with `.all()`, which executes at once on
+          // a sync driver.
           return target.transaction((tx: any) => {
-            const execute = (batch: (typeof batches)[number]) => {
+            const execute = (batch: (typeof batches)[number]): Record<string, any>[] => {
               const query = batchQuery(tx, batch);
               return typeof query.all === 'function' ? query.all() : query;
             };
-            const first = execute(batches[0]!);
-            if (typeof first?.then === 'function') {
-              return (async () => {
-                const rows: Record<string, any>[] = [...(await first)];
-                for (const batch of batches.slice(1)) {
-                  rows.push(...(await execute(batch)));
-                }
-                return rows;
-              })();
-            }
-            const rows: Record<string, any>[] = [...first];
-            for (const batch of batches.slice(1)) {
-              rows.push(...execute(batch));
-            }
-            return rows;
+            const perBatch = runInOrder(batches, execute);
+            return perBatch instanceof Promise ? perBatch.then((results) => results.flat()) : perBatch.flat();
           });
         };
 
@@ -416,14 +401,15 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         const enriched = await withEagerRelations(executor, tableName, result, pkNames, withParams, hasRelations);
 
         return single
-          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
-          : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
+          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, eagerRelations)
+          : remapToGraphQLArrayOutput(enriched, tableName, table, eagerRelations);
       },
     });
   };
 
   const generateUpdate = (build: WriteBuildOptions, opts: UpdateOptions): CreatedResolver => {
-    const { db, tables, relationMap, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } = build;
+    const { db, tables, eagerRelations, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } =
+      build;
     const { tableName, table, setArgs, filterArgs, fieldName, typeName, single, requireWhere } = opts;
     const queryArgs = {
       set: {
@@ -448,10 +434,10 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
       args: queryArgs,
       run: async ({ executor, args, context, info, before, after, returning: withHookReturning, output }) => {
         const { where, set } = args;
-        const scope = policies?.scope?.(context);
+        const visibility = policies?.visibility?.(context);
 
         const { columns, hasRelations, withParams } = mutationSelection(info, {
-          relationMap,
+          eagerRelations,
           filterCtx,
           tables,
           tableName,
@@ -461,7 +447,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           table,
           pkNames,
           limits,
-          scope,
+          visibility,
           defaultOrderBy: policies?.defaultOrderBy,
         });
 
@@ -482,10 +468,10 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           nested!.validate(tableName, nestedOps, { context, args, info });
         }
 
-        const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
+        const relationCtx = relationFilterCtx(filterCtx, tableName, visibility);
         // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
-        const matched = scopedWhere({
-          scope,
+        const matched = visibleWhere({
+          visibility,
           tableName,
           table,
           where,
@@ -541,8 +527,8 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         const enriched = await withEagerRelations(executor, tableName, result, pkNames, withParams, hasRelations);
 
         return single
-          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, relationMap)
-          : remapToGraphQLArrayOutput(enriched, tableName, table, relationMap);
+          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, eagerRelations)
+          : remapToGraphQLArrayOutput(enriched, tableName, table, eagerRelations);
       },
     });
   };
@@ -590,7 +576,7 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
         // `canHardDelete` decides whether the argument exists; this decides what it does,
         // so a stitched-in `hard: true` on a table that never opted in stays a soft delete.
         const hard = canHardDelete && args.hard === true;
-        const scope = policies?.scope?.(context);
+        const visibility = policies?.visibility?.(context);
 
         const parsedInfo = parseResolveInfo(info, {
           deep: true,
@@ -602,13 +588,13 @@ export const buildWriteResolvers = (primaryKeyPropNames: PrimaryKeyPropNames) =>
           selectionCtx,
         );
 
-        const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
+        const relationCtx = relationFilterCtx(filterCtx, tableName, visibility);
         // Same rule as update: the scope is ANDed on last, so a delete can only ever reach
         // rows inside it — an out-of-scope row is not matched rather than being refused.
         // A soft-deleting table adds the marker predicate the same way: `delete` only sees
         // rows that are not already marked, `restore` only sees the ones that are.
-        const matched = scopedWhere({
-          scope,
+        const matched = visibleWhere({
+          visibility,
           tableName,
           table,
           where,

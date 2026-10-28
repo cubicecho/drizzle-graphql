@@ -1,7 +1,3 @@
-import { is } from 'drizzle-orm';
-import { MySqlAsyncDatabase } from 'drizzle-orm/mysql-core';
-import { PgAsyncDatabase } from 'drizzle-orm/pg-core';
-import { SQLiteAsyncDatabase } from 'drizzle-orm/sqlite-core';
 import {
   type GraphQLFieldConfig,
   type GraphQLInputObjectType,
@@ -11,8 +7,8 @@ import {
 } from 'graphql';
 import type { AnyDrizzleDB, BuildSchemaConfig, GeneratedData, NamingOf } from './types.ts';
 import { resolveBuildConfig } from './util/build-config.ts';
-import { applyErrorMapper, defaultErrorMapper } from './util/builders/common.ts';
-import { generateMySQL, generatePG, generateSQLite } from './util/builders/index.ts';
+import { applyErrorMapper, defaultErrorMapper, tablesOfRelations } from './util/builders/common.ts';
+import { dialectOf } from './util/builders/dialects.ts';
 
 export type {
   AggregateResolver,
@@ -132,15 +128,9 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>, TConfig extends
   config?: TConfig,
 ): GeneratedData<TDbClient, NamingOf<TConfig>> => {
   const relations = db._.relations;
-  // The relations config is the only table map a v1 handle carries: `_.fullSchema` is gone
-  // from all three dialects, and the constructor's separate `schema` argument no longer
-  // reaches the handle at all. Each entry carries its own table, so the map is rebuilt from
-  // there — a table left out of the relations config is simply not part of the schema.
-  const schema = Object.fromEntries(
-    Object.entries(relations as Record<string, any>)
-      .filter(([, config]) => config?.table != null)
-      .map(([key, config]) => [key, config.table]),
-  );
+  // `_.fullSchema` is gone from all three dialects and the constructor's separate `schema`
+  // argument no longer reaches the handle, so the table map comes from the relations config.
+  const schema = tablesOfRelations(relations);
 
   if (!Object.keys(schema).length) {
     throw new Error(
@@ -148,18 +138,13 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>, TConfig extends
     );
   }
 
-  const generatorOptions = resolveBuildConfig(config, schema as Record<string, unknown>);
+  const generatorOptions = resolveBuildConfig(config, schema);
 
-  let generatorOutput;
-  if (is(db, MySqlAsyncDatabase)) {
-    generatorOutput = generateMySQL(db, schema, relations, generatorOptions);
-  } else if (is(db, PgAsyncDatabase)) {
-    generatorOutput = generatePG(db, schema, relations, generatorOptions);
-  } else if (is(db, SQLiteAsyncDatabase)) {
-    generatorOutput = generateSQLite(db, schema, relations, generatorOptions);
-  } else {
+  const dialect = dialectOf(db);
+  if (!dialect) {
     throw new Error('Drizzle-GraphQL Error: Unknown database instance type');
   }
+  const generatorOutput = dialect.generateSchemaData(db, schema, relations, generatorOptions);
 
   // Wrap resolvers before the schema is assembled, so the generated schema and the returned
   // entities share the same handling.
@@ -192,9 +177,8 @@ export const buildSchema = <TDbClient extends AnyDrizzleDB<any>, TConfig extends
 
   const outputSchema = new GraphQLSchema(graphQLSchemaConfig);
 
-  // The three dialect generators are typed on their own dialect's database, so their union
-  // does not structurally match `GeneratedEntities<TDbClient>` for a still-generic TDbClient.
-  // The runtime branch above is what guarantees the right one was built.
+  // Each dialect generator is typed on its own database, so none matches
+  // `GeneratedEntities<TDbClient>` for a still-generic TDbClient; `dialectOf` picked this one.
   return {
     schema: outputSchema,
     entities: generatorOutput as unknown as GeneratedData<TDbClient, NamingOf<TConfig>>['entities'],

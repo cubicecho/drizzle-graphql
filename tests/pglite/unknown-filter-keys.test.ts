@@ -39,7 +39,7 @@ const tables = {
  */
 const relationCtxFor = (tableKey: string): RelationFilterContext => ({
   tables,
-  relationMap: buildNamedRelations((ctx.db as any)._.relations ?? {}, Object.entries(tables)),
+  namedRelations: buildNamedRelations((ctx.db as any)._.relations ?? {}, Object.entries(tables)),
   tableKey,
 });
 

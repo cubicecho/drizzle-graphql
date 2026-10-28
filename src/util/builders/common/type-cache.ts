@@ -22,7 +22,7 @@ export interface TypeCacheCtx {
    * identity function when the caller configured none of the three, so a default build names
    * everything exactly as it always did.
    */
-  typeName: TypeNameResolver;
+  resolveName: TypeNameResolver;
   /** Cache of generic filter types, keyed by generic name (e.g. "String", "DateTime"). */
   genericFilterCache: Map<string, GraphQLInputObjectType>;
   /**

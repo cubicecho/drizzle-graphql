@@ -1,23 +1,6 @@
-// =============================================================================
-// LOCAL MODIFICATION — diverges from upstream drizzle-graphql
-//
-// 1. generateColumnFilterValues() rewritten to produce generic shared filter
-//    types (IdFilter, StringFilter, IntFilter, FloatFilter, BigIntFilter,
-//    DecimalFilter, DateTimeFilter, BooleanFilter, per-enum, per-array) instead
-//    of one type per (table, column) pair. The filter is picked by column data
-//    type, not name.
-//
-// 2. Type naming:
-//    - Select types: ${capitalize(tableName)} (e.g. Users)
-//    - Relation fields: reference the target table's type directly (e.g. posts: [Posts!]!)
-//    - Mutation return: same type as select (${capitalize(tableName)})
-//    - Insert input: ${capitalize(insertPrefix)}${toTypeName(tableName)}Input (e.g. CreateUsersInput)
-//    - Update input: ${capitalize(updatePrefix)}${toTypeName(tableName)}Input (e.g. UpdateUsersInput)
-// =============================================================================
-
-// The implementation lives in focused modules under ./common/; this file is the barrel
-// that keeps `from './common.ts'` working for every dialect builder. It re-exports exactly
-// the names this module exported before the split, and nothing more.
+// Re-exports the shared builder helpers in ./common/, so the builders import them from one
+// path. Unlike upstream drizzle-graphql, column filters are shared per scalar type
+// (`StringFilter`, `IntFilter`, …) rather than generated per column; see common/column-filters.ts.
 
 export { deletedArg, selectArrayArgs, selectSingleArgs } from './common/args.ts';
 export { generateColumnEnum, generateDistinctEnum } from './common/column-enums.ts';
@@ -63,6 +46,7 @@ export {
   visibleColumns,
 } from './common/exclusions.ts';
 export { drizzleExecutorKey, resolveExecutor, resolveQueryExecutor } from './common/executor.ts';
+export { computeResolverFieldNames, type ResolverFieldNames } from './common/field-names.ts';
 export { extractFiltersColumn } from './common/filters.ts';
 export { innerOrderType, orderNullsType } from './common/input-order.ts';
 export {
@@ -98,11 +82,9 @@ export {
   narrowToSingleMatch,
   prepareMutationRelationColumns,
   rowsAffected,
-  scopedWhere,
+  visibleWhere,
   withEagerRelations,
 } from './common/mutation-helpers.ts';
-export type { TypeNameMapper } from './common/naming.ts';
-export { applyObjectTypeName, resolveObjectTypeName, resolveTypeName } from './common/naming.ts';
 export type { OrderNullsOption } from './common/order-by.ts';
 export { extractOrderBy, orderByEntries, orderExpressions } from './common/order-by.ts';
 export type {
@@ -110,8 +92,8 @@ export type {
   ContextValuesFor,
   DeletedMode,
   ResolverPolicies,
+  RowVisibility,
   ScopeFor,
-  ScopeResolver,
   SoftDeleteFor,
   SoftDeleteInfo,
   TablePolicies,
@@ -125,11 +107,10 @@ export {
   junctionPolicy,
   junctionTableName,
   relationDeletedDefault,
-  resolveScope,
   resolveSoftDeleteInfo,
   softDeletePredicate,
   stripContextValues,
-  withScope,
+  withRowVisibility,
 } from './common/policies.ts';
 export type { RelationFilterBase, RelationFilterContext } from './common/relation-filters.ts';
 export { extractFilters, relationFilterCtx } from './common/relation-filters.ts';
@@ -139,6 +120,7 @@ export type { RelationAggregateFactory, RelationResolverFactory, TablesRelationa
 export {
   attachTargetPrimaryKeys,
   buildNamedRelations,
+  buildRelationGraph,
   extractJunctionColumns,
   extractRelationJoinColumnPairs,
   extractRelationJoinColumns,
@@ -150,10 +132,10 @@ export {
   relatedRowParents,
   relationColumns,
   relationOwnCondition,
+  tablesOfRelations,
   unwrapRelationColumn,
   warnUnresolvedJoin,
 } from './common/relations.ts';
-export { computeResolverFieldNames, type ResolverFieldNames } from './common/resolver-names.ts';
 export { defineRootField } from './common/root-fields.ts';
 export { eagerLoadMutationRelations, runRelationalSelect } from './common/select-runtime.ts';
 export type { SelectionCtx } from './common/selected-columns.ts';
@@ -172,9 +154,16 @@ export type {
   GeneratedTypeInfo,
   GeneratedTypeKind,
   GeneratedTypeNameConfig,
+  TypeNameMapper,
   TypeNameResolver,
 } from './common/type-names.ts';
-export { resolveGeneratedTypeNames, sharedType } from './common/type-names.ts';
+export {
+  applyObjectTypeName,
+  resolveGeneratedTypeNames,
+  resolveObjectTypeName,
+  resolveTypeName,
+  sharedType,
+} from './common/type-names.ts';
 export { tableUniqueKeyMap, type UniqueKeyMap, uniqueKeyFieldName } from './common/unique-keys.ts';
 export type {
   NestedWriteOp,

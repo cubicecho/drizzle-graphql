@@ -8,7 +8,7 @@ import { type RelationFilterBase, relationFilterCtx } from '@/util/builders/comm
 
 const Users = pgTable('users', { id: integer('id').primaryKey(), name: text('name') });
 
-const baseFor = (): RelationFilterBase => ({ tables: { Users }, relationMap: {}, uniqueKeys: {} });
+const baseFor = (): RelationFilterBase => ({ tables: { Users }, namedRelations: {}, uniqueKeys: {} });
 
 describe('relationFilterCtx', () => {
   it('returns the same context for the same base and table', () => {

@@ -23,16 +23,15 @@ import { drizzleError } from './errors.ts';
 import { primaryKeyOrderExprs } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
 import { assertPagingNotNegative, effectiveOffset, offsetOnlyLimit } from './limits.ts';
-import type { TypeNameMapper } from './naming.ts';
 import { extractOrderBy } from './order-by.ts';
-import type { DeletedMode, ScopeResolver } from './policies.ts';
-import { withScope } from './policies.ts';
+import type { DeletedMode, RowVisibility } from './policies.ts';
+import { withRowVisibility } from './policies.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractRelationsParams } from './relation-params.ts';
 import { omitUndefinedKeys } from './rqb-config.ts';
 import { extractSelectedColumnsFromTree } from './selected-columns.ts';
-import type { TypeNameResolver } from './type-names.ts';
+import type { TypeNameMapper, TypeNameResolver } from './type-names.ts';
 
 /**
  * Runs the relational-query-builder select shared by every dialect's `generateSelect*`
@@ -46,7 +45,7 @@ export const runRelationalSelect = async (opts: {
   tables: Record<string, Table>;
   tableName: string;
   table: Table;
-  relationMap: Record<string, Record<string, TableNamedRelations>>;
+  eagerRelations: Record<string, Record<string, TableNamedRelations>>;
   typeName: string;
   typeNameMapper: TypeNameMapper | undefined;
   parsedInfo: ResolveTree;
@@ -62,7 +61,7 @@ export const runRelationalSelect = async (opts: {
   after?: string;
   nullOrdering: NullOrdering;
   limits?: LimitPolicyFor;
-  scope?: ScopeResolver;
+  visibility?: RowVisibility;
   defaultOrderBy?: DefaultOrderByFor;
   deleted?: DeletedMode;
   /** The build's type-naming rule, so a relation's target type is looked up under its real name. */
@@ -73,7 +72,7 @@ export const runRelationalSelect = async (opts: {
     tables,
     tableName,
     table,
-    relationMap,
+    eagerRelations,
     typeName,
     typeNameMapper,
     parsedInfo,
@@ -84,7 +83,7 @@ export const runRelationalSelect = async (opts: {
     filterCtx,
     pkNames,
     after,
-    scope,
+    visibility,
     deleted,
   } = opts;
   const distinct = opts.distinct?.length ? opts.distinct : undefined;
@@ -140,11 +139,13 @@ export const runRelationalSelect = async (opts: {
           tableName,
           distinct,
           pkNames: pkNames ?? [],
-          where: withScope(
-            scope,
+          where: withRowVisibility(
+            visibility,
             tableName,
             table,
-            where ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, scope)) : undefined,
+            where
+              ? extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, visibility))
+              : undefined,
             deleted,
           ),
           orderBy,
@@ -159,9 +160,9 @@ export const runRelationalSelect = async (opts: {
   const params: any = {
     columns: extractSelectedColumnsFromTree(parsedInfo.fieldsByTypeName[typeName]!, table, {
       tableName,
-      relationMap,
+      eagerRelations,
       tables,
-      allRelations: filterCtx?.relationMap,
+      namedRelations: filterCtx?.namedRelations,
     }),
     offset: distinctRows ? undefined : offset,
     // drizzle-orm v1 RQB calls orderBy/where with the aliased table proxy — use it
@@ -169,7 +170,7 @@ export const runRelationalSelect = async (opts: {
     orderBy: distinctRows
       ? (aliasedTable: Table) => [
           ...(orderBy
-            ? extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName, scope), where)
+            ? extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName, visibility), where)
             : []),
           ...primaryKeyOrderExprs(aliasedTable, pkNames!),
         ]
@@ -179,7 +180,7 @@ export const runRelationalSelect = async (opts: {
           (aliasedTable: Table) => cursorOrderExprs(aliasedTable, cursorEntries!)
         : orderBy
           ? (aliasedTable: Table) => [
-              ...extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName, scope), where),
+              ...extractOrderBy(aliasedTable, orderBy, relationFilterCtx(filterCtx, tableName, visibility), where),
               // A page of a non-unique ordering is only stable with a tiebreak: rows that tie
               // could otherwise land on either side of a page boundary, so pages repeat or skip
               // them. Same tiebreak a relation page and a cursor page use.
@@ -189,18 +190,23 @@ export const runRelationalSelect = async (opts: {
             ? (aliasedTable: Table) => primaryKeyOrderExprs(aliasedTable, pkNames)
             : undefined,
     where: distinctRows
-      ? // The distinct pass runs inside the scope, so the rows it keeps are in it.
+      ? // The distinct pass runs inside the row policies, so the rows it keeps are in it.
         { RAW: distinctRows }
-      : where || cursorValues || scope?.has(tableName, deleted)
+      : where || cursorValues || visibility?.has(tableName, deleted)
         ? {
             RAW: (aliasedTable: Table) =>
-              withScope(
-                scope,
+              withRowVisibility(
+                visibility,
                 tableName,
                 aliasedTable,
                 and(
                   where
-                    ? extractFilters(aliasedTable, tableName, where, relationFilterCtx(filterCtx, tableName, scope))
+                    ? extractFilters(
+                        aliasedTable,
+                        tableName,
+                        where,
+                        relationFilterCtx(filterCtx, tableName, visibility),
+                      )
                     : undefined,
                   cursorValues
                     ? buildCursorCondition(aliasedTable, cursorEntries!, cursorValues, opts.nullOrdering)
@@ -210,12 +216,12 @@ export const runRelationalSelect = async (opts: {
               ),
           }
         : undefined,
-    with: relationMap[tableName]
-      ? extractRelationsParams(relationMap, tables, tableName, parsedInfo, typeName, {
+    with: eagerRelations[tableName]
+      ? extractRelationsParams(eagerRelations, tables, tableName, parsedInfo, typeName, {
           typeNameMapper,
           filterCtx,
           limits: opts.limits,
-          scope,
+          visibility,
           defaultOrderBy: opts.defaultOrderBy,
           resolveName: opts.resolveName,
         })
@@ -224,7 +230,7 @@ export const runRelationalSelect = async (opts: {
 
   if (single) {
     const result = await queryBase.findFirst(omitUndefinedKeys(params));
-    return result ? remapToGraphQLSingleOutput(result, tableName, table, relationMap) : undefined;
+    return result ? remapToGraphQLSingleOutput(result, tableName, table, eagerRelations) : undefined;
   }
 
   // Computing each row's cursor needs the whole ordering tuple, which the client has no
@@ -253,7 +259,7 @@ export const runRelationalSelect = async (opts: {
     // On the raw rows, before remapping rewrites dates/bigints into transport forms.
     attachRowCursors(result, cursorEntries);
   }
-  return remapToGraphQLArrayOutput(result, tableName, table, relationMap);
+  return remapToGraphQLArrayOutput(result, tableName, table, eagerRelations);
 };
 
 /**

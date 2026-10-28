@@ -17,7 +17,7 @@ export type BuildRuntime = {
   /** `scope`, `softDelete` and `defaults.orderBy`, bound the way the generated resolvers use them. */
   policies: ResolverPolicies | undefined;
   /** Whether any table has a `scope` hook — the one policy that needs the request context. */
-  scoped: boolean;
+  hasRowScope: boolean;
   limits: LimitPolicyFor | undefined;
   nullOrdering: NullOrdering;
 };
@@ -38,7 +38,7 @@ const buildsByDb = new WeakMap<object, { count: number; only?: BuildRuntime; any
 
 /** Whether a build changes what a read returns at all: a row policy, a limit or a default ordering. */
 const hasPolicies = (runtime: BuildRuntime): boolean =>
-  !!(runtime.policies?.scope || runtime.policies?.defaultOrderBy || runtime.limits);
+  !!(runtime.policies?.visibility || runtime.policies?.defaultOrderBy || runtime.limits);
 
 /** Records a finished build against the object types it generated and the instance it read. */
 export const registerBuildRuntime = (runtime: BuildRuntime, types: Iterable<unknown>): void => {

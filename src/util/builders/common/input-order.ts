@@ -11,9 +11,9 @@ import { sharedType, type TypeNameResolver } from './type-names.ts';
  * clause, so there it is emulated with an extra `<expr> IS NULL` sort key ahead of
  * the column itself.
  */
-export const orderNullsType = (typeName: TypeNameResolver): GraphQLEnumType =>
+export const orderNullsType = (resolveName: TypeNameResolver): GraphQLEnumType =>
   sharedType(
-    typeName,
+    resolveName,
     { kind: 'shared', defaultName: 'OrderNulls' },
     (name) =>
       new GraphQLEnumType({
@@ -32,9 +32,9 @@ export const orderNullsType = (typeName: TypeNameResolver): GraphQLEnumType =>
       }),
   );
 
-const orderDirectionType = (typeName: TypeNameResolver): GraphQLEnumType =>
+const orderDirectionType = (resolveName: TypeNameResolver): GraphQLEnumType =>
   sharedType(
-    typeName,
+    resolveName,
     { kind: 'shared', defaultName: 'OrderDirection' },
     (name) =>
       new GraphQLEnumType({
@@ -53,23 +53,23 @@ const orderDirectionType = (typeName: TypeNameResolver): GraphQLEnumType =>
       }),
   );
 
-export const innerOrderType = (typeName: TypeNameResolver): GraphQLInputObjectType =>
+export const innerOrderType = (resolveName: TypeNameResolver): GraphQLInputObjectType =>
   sharedType(
-    typeName,
+    resolveName,
     { kind: 'shared', defaultName: 'InnerOrder' },
     (name) =>
       new GraphQLInputObjectType({
         name,
         fields: {
           direction: {
-            type: new GraphQLNonNull(orderDirectionType(typeName)),
+            type: new GraphQLNonNull(orderDirectionType(resolveName)),
           },
           priority: {
             type: new GraphQLNonNull(GraphQLInt),
             description: 'Priority of current field',
           },
           nulls: {
-            type: orderNullsType(typeName),
+            type: orderNullsType(resolveName),
             description:
               "Where NULL values sort. Defaults to the database's own rule (PostgreSQL: last on asc, first on desc; MySQL/SQLite: first on asc, last on desc)",
           },

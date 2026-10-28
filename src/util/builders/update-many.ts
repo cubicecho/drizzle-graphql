@@ -16,14 +16,16 @@ import {
   drizzleError,
   mutationSelection,
   relationFilterCtx,
-  scopedWhere,
   stripContextValues,
+  visibleWhere,
   withEagerRelations,
   writeResolver,
 } from '../builders/common.ts';
 import { remapToGraphQLSingleOutput } from '../data-mappers/index.ts';
 import { remapUpdateInput } from './field-updates.ts';
-import { mergedOps, type NestedWriteRequest, type NestedWriteRuntime, writeNestedEntry } from './nested-writes.ts';
+import { writeNestedEntry } from './nested-writes/entry.ts';
+import { mergedOps, type NestedWriteRequest } from './nested-writes/ops.ts';
+import type { NestedWriteRuntime } from './nested-writes/runtime.ts';
 import type { UpdateManyGenerator, UpdateManyOptions } from './schema-data.ts';
 import type { CreatedResolver, Filters } from './types.ts';
 import type { WriteBuildOptions } from './write-resolvers.ts';
@@ -58,50 +60,63 @@ export type UpdateManyBatchCtx = {
 export type UpdateManyBatchRunner = (ctx: UpdateManyBatchCtx) => Promise<Record<string, any>[][]>;
 
 /**
+ * Writes one entry, with `patch` (what its parent-side nested operations produced) merged into
+ * its `set`, and returns its rows. As in the single update, an entry with no column values
+ * reads the rows its `where` matched instead, so its nested operations have rows to attach to.
+ */
+const writeUpdateManyEntry = async (
+  target: any,
+  table: any,
+  entry: UpdateManyEntry,
+  returning: Record<string, any>,
+  patch: Record<string, any>,
+): Promise<Record<string, any>[]> => {
+  const values = { ...entry.set, ...patch };
+  const writes = Object.keys(values).length > 0;
+  let query = writes ? target.update(table).set(values) : target.select(returning).from(table);
+  if (entry.filters) {
+    query = query.where(entry.filters);
+  }
+  return (await (writes ? query.returning(returning) : query)) as Record<string, any>[];
+};
+
+/**
+ * Writes every entry on `tx`, awaited in input order, each through its nested operations when
+ * it has any. The whole batch on an async driver, and the nested half of SQLite's.
+ */
+export const writeEntriesInOrder = async (
+  tx: any,
+  { entries, table, returning, nested, tableName, request }: UpdateManyBatchCtx,
+): Promise<Record<string, any>[][]> => {
+  const results: Record<string, any>[][] = [];
+  for (const entry of entries) {
+    const write = (target: any, patch: Record<string, any>) =>
+      writeUpdateManyEntry(target, table, entry, returning, patch);
+    results.push(
+      entry.ops
+        ? await writeNestedEntry({
+            executor: tx,
+            runtime: nested!,
+            tableName,
+            ops: entry.ops,
+            write,
+            request,
+            existing: true,
+          })
+        : await write(tx, {}),
+    );
+  }
+  return results;
+};
+
+/**
  * The batch runner for a dialect whose driver is always asynchronous: one UPDATE per entry,
  * awaited in input order, inside a single transaction. On a caller-supplied transaction — or
  * the shared multi-mutation transaction opened by `runMutation` — this opens a savepoint, so
  * the batch stays atomic without breaking the outer transaction.
  */
-export const runUpdateManyBatch: UpdateManyBatchRunner = ({
-  executor,
-  entries,
-  table,
-  returning,
-  nested,
-  tableName,
-  request,
-}) =>
-  executor.transaction(async (tx: any) => {
-    const results: Record<string, any>[][] = [];
-    for (const entry of entries) {
-      const write = async (target: any, patch: Record<string, any>) => {
-        const values = { ...entry.set, ...patch };
-        // Same as the single update: an entry with no column values reads the rows its
-        // `where` matched so the nested operations have something to attach to.
-        const writes = Object.keys(values).length > 0;
-        let query = writes ? target.update(table).set(values) : target.select(returning).from(table);
-        if (entry.filters) {
-          query = query.where(entry.filters) as any;
-        }
-        return (await (writes ? (query.returning(returning) as any) : query)) as Record<string, any>[];
-      };
-      results.push(
-        entry.ops
-          ? await writeNestedEntry({
-              executor: tx,
-              runtime: nested!,
-              tableName,
-              ops: entry.ops,
-              write,
-              request,
-              existing: true,
-            })
-          : await write(tx, {}),
-      );
-    }
-    return results;
-  });
+export const runUpdateManyBatch: UpdateManyBatchRunner = (ctx) =>
+  ctx.executor.transaction((tx: any) => writeEntriesInOrder(tx, ctx));
 
 /**
  * Builds a dialect's `update<Table>Many` generator.
@@ -121,7 +136,8 @@ export const createUpdateManyGenerator = (
   runBatch: UpdateManyBatchRunner = runUpdateManyBatch,
 ): UpdateManyGenerator => {
   return (build: WriteBuildOptions, opts: UpdateManyOptions): CreatedResolver => {
-    const { db, tables, relationMap, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } = build;
+    const { db, tables, eagerRelations, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } =
+      build;
     const { tableName, table, updateManyInput, fieldName, typeName, requireWhere } = opts;
     const queryArgs = {
       updates: {
@@ -155,11 +171,11 @@ export const createUpdateManyGenerator = (
         if (!updates.length) {
           throw drizzleError('No updates were provided!', { code: 'DRIZZLE_NO_VALUES' });
         }
-        const scope = policies?.scope?.(context);
+        const visibility = policies?.visibility?.(context);
         const contextColumns = policies?.contextValues?.(tableName);
 
         const { columns, hasRelations, withParams } = mutationSelection(info, {
-          relationMap,
+          eagerRelations,
           filterCtx,
           tables,
           tableName,
@@ -169,7 +185,7 @@ export const createUpdateManyGenerator = (
           table,
           pkNames,
           limits,
-          scope,
+          visibility,
           defaultOrderBy: policies?.defaultOrderBy,
         });
 
@@ -194,12 +210,12 @@ export const createUpdateManyGenerator = (
             ops,
             // Under `requireWhere` every entry must carry a non-empty `where`, as the plural
             // update must.
-            filters: scopedWhere({
-              scope,
+            filters: visibleWhere({
+              visibility,
               tableName,
               table,
               where,
-              relationCtx: relationFilterCtx(filterCtx, tableName, scope),
+              relationCtx: relationFilterCtx(filterCtx, tableName, visibility),
               required: requireWhere,
             }),
           };
@@ -246,7 +262,7 @@ export const createUpdateManyGenerator = (
             continue;
           }
           for (let i = 0; i < rows.length; i++) {
-            output.push(remapToGraphQLSingleOutput(enriched[offset + i], tableName, table, relationMap));
+            output.push(remapToGraphQLSingleOutput(enriched[offset + i], tableName, table, eagerRelations));
           }
           offset += rows.length;
         }

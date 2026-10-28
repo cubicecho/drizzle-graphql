@@ -16,17 +16,16 @@ import {
   offsetOnlyLimit,
   withDefaultOrderBy,
 } from './limits.ts';
-import type { TypeNameMapper } from './naming.ts';
-import { resolveObjectTypeName } from './naming.ts';
 import { extractOrderBy } from './order-by.ts';
-import type { DeletedMode, ScopeResolver } from './policies.ts';
-import { hasJunctionPolicy, junctionTableName, withScope } from './policies.ts';
+import type { DeletedMode, RowVisibility } from './policies.ts';
+import { hasJunctionPolicy, junctionTableName, withRowVisibility } from './policies.ts';
 import type { RelationFilterBase } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractJunctionColumns } from './relations.ts';
 import { omitUndefinedKeys } from './rqb-config.ts';
 import { extractSelectedColumnsFromTree } from './selected-columns.ts';
-import type { TypeNameResolver } from './type-names.ts';
+import type { TypeNameMapper, TypeNameResolver } from './type-names.ts';
+import { resolveObjectTypeName } from './type-names.ts';
 
 /**
  * The build-wide policy the walk carries down unchanged. Grouped rather than passed
@@ -38,25 +37,25 @@ export interface RelationParamsOptions {
   typeNameMapper?: TypeNameMapper;
   filterCtx?: RelationFilterBase;
   limits?: LimitPolicyFor;
-  scope?: ScopeResolver;
+  visibility?: RowVisibility;
   defaultOrderBy?: DefaultOrderByFor;
   resolveName?: TypeNameResolver;
 }
 
 export const extractRelationsParams = (
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
+  eagerRelations: Record<string, Record<string, TableNamedRelations>>,
   tables: Record<string, Table>,
   tableName: string,
   info: ResolveTree | undefined,
   typeName: string,
   options: RelationParamsOptions = {},
 ): Record<string, Partial<ProcessedTableSelectArgs>> | undefined => {
-  const { typeNameMapper, filterCtx, limits, scope, defaultOrderBy, resolveName } = options;
+  const { typeNameMapper, filterCtx, limits, visibility, defaultOrderBy, resolveName } = options;
   if (!info) {
     return undefined;
   }
 
-  const relationsForTable = relationMap[tableName];
+  const relationsForTable = eagerRelations[tableName];
   if (!relationsForTable) {
     return undefined;
   }
@@ -135,7 +134,7 @@ export const extractRelationsParams = (
     // junction itself — still one query per relation. A junction the loader cannot express
     // (several columns on a side) would read every link, so it is refused instead.
     const junctionName = junctionTableName(tables, relEntry);
-    if (hasJunctionPolicy(scope, junctionName)) {
+    if (hasJunctionPolicy(visibility, junctionName)) {
       if (!extractJunctionColumns(relEntry)) {
         throw drizzleError(
           `Relation '${tableName}.${relName}' goes through '${junctionName}', which has a scope or soft delete, over a composite key. Its links can only be filtered when the junction joins on one column per side.`,
@@ -147,9 +146,9 @@ export const extractRelationsParams = (
 
     const columns = extractSelectedColumnsFromTree(relFieldSelection, tables[targetTableName]!, {
       tableName: targetTableName,
-      relationMap,
+      eagerRelations,
       tables,
-      allRelations: filterCtx?.relationMap,
+      namedRelations: filterCtx?.namedRelations,
     });
 
     const thisRecord: Partial<ProcessedTableSelectArgs> = {};
@@ -188,7 +187,7 @@ export const extractRelationsParams = (
     // required to-one relation, and a table declared `scope: 'root'`, both read INCLUDE.
     const relDeleted =
       ((relationArgs as any)?.deleted as DeletedMode | undefined) ??
-      scope?.relationDefault(
+      visibility?.relationDefault(
         targetTableName,
         is(relEntry.relation, One) && (relEntry.relation as any).optional === false,
       );
@@ -196,11 +195,11 @@ export const extractRelationsParams = (
     // resolver, so the target's scope has to be applied here as well — otherwise selecting a
     // relation would be the way around it.
     thisRecord.where =
-      relWhere || scope?.has(targetTableName, relDeleted)
+      relWhere || visibility?.has(targetTableName, relDeleted)
         ? {
             RAW: (aliasedTable: Table) =>
-              withScope(
-                scope,
+              withRowVisibility(
+                visibility,
                 targetTableName,
                 aliasedTable,
                 relWhere
@@ -208,7 +207,7 @@ export const extractRelationsParams = (
                       aliasedTable,
                       relName,
                       relWhere,
-                      relationFilterCtx(filterCtx, targetTableName, scope),
+                      relationFilterCtx(filterCtx, targetTableName, visibility),
                     )
                   : undefined,
                 relDeleted,
@@ -232,7 +231,7 @@ export const extractRelationsParams = (
               ? extractOrderBy(
                   aliasedTable,
                   requestOrder,
-                  relationFilterCtx(filterCtx, targetTableName, scope),
+                  relationFilterCtx(filterCtx, targetTableName, visibility),
                   relWhere,
                 )
               : []),
@@ -242,7 +241,7 @@ export const extractRelationsParams = (
     thisRecord.offset = offset;
     thisRecord.limit = offsetOnlyLimit(tables[targetTableName]!, limit, offset);
 
-    const relWith = extractRelationsParams(relationMap, tables, targetTableName, field, relTypeName, options);
+    const relWith = extractRelationsParams(eagerRelations, tables, targetTableName, field, relTypeName, options);
     thisRecord.with = relWith;
 
     args[relName] = omitUndefinedKeys(thisRecord);
@@ -252,7 +251,7 @@ export const extractRelationsParams = (
 };
 
 /**
- * Returns a copy of `relationMap` containing only the relations that should be eagerly
+ * Returns a copy of `namedRelations` containing only the relations that should be eagerly
  * pre-fetched (per the `shouldEagerLoad` predicate). Pass the result wherever a query or
  * mutation resolver builds its `with:` clause; pass the full map to type generation so
  * opted-out relations still get a (lazily-resolved) field. Relations excluded here are
@@ -260,11 +259,11 @@ export const extractRelationsParams = (
  * resolver instead (or a resolver you override, e.g. via `@graphql-tools/schema`).
  */
 export const pruneNonEagerRelations = (
-  relationMap: Record<string, Record<string, TableNamedRelations>>,
+  namedRelations: Record<string, Record<string, TableNamedRelations>>,
   shouldEagerLoad: (tableName: string, relationName: string) => boolean,
 ): Record<string, Record<string, TableNamedRelations>> => {
   const out: Record<string, Record<string, TableNamedRelations>> = {};
-  for (const [tableName, rels] of Object.entries(relationMap)) {
+  for (const [tableName, rels] of Object.entries(namedRelations)) {
     out[tableName] = Object.fromEntries(
       Object.entries(rels).filter(([relationName]) => shouldEagerLoad(tableName, relationName)),
     );

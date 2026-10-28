@@ -70,7 +70,7 @@ export type SchemaGeneratorOptions = {
    * configured none of the three. Optional so a consumer calling a dialect generator directly
    * need not supply one.
    */
-  typeName?: TypeNameResolver;
+  resolveName?: TypeNameResolver;
   shouldEagerLoad: (tableName: string, relationName: string) => boolean;
   features: GeneratorFeatures;
   /** Resolved cost-hint settings, or `undefined` when the caller passed `complexity: false`. */

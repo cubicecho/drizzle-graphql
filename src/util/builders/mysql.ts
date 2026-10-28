@@ -3,7 +3,7 @@ import {
   type MySqlAsyncDatabase,
   MySqlSelectBase,
   MySqlTable,
-  getTableConfig as mysqlTableConfig,
+  getTableConfig as mysqlTableConfigUncached,
 } from 'drizzle-orm/mysql-core';
 import {
   GraphQLBoolean,
@@ -34,9 +34,9 @@ import {
   type ResolverPolicies,
   relationFilterCtx,
   resolveConflictPlan,
-  scopedWhere,
   stripContextValues,
   type TablesRelationalConfig,
+  visibleWhere,
   type WriteOperation,
   writeResolver,
 } from '../builders/common.ts';
@@ -257,7 +257,7 @@ const generateUpdate = (
     },
     run: async ({ executor, args, context, before, after }) => {
       const { where, set } = args;
-      const scope = policies?.scope?.(context);
+      const visibility = policies?.visibility?.(context);
 
       // A context-derived column is the server's to set, so an update never reassigns
       // one — that is what stops a row being handed to another owner.
@@ -266,10 +266,10 @@ const generateUpdate = (
         throw drizzleError('Unable to update with no values specified!', { code: 'DRIZZLE_NO_VALUES' });
       }
 
-      const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
+      const relationCtx = relationFilterCtx(filterCtx, tableName, visibility);
       // The scope is ANDed on last, so a caller-supplied `where` can only narrow it.
-      const matched = scopedWhere({
-        scope,
+      const matched = visibleWhere({
+        visibility,
         tableName,
         table,
         where,
@@ -334,7 +334,7 @@ const generateUpdateMany = (
       if (!updates.length) {
         throw drizzleError('No updates were provided!', { code: 'DRIZZLE_NO_VALUES' });
       }
-      const scope = policies?.scope?.(context);
+      const visibility = policies?.visibility?.(context);
       const contextColumns = policies?.contextValues?.(tableName);
 
       // Remap and validate every entry before the hook and the transaction, so a malformed
@@ -348,12 +348,12 @@ const generateUpdateMany = (
           set: input,
           // Under `requireWhere` every entry must carry a non-empty `where`, as the plural
           // update must.
-          filters: scopedWhere({
-            scope,
+          filters: visibleWhere({
+            visibility,
             tableName,
             table,
             where,
-            relationCtx: relationFilterCtx(filterCtx, tableName, scope),
+            relationCtx: relationFilterCtx(filterCtx, tableName, visibility),
             required: requireWhere,
           }),
         };
@@ -424,15 +424,15 @@ const generateDelete = (
       // `canHardDelete` decides whether the argument exists; this decides what it does,
       // so a stitched-in `hard: true` on a table that never opted in stays a soft delete.
       const hard = canHardDelete && args.hard === true;
-      const scope = policies?.scope?.(context);
+      const visibility = policies?.visibility?.(context);
 
-      const relationCtx = relationFilterCtx(filterCtx, tableName, scope);
+      const relationCtx = relationFilterCtx(filterCtx, tableName, visibility);
       // Same rule as update: the scope is ANDed on last, so a delete can only ever reach
       // rows inside it — an out-of-scope row is not matched rather than being refused.
       // A soft-deleting table adds the marker predicate the same way: `delete` only sees
       // rows that are not already marked, `restore` only sees the ones that are.
-      const matched = scopedWhere({
-        scope,
+      const matched = visibleWhere({
+        visibility,
         tableName,
         table,
         where,
@@ -467,11 +467,11 @@ const generateDelete = (
 };
 
 /** The dialect's table config, cached per table — see {@link memoizeTableConfig}. */
-const getTableConfig = memoizeTableConfig(mysqlTableConfig);
+export const mysqlTableConfig = memoizeTableConfig(mysqlTableConfigUncached);
 
 /** Primary-key property names for a MySQL table, including table-level composite keys. */
-const mysqlPrimaryKeyPropNames = (table: MySqlTable): string[] =>
-  getPrimaryKeyPropNamesFromConfig(table, getTableConfig);
+export const mysqlPrimaryKeyPropNames = (table: MySqlTable): string[] =>
+  getPrimaryKeyPropNamesFromConfig(table, mysqlTableConfig);
 
 const TABLE_ORIGINAL_NAME = Symbol.for('drizzle:OriginalName');
 const TABLE_SCHEMA = Symbol.for('drizzle:Schema');
@@ -534,7 +534,7 @@ const mysqlWriteFilter = (table: MySqlTable, filters: SQL | undefined): SQL | un
 // MySQL sorts NULLs as the smallest values (first in ASC), and its writes return no rows.
 const { prepareBuild, forEachTable, finalizeBuild } = createSchemaBuilder({
   tableClass: MySqlTable,
-  getTableConfig,
+  getTableConfig: mysqlTableConfig,
   primaryKeyPropNames: mysqlPrimaryKeyPropNames,
   nullOrdering: DIALECT_NULL_ORDERING.mysql,
   returnsRows: false,
@@ -569,7 +569,7 @@ export const generateSchemaData = <
   // MySQL cannot return the rows a write touched, so every mutation reports only whether it
   // succeeded — one shared type for the whole build.
   const mutationReturnType = new GraphQLObjectType({
-    name: cacheCtx.typeName({ kind: 'shared', defaultName: 'MutationReturn' }),
+    name: cacheCtx.resolveName({ kind: 'shared', defaultName: 'MutationReturn' }),
     fields: {
       isSuccess: {
         type: new GraphQLNonNull(GraphQLBoolean),

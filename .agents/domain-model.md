@@ -13,15 +13,15 @@ writes, filters, pagination, aggregates and row policies all compiled to SQL.
 
 ## Flow
 
-- **Schema build:** drizzle db + `BuildSchemaConfig` → `buildSchema` (table map from `db._.relations`) → `resolveBuildConfig` (validate, resolve features/limits/defaults/policies/hooks) → dialect dispatch (`generatePG` / `generateMySQL` / `generateSQLite`) → `createSchemaBuilder.prepareBuild` (drop excluded tables, reset per-build registries, relation graph, unique keys, filter context, bound policies, type cache, preflight, nested-write plans, per-table types) → `forEachTable` (read fields + dialect's mutation half → `defineRootField`) → `finalizeBuild` (relation field resolvers, transaction roster, build registry) → `applyErrorMapper` → `new GraphQLSchema` → `{ schema, entities }`.
+- **Schema build:** drizzle db + `BuildSchemaConfig` → `buildSchema` (table map from `db._.relations`, `tablesOfRelations`) → `resolveBuildConfig` (validate, resolve features/limits/defaults/policies/hooks) → `dialectOf(db).generateSchemaData` (`generatePG` / `generateMySQL` / `generateSQLite`) → `createSchemaBuilder.prepareBuild` (drop excluded tables, `installBuildRegistries`, `buildRelationGraph`, `buildUniqueKeys`, filter context, `bindPolicies`, `createTypeCache`, preflight, `buildGatedNestedPlans`, per-table types) → `forEachTable` (read fields + dialect's mutation half → `defineRootField`) → `finalizeBuild` (relation field resolvers, transaction roster, build registry) → `applyErrorMapper` → `new GraphQLSchema` → `{ schema, entities }`.
 - **List read:** client `users(where, orderBy, limit, offset, after, distinct, deleted)` → select resolver → `withDefaultOrderBy` → `parseResolveInfo` → `resolveQueryExecutor` → `applyLimitPolicy` → `runRelationalSelect` (cursor entries, distinct subquery, filters + scope, `with:` from `extractRelationsParams`) → `db.query[table].findMany` → `attachRowCursors` → `remapToGraphQLArrayOutput`.
 - **Single-row read:** `usersSingle(where, orderBy, offset)` → same path with `single: true` → `findFirst` (PK order by default, no limit policy, no cursor) → `remapToGraphQLSingleOutput` or `null`.
 - **Relation field read:** parent row → relation resolver → eager value on the parent? return it : `getOrCreateRequestValue` (args → loader key, per execution) → `getOrCreateLoader` (per execution + key) → next microtask: one `IN`/OR query per chunk, windowed when paginated, scoped + soft-delete filtered → group by parent key → remap.
 - **Aggregate read:** `usersAggregate(where, deleted)` / `usersGroupBy(by, having, …)` / `postsAggregate` on a parent → `parseAggregateRequest` → `select(aggregates).from(table)` with filters + scope (grouped / batched by FK for relation aggregates) → `assembleAggregateRow`.
-- **Mutation (insert / update / delete / upsert / restore / updateMany / count):** client mutation → `writeResolver` → `runMutation` (pick executor: caller's, request's shared tx, forced tx for hooks, or `db`) → body: validate input (remap, stamp/strip context values, `scopedWhere`, `nested.validate`) → `before` hook → `narrowToSingleMatch` for `Single` → statement with `RETURNING` (PG/SQLite) or plain (MySQL) → `after` hook → strip hook-only columns → `withEagerRelations` re-fetch → remap → rows, `{ isSuccess }` (MySQL) or an `Int` (count).
+- **Mutation (insert / update / delete / upsert / restore / updateMany / count):** client mutation → `writeResolver` → `runMutation` (pick executor: caller's, request's shared tx, forced tx for hooks, or `db`) → body: validate input (remap, stamp/strip context values, `visibleWhere`, `nested.validate`) → `before` hook → `narrowToSingleMatch` for `Single` → statement with `RETURNING` (PG/SQLite) or plain (MySQL) → `after` hook → strip hook-only columns → `withEagerRelations` re-fetch → remap → rows, `{ isSuccess }` (MySQL) or an `Int` (count).
 - **Nested write:** create/update/upsert input → `nested.split` (columns vs relation ops) → `writeWithNestedOps` / `updateWithNestedOps` opens a transaction → per entry `writeNestedEntry`: `applyParentSide` (create/connect target first, key into parent) → parent write → `checkParentSide` → `applyChildSide` (attach children / junction rows) → `refreshed` → each nested statement fires the target table's hooks with `payload.nested`.
 
-Dependency direction: `index.ts` → `build-config.ts` → `builders/{pg,sqlite,mysql}.ts` → `schema-data.ts` / `build-context.ts` → `write-resolvers.ts`, `select.ts`, `aggregates.ts`, `nested-writes.ts` → `builders/common/*` → `type-converter`, `data-mappers`, `parse-resolve-info`, `batch-loader`; `selection.ts` sits beside `index.ts` and reads the build through `common/build-registry.ts`.
+Dependency direction: `index.ts` → `build-config.ts` → `builders/{pg,sqlite,mysql}.ts` → `schema-data.ts` / `build-context.ts` → `write-resolvers.ts`, `select.ts`, `aggregates.ts`, `nested-writes/*` → `builders/common/*` → `type-converter`, `data-mappers`, `parse-resolve-info`, `batch-loader`; `selection.ts` sits beside `index.ts` and reads the build through `common/build-registry.ts`.
 
 ## Actors
 
@@ -79,24 +79,24 @@ live --delete, client--> marked --restore, client--> live
 live | marked --delete(hard: true), client, opted-in table--> gone
 ```
 
-Nested entry — owner `nested-writes.ts writeNestedEntry`:
+Nested entry — owner `nested-writes/entry.ts writeNestedEntry`:
 ```
 pending --applyParentSide--> parent-keyed --parent write--> written --checkParentSide--> checked --applyChildSide--> attached --refreshed--> done
 parent-keyed --parent write returns no row (savepoint)--> rolled back, entry yields []
 ```
 
-Per-build registries — owner `build-context.ts prepareBuild`:
+Per-build registries — owner `build-context.ts installBuildRegistries`, the second step of `prepareBuild`:
 ```
-(previous build's state) --registerScalarOverrides / registerEnumConfig / registerColumnExclusions / resetAggregateColumnCache--> this build's state --next buildSchema--> overwritten
+(previous build's state) --registerScalarOverrides / installSqliteBlobJsonDecoders / registerEnumConfig / registerColumnExclusions / resetAggregateColumnCache / resetFieldUpdateCaches--> this build's state --next buildSchema--> overwritten (per table/column object for scalar overrides, exclusions, blob decoders; whole for the rest)
 ```
 
 ## Invariants
 
 | Invariant | Enforced by |
 |---|---|
-| A table's scope and soft-delete predicate are ANDed after the client's `where`, so a client can only narrow them | `policies.withScope`, `mutation-helpers.scopedWhere`, `select-runtime.runRelationalSelect` |
-| Soft-delete predicate comes before the scope predicate in the SQL | `policies.resolveScope` (`on`) |
-| A scope hook returns SQL, a filter object or nothing | `policies.resolveScope` (`DRIZZLE_INVALID_SCOPE`) |
+| A table's scope and soft-delete predicate are ANDed after the client's `where`, so a client can only narrow them | `policies.withRowVisibility`, `mutation-helpers.visibleWhere`, `select-runtime.runRelationalSelect` |
+| Soft-delete predicate comes before the scope predicate in the SQL | `policies.bindRowVisibility` (`on`) |
+| A scope hook returns SQL, a filter object or nothing | `policies.bindRowVisibility` (`DRIZZLE_INVALID_SCOPE`) |
 | Inserts stamp every `contextValues` column (and a NOT NULL soft-delete marker's restored value) | `policies.insertStamps`, `policies.applyContextValues` |
 | Updates never write a `contextValues` column | `policies.stripContextValues` |
 | Generated and identity-ALWAYS columns never appear in a write input | `writable-columns.isWritableColumn` |
@@ -117,8 +117,8 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 | `hard` only purges on a soft-delete table that opted in | `write-resolvers.generateDelete`, `mutation-helpers.generateWriteCount` |
 | `after` cannot combine with `distinct`; cursors need a primary key and a cursor-expressible ordering | `select-runtime.runRelationalSelect` |
 | A stored value a JS Date cannot hold (BC, year past 275760, infinity, zero date) never fails a read: output mapping leaves the invalid Date for the scalar to reject on that field alone, and a PostgreSQL / MySQL `mode: 'date'` ordering column's cursor carries the database's own text | `data-mappers.remapToGraphQLCore`, `cursor.cursorTextForm` / `cursorPreciseExtras` |
-| A nested to-one `connect` matches exactly one row | `nested-writes.createNestedWriteRuntime` (`connectMatchError`) |
-| A to-one relation never has two attached rows through a nested write: a nullable key detaches the old row, a NOT NULL one refuses the attach | `nested-writes.createNestedWriteRuntime` (`detachAll`, `assertNothingElseAttached`) |
+| A nested to-one `connect` matches exactly one row | `nested-writes/runtime.ts createNestedWriteRuntime` (`connectMatchError`) |
+| A to-one relation never has two attached rows through a nested write: a nullable key detaches the old row, a NOT NULL one refuses the attach | `nested-writes/runtime.ts createNestedWriteRuntime` (`detachAll`, `assertNothingElseAttached`) |
 | Nested writes are rejected on MySQL; nested writes, `transactions: 'auto'` and `onWrite` are rejected on a sync SQLite driver | `mysql.ts` / `sqlite.ts` `preflight` |
 | Two enum columns mapped to one name must have the same values | `type-converter.generateEnumCached` |
 | An error the library did not raise reaches the client as `Internal server error` (unless `onError` says otherwise) | `errors.defaultErrorMapper` via `errors.applyErrorMapper` |
@@ -139,7 +139,7 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 - **Entities (generated data):** The parts of the schema handed back separately — queries, mutations, inputs, types, relation field resolvers — for composing your own schema. Owner: `GeneratedEntities`; the code also calls the output `generatorOutput`, and `types` is `ctx.outputs` renamed.
 - **Feature (feature switch, feature flag):** An on/off choice per operation family, globally or per table. Owner: `src/util/features.ts resolveTableFeatures`; `TableFeatures`, `featureOf`, `anyTable`.
 - **Exclusion (exclude):** A table or column kept out of every schema surface. Owner: `common/exclusions.ts visibleColumns`; `registerColumnExclusions`.
-- **Naming (field names, type names):** How tables become query, mutation and type names. Owner: `common/resolver-names.ts computeResolverFieldNames`, `common/type-names.ts resolveGeneratedTypeNames`; spread across `typeNameMapper`, `TypeNameResolver`/`resolveName`/`cacheCtx.typeName`, `resolveObjectTypeName`, `applyObjectTypeName`.
+- **Naming (field names, type names):** How tables become query, mutation and type names. Owner: `common/field-names.ts computeResolverFieldNames` (root field names) and `common/type-names.ts` (every type name: `resolveTypeName`, `resolveObjectTypeName`, `applyObjectTypeName`, `resolveGeneratedTypeNames`, `sharedType`); read from `typeNameMapper`, the naming rule `TypeNameResolver` (always called `resolveName`, as in `cacheCtx.resolveName` and `SchemaGeneratorOptions.resolveName`; `typeName` is always a string). `src/util/type-naming.ts` is the type-level mirror of `singularizeMapper` that keys `entities`.
 - **Field identity (extensions.drizzle):** A stable tag on each generated field and type saying what it is (table, operation, single, target arg). Owner: `src/util/extensions.ts tableFieldExtensions`, `drizzleExtension`; meta type `DrizzleMutationMeta`.
 - **Cost hint (complexity):** Per-field price for query-complexity tools. Owner: `common/limits.ts listFieldComplexity`, `aggregateFieldComplexity`.
 
@@ -181,11 +181,11 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 
 ### Relations
 
-- **Relation:** A named link from one table to another, from Drizzle's relations config. Owner: `common/relations.ts buildNamedRelations`; `namedRelations`, `TableNamedRelations`, `relEntry`.
+- **Relation:** A named link from one table to another, from Drizzle's relations config. Owner: `common/relations.ts buildRelationGraph` (over `buildNamedRelations` and `attachTargetPrimaryKeys`), used by both `prepareBuild` and the selection helpers; the whole graph is `namedRelations` everywhere, the filter context's key included; `TableNamedRelations`, `relEntry`.
 - **To-one / to-many:** Whether a relation yields a row or a list. Owner: `is(relation, One)`; `isOne`.
 - **Junction (through, many-to-many):** A middle table linking two tables. Owner: `relations.ts extractJunctionColumns`; `NestedThroughPlan`, `junctionPolicy`.
 - **Relation's own where:** A filter declared on the relation itself, applied on every read and write through it. Owner: `relations.ts relationOwnCondition`, `relationOwnWhere`.
-- **Eager loading (with:):** Fetching selected relations in the parent's query. Owner: `common/relation-params.ts extractRelationsParams`, `pruneNonEagerRelations`; `eagerRelations`, `shouldEagerLoad`.
+- **Eager loading (with:):** Fetching selected relations in the parent's query. Owner: `common/relation-params.ts extractRelationsParams`, `pruneNonEagerRelations`; the pruned map is `eagerRelations` in every resolver, `runRelationalSelect`, the write builds and the data mappers (the selection helpers pass the whole graph as it); `shouldEagerLoad`.
 - **Relation resolver (field resolver):** The resolver on each relation field, returning the eager value or a batched load. Owner: `common/relation-resolvers.ts createRelationResolverFactory`; exported as `entities.fieldResolvers`.
 - **Mutation re-fetch:** Reloading written rows by key to eager-load their selected relations. Owner: `select-runtime.ts eagerLoadMutationRelations`, `withEagerRelations`.
 
@@ -200,7 +200,7 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 - **Mutation (write):** A generated field that changes rows. Owner: `common/write-scaffold.ts writeResolver`; `WriteOperation`.
 - **Insert (create):** Adds rows. Owner: `write-resolvers.ts generateInsert`; MySQL `generateInsertArray`/`generateInsertSingle`; prefix `create`.
 - **Update:** Changes matching rows' columns. Owner: `write-resolvers.ts generateUpdate`.
-- **Update many (updateMany):** Several `where`/`set` entries in one transaction. Owner: `update-many.ts createUpdateManyGenerator`; dialect `UpdateManyBatchRunner`.
+- **Update many (updateMany):** Several `where`/`set` entries in one transaction. Owner: `update-many.ts createUpdateManyGenerator`; dialect `UpdateManyBatchRunner`: `runUpdateManyBatch` (PostgreSQL) awaits `writeEntriesInOrder`; `sqlite.ts runSqliteUpdateManyBatch` uses it for nested batches and `runInOrder` with `.all()` otherwise, so a sync driver works.
 - **Delete:** Removes (or soft-marks) matching rows. Owner: `write-resolvers.ts generateDelete`.
 - **Count mutation:** An update or delete that answers how many rows instead of the rows. Owner: `mutation-helpers.ts generateWriteCount`.
 - **Upsert (onConflict):** Insert, or on a key conflict update or do nothing. Owner: `write-resolvers.ts generateUpsert`, `common/conflict.ts resolveConflictPlan`; `ConflictPlan`, deprecated `conflictDoNothing`.
@@ -211,36 +211,37 @@ Per-build registries — owner `build-context.ts prepareBuild`:
 
 ### Nested writes
 
-- **Nested write (nested op):** Writing related rows through a relation field of a create/update/upsert input. Owner: `nested-writes.ts`; ops `create`, `connect`, `disconnect`, `set` (`NestedWriteOp`).
-- **Nested plan:** Build-time decision of which ops a relation offers and which side holds the key. Owner: `buildNestedWritePlans`, `gateNestedWritePlans`; `NestedRelationPlan`, `fkSide` (`child` / `parent`).
-- **Parent side / child side:** Ops that must run before the parent row (key lives on parent) versus after it (key lives on the child). Owner: `NestedWriteRuntime.applyParentSide`, `applyChildSide`.
+- **Nested write (nested op):** Writing related rows through a relation field of a create/update/upsert input. Owner: the `builders/nested-writes/` folder (`plans`, `gating`, `input-types`, `ops`, `hook-steps`, `runtime`, `entry`); ops `create`, `connect`, `disconnect`, `set` (`NestedWriteOp`).
+- **Nested plan:** Build-time decision of which ops a relation offers and which side holds the key. Owner: `nested-writes/plans.ts buildNestedWritePlans`, `nested-writes/gating.ts gateNestedWritePlans` / `dropContextValueRelations`; `NestedRelationPlan`, `fkSide` (`child` / `parent`).
+- **Parent side / child side:** Ops that must run before the parent row (key lives on parent) versus after it (key lives on the child). Owner: `nested-writes/runtime.ts NestedWriteRuntime.applyParentSide`, `applyChildSide`; their `onWrite` calls are `nested-writes/hook-steps.ts`.
 
 ### Policies & hooks
 
-- **Row scope (scope):** A per-table, per-request predicate every read and write is confined to. Owner: config `ScopeFor`; compiled by `policies.resolveScope`. Homonym: `ScopeResolver` bundles scope *and* soft delete, and `SoftDeleteColumn.scope` means something else (see below).
+- **Row scope (scope):** A per-table, per-request predicate every read and write is confined to. Owner: config `ScopeFor` (`TablePolicies.scope`); compiled into the row visibility by `policies.bindRowVisibility`. `SoftDeleteColumn.scope` is a different thing, the soft delete's reach (see Deleted view).
+- **Row visibility:** Which rows of each table one request can see: its row scope and its soft-delete view together, bound to the request's context. Owner: `policies.ts RowVisibility` (`has`, `on`, `relationDefault`), from `ResolverPolicies.visibility(context)`; applied by `withRowVisibility`, `visibleWhere`; code variables `visibility`. `RelationFilterContext.visibility` carries it into relation filters.
 - **Context value (server-owned column):** A column the server fills from the request context, absent from inputs. Owner: `policies.ts applyContextValues`, `stripContextValues`; `ContextValuesFor`.
 - **Soft delete (marker column):** Delete by marking a column; reads hide marked rows. Owner: `policies.ts resolveSoftDeleteInfo`, `softDeletePredicate`; `SoftDeleteInfo`.
-- **Deleted view (deleted: EXCLUDE / INCLUDE / ONLY):** Which marked rows a read returns. Owner: `DeletedMode`, enum `DeletedFilter`; `relationDeletedDefault` uses `SoftDeleteColumn.scope` (`'root'`/`'all'`).
+- **Deleted view (deleted: EXCLUDE / INCLUDE / ONLY):** Which marked rows a read returns. Owner: `DeletedMode`, enum `DeletedFilter`; `relationDeletedDefault` uses the soft delete's reach, config `SoftDeleteColumn.scope` (`'root'`/`'all'`), read internally as `SoftDeleteInfo.hiddenIn`.
 - **Restore:** Un-marks soft-deleted rows. Owner: `generateDelete({ restore: true })`; prefix `restore`. An UPDATE of the marker, so it is offered only where the table's `update` feature is on (the root mutations, and a nested link through a soft-deleting junction).
 - **Hard delete (hard):** A real `DELETE` on a soft-delete table that opted in. Owner: `hardDeleteArg`.
-- **Policies:** The bundle of scope, context values, soft delete, hooks and default order for a build. Owner: `policies.ts TablePolicies` (unbound) and `ResolverPolicies` (scope bound per context) — two shapes of one concept, see `bindPolicies`.
+- **Policies:** The bundle of scope, context values, soft delete, hooks and default order for a build. Owner: `policies.ts TablePolicies` (as resolved from the config, and as `createRelationResolverFactory` takes them) and `ResolverPolicies` (scope and soft delete bound into `visibility(context)`). `bindPolicies` is the one place the first becomes the second; every resolver, aggregate and nested write reads the bound shape.
 - **Write hook (onWrite, before / after):** Consumer code run around a write on the same executor. Owner: `common/write-hooks.ts normalizeWriteHooks`, `runWriteHook`; `WriteHookPayload`, hook `columns`.
 - **Auto transaction (transactions: 'auto'):** One transaction for a document with several mutation fields. Owner: `transactions.ts runMutation`; `MutationTxCtx`, shared tx.
 - **Error mapping (onError):** What a thrown error becomes before the client sees it. Owner: `common/errors.ts applyErrorMapper`, `defaultErrorMapper`, `drizzleError`; `DrizzleErrorCode`.
 
 ### Dialects
 
-- **Dialect:** PostgreSQL, MySQL or SQLite; picked from the handle's class. Owner: `index.ts` dispatch; `selection.ts tableConfigFor` repeats it.
+- **Dialect:** PostgreSQL, MySQL or SQLite; picked from the handle's class. Owner: `builders/dialects.ts dialectOf` (`DIALECTS`: database class, schema generator, primary-key lookup), used by `index.buildSchema` and `selection.ts`.
 - **Dialect adapter:** What a dialect supplies to the shared build: table class, table config, PK lookup, null ordering, whether writes return rows, preflight. Owner: `build-context.ts SchemaBuildAdapter`, `schema-data.ts DialectSchemaAdapter`.
 - **Null ordering:** Whether the database sorts NULLs first or last, which cursors must match. Owner: `cursor.ts NullOrdering`.
 - **Preflight:** Build-time refusal of options a dialect/driver cannot honour. Owner: `SchemaBuildAdapter.preflight` in `mysql.ts`, `sqlite.ts`.
-- **Sync driver:** A SQLite driver whose transaction commits when its callback returns. Owner: implicit — `db.resultKind === 'sync'` in `sqlite.ts`, plus `.then` probes in `sqlite.ts` and `write-resolvers.ts`.
+- **Sync driver:** A SQLite driver (better-sqlite3, node:sqlite) whose transaction commits when its callback returns. Owner: `common/sync-driver.ts`: `isSyncDriver(db)` reads the handle (`sqlite.ts` preflight); `runInOrder` runs statements from a non-async transaction callback and tells the families apart by the first result (`sqlite.ts` updateMany batch, `write-resolvers.ts` multi-batch upsert).
 
 ### Internals
 
 - **Build context:** Everything a build accumulates before its root fields exist. Owner: `build-context.ts SchemaBuildContext`.
-- **Type cache:** Per-build caches so each generated type is built once. Owner: `common/type-cache.ts TypeCacheCtx`; plus module-level caches (`sharedType`, `field-updates.ts` `kindCache`/`inputCache`, `table-inputs.ts orderMap`).
-- **Per-build registry:** Module-global state reset at the start of each build (scalar overrides, enums, exclusions, aggregate column sets). Owner: `registerScalarOverrides`, `registerEnumConfig`, `registerColumnExclusions`, `resetAggregateColumnCache`.
+- **Type cache:** Per-build caches so each generated type is built once. Owner: `common/type-cache.ts TypeCacheCtx`; plus module-level caches: `field-updates.ts` `kindCache`/`inputCache` and `aggregates.ts aggregateColumnSetsCache` (per-build registries), and `type-names.ts sharedType` / `table-inputs.ts orderMap`, which outlive builds on purpose, keyed by resolved name and by the `InnerOrder` instance so builds that agree share and builds that differ do not.
+- **Per-build registry:** Module-global state each build installs before generating anything (scalar overrides, SQLite blob decoders, enums, exclusions, aggregate column sets, field-update kinds and inputs). Request-time remapping reads the scalar overrides and field-update kinds, so between two live schemas over the same tables the most recent build wins there. Owner: `build-context.ts installBuildRegistries` (the one reset point), over `registerScalarOverrides`, `installSqliteBlobJsonDecoders`, `registerEnumConfig`, `registerColumnExclusions`, `resetAggregateColumnCache`, `resetFieldUpdateCaches`. Each registry declares itself with `per-build-registry.ts declarePerBuildRegistry` and reports in from its install, so `tests/per-build-registries.test.ts` fails when a build skips one.
 - **Build registry:** Maps generated types and db handles back to the build that made them, for the selection helpers. Owner: `common/build-registry.ts registerBuildRuntime`, `runtimeForType`, `runtimeForDb`.
 - **Execution:** One run of a GraphQL document (one `execute()` call); per-request state — the request cache, batch loaders and auto-transaction — belongs to it, not to the context object. Owner: `src/util/execution.ts executionKey` (`info.variableValues`, which graphql builds once per execution).
 - **Request cache:** Per-execution memo of a field's derived values. Owner: `batch-loader/index.ts getOrCreateRequestValue`.

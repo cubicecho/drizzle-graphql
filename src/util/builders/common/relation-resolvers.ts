@@ -31,7 +31,13 @@ import type { LimitPolicyFor } from './limits.ts';
 import { applyLimitPolicy, assertPagingNotNegative, effectiveOffset, withDefaultOrderBy } from './limits.ts';
 import { extractOrderBy } from './order-by.ts';
 import type { TablePolicies } from './policies.ts';
-import { junctionPolicy, junctionTableName, relationDeletedDefault, resolveScope, withScope } from './policies.ts';
+import {
+  bindPolicies,
+  junctionPolicy,
+  junctionTableName,
+  relationDeletedDefault,
+  withRowVisibility,
+} from './policies.ts';
 import type { RelationFilterBase, RelationFilterContext } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import type { RelationResolverFactory } from './relations.ts';
@@ -156,6 +162,8 @@ export const createRelationResolverFactory =
     policies?: TablePolicies,
   ): RelationResolverFactory =>
   ({ tableName, relationName, relEntry, isOne }) => {
+    // Bound the way the generated resolvers' policies are: a consumer passes them unbound.
+    const visibilityOf = bindPolicies(policies, filterCtx)?.visibility;
     const parentTable = tables[tableName];
     const targetTableName = relEntry.targetTableName;
     const targetTable = tables[targetTableName];
@@ -227,9 +235,8 @@ export const createRelationResolverFactory =
 
       const columns = extractSelectedColumnsFromTreeSQLFormat(tree, targetTable, {
         tableName: targetTableName,
-        relationMap: filterCtx?.relationMap ?? {},
         tables,
-        allRelations: filterCtx?.relationMap,
+        namedRelations: filterCtx?.namedRelations,
       });
 
       const targetColumns = getColumns(targetTable);
@@ -360,26 +367,26 @@ export const createRelationResolverFactory =
         const executor = resolveExecutor(db, context);
         const uniqueKeys = [...new Map(parentKeys.map((key) => [joinKeyOf(key, localCols), key])).values()];
         // Loaders are keyed per execution too, so the scope resolved here is this request's.
-        const scope = resolveScope(policies, context, filterCtx);
+        const visibility = visibilityOf?.(context);
 
         // One query over a group of parents, returning each parent's result by its key. Every
         // parent's rows come from the query its key is in, so splitting the batch changes
         // nothing a parent sees.
         const loadChunk = async (chunkKeys: readonly (readonly unknown[])[]): Promise<Map<string, any>> => {
-          let whereCondition = withScope(
-            scope,
+          let whereCondition = withRowVisibility(
+            visibility,
             targetTableName,
             targetTable,
             and(
               parentKeyCondition(groupCols, chunkKeys),
               ownCondition,
-              junction ? junctionPolicy(scope, junctionName, junction.table) : undefined,
+              junction ? junctionPolicy(visibility, junctionName, junction.table) : undefined,
               whereArg
                 ? extractFilters(
                     targetTable,
                     targetTableName,
                     whereArg,
-                    relationFilterCtx(filterCtx, targetTableName, scope),
+                    relationFilterCtx(filterCtx, targetTableName, visibility),
                   )
                 : undefined,
               cursorValues ? buildCursorCondition(targetTable, cursorEntries!, cursorValues, nullOrdering) : undefined,
@@ -434,7 +441,7 @@ export const createRelationResolverFactory =
               offset ?? null,
               targetPkNames,
               selection,
-              relationFilterCtx(filterCtx, targetTableName, scope),
+              relationFilterCtx(filterCtx, targetTableName, visibility),
               whereArg,
               junction,
             );
@@ -453,7 +460,7 @@ export const createRelationResolverFactory =
                     ? extractOrderBy(
                         targetTable,
                         orderByArg,
-                        relationFilterCtx(filterCtx, targetTableName, scope),
+                        relationFilterCtx(filterCtx, targetTableName, visibility),
                         whereArg,
                       )
                     : []),

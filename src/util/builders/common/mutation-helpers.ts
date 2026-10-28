@@ -11,16 +11,14 @@ import { parseResolveInfo } from '../../parse-resolve-info.ts';
 import { remapUpdateInput } from '../field-updates.ts';
 // Type-only: the nested-write module imports this one at runtime, so the dependency has to
 // stay one-directional. The implementation is injected by the dialect builder.
-import type { NestedWriteRuntime } from '../nested-writes.ts';
+import type { NestedWriteRuntime } from '../nested-writes/runtime.ts';
 import type { CreatedResolver, Filters, ProcessedTableSelectArgs, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
 import { MATCHES_EVERY_ROW } from './filters.ts';
 import { withPrimaryKeyColumns } from './keys.ts';
 import type { DefaultOrderByFor, LimitPolicyFor } from './limits.ts';
-import type { TypeNameMapper } from './naming.ts';
-import { resolveObjectTypeName } from './naming.ts';
-import type { DeletedMode, ResolverPolicies, ScopeResolver } from './policies.ts';
-import { stripContextValues, withScope } from './policies.ts';
+import type { DeletedMode, ResolverPolicies, RowVisibility } from './policies.ts';
+import { stripContextValues, withRowVisibility } from './policies.ts';
 import type { RelationFilterBase, RelationFilterContext } from './relation-filters.ts';
 import { extractFilters, relationFilterCtx } from './relation-filters.ts';
 import { extractRelationsParams } from './relation-params.ts';
@@ -28,7 +26,8 @@ import { eagerLoadMutationRelations } from './select-runtime.ts';
 import { extractSelectedColumnsFromTreeSQLFormat } from './selected-columns.ts';
 import type { MutationTxCtx } from './transactions.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
-import type { TypeNameResolver } from './type-names.ts';
+import type { TypeNameMapper, TypeNameResolver } from './type-names.ts';
+import { resolveObjectTypeName } from './type-names.ts';
 import { writeResolver } from './write-scaffold.ts';
 
 /**
@@ -51,9 +50,9 @@ export const hardDeleteArg = {
  */
 export interface PrepareMutationRelationColumnsParams {
   /** The eager-load map: the relations the re-fetch attaches through `with:`. */
-  relationMap: Record<string, Record<string, TableNamedRelations>>;
+  eagerRelations: Record<string, Record<string, TableNamedRelations>>;
   /**
-   * The build's relation-filter context. Its `relationMap` is every relation, including the ones
+   * The build's relation-filter context. Its `namedRelations` is every relation, including the ones
    * `eagerLoadRelations` leaves to their own resolver, which still need their join column (and
    * the primary key) in RETURNING; and a relation argument that filters or orders through a
    * relation needs it to compile in the re-fetch. Required so no write path can leave it off.
@@ -67,7 +66,7 @@ export interface PrepareMutationRelationColumnsParams {
   pkNames: readonly string[];
   parsedInfo: ResolveTree;
   limits?: LimitPolicyFor;
-  scope?: ScopeResolver;
+  visibility?: RowVisibility;
   defaultOrderBy?: DefaultOrderByFor;
   /** The build's type-naming rule — the selection tree is keyed by the name it produced. */
   resolveName?: TypeNameResolver;
@@ -80,14 +79,15 @@ export const prepareMutationRelationColumns = (
   hasRelations: boolean;
   withParams: Record<string, Partial<ProcessedTableSelectArgs>> | undefined;
 } => {
-  const { relationMap, filterCtx, tables, tableName, typeNameMapper, table, pkNames, parsedInfo, resolveName } = params;
+  const { eagerRelations, filterCtx, tables, tableName, typeNameMapper, table, pkNames, parsedInfo, resolveName } =
+    params;
   const typeName = resolveObjectTypeName(tableName, typeNameMapper, resolveName);
-  const withParams = relationMap[tableName]
-    ? extractRelationsParams(relationMap, tables, tableName, parsedInfo, typeName, {
+  const withParams = eagerRelations[tableName]
+    ? extractRelationsParams(eagerRelations, tables, tableName, parsedInfo, typeName, {
         typeNameMapper,
         filterCtx,
         limits: params.limits,
-        scope: params.scope,
+        visibility: params.visibility,
         defaultOrderBy: params.defaultOrderBy,
         resolveName,
       })
@@ -95,9 +95,9 @@ export const prepareMutationRelationColumns = (
   const hasRelations = !!(withParams && Object.keys(withParams).length);
   const baseColumns = extractSelectedColumnsFromTreeSQLFormat(parsedInfo.fieldsByTypeName[typeName]!, table, {
     tableName,
-    relationMap,
+    eagerRelations,
     tables,
-    allRelations: filterCtx?.relationMap,
+    namedRelations: filterCtx?.namedRelations,
   });
   const columns = hasRelations ? withPrimaryKeyColumns(baseColumns, table, pkNames) : baseColumns;
   return { columns, hasRelations, withParams };
@@ -129,8 +129,8 @@ export const mutationSelection = (
  * `deleted` states which soft-delete mode the match reads at, for the writes that need one:
  * `restore` sees only marked rows, a hard delete has to see them too.
  */
-export const scopedWhere = <TTable extends Table>(params: {
-  scope: ScopeResolver | undefined;
+export const visibleWhere = <TTable extends Table>(params: {
+  visibility: RowVisibility | undefined;
   tableName: string;
   table: TTable;
   where: Filters<TTable> | undefined;
@@ -139,9 +139,9 @@ export const scopedWhere = <TTable extends Table>(params: {
   required?: boolean;
   deleted?: DeletedMode;
 }): SQL | undefined => {
-  const { scope, tableName, table, where, relationCtx, required, deleted } = params;
-  return withScope(
-    scope,
+  const { visibility, tableName, table, where, relationCtx, required, deleted } = params;
+  return withRowVisibility(
+    visibility,
     tableName,
     table,
     required
@@ -181,7 +181,7 @@ export const generateUpdateManyInput = (params: {
 }): GraphQLInputObjectType => {
   const { tableName, typeName, updatePrefix, updateInput, tableFilters, cacheCtx } = params;
   return new GraphQLInputObjectType({
-    name: cacheCtx.typeName({
+    name: cacheCtx.resolveName({
       kind: 'updateManyInput',
       defaultName: `${capitalize(updatePrefix)}${typeName}ManyInput`,
       table: tableName,
@@ -390,7 +390,7 @@ export const generateWriteCount = ({
       // `canHardDelete` decides whether the argument exists; this decides what it does, so a
       // stitched-in `hard: true` on a table that never opted in stays a soft delete.
       const hard = canHardDelete && args.hard === true;
-      const scope = policies?.scope?.(context);
+      const visibility = policies?.visibility?.(context);
 
       let query: any;
       if (kind === 'delete') {
@@ -423,12 +423,12 @@ export const generateWriteCount = ({
 
       // The scope — and on a soft-deleting table the not-yet-marked predicate — is ANDed on
       // last, so a caller's `where` can only narrow what the write reaches.
-      const filters = scopedWhere({
-        scope,
+      const filters = visibleWhere({
+        visibility,
         tableName,
         table,
         where,
-        relationCtx: relationFilterCtx(filterCtx, tableName, scope),
+        relationCtx: relationFilterCtx(filterCtx, tableName, visibility),
         required: requireWhere,
         // A hard delete reads at INCLUDE, so it reaches the rows that are already marked.
         deleted: hard ? 'INCLUDE' : undefined,
