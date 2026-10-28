@@ -97,6 +97,32 @@ Site: [cubicecho.github.io/drizzle-graphql](https://cubicecho.github.io/drizzle-
     `entities.mutations.createUsers` / `updateUsers` / `deleteUsers`. A `typeNameMapper`
     changes these keys too, so a composed schema has to use the mapped names.
 
+## Migrating to 19
+
+### Import `GraphQLDateTime` from this library
+
+`DateTime` errors now carry a code, like every other error the library raises: a value the scalar
+cannot output (an invalid `Date`, which is how a BC date, a year past 275760 or an infinity reads)
+is `DRIZZLE_UNREPRESENTABLE_VALUE`, and an argument it cannot parse, as a literal or a variable, is
+`DRIZZLE_INVALID_INPUT_VALUE`. The messages, coercion and printed SDL are unchanged.
+
+To code them, the exported `GraphQLDateTime` is now the library's own copy of `graphql-scalars`'
+scalar rather than that scalar itself. A schema you compose by hand around `entities` that also
+uses `graphql-scalars`' `GraphQLDateTime` therefore holds two types named `DateTime`, and graphql
+refuses it with `Schema must contain uniquely named types but contains multiple types named
+"DateTime"`. Import it from here instead:
+
+```diff
+-import { GraphQLDateTime } from 'graphql-scalars'
++import { GraphQLDateTime } from '@vantreeseba/drizzle-graphql'
+```
+
+The same goes for a schema stitched or merged with the generated one. A
+[`scalars` / `mapColumnType` override](#overriding-a-columns-scalar) naming `graphql-scalars`'
+`GraphQLDateTime` keeps working unchanged: it is swapped for the library's instance. `buildSchema`
+cannot see what you compose afterwards, so the duplicate is only reported by graphql when that
+schema is built.
+
 ## Naming the generated types and fields
 
 By default every name comes from the table's key in the Drizzle schema: `tasks` gives type
@@ -768,6 +794,11 @@ import { GraphQLBigIntString, GraphQLDate, GraphQLDateTime, GraphQLDecimalString
 `GraphQLBigIntString` is the `BigInt` scalar — named for what it does rather than what it is
 called in SDL, to avoid clashing with the language's own `BigInt`. `GraphQLDate` is this
 library's own `Date` scalar, not `graphql-scalars`' (whose `parseValue` returns a JS `Date`).
+`GraphQLDateTime` is `graphql-scalars`' `DateTime` with the same name, description, coercion and
+messages, except that its errors are coded like `Date`'s (see [Migrating to 19](#migrating-to-19)).
+It is a separate instance, so a hand-written schema combined with the generated one uses this
+export rather than `graphql-scalars`' own; a `scalars` / `mapColumnType` override naming
+`graphql-scalars`' instance is swapped for this one automatically.
 
 > **Upgrading — `date` columns.** A `date` column used to be typed differently depending on
 > where it appeared and which `mode` it was declared with. Both modes are now `Date` everywhere:
@@ -2496,8 +2527,8 @@ to match on prose:
     the generated `field`, and the `relation` for a relation field. The type is exported as
     `DrizzleErrorContext`.
 
-A value the request could not supply is `DRIZZLE_INVALID_INPUT_VALUE` — a date that does not
-parse, a `BigInt` argument that is not an integer, a malformed JSON column value, a negative
+A value the request could not supply is `DRIZZLE_INVALID_INPUT_VALUE` — a `Date` or `DateTime`
+that does not parse, a `BigInt` argument that is not an integer, a malformed JSON column value, a negative
 `limit` or `offset` — and a write
 naming something that is not a column of its table is `DRIZZLE_UNKNOWN_COLUMN`. The mirror
 image, a stored value the scalar transporting it cannot represent, is

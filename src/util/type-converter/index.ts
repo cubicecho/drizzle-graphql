@@ -27,6 +27,7 @@ import {
 import { capitalize, constantCase } from '../case-ops/index.ts';
 import { declarePerBuildRegistry } from '../per-build-registry.ts';
 import {
+  canonicalScalar,
   GraphQLBigIntString,
   GraphQLDate,
   GraphQLDateTime,
@@ -516,7 +517,12 @@ const normalizeScalarOverride = (
     }
   }
 
-  return pair;
+  // `graphql-scalars`' own `DateTime` is the library's built-in one under another instance; a
+  // schema holding both would hold two types named `DateTime`.
+  return {
+    output: pair.output && canonicalScalar(pair.output),
+    input: pair.input && canonicalScalar(pair.input),
+  };
 };
 
 /**

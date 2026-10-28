@@ -79,6 +79,8 @@ const schema = new GraphQLSchema({
 })
 ```
 
+A hand-written field typed `DateTime` must use `GraphQLDateTime` from `@vantreeseba/drizzle-graphql`, not from `graphql-scalars`: they are separate instances, and a schema holding both fails with "Schema must contain uniquely named types".
+
 ## Relations & N+1 handling
 
 - **Root queries** (`entities.queries.*`) eagerly load every requested relation in a single round-trip via Drizzle's relational query builder (`with:`), including nested relations and per-relation `where` / `orderBy` / `limit` / `offset`.
@@ -195,6 +197,7 @@ From `drizzle-graphql`:
 - `createRelationResolverFactory(db, tables, nullOrdering, filterCtx?)`, `extractFilters`, `extractOrderBy`, `extractRelationJoinColumns` — helpers for custom relation resolvers. `nullOrdering` is the dialect's native `ORDER BY` placement for `NULL` — `'nulls-largest'` for PostgreSQL, `'nulls-smallest'` for MySQL and SQLite — and the keyset predicate behind a relation's `after` argument must match it.
 - `selectionToWith(info, options)`, `resolveSelection(info, options)` — selection-set translation for a hand-written resolver over a generated type.
 - `drizzleExtension(fieldOrType)`, `isDrizzleFieldExtension(value)`, `identifyRows(field, args)` — read the `extensions.drizzle` identity block.
+- Scalars: `GraphQLBigIntString` (`BigInt`), `GraphQLDecimalString` (`Decimal`), `GraphQLDate` (`Date`), `GraphQLDateTime` (`DateTime`), `GraphQLJSON`, `GraphQLUUID`. `GraphQLDateTime` is the library's own copy of `graphql-scalars`' (same SDL and coercion; errors coded `DRIZZLE_UNREPRESENTABLE_VALUE` on output, `DRIZZLE_INVALID_INPUT_VALUE` on input) since 19.0.0: a hand-composed schema must import it from here, not `graphql-scalars`, or it holds two `DateTime` types. A `scalars` / `mapColumnType` override naming `graphql-scalars`' instance is swapped for the library's.
 - `singularizeMapper(tableName)` — the `typeNameMapper: 'singularize'` preset, exported for wrapping.
 - `runCommitCallbacks(context)`, `discardCommitCallbacks(context)` — run (or drop) the `payload.onCommit` callbacks queued on a context that carried a caller-supplied executor under `drizzleExecutorKey`; call after your own transaction commits (or rolls back).
 - Types: `AnyDrizzleDB`, `BuildSchemaConfig`, `FeatureSwitch`, `GeneratedData`, `GeneratedEntities`, `GeneratedInputs`, `GeneratedOutputs`, `QueriesCore`, `MutationsCore`, `MutationReturnlessResult`, `LimitsConfig`, `TableLimitPolicy`, `ScopeConfig`, `RowScope`, `RowScopeFilter`, `ContextValuesConfig`, `SoftDeleteColumn`, `SoftDeleteConfig`, `SchemaExclusions`, `SelectResolver`, `SelectSingleResolver`, `InsertResolver`, `InsertArrResolver`, `UpdateResolver`, `DeleteResolver`, `RelationResolverFactory`, `TableNamedRelations`, `DrizzleExtension`, `DrizzleFieldExtension`, `DrizzleTypeExtension`, `DrizzleFieldKind`, `DrizzleFieldOperation`, `DrizzleTargetArg`, `IdentifiedRows`, `SelectionOptions`, `ResolveSelectionOptions`, and Drizzle schema-extraction utility types (`ExtractTables`, `ExtractRelations`, `ExtractTableRelations`, `ExtractTableByName`).
