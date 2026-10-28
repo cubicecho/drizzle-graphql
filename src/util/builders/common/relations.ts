@@ -16,6 +16,7 @@ import {
   isDecimalStringColumn,
   isMySqlDateTimeStringColumn,
   isPgTimestampStringColumn,
+  type ScalarOverrides,
 } from '../../type-converter/index.ts';
 import type { TableNamedRelations } from '../types.ts';
 
@@ -503,7 +504,11 @@ export const relatedRowParents = async (
  * related rows' decoded values. The values from before remapping are used when the row kept
  * them; otherwise the output form is mapped back the way an input value would be.
  */
-export const parentJoinValues = (parent: Record<string, any>, pairs: readonly RelationJoinColumnPair[]): unknown[] =>
+export const parentJoinValues = (
+  parent: Record<string, any>,
+  pairs: readonly RelationJoinColumnPair[],
+  overrides: ScalarOverrides | undefined,
+): unknown[] =>
   pairs.map(({ localColPropName, localCol }) => {
     const raw = rawColumnValue(parent, localColPropName);
     if (raw.found) {
@@ -514,7 +519,7 @@ export const parentJoinValues = (parent: Record<string, any>, pairs: readonly Re
       return value;
     }
     try {
-      return remapFromGraphQLCore(value, localCol, localColPropName);
+      return remapFromGraphQLCore(value, localCol, localColPropName, overrides);
     } catch {
       return value;
     }

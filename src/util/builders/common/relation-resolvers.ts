@@ -165,6 +165,8 @@ export const createRelationResolverFactory =
   ({ tableName, relationName, relEntry, isOne }) => {
     // Bound the way the generated resolvers' policies are: a consumer passes them unbound.
     const visibilityOf = bindPolicies(policies, filterCtx)?.visibility;
+    // The build's scalar overrides, carried on its filter context; none without one.
+    const overrides = filterCtx?.registries?.scalarOverrides;
     const parentTable = tables[tableName];
     const targetTableName = relEntry.targetTableName;
     const targetTable = tables[targetTableName];
@@ -260,7 +262,7 @@ export const createRelationResolverFactory =
       }
 
       // A null in any join column matches nothing: SQL equality never holds for it.
-      const localValues = parentJoinValues(parent, joinPairs);
+      const localValues = parentJoinValues(parent, joinPairs, overrides);
       if (localValues.some((value) => value == null)) {
         return isOne ? null : [];
       }
@@ -502,7 +504,7 @@ export const createRelationResolverFactory =
                 byKey.set(key, row);
               }
             }
-            remapToGraphQLArrayOutput(rows, targetTableName, targetTable);
+            remapToGraphQLArrayOutput(rows, targetTableName, targetTable, overrides);
             return byKey;
           }
 
@@ -512,7 +514,7 @@ export const createRelationResolverFactory =
               grouped.get(key)?.push(row);
             }
           }
-          remapToGraphQLArrayOutput(rows, targetTableName, targetTable);
+          remapToGraphQLArrayOutput(rows, targetTableName, targetTable, overrides);
           return grouped;
         };
 

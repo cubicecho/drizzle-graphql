@@ -23,10 +23,12 @@
 import { getColumns, is, One, type Table } from 'drizzle-orm';
 import type { GraphQLFieldConfig, GraphQLInputObjectType, GraphQLObjectType, GraphQLOutputType } from 'graphql';
 import { GraphQLList, GraphQLNonNull } from 'graphql';
+import { type BuildRegistries, createBuildRegistries } from '../build-registries.ts';
 import {
   aggregateFieldComplexity,
   bindPolicies,
   buildRelationGraph,
+  type ColumnExclusions,
   computeResolverFieldNames,
   createMutationTxCtx,
   createRelationResolverFactory,
@@ -46,7 +48,6 @@ import {
   type RelationResolverFactory,
   type ResolverFieldNames,
   type ResolverPolicies,
-  registerColumnExclusions,
   type SoftDeleteInfo,
   type TablesRelationalConfig,
   type TypeCacheCtx,
@@ -58,8 +59,6 @@ import {
 import { installSqliteBlobJsonDecoders } from '../data-mappers/index.ts';
 import { type DrizzleMutationMeta, type TableFieldExtensionFactory, tableFieldExtensions } from '../extensions.ts';
 import { resolveTableFeatures } from '../features.ts';
-import { beginPerBuildInstall } from '../per-build-registry.ts';
-import { registerEnumConfig, registerScalarOverrides } from '../type-converter/index.ts';
 import {
   createRelationAggregateFactory,
   generateAggregate,
@@ -68,10 +67,8 @@ import {
   generateGroupByEnum,
   generateGroupByType,
   generateHavingInput,
-  resetAggregateColumnCache,
 } from './aggregates.ts';
 import { registerBuildRuntime } from './common/build-registry.ts';
-import { resetFieldUpdateCaches } from './field-updates.ts';
 import { dropContextValueRelations, gateNestedWritePlans } from './nested-writes/gating.ts';
 import { createNestedWriteTypes, type NestedWriteTypes } from './nested-writes/input-types.ts';
 import { buildNestedWritePlans, type NestedWritePlans } from './nested-writes/plans.ts';
@@ -201,23 +198,6 @@ export type TableBuild<WithReturning extends boolean = boolean> = {
   softDeleteInfo: SoftDeleteInfo | undefined;
 };
 
-/**
- * Installs this build's module-level state, in order, replacing what the previous build left.
- * Scalar overrides, column exclusions and the SQLite blob decoders are kept per table or column
- * object, so a second build changes only the tables it shares with the first; the enum registry
- * and the aggregate and field-update caches are replaced whole. Request-time remapping reads the
- * scalar overrides and field-update kinds, so there the most recent build wins.
- */
-const installBuildRegistries = (tables: Record<string, Table>, options: SchemaGeneratorOptions): void => {
-  beginPerBuildInstall();
-  registerScalarOverrides(tables, options);
-  installSqliteBlobJsonDecoders(tables);
-  registerEnumConfig(options);
-  registerColumnExclusions(tables, options.exclude);
-  resetAggregateColumnCache();
-  resetFieldUpdateCaches();
-};
-
 /** How many tables a build-time warning names before it only counts the rest. */
 const MAX_LISTED_OMISSIONS = 5;
 
@@ -271,8 +251,9 @@ const createTypeCache = (build: {
   primaryKeyPropNames: (table: any) => string[];
   featureOf: (tableName: string) => TableFeatures;
   uniqueKeys: Record<string, UniqueKeyMap>;
+  registries: BuildRegistries;
 }): TypeCacheCtx => {
-  const { options, tables, primaryKeyPropNames, featureOf, uniqueKeys } = build;
+  const { options, tables, primaryKeyPropNames, featureOf, uniqueKeys, registries } = build;
   return {
     resolveName: options.resolveName ?? ((info) => info.defaultName),
     genericFilterCache: new Map(),
@@ -289,6 +270,7 @@ const createTypeCache = (build: {
     complexity: options.complexity,
     limits: options.limits,
     docs: options.docs ?? {},
+    registries,
     primaryKeyOf: (name) => (tables[name] ? primaryKeyPropNames(tables[name] as Table) : []),
     contextValuesOf: options.policies?.contextValues,
     softDeleteOf: options.policies?.softDelete,
@@ -306,7 +288,8 @@ const createTypeCache = (build: {
  */
 export const createSchemaBuilder = <WithReturning extends boolean>(adapter: SchemaBuildAdapter<WithReturning>) => {
   const primaryKeyPropNames = adapter.primaryKeyPropNames;
-  const uniqueColumnSets = (table: Table): string[][] => getUniqueColumnSets(table, adapter.getTableConfig);
+  const uniqueColumnSets = (exclusions: ColumnExclusions, table: Table): string[][] =>
+    getUniqueColumnSets(exclusions, table, adapter.getTableConfig);
   const { generateSelectArray, generateSelectSingle } = createSelectGenerators(
     primaryKeyPropNames,
     adapter.nullOrdering,
@@ -321,6 +304,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     tableEntries: [string, Table][],
     featureOf: (tableName: string) => TableFeatures,
     namedRelations: Record<string, Record<string, TableNamedRelations>>,
+    exclusions: ColumnExclusions,
   ): Record<string, UniqueKeyMap> => {
     const uniqueKeys: Record<string, UniqueKeyMap> = {};
     for (const [tableName, table] of tableEntries) {
@@ -329,7 +313,12 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       }
       // Whatever the filter input already offers under a name keeps it — columns are added
       // first, then relations, and a key field last.
-      const map = tableUniqueKeyMap(table, Object.keys(namedRelations[tableName] ?? {}), uniqueColumnSets(table));
+      const map = tableUniqueKeyMap(
+        exclusions,
+        table,
+        Object.keys(namedRelations[tableName] ?? {}),
+        uniqueColumnSets(exclusions, table),
+      );
       if (Object.keys(map).length) {
         uniqueKeys[tableName] = map;
       }
@@ -349,15 +338,16 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     excludedTables: ReadonlySet<string>;
     featureOf: (tableName: string) => TableFeatures;
     tablePolicies: SchemaGeneratorOptions['policies'];
+    exclusions: ColumnExclusions;
   }): NestedWritePlans => {
-    const { schemaEntries, tables, namedRelations, excludedTables, featureOf, tablePolicies } = build;
+    const { schemaEntries, tables, namedRelations, excludedTables, featureOf, tablePolicies, exclusions } = build;
     const contextValuesOf = tablePolicies?.contextValues;
     const softDeleteOf = tablePolicies?.softDelete;
     const plans = buildNestedWritePlans(
       tables,
       namedRelations,
       // A partial unique index still says which side of a one-to-one holds the key.
-      (target) => getUniqueColumnSets(target as Table, adapter.getTableConfig, { partial: true }),
+      (target) => getUniqueColumnSets(exclusions, target as Table, adapter.getTableConfig, { partial: true }),
       (target) => primaryKeyPropNames(target as Table),
       extractRelationJoinColumns,
       // A junction is written without being a relation target, so it is named from the
@@ -417,8 +407,12 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       );
     }
 
-    // Before any type generation: every column→GraphQL type decision reads these.
-    installBuildRegistries(tables, options);
+    // Before any type generation: every column→GraphQL type decision reads these. They belong
+    // to this build alone, so a later build over the same tables cannot change them.
+    const registries = createBuildRegistries(tables, options);
+    // Not per-build state: the decoder depends on nothing but the column, and drizzle reads it
+    // off the column object, so it is installed on the column once and every build shares it.
+    installSqliteBlobJsonDecoders(tables);
 
     // Each relation entry carries its target's primary key before pruning and type generation,
     // which share the entry objects, so paginated relations default to a deterministic order.
@@ -428,8 +422,8 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     // fields still exist and resolve lazily.
     const eagerRelations = pruneNonEagerRelations(namedRelations, shouldEagerLoad);
 
-    const uniqueKeys = buildUniqueKeys(tableEntries, featureOf, namedRelations);
-    const filterCtx: RelationFilterBase = { tables, namedRelations, uniqueKeys };
+    const uniqueKeys = buildUniqueKeys(tableEntries, featureOf, namedRelations, registries.exclusions);
+    const filterCtx: RelationFilterBase = { tables, namedRelations, uniqueKeys, registries };
 
     // The row scope compiled against this build's relation graph, plus the columns whose value
     // the server supplies. Both stay undefined unless configured.
@@ -447,7 +441,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       tablePolicies,
     );
 
-    const cacheCtx = createTypeCache({ options, tables, primaryKeyPropNames, featureOf, uniqueKeys });
+    const cacheCtx = createTypeCache({ options, tables, primaryKeyPropNames, featureOf, uniqueKeys, registries });
 
     adapter.preflight?.(db, options);
 
@@ -455,7 +449,15 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     // fields to the create/update inputs, and the runtime executes them. All three are left
     // undefined when the feature is off, so the inputs and the resolvers stay as they were.
     const nestedPlans = features.nestedWrites
-      ? buildGatedNestedPlans({ schemaEntries, tables, namedRelations, excludedTables, featureOf, tablePolicies })
+      ? buildGatedNestedPlans({
+          schemaEntries,
+          tables,
+          namedRelations,
+          excludedTables,
+          featureOf,
+          tablePolicies,
+          exclusions: registries.exclusions,
+        })
       : undefined;
     const nestedTypes = nestedPlans
       ? createNestedWriteTypes({ plans: nestedPlans, cacheCtx, typeNameMapper })
@@ -464,6 +466,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       ? createNestedWriteRuntime({
           plans: nestedPlans,
           filterCtx,
+          registries,
           policies,
           contextValues: contextValuesOf,
         })
@@ -557,6 +560,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       eagerRelations,
       typeNameMapper,
       filterCtx,
+      registries: cacheCtx.registries,
       limits,
       policies,
       resolveName: cacheCtx.resolveName,
@@ -581,6 +585,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       : undefined;
     const aggregateGenerated = tableFeatures.aggregates
       ? generateAggregate(
+          cacheCtx.registries,
           db,
           tableName,
           table,
@@ -603,6 +608,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     const groupByGenerated =
       groupByType && groupByEnum && havingInput
         ? generateGroupBy(
+            cacheCtx.registries,
             db,
             tableName,
             table,

@@ -18,7 +18,7 @@ import type { SchemaGeneratorOptions } from './types.ts';
 import type { PrimaryKeyPropNames } from './write-resolvers.ts';
 
 /** A dialect's cached `getTableConfig`, as the unique-key helpers read it. */
-type TableConfigLookup = Parameters<typeof getUniqueColumnSets<Table>>[1];
+type TableConfigLookup = Parameters<typeof getUniqueColumnSets<Table>>[2];
 
 /** What one dialect hands the code that picked it from a database handle. */
 export type Dialect = {

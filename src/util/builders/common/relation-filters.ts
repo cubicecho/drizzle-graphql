@@ -15,6 +15,7 @@ import {
   type SQL,
   sql,
 } from 'drizzle-orm';
+import type { BuildRegistries } from '../../build-registries.ts';
 import type { FilterColumnOperatorsCore, Filters, TableNamedRelations } from '../types.ts';
 import { drizzleError } from './errors.ts';
 import { allOf, type CompiledFilter, compileBooleanBranches, extractFiltersColumn, isNotTrue } from './filters.ts';
@@ -54,13 +55,19 @@ export interface RelationFilterContext {
    * filter object, which is the server's predicate and is compiled unscoped.
    */
   visibility?: RowVisibility;
+  /**
+   * The build's registries. Request-time value conversion reads its scalar overrides — a filter
+   * operand on a column an override scalar owns is passed through as that scalar produced it —
+   * so a context without them converts every operand by the built-in rules.
+   */
+  registries?: BuildRegistries;
 }
 
 /**
  * The build-scoped half of {@link RelationFilterContext}. Created once per generated schema and
  * handed to every resolver, which adds the table it is filtering.
  */
-export type RelationFilterBase = Pick<RelationFilterContext, 'tables' | 'namedRelations' | 'uniqueKeys'>;
+export type RelationFilterBase = Pick<RelationFilterContext, 'tables' | 'namedRelations' | 'uniqueKeys' | 'registries'>;
 
 /**
  * The narrowed contexts already handed out, keyed by the build-scoped base and then by
@@ -451,9 +458,16 @@ export const extractFilters = <TTable extends Table>(
     }
 
     const extracted = column
-      ? extractFiltersColumn(column, fieldName, operators)
+      ? extractFiltersColumn(column, fieldName, operators, relationCtx?.registries?.scalarOverrides)
       : uniqueKey
-        ? extractUniqueKeyFilter(table, tableName, fieldName, uniqueKey, operators as any)
+        ? extractUniqueKeyFilter(
+            table,
+            tableName,
+            fieldName,
+            uniqueKey,
+            operators as any,
+            relationCtx?.registries?.scalarOverrides,
+          )
         : extractRelationFilter(table, fieldName, relations![fieldName]!, operators as any, relationCtx!);
 
     if (extracted) {

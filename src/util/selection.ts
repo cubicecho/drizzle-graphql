@@ -90,14 +90,17 @@ const contextFor = (db: AnyDrizzleDB<any>): SelectionContext => {
   // Every table's unique-key `where` fields, for a read no build identifies: which tables enabled
   // them is per build. A client cannot spell a field its schema did not generate, so offering
   // them all costs nothing, while offering none made a build's own key an unknown filter key.
+  // Which columns a build excludes is per build too, so none are excluded here.
+  const noExclusions = new WeakMap();
   const uniqueKeys: Record<string, UniqueKeyMap> = Object.fromEntries(
     tableEntries
       .map(([tableName, table]): [string, UniqueKeyMap] => [
         tableName,
         tableUniqueKeyMap(
+          noExclusions,
           table,
           Object.keys(namedRelations[tableName] ?? {}),
-          getUniqueColumnSets(table, getTableConfig),
+          getUniqueColumnSets(noExclusions, table, getTableConfig),
         ),
       ])
       .filter(([, map]) => Object.keys(map).length),

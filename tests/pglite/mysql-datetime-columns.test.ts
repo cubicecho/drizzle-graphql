@@ -60,7 +60,7 @@ describe('MySQL timestamp / datetime schema shape', () => {
 describe('MySQL timestamp / datetime input mapping', () => {
   it("passes a 'date'-mode column a Date that drizzle writes as the same UTC instant", () => {
     for (const column of DATE_MODE) {
-      const mapped = remapFromGraphQLCore(GraphQLDateTime.parseValue(INSTANT), column, column.name);
+      const mapped = remapFromGraphQLCore(GraphQLDateTime.parseValue(INSTANT), column, column.name, undefined);
       expect(mapped).toBeInstanceOf(Date);
       expect((mapped as Date).toISOString()).toBe(INSTANT);
       // What drizzle hands mysql2: UTC text, not mysql2's local-time formatting of a Date.
@@ -70,26 +70,30 @@ describe('MySQL timestamp / datetime input mapping', () => {
 
   it("passes a 'string'-mode column MySQL datetime text in UTC", () => {
     for (const column of STRING_MODE) {
-      expect(remapFromGraphQLCore(GraphQLDateTime.parseValue(INSTANT), column, column.name)).toBe(MYSQL_TEXT);
-      // An offset is resolved to the instant it names.
-      expect(remapFromGraphQLCore(GraphQLDateTime.parseValue('2026-09-15T05:00:00-05:00'), column, column.name)).toBe(
+      expect(remapFromGraphQLCore(GraphQLDateTime.parseValue(INSTANT), column, column.name, undefined)).toBe(
         MYSQL_TEXT,
       );
+      // An offset is resolved to the instant it names.
+      expect(
+        remapFromGraphQLCore(GraphQLDateTime.parseValue('2026-09-15T05:00:00-05:00'), column, column.name, undefined),
+      ).toBe(MYSQL_TEXT);
     }
   });
 
   it('reads offset-less MySQL text from a hand-built caller as UTC, in both modes', () => {
     for (const column of DATE_MODE) {
-      expect((remapFromGraphQLCore('2026-09-15 10:00:00', column, column.name) as Date).toISOString()).toBe(INSTANT);
+      expect((remapFromGraphQLCore('2026-09-15 10:00:00', column, column.name, undefined) as Date).toISOString()).toBe(
+        INSTANT,
+      );
     }
     for (const column of STRING_MODE) {
-      expect(remapFromGraphQLCore('2026-09-15 10:00:00', column, column.name)).toBe(MYSQL_TEXT);
+      expect(remapFromGraphQLCore('2026-09-15 10:00:00', column, column.name, undefined)).toBe(MYSQL_TEXT);
     }
   });
 
   it('rejects a value that is not a date', () => {
     for (const column of [...DATE_MODE, ...STRING_MODE]) {
-      expect(() => remapFromGraphQLCore('not a date', column, column.name)).toThrow(
+      expect(() => remapFromGraphQLCore('not a date', column, column.name, undefined)).toThrow(
         expect.objectContaining({ extensions: expect.objectContaining({ code: 'DRIZZLE_INVALID_INPUT_VALUE' }) }),
       );
     }
@@ -104,11 +108,11 @@ describe('MySQL timestamp / datetime output mapping', () => {
       ['tsString', Stamps.tsString],
       ['dtString', Stamps.dtString],
     ] as const) {
-      expect(serialize(remapToGraphQLCore(key, '2026-09-15 10:00:00', 'stamps', column))).toBe(INSTANT);
-      expect(serialize(remapToGraphQLCore(key, '2026-09-15 10:00:00.123', 'stamps', column))).toBe(
+      expect(serialize(remapToGraphQLCore(key, '2026-09-15 10:00:00', 'stamps', column, undefined))).toBe(INSTANT);
+      expect(serialize(remapToGraphQLCore(key, '2026-09-15 10:00:00.123', 'stamps', column, undefined))).toBe(
         '2026-09-15T10:00:00.123Z',
       );
-      expect(serialize(remapToGraphQLCore(key, '2026-09-15 10:00:00.123456', 'stamps', column))).toBe(
+      expect(serialize(remapToGraphQLCore(key, '2026-09-15 10:00:00.123456', 'stamps', column, undefined))).toBe(
         '2026-09-15T10:00:00.123Z',
       );
     }
@@ -119,12 +123,12 @@ describe('MySQL timestamp / datetime output mapping', () => {
       ['ts', Stamps.ts],
       ['dt', Stamps.dt],
     ] as const) {
-      expect(serialize(remapToGraphQLCore(key, new Date(INSTANT), 'stamps', column))).toBe(INSTANT);
+      expect(serialize(remapToGraphQLCore(key, new Date(INSTANT), 'stamps', column, undefined))).toBe(INSTANT);
     }
   });
 
   it('leaves text that names no instant for the scalar to reject', () => {
-    const zeroDate = remapToGraphQLCore('tsString', '0000-00-00 00:00:00', 'stamps', Stamps.tsString);
+    const zeroDate = remapToGraphQLCore('tsString', '0000-00-00 00:00:00', 'stamps', Stamps.tsString, undefined);
     expect(() => GraphQLDateTime.serialize(zeroDate)).toThrow();
   });
 });

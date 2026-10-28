@@ -13,6 +13,7 @@ import type { RelationFilterBase } from './relation-filters.ts';
 export type BuildRuntime = {
   /** The drizzle instance the build read its tables from. */
   db: object;
+  /** The build's filter base, which carries its registries (scalar overrides included). */
   filterCtx: RelationFilterBase;
   /** `scope`, `softDelete` and `defaults.orderBy`, bound the way the generated resolvers use them. */
   policies: ResolverPolicies | undefined;
@@ -36,9 +37,17 @@ const runtimeByTypeMeta = new WeakMap<object, BuildRuntime>();
  */
 const buildsByDb = new WeakMap<object, { count: number; only?: BuildRuntime; anyPolicies: boolean }>();
 
-/** Whether a build changes what a read returns at all: a row policy, a limit or a default ordering. */
+/**
+ * Whether a build changes what a read returns at all: a row policy, a limit, a default ordering,
+ * or a scalar override, which decides how a column's values are mapped.
+ */
 const hasPolicies = (runtime: BuildRuntime): boolean =>
-  !!(runtime.policies?.visibility || runtime.policies?.defaultOrderBy || runtime.limits);
+  !!(
+    runtime.policies?.visibility ||
+    runtime.policies?.defaultOrderBy ||
+    runtime.limits ||
+    runtime.filterCtx.registries?.scalarOverrides.size
+  );
 
 /** Records a finished build against the object types it generated and the instance it read. */
 export const registerBuildRuntime = (runtime: BuildRuntime, types: Iterable<unknown>): void => {
@@ -78,7 +87,7 @@ export const runtimeForDb = (db: object, helper: string): BuildRuntime | undefin
   }
   if (builds.anyPolicies) {
     throw new Error(
-      `Drizzle-GraphQL Error: ${helper} cannot tell which of the ${builds.count} schemas built over this database the selection belongs to, and at least one applies row policies (scope, softDelete, limits or defaults). Pass the resolver's \`info\` rather than a parsed selection tree, from a field whose type the build generated.`,
+      `Drizzle-GraphQL Error: ${helper} cannot tell which of the ${builds.count} schemas built over this database the selection belongs to, and at least one applies row policies (scope, softDelete, limits or defaults) or scalar overrides. Pass the resolver's \`info\` rather than a parsed selection tree, from a field whose type the build generated.`,
     );
   }
   return undefined;

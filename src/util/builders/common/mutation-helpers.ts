@@ -6,6 +6,7 @@ import { and, getColumns, is, type SQL, sql } from 'drizzle-orm';
 import { PgDoublePrecision, PgReal } from 'drizzle-orm/pg-core';
 import type { GraphQLFieldConfigArgumentMap } from 'graphql';
 import { GraphQLBoolean, GraphQLInputObjectType, GraphQLNonNull } from 'graphql';
+import type { BuildRegistries } from '../../build-registries.ts';
 import { capitalize } from '../../case-ops/index.ts';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import { parseResolveInfo } from '../../parse-resolve-info.ts';
@@ -364,6 +365,7 @@ export const generateWriteCount = ({
   fieldName,
   requireWhere,
   filterCtx,
+  registries,
   txCtx,
   nested,
   policies,
@@ -381,6 +383,8 @@ export const generateWriteCount = ({
   fieldName: string;
   requireWhere: boolean;
   filterCtx?: RelationFilterBase;
+  /** The build's registries, which decide how the `set` values are mapped. */
+  registries: BuildRegistries;
   txCtx?: MutationTxCtx;
   nested?: NestedWriteRuntime;
   policies?: ResolverPolicies;
@@ -448,7 +452,7 @@ export const generateWriteCount = ({
         }
         // A context-derived column is the server's to set, so an update never reassigns one.
         const values = stripContextValues(
-          remapUpdateInput(entry ? entry.columns : set!, table, tableName),
+          remapUpdateInput(registries, entry ? entry.columns : set!, table, tableName),
           policies?.contextValues?.(tableName),
         );
         if (!Object.keys(values).length) {

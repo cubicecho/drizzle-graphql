@@ -2,7 +2,7 @@
 
 import type { Column, Table } from 'drizzle-orm';
 import { asc, getColumns, type SQL } from 'drizzle-orm';
-import { visibleColumns } from './exclusions.ts';
+import { type ColumnExclusions, visibleColumns } from './exclusions.ts';
 
 /**
  * Returns the property names of a table's primary key column(s).
@@ -150,9 +150,10 @@ type UniqueTableConfig = {
  * together with that predicate, and it does not make the set unique across the whole table.
  */
 export const getUniqueTargets = <TTable extends Table>(
+  exclusions: ColumnExclusions,
   table: TTable,
   getTableConfig: (table: TTable) => UniqueTableConfig,
-): UniqueTarget[] => uniqueTargetsOver(table, visibleColumns(table), getTableConfig);
+): UniqueTarget[] => uniqueTargetsOver(table, visibleColumns(exclusions, table), getTableConfig);
 
 /** {@link getUniqueTargets} over the columns given: the visible ones for the schema, all of them for SQL. */
 const uniqueTargetsOver = <TTable extends Table>(
@@ -223,11 +224,12 @@ const uniqueTargetsOver = <TTable extends Table>(
  * unique among the rows that matter.
  */
 export const getUniqueColumnSets = <TTable extends Table>(
+  exclusions: ColumnExclusions,
   table: TTable,
   getTableConfig: (table: TTable) => UniqueTableConfig,
   options: { partial?: boolean } = {},
 ): string[][] =>
-  getUniqueTargets(table, getTableConfig)
+  getUniqueTargets(exclusions, table, getTableConfig)
     .filter((target) => options.partial || !target.where)
     .map((target) => target.columns);
 

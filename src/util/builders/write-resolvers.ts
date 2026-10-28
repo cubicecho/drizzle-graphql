@@ -14,6 +14,7 @@ import type { Table } from 'drizzle-orm';
 import type { PgAsyncDatabase } from 'drizzle-orm/pg-core';
 import type { SQLiteAsyncDatabase } from 'drizzle-orm/sqlite-core';
 import { type GraphQLFieldConfigArgumentMap, type GraphQLInputObjectType, GraphQLList, GraphQLNonNull } from 'graphql';
+import type { BuildRegistries } from '../build-registries.ts';
 import {
   remapFromGraphQLArrayInput,
   remapFromGraphQLSingleInput,
@@ -81,6 +82,8 @@ export interface WriteBuildOptions {
   eagerRelations: Record<string, Record<string, TableNamedRelations>>;
   typeNameMapper?: TypeNameMapper;
   filterCtx?: RelationFilterBase;
+  /** The build's registries: its scalar overrides and field-update kinds decide how values are mapped. */
+  registries: BuildRegistries;
   txCtx?: MutationTxCtx;
   nested?: NestedWriteRuntime;
   limits?: LimitPolicyFor;
@@ -147,8 +150,20 @@ export const buildWriteResolvers = (
    * one-element list.
    */
   const generateInsert = (build: WriteBuildOptions, opts: InsertOptions): CreatedResolver => {
-    const { db, tables, eagerRelations, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } =
-      build;
+    const {
+      db,
+      tables,
+      eagerRelations,
+      typeNameMapper,
+      filterCtx,
+      registries,
+      txCtx,
+      nested,
+      limits,
+      policies,
+      resolveName,
+    } = build;
+    const overrides = registries.scalarOverrides;
     const { tableName, table, baseType, fieldName, typeName, single, conflictDoNothing = false } = opts;
     const queryArgs: GraphQLFieldConfigArgumentMap = {
       values: {
@@ -189,7 +204,7 @@ export const buildWriteResolvers = (
         const input = nestedEntries
           ? []
           : applyContextValuesAll(
-              remapFromGraphQLArrayInput(entries ? entries.map((entry) => entry.columns) : supplied, table),
+              remapFromGraphQLArrayInput(entries ? entries.map((entry) => entry.columns) : supplied, table, overrides),
               contextColumns,
               context,
             );
@@ -231,7 +246,7 @@ export const buildWriteResolvers = (
               tableName,
               entries: nestedEntries,
               remapValues: (values) =>
-                applyContextValues(remapFromGraphQLSingleInput(values, table), contextColumns, context),
+                applyContextValues(remapFromGraphQLSingleInput(values, table, overrides), contextColumns, context),
               write: (tx, values) => runInsert(tx, [values]),
               request: { context, args, info, commits },
             })
@@ -252,8 +267,8 @@ export const buildWriteResolvers = (
         const enriched = await withEagerRelations(executor, tableName, result, pkNames, withParams, hasRelations);
 
         return single
-          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, eagerRelations)
-          : remapToGraphQLArrayOutput(enriched, tableName, table, eagerRelations);
+          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, overrides, eagerRelations)
+          : remapToGraphQLArrayOutput(enriched, tableName, table, overrides, eagerRelations);
       },
     });
   };
@@ -265,8 +280,20 @@ export const buildWriteResolvers = (
    * Shares the insert input: an upsert supplies a whole row, same as a create.
    */
   const generateUpsert = (build: WriteBuildOptions, opts: UpsertOptions): CreatedResolver => {
-    const { db, tables, eagerRelations, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } =
-      build;
+    const {
+      db,
+      tables,
+      eagerRelations,
+      typeNameMapper,
+      filterCtx,
+      registries,
+      txCtx,
+      nested,
+      limits,
+      policies,
+      resolveName,
+    } = build;
+    const overrides = registries.scalarOverrides;
     const { tableName, table, baseType, onConflictType, uniqueSets, fieldName, typeName, single } = opts;
     const queryArgs: GraphQLFieldConfigArgumentMap = {
       values: {
@@ -307,7 +334,7 @@ export const buildWriteResolvers = (
         const input = nestedEntries
           ? []
           : applyContextValuesAll(
-              remapFromGraphQLArrayInput(entries ? entries.map((entry) => entry.columns) : supplied, table),
+              remapFromGraphQLArrayInput(entries ? entries.map((entry) => entry.columns) : supplied, table, overrides),
               contextColumns,
               context,
             );
@@ -356,7 +383,7 @@ export const buildWriteResolvers = (
         // exactly the requests the real plan would, without firing the hook first.
         for (const entry of nestedEntries ?? []) {
           const fillable = [...Object.keys(contextColumns ?? {}), ...nested!.parentSideColumns(tableName, entry.ops)];
-          const values = remapFromGraphQLSingleInput(entry.columns, table);
+          const values = remapFromGraphQLSingleInput(entry.columns, table, overrides);
           conflictBatches([{ ...Object.fromEntries(fillable.map((name) => [name, null])), ...values }]);
         }
         await before();
@@ -398,7 +425,7 @@ export const buildWriteResolvers = (
               tableName,
               entries: nestedEntries,
               remapValues: (values) =>
-                applyContextValues(remapFromGraphQLSingleInput(values, table), contextColumns, context),
+                applyContextValues(remapFromGraphQLSingleInput(values, table, overrides), contextColumns, context),
               write: (tx, values, ops) => runUpsert(tx, conflictBatches([values]), ops),
               request: { context, args, info, commits },
             })
@@ -414,15 +441,27 @@ export const buildWriteResolvers = (
         const enriched = await withEagerRelations(executor, tableName, result, pkNames, withParams, hasRelations);
 
         return single
-          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, eagerRelations)
-          : remapToGraphQLArrayOutput(enriched, tableName, table, eagerRelations);
+          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, overrides, eagerRelations)
+          : remapToGraphQLArrayOutput(enriched, tableName, table, overrides, eagerRelations);
       },
     });
   };
 
   const generateUpdate = (build: WriteBuildOptions, opts: UpdateOptions): CreatedResolver => {
-    const { db, tables, eagerRelations, typeNameMapper, filterCtx, txCtx, nested, limits, policies, resolveName } =
-      build;
+    const {
+      db,
+      tables,
+      eagerRelations,
+      typeNameMapper,
+      filterCtx,
+      registries,
+      txCtx,
+      nested,
+      limits,
+      policies,
+      resolveName,
+    } = build;
+    const overrides = registries.scalarOverrides;
     const { tableName, table, setArgs, filterArgs, fieldName, typeName, single, requireWhere } = opts;
     const queryArgs = {
       set: {
@@ -471,7 +510,7 @@ export const buildWriteResolvers = (
         // A context-derived column is the server's to set, so an update never reassigns
         // one — that is what stops a row being handed to another owner.
         const input = stripContextValues(
-          remapUpdateInput(entry ? entry.columns : set, table, tableName),
+          remapUpdateInput(registries, entry ? entry.columns : set, table, tableName),
           policies?.contextValues?.(tableName),
         );
         // A `set` that carries only nested operations is a legitimate update — of the
@@ -542,8 +581,8 @@ export const buildWriteResolvers = (
         const enriched = await withEagerRelations(executor, tableName, result, pkNames, withParams, hasRelations);
 
         return single
-          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, eagerRelations)
-          : remapToGraphQLArrayOutput(enriched, tableName, table, eagerRelations);
+          ? remapToGraphQLSingleOutput(enriched[0], tableName, table, overrides, eagerRelations)
+          : remapToGraphQLArrayOutput(enriched, tableName, table, overrides, eagerRelations);
       },
     });
   };
@@ -561,7 +600,8 @@ export const buildWriteResolvers = (
    * rows it mostly exists to remove are the ones already marked; a `scope` still confines it.
    */
   const generateDelete = (build: WriteBuildOptions, opts: DeleteOptions): CreatedResolver => {
-    const { db, filterCtx, txCtx, policies, resolveName } = build;
+    const { db, filterCtx, registries, txCtx, policies, resolveName } = build;
+    const overrides = registries.scalarOverrides;
     const { tableName, table, filterArgs, fieldName, typeName, single, requireWhere, selectionCtx } = opts;
     const restore = opts.restore ?? false;
     const softDelete = policies?.softDelete?.(tableName);
@@ -647,10 +687,10 @@ export const buildWriteResolvers = (
         }
 
         if (single) {
-          return result[0] ? remapToGraphQLSingleOutput(result[0], tableName, table) : undefined;
+          return result[0] ? remapToGraphQLSingleOutput(result[0], tableName, table, overrides) : undefined;
         }
 
-        return remapToGraphQLArrayOutput(result, tableName, table);
+        return remapToGraphQLArrayOutput(result, tableName, table, overrides);
       },
     });
   };

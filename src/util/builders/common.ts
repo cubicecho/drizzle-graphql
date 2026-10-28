@@ -41,9 +41,10 @@ export {
   withErrorContext,
 } from './common/errors.ts';
 export {
+  type ColumnExclusions,
+  createColumnExclusions,
   excludedColumnsKey,
   hasExcludedColumns,
-  registerColumnExclusions,
   visibleColumns,
 } from './common/exclusions.ts';
 export { drizzleExecutorKey, resolveExecutor, resolveQueryExecutor } from './common/executor.ts';

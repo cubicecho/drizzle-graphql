@@ -181,6 +181,7 @@ const generateSelectFields = (
     // implements both — see extractRelationsParams.
     const targetDistinctEnum = cacheCtx.featureOf(targetTableName).distinct
       ? generateDistinctEnum(
+          cacheCtx.registries.exclusions,
           tables[targetTableName]!,
           resolveTypeName(targetTableName, typeNameMapper),
           cacheCtx.resolveName,
@@ -284,7 +285,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   );
 
   const table = tables[tableName]!;
-  const columns = visibleColumns(table);
+  const columns = visibleColumns(cacheCtx.registries.exclusions, table);
   const columnEntries = Object.entries(columns);
 
   // A client writes only the columns it may set; the rest stay in the output type, filters and
@@ -301,6 +302,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   const insertFields = Object.fromEntries(
     writableEntries.map(([columnName, column]) => {
       const converted = drizzleColumnToGraphQLType(
+        cacheCtx.registries,
         column,
         columnName,
         tableName,
@@ -317,11 +319,19 @@ export const generateTableTypes = <WithReturning extends boolean>(
 
   const updateFields = Object.fromEntries(
     writableEntries.map(([columnName, column]) => {
-      const converted = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, true);
+      const converted = drizzleColumnToGraphQLType(
+        cacheCtx.registries,
+        column,
+        columnName,
+        tableName,
+        true,
+        false,
+        true,
+      );
       // A numeric or array column takes an operations input instead of the bare scalar, so
       // it can be changed relative to its current value rather than only replaced.
       const operations = cacheCtx.featureOf(tableName).fieldUpdateOperations
-        ? fieldUpdateInputType(column, columnName, tableName, cacheCtx.resolveName)
+        ? fieldUpdateInputType(cacheCtx.registries, column, columnName, tableName, cacheCtx.resolveName)
         : undefined;
       const field = operations ? { ...converted, type: operations } : converted;
       return [columnName, { ...field, ...inputFieldDocs(cacheCtx.docs, column, tableName, columnName, field.type) }];

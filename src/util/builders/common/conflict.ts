@@ -60,6 +60,7 @@ export const generateOnConflictInput = (params: {
   ].join(',');
 
   const updateEnum = generateColumnEnum(
+    cacheCtx.registries.exclusions,
     table,
     resolveName({
       kind: 'columnEnum',
@@ -92,6 +93,7 @@ export const generateOnConflictInput = (params: {
   if (withTarget) {
     const uniqueColumns = new Set(uniqueSets.flatMap((set) => set.columns));
     const targetEnum = generateColumnEnum(
+      cacheCtx.registries.exclusions,
       table,
       resolveName({
         kind: 'columnEnum',

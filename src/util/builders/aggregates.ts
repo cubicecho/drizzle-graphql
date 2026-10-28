@@ -31,13 +31,13 @@ import {
   GraphQLObjectType,
 } from 'graphql';
 import { getOrCreateLoader, getOrCreateRequestValue } from '../batch-loader/index.ts';
+import type { BuildRegistries } from '../build-registries.ts';
 import { capitalize } from '../case-ops/index.ts';
 import { remapToGraphQLCore } from '../data-mappers/index.ts';
 import { executionKey } from '../execution.ts';
 import { requestValueNodes } from '../graphql-variables.ts';
 import type { ResolveTree } from '../parse-resolve-info.ts';
 import { parseResolveInfo } from '../parse-resolve-info.ts';
-import { declarePerBuildRegistry } from '../per-build-registry.ts';
 import { drizzleColumnToGraphQLType } from '../type-converter/index.ts';
 import type { ConvertedColumn } from '../type-converter/types.ts';
 import { columnDialect } from './common/column-filters.ts';
@@ -183,27 +183,24 @@ interface AggregateColumnSets {
  * but a table registered under two names would name its enums differently, so it is part of
  * the key rather than assumed irrelevant.
  *
- * The entries hold this build's GraphQL types and this build's column exclusions, so the
- * cache lives exactly as long as a build: {@link resetAggregateColumnCache} runs at the start
- * of every one, alongside the other per-build registries. Kept across builds it would hand a
- * second build the first build's enum instances, which is a schema with two types of one name.
+ * The entries hold the build's GraphQL types and the build's column exclusions, so the cache
+ * belongs to the build (`BuildRegistries.aggregateColumnSets`). Shared across builds it would
+ * hand a second build the first build's enum instances, which is a schema with two types of one
+ * name.
  */
-let aggregateColumnSetsCache = new WeakMap<Table, Map<string, AggregateColumnSets>>();
-const aggregateCacheInstalled = declarePerBuildRegistry('aggregate column sets');
+export type AggregateColumnSetsCache = WeakMap<Table, Map<string, AggregateColumnSets>>;
 
-/** Drops the classifications cached for the previous build. Called by `installBuildRegistries`. */
-export const resetAggregateColumnCache = (): void => {
-  aggregateCacheInstalled();
-  aggregateColumnSetsCache = new WeakMap();
-};
-
-const classifyAggregateColumns = (table: Table, tableName: string): AggregateColumnSets => {
+const classifyAggregateColumns = (
+  registries: BuildRegistries,
+  table: Table,
+  tableName: string,
+): AggregateColumnSets => {
   // Called from every aggregate/group-by generator for the same table — five times per table
   // at build time, plus twice per to-many relation — and each call re-converts every column.
-  let byName = aggregateColumnSetsCache.get(table);
+  let byName = registries.aggregateColumnSets.get(table);
   if (!byName) {
     byName = new Map();
-    aggregateColumnSetsCache.set(table, byName);
+    registries.aggregateColumnSets.set(table, byName);
   }
   const cached = byName.get(tableName);
   if (cached) {
@@ -215,9 +212,9 @@ const classifyAggregateColumns = (table: Table, tableName: string): AggregateCol
   const comparable: AggregateColumnSets['comparable'] = {};
   const all: AggregateColumnSets['all'] = {};
 
-  for (const [columnName, column] of Object.entries(visibleColumns(table))) {
+  for (const [columnName, column] of Object.entries(visibleColumns(registries.exclusions, table))) {
     all[columnName] = column;
-    const converted = drizzleColumnToGraphQLType(column, columnName, tableName, true, false, false);
+    const converted = drizzleColumnToGraphQLType(registries, column, columnName, tableName, true, false, false);
     const gqlType = converted.type;
 
     // Anything that isn't a plain scalar in the generated schema (arrays, geometry objects)
@@ -266,14 +263,14 @@ export const generateAggregateTypes = (
   table: Table,
   tableName: string,
   typeName: string,
-  cacheCtx?: TypeCacheCtx,
+  cacheCtx: TypeCacheCtx,
 ): GraphQLObjectType => {
   const cached = cacheCtx?.aggregateTypeCache.get(tableName);
   if (cached) {
     return cached;
   }
 
-  const { numeric, orderable, comparable, all } = classifyAggregateColumns(table, tableName);
+  const { numeric, orderable, comparable, all } = classifyAggregateColumns(cacheCtx.registries, table, tableName);
   const nameOf = (op: string) =>
     cacheCtx?.resolveName({
       kind: 'aggregate',
@@ -374,15 +371,18 @@ interface AggregateTarget {
   columns: Record<string, Column>;
   /** Columns whose GraphQL output is DateTime — their min/max may need string→Date coercion. */
   dateTimeColumns: Set<string>;
+  /** The build's registries, whose scalar overrides decide how a min/max value is remapped. */
+  registries: BuildRegistries;
 }
 
 const aggregateTarget = (
+  registries: BuildRegistries,
   table: Table,
   tableName: string,
   typeName: string,
   resolveName?: TypeNameResolver,
 ): AggregateTarget => {
-  const { orderable } = classifyAggregateColumns(table, tableName);
+  const { orderable } = classifyAggregateColumns(registries, table, tableName);
   // Named exactly the way `generateAggregateTypes` names them, so the resolver reads the
   // selection tree under the key the schema actually published.
   return {
@@ -404,6 +404,7 @@ const aggregateTarget = (
         .filter(([, { converted }]) => converted.typeLabel === 'DateTime')
         .map(([columnName]) => columnName),
     ),
+    registries,
   };
 };
 
@@ -493,7 +494,13 @@ const assembleAggregateRow = (row: Record<string, any>, request: AggregateReques
         const column = target.columns[columnName]!;
         const decoded =
           typeof value === 'string' && target.dateTimeColumns.has(columnName) ? parseDriverDateTime(value) : value;
-        opResult[columnName] = remapToGraphQLCore(columnName, decoded, target.tableName, column);
+        opResult[columnName] = remapToGraphQLCore(
+          columnName,
+          decoded,
+          target.tableName,
+          column,
+          target.registries.scalarOverrides,
+        );
       }
     }
     result[op] = opResult;
@@ -511,6 +518,7 @@ const assembleAggregateRow = (row: Record<string, any>, request: AggregateReques
  * Shared by all three dialects — it only relies on `db.select().from().where()`.
  */
 export const generateAggregate = (
+  registries: BuildRegistries,
   db: any,
   tableName: string,
   table: Table,
@@ -521,7 +529,7 @@ export const generateAggregate = (
   policies?: ResolverPolicies,
   resolveName?: TypeNameResolver,
 ): CreatedResolver => {
-  const target = aggregateTarget(table, tableName, typeName, resolveName);
+  const target = aggregateTarget(registries, table, tableName, typeName, resolveName);
   const errorCtx: DrizzleErrorContext = { table: tableName, operation: 'aggregate', field: fieldName };
 
   const queryArgs = {
@@ -635,7 +643,13 @@ export const createRelationAggregateFactory = (
 
     const targetTypeName = resolveTypeName(targetTableName, typeNameMapper);
     const type = generateAggregateTypes(targetTable, targetTableName, targetTypeName, cacheCtx);
-    const target = aggregateTarget(targetTable, targetTableName, targetTypeName, cacheCtx.resolveName);
+    const target = aggregateTarget(
+      cacheCtx.registries,
+      targetTable,
+      targetTableName,
+      targetTypeName,
+      cacheCtx.resolveName,
+    );
     const errorCtx: DrizzleErrorContext = {
       table: targetTableName,
       operation: 'relationAggregate',
@@ -673,7 +687,7 @@ export const createRelationAggregateFactory = (
         }
 
         // The parent's join values as the database holds them, not their GraphQL output form.
-        const localValues = parentJoinValues(parent, joinPairs);
+        const localValues = parentJoinValues(parent, joinPairs, cacheCtx.registries.scalarOverrides);
         // No key to correlate on — the relation is empty by definition.
         if (localValues.some((value) => value == null)) {
           return assembleAggregateRow({}, request, target);
@@ -757,13 +771,14 @@ const HAVING_OPS = { eq, ne, gt, gte, lt, lte } as const;
  * true/false says nothing, but `GROUP BY isConfirmed` is perfectly ordinary.
  */
 const groupableColumns = (
+  registries: BuildRegistries,
   table: Table,
   tableName: string,
 ): Record<string, { column: Column; converted: ConvertedColumn }> => {
-  const { comparable } = classifyAggregateColumns(table, tableName);
+  const { comparable } = classifyAggregateColumns(registries, table, tableName);
   const groupable: Record<string, { column: Column; converted: ConvertedColumn }> = { ...comparable };
 
-  for (const [columnName, column] of Object.entries(visibleColumns(table))) {
+  for (const [columnName, column] of Object.entries(visibleColumns(registries.exclusions, table))) {
     if (groupable[columnName]) {
       continue;
     }
@@ -773,7 +788,7 @@ const groupableColumns = (
     }
     groupable[columnName] = {
       column,
-      converted: drizzleColumnToGraphQLType(column, columnName, tableName, true, false, false),
+      converted: drizzleColumnToGraphQLType(registries, column, columnName, tableName, true, false, false),
     };
   }
 
@@ -785,12 +800,13 @@ export const generateGroupByEnum = (
   table: Table,
   tableName: string,
   typeName: string,
-  cacheCtx?: TypeCacheCtx,
+  cacheCtx: TypeCacheCtx,
 ): GraphQLEnumType | undefined => {
-  const groupable = groupableColumns(table, tableName);
+  const groupable = groupableColumns(cacheCtx.registries, table, tableName);
   const defaultName = `${typeName}GroupByColumn`;
 
   return generateColumnEnum(
+    cacheCtx.registries.exclusions,
     table,
     cacheCtx?.resolveName({ kind: 'columnEnum', defaultName, table: tableName, operation: 'groupBy' }) ?? defaultName,
     `Columns of ${typeName} that a query can group by`,
@@ -823,9 +839,9 @@ export const generateHavingInput = (
   table: Table,
   tableName: string,
   typeName: string,
-  cacheCtx?: TypeCacheCtx,
+  cacheCtx: TypeCacheCtx,
 ): GraphQLInputObjectType => {
-  const { numeric, comparable, all } = classifyAggregateColumns(table, tableName);
+  const { numeric, comparable, all } = classifyAggregateColumns(cacheCtx.registries, table, tableName);
   const resolveName = cacheCtx?.resolveName ?? ((info: GeneratedTypeInfo) => info.defaultName);
   const numberFilter = aggregateNumberFilterType(resolveName);
 
@@ -879,9 +895,9 @@ export const generateGroupByType = (
   table: Table,
   tableName: string,
   typeName: string,
-  cacheCtx?: TypeCacheCtx,
+  cacheCtx: TypeCacheCtx,
 ): GraphQLObjectType | undefined => {
-  const groupable = groupableColumns(table, tableName);
+  const groupable = groupableColumns(cacheCtx.registries, table, tableName);
   if (!Object.keys(groupable).length) {
     return undefined;
   }
@@ -971,6 +987,7 @@ const buildHavingCondition = (having: Record<string, any> | undefined, columns: 
  * HAVING …` is the same everywhere.
  */
 export const generateGroupBy = (
+  registries: BuildRegistries,
   db: any,
   tableName: string,
   table: Table,
@@ -983,8 +1000,8 @@ export const generateGroupBy = (
   policies?: ResolverPolicies,
   resolveName?: TypeNameResolver,
 ): CreatedResolver => {
-  const target = aggregateTarget(table, tableName, typeName, resolveName);
-  const groupable = groupableColumns(table, tableName);
+  const target = aggregateTarget(registries, table, tableName, typeName, resolveName);
+  const groupable = groupableColumns(registries, table, tableName);
   const columns = getColumns(table);
   const rootTypeName =
     resolveName?.({ kind: 'groupBy', defaultName: `${typeName}GroupBy`, table: tableName }) ?? `${typeName}GroupBy`;
@@ -1061,7 +1078,10 @@ export const generateGroupBy = (
             const value = row[`${GROUP_COL}${columnName}`];
             const decoded =
               typeof value === 'string' && target.dateTimeColumns.has(columnName) ? parseDriverDateTime(value) : value;
-            group[columnName] = value == null ? null : remapToGraphQLCore(columnName, decoded, tableName, column);
+            group[columnName] =
+              value == null
+                ? null
+                : remapToGraphQLCore(columnName, decoded, tableName, column, registries.scalarOverrides);
           }
 
           return { group, ...assembleAggregateRow(row, request, target) };

@@ -232,7 +232,9 @@ export const runRelationalSelect = async (opts: {
 
   if (single) {
     const result = await queryBase.findFirst(omitUndefinedKeys(params));
-    return result ? remapToGraphQLSingleOutput(result, tableName, table, eagerRelations) : undefined;
+    return result
+      ? remapToGraphQLSingleOutput(result, tableName, table, filterCtx?.registries?.scalarOverrides, eagerRelations)
+      : undefined;
   }
 
   // Computing each row's cursor needs the whole ordering tuple, which the client has no
@@ -261,7 +263,7 @@ export const runRelationalSelect = async (opts: {
     // On the raw rows, before remapping rewrites dates/bigints into transport forms.
     attachRowCursors(result, cursorEntries);
   }
-  return remapToGraphQLArrayOutput(result, tableName, table, eagerRelations);
+  return remapToGraphQLArrayOutput(result, tableName, table, filterCtx?.registries?.scalarOverrides, eagerRelations);
 };
 
 /**

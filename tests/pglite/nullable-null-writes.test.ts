@@ -57,7 +57,7 @@ beforeEach(async () => {
 describe('remapping an explicit null for a nullable column', () => {
   it('passes it through untouched on both sides of a write', () => {
     for (const operation of ['insert', 'update'] as const) {
-      expect(remapFromGraphQLSingleInput({ completedAt: null, bytes: null }, Todos, operation)).toEqual({
+      expect(remapFromGraphQLSingleInput({ completedAt: null, bytes: null }, Todos, undefined, operation)).toEqual({
         completedAt: null,
         bytes: null,
       });
