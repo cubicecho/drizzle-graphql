@@ -132,7 +132,7 @@ Per-build registries — owner `build-context.ts installBuildRegistries`, the se
 
 ### Claimed but not enforced (findings)
 
-- `DRIZZLE_MULTI_ROW_MATCH` means nothing was written (`common/errors.ts`). The write is narrowed to the row the check found by its primary key, else by a non-partial unique key (`keys.getRowKeyCandidates`, `mutation-helpers.narrowToSingleMatch`). Still exposed — a row arriving between the check and the write is written too: tables with no primary key and no non-partial unique key (the build warns, listing them), and tables whose only unique keys are nullable when the checked row holds NULL in each. Tracked in #230.
+- `DRIZZLE_MULTI_ROW_MATCH` means nothing was written (`common/errors.ts`). The write is narrowed to the row the check found by its primary key, else by a non-partial unique key (`keys.getRowKeyCandidates`, `mutation-helpers.narrowToSingleMatch`). Still exposed — a row arriving between the check and the write is written too: tables with no primary key and no non-partial unique key (the build warns once, listing them and, for a many-to-many junction, the `primaryKey` to give it — `build-context.junctionKeyHints`), and tables whose only unique keys are nullable when the checked row holds NULL in each. Tracked in #230.
 
 ## Glossary
 
