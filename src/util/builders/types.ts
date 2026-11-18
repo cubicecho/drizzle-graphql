@@ -48,9 +48,9 @@ export type TableFeatures = {
 /**
  * The `features` a dialect generator works from: the config's own shape, unresolved, since a
  * flag may be a per-table predicate. Generators run it through `resolveTableFeatures`, which
- * fills in the defaults and memoizes per table. `nestedWrites` is read straight off it —
- * that one flag is build-wide, because the nested-write plans are computed once over the
- * whole relation graph and a nested write reaches a second table by definition.
+ * fills in the defaults and memoizes per table. `nestedWrites` is read straight off it: its
+ * predicate is asked per relation input rather than per table, while the nested-write plans
+ * are computed once over the whole relation graph.
  */
 export type GeneratorFeatures = SchemaFeatures;
 

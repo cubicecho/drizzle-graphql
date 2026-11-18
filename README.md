@@ -210,7 +210,7 @@ const { schema } = buildSchema(db, {
         updateMany: false,        // update<Table>Many batch mutation (needs `update`)
         delete: false,            // delete<Table> / delete<Table>Single mutations
         upsert: true,             // upsert<Table> / upsert<Table>Single mutations (off by default)
-        nestedWrites: true,       // relation fields on the create/update inputs (off by default)
+        nestedWrites: true,       // relation fields on the create/update inputs (off by default; or a per-relation predicate)
         fieldUpdateOperations: true, // increment/push operations on the update input (off by default)
         countMutations: true,     // update<Table>Count / delete<Table>Count mutations (off by default)
         requireWhere: true,       // require a `where` on plural update/delete/updateMany (off by default)
@@ -254,10 +254,10 @@ const { schema } = buildSchema(db, {
 
 -   The table is still fully readable — this decides which operations it offers, not whether
     it is in the schema at all. For that, use `exclude` below
--   `nestedWrites` is the one flag that stays build-wide: its plans are computed once over
-    the whole relation graph, and a nested write reaches a second table by definition. What
-    it offers on each relation still follows the *target* table's flags — see
-    [Nested writes](#nested-writes)
+-   `nestedWrites` is the one flag whose predicate is not per table: a nested write reaches
+    a second table by definition, so it is asked per relation input instead. What it offers
+    on each relation still follows the *target* table's flags — see
+    [Nested writes](#nested-writes) and [Choosing per relation](#choosing-per-relation)
 -   `Mutation` is omitted when *no* table generates a mutation, and kept when one still does
 -   Some operations are built out of others, and the generator knows which. A table that
     asks for `upsert` while its `insert` or `update` is off — an upsert is a second write
@@ -2112,6 +2112,45 @@ root field's:
     by another table's nested `create` either
 -   **`onWrite`**: the hooks of the table a nested statement writes run too — see
     [Nested writes and hooks](#nested-writes-and-hooks)
+
+### Choosing per relation
+
+The target's own switches cannot say "keep this table's generated CRUD, but don't let other
+tables write it": turning its `insert` off takes its own `create<Table>` away too. For that,
+`nestedWrites` takes a predicate instead of `true`, asked once at build time for each input a
+relation's shape allows:
+
+```Typescript
+const bench = new Set(['batches', 'batchLines', 'batchSteps']);
+
+const { schema } = buildSchema(db, {
+    features: {
+        nestedWrites: ({ table, relation, target, op }) =>
+            // the bench tables are written by their own mutations, or by each other
+            !(bench.has(target) && !bench.has(table)) &&
+            // link existing items, never create one underneath another write
+            !(target === 'inventoryItems' && op === 'create'),
+    },
+})
+```
+
+| Argument | Is |
+| --- | --- |
+| `table` | the Drizzle schema key of the table whose input carries the relation field |
+| `relation` | the relation's name, as declared on `table` |
+| `target` | the table the nested statement writes: the related table, and for a `.through()` relation the far side, not the junction |
+| `op` | `'create'`, `'connect'`, `'disconnect'` or `'set'` |
+
+-   `false` leaves that input out of the create, update and upsert inputs alike. A relation
+    with nothing left loses its field, and a parent-side key no input can fill in any more
+    is required again on the create input
+-   The predicate only narrows. An input the relation's shape does not allow (a many-to-many
+    `create`, a `disconnect` on a NOT NULL key) is never asked about, and the target's
+    `features`, `contextValues`, `scope` and `softDelete` still apply to what it lets through
+-   Nothing is noted on the console for what the predicate turns down; the build note lists
+    only what the target's own switches took away
+-   Any predicate turns the feature on, so the MySQL and synchronous-SQLite checks reject it
+    as they reject `true`
 
 ### Many-to-many relations
 
