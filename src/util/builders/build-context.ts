@@ -72,12 +72,14 @@ import { registerBuildRuntime } from './common/build-registry.ts';
 import { dropContextValueRelations, gateNestedWritePlans } from './nested-writes/gating.ts';
 import { createNestedWriteTypes, type NestedWriteTypes } from './nested-writes/input-types.ts';
 import { buildNestedWritePlans, type NestedWritePlans } from './nested-writes/plans.ts';
+import { restrictNestedWritePlans } from './nested-writes/predicate.ts';
 import { createNestedWriteRuntime, type NestedWriteRuntime } from './nested-writes/runtime.ts';
 import { createSelectGenerators, type ReadBuildOptions } from './select.ts';
 import type {
   CreatedResolver,
   GeneratedTableTypes,
   GeneratedTableTypesOutputs,
+  GeneratorFeatures,
   SchemaGeneratorOptions,
   TableFeatures,
   TableNamedRelations,
@@ -327,11 +329,13 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
   };
 
   /**
-   * The nested-write plans, less what the build cannot offer: an input whose write is turned
-   * off on its target (or junction) table, and a relation keyed on a column the server stamps
-   * from `contextValues`. Each omission is reported once as a warning.
+   * The nested-write plans, less what the `nestedWrites` predicate turns down and what the build
+   * cannot offer: an input whose write is turned off on its target (or junction) table, and a
+   * relation keyed on a column the server stamps from `contextValues`. Each omission the build
+   * makes is reported once as a warning.
    */
   const buildGatedNestedPlans = (build: {
+    nestedWrites: GeneratorFeatures['nestedWrites'];
     schemaEntries: [string, unknown][];
     tables: Record<string, Table>;
     namedRelations: Record<string, Record<string, TableNamedRelations>>;
@@ -355,6 +359,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
       (junction) => schemaEntries.find(([, value]) => value === junction)?.[0],
       (tableName) => insertStamps({ contextValues: contextValuesOf, softDelete: softDeleteOf }, tableName),
     );
+    restrictNestedWritePlans(plans, build.nestedWrites);
 
     const turnedOff = gateNestedWritePlans(
       plans,
@@ -450,6 +455,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     // undefined when the feature is off, so the inputs and the resolvers stay as they were.
     const nestedPlans = features.nestedWrites
       ? buildGatedNestedPlans({
+          nestedWrites: features.nestedWrites,
           schemaEntries,
           tables,
           namedRelations,

@@ -85,6 +85,11 @@ anyone who reaches the endpoint. Pick the right tool:
 With both `upsert` and `nestedWrites`, a table with writable relations is upserted through
 `Upsert<Type>Input`, whose relation fields take `connect`, `disconnect` and `set` (plus
 `create` where allowed), so one upsert can save a form whether or not the row exists yet.
+A nested input follows the target table's own `features`, so `insert: false` on a table
+also stops other tables creating its rows. To keep a table's own CRUD but not let other
+tables write it, make `nestedWrites` a predicate, asked once per relation input:
+`nestedWrites: ({ table, relation, target, op }) => !(target === 'items' && op === 'create')`.
+It only narrows what the target's rules allow; `target` is the far side of a `.through()`.
 
 **Public endpoints need bounds the library does not add for you:**
 

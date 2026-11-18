@@ -31,7 +31,7 @@ import type {
   GraphQLSchema,
 } from 'graphql';
 
-import type { DerivedTypeNameMapper, TableWriteHooks, TypeNameMapper } from './util/builders/common.ts';
+import type { DerivedTypeNameMapper, NestedWriteOp, TableWriteHooks, TypeNameMapper } from './util/builders/common.ts';
 import type {
   Filters,
   GetRemappedTableDataType,
@@ -760,12 +760,38 @@ export type NamingOf<TConfig> = TConfig extends { typeNameMapper: 'singularize' 
  */
 export type FeatureSwitch = boolean | ((tableName: string) => boolean);
 
+/** One input of one relation field, as a {@link NestedWritesSwitch} predicate is asked about it. */
+export type NestedWriteInputInfo = {
+  /** Drizzle schema key of the table whose input carries the relation field. */
+  table: string;
+  /** The relation's name, as declared on `table`. */
+  relation: string;
+  /** Drizzle schema key of the table the nested statement writes: the far side of a `.through()` relation. */
+  target: string;
+  /** The relation field's input being decided. */
+  op: NestedWriteOp;
+};
+
+/**
+ * The `nestedWrites` switch: a boolean for the whole build, or a predicate asked once per relation input at build time.
+ *
+ * ```ts
+ * features: { nestedWrites: ({ target, op }) => !(target === 'inventoryItems' && op === 'create') }
+ * ```
+ *
+ * @remarks
+ * Any predicate turns the feature on, and answering `false` leaves that input out; a relation
+ * left with none loses its field. The predicate only narrows: the relation's shape, the target's
+ * `features` and `contextValues` still decide what is offered on top of it.
+ */
+export type NestedWritesSwitch = boolean | ((input: NestedWriteInputInfo) => boolean);
+
 /**
  * Per-feature switches for what `buildSchema` generates. Every flag defaults to `true` except
  * `upsert`, `nestedWrites`, `fieldUpdateOperations`, `countMutations`, `requireWhere` and
  * `uniqueKeyFilters`.
- * Each one takes a boolean or a per-table predicate, apart from `nestedWrites`, which is
- * build-wide.
+ * Each one takes a boolean or a per-table predicate, apart from `nestedWrites`, whose predicate
+ * is asked per relation input instead ({@link NestedWritesSwitch}).
  * See {@link BuildSchemaConfig.features}.
  */
 export type SchemaFeatures = {
@@ -868,6 +894,23 @@ export type SchemaFeatures = {
    * upsert whose conflict branch does not write the join column a parent-side operation set
    * fails rather than leave its target unattached.
    *
+   * A predicate in place of `true` decides per relation input which of these are offered. It is
+   * asked once at build time for each input a relation's shape allows, with the table carrying
+   * the field, the relation, the table the statement writes and the input
+   * ({@link NestedWriteInputInfo}); `false` leaves that input out. It only narrows what the rules
+   * above offer, so a table can keep its own generated CRUD without being writable through
+   * other tables' inputs:
+   *
+   * ```ts
+   * features: {
+   *   nestedWrites: ({ table, target, op }) =>
+   *     // only the bench tables write each other
+   *     !(bench.has(target) && !bench.has(table)) &&
+   *     // link existing items, never create one underneath another write
+   *     !(target === 'inventoryItems' && op === 'create'),
+   * }
+   * ```
+   *
    * PostgreSQL and SQLite only. MySQL cannot return the rows it just wrote, which is how a
    * nested write learns the parent's key, so `buildSchema` rejects the flag there. On SQLite
    * the driver must be asynchronous (libsql, D1, …): a synchronous one commits before an
@@ -875,7 +918,7 @@ export type SchemaFeatures = {
    *
    * @default false
    */
-  nestedWrites?: boolean;
+  nestedWrites?: NestedWritesSwitch;
   /**
    * Operation inputs on the update `set`, so a column can be changed relative to its current
    * value instead of only replaced.
@@ -1343,8 +1386,8 @@ export type BuildSchemaConfig = {
    *
    * A table that generates nothing at all belongs in {@link BuildSchemaConfig.exclude}; this
    * decides which operations a table that *is* in the schema offers. `nestedWrites` is the one
-   * flag that stays build-wide: its plans are computed once over the whole relation graph, and
-   * a nested write reaches a second table by definition.
+   * flag whose predicate is not per table: a nested write reaches a second table by definition,
+   * so it is asked per relation input instead ({@link NestedWritesSwitch}).
    *
    * Some operations are built out of others — an upsert writes through insert and update, a
    * batch update reuses the update input, a grouped query reuses the aggregate types. Flags
