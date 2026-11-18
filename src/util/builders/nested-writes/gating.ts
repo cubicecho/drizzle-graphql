@@ -1,3 +1,4 @@
+import type { InputWrite } from '../common/exclusions.ts';
 import type { NestedWriteOp } from '../common/write-hooks.ts';
 import type { ContextValuesFor } from '../common.ts';
 import type { TableFeatures } from '../types.ts';
@@ -127,6 +128,88 @@ export const dropContextValueRelations = (
       if (stamped) {
         delete tablePlans[relationName];
         omitted.push(`${tableName}.${relationName} (${stamped[0]}.${stamped[1]} is a contextValues column)`);
+      }
+    }
+    if (!Object.keys(tablePlans).length) {
+      delete plans[tableName];
+    }
+  }
+  return omitted;
+};
+
+/** One column a nested input writes, and which write of its table writes it. */
+type ColumnWrite = { tableName: string | undefined; columnName: string; write: InputWrite };
+
+/**
+ * The key columns one input of a relation writes. A child-side `create` fills the target's foreign
+ * key in as it inserts the row, and its `connect` / `disconnect` / `set` move that key, an update.
+ * A many-to-many `connect` or `set` inserts junction rows with both of its columns. A parent-side
+ * relation writes the parent's own key, whose writes {@link dropInputExcludedWrites} decides whole.
+ */
+const keyWrites = (plan: NestedRelationPlan, op: NestedWriteOp): ColumnWrite[] => {
+  if (plan.through) {
+    const { tableName, sourceColPropName, targetColPropName } = plan.through;
+    return op === 'connect' || op === 'set'
+      ? [
+          { tableName, columnName: sourceColPropName, write: 'insert' },
+          { tableName, columnName: targetColPropName, write: 'insert' },
+        ]
+      : [];
+  }
+  if (plan.fkSide === 'parent') {
+    return [];
+  }
+  const key = { tableName: plan.targetTableName, columnName: plan.foreignColPropName };
+  if (op === 'create') {
+    const detaches = plan.isOne && plan.canDetach;
+    return detaches
+      ? [
+          { ...key, write: 'insert' },
+          { ...key, write: 'update' },
+        ]
+      : [{ ...key, write: 'insert' }];
+  }
+  return [{ ...key, write: 'update' }];
+};
+
+/**
+ * Takes out the nested inputs that would write a key column `exclude.inputs` keeps out of that
+ * write, so a column a client may not change cannot be changed by moving a relation either. A
+ * parent-side relation writes the parent's own key from its create and its update input alike, so
+ * a key left out of either write takes the whole relation out.
+ *
+ * Returns one line per input or relation taken out, for the build note.
+ */
+export const dropInputExcludedWrites = (
+  plans: NestedWritePlans,
+  isExcluded: (tableName: string, columnName: string, write: InputWrite) => boolean,
+): string[] => {
+  const omitted: string[] = [];
+  for (const [tableName, tablePlans] of Object.entries(plans)) {
+    for (const [relationName, plan] of Object.entries(tablePlans)) {
+      const isParentSide = !plan.through && plan.fkSide === 'parent';
+      if (isParentSide) {
+        const column = plan.localColPropName;
+        const leftOut = (['insert', 'update'] as const).filter((write) => isExcluded(tableName, column, write));
+        if (leftOut.length) {
+          delete tablePlans[relationName];
+          omitted.push(`${tableName}.${relationName} (${tableName}.${column} is left out of ${leftOut.join(' and ')})`);
+        }
+        continue;
+      }
+      for (const op of [...plan.allowed]) {
+        const blocked = keyWrites(plan, op).find(
+          ({ tableName: owner, columnName, write }) => owner !== undefined && isExcluded(owner, columnName, write),
+        );
+        if (blocked) {
+          plan.allowed.delete(op);
+          omitted.push(
+            `${tableName}.${relationName}.${op} (${blocked.tableName}.${blocked.columnName} is left out of ${blocked.write})`,
+          );
+        }
+      }
+      if (!plan.allowed.size) {
+        delete tablePlans[relationName];
       }
     }
     if (!Object.keys(tablePlans).length) {

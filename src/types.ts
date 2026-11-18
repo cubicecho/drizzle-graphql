@@ -1198,6 +1198,26 @@ export type SchemaExclusions = {
   tables?: string[];
   /** Per-table column exclusions, keyed by the table's key in the Drizzle schema. */
   columns?: Record<string, string[]>;
+  /**
+   * Columns left out of the generated write inputs while every read still serves them, per table
+   * and per write. `insert` covers the create and upsert inputs and a nested `create` of the
+   * table; `update` covers the update input (and `update<Table>Many`), the columns an upsert's
+   * conflict branch may overwrite, and a nested `connect` / `disconnect` / `set` that moves the
+   * table's foreign key.
+   *
+   * ```ts
+   * exclude: { inputs: { servers: { update: ['installDir', 'source'] } } }
+   * ```
+   */
+  inputs?: Record<string, InputExclusion>;
+};
+
+/** One table's entry in {@link SchemaExclusions.inputs}: the columns each write leaves out. */
+export type InputExclusion = {
+  /** Columns no generated insert sets: the create, upsert and nested-create inputs leave them out. */
+  insert?: string[];
+  /** Columns no generated update sets, once the row exists. */
+  update?: string[];
 };
 
 export type BuildSchemaConfig = {
@@ -1713,6 +1733,9 @@ export type BuildSchemaConfig = {
    *
    * Names that match nothing throw, so a renamed column fails the build instead of quietly
    * un-hiding itself.
+   *
+   * `inputs` is the read-only variant: it leaves a column out of the insert or update inputs
+   * (or both), and every read still serves it. See {@link SchemaExclusions.inputs}.
    */
   exclude?: SchemaExclusions;
   /**

@@ -37,7 +37,9 @@ import {
   generateTableTypes,
   getRowKeyCandidates,
   getUniqueColumnSets,
+  type InputExclusions,
   insertStamps,
+  isInputExcluded,
   type LimitPolicyFor,
   listFieldComplexity,
   type MutationTxCtx,
@@ -69,7 +71,7 @@ import {
   generateHavingInput,
 } from './aggregates.ts';
 import { registerBuildRuntime } from './common/build-registry.ts';
-import { dropContextValueRelations, gateNestedWritePlans } from './nested-writes/gating.ts';
+import { dropContextValueRelations, dropInputExcludedWrites, gateNestedWritePlans } from './nested-writes/gating.ts';
 import { createNestedWriteTypes, type NestedWriteTypes } from './nested-writes/input-types.ts';
 import { buildNestedWritePlans, type NestedWritePlans } from './nested-writes/plans.ts';
 import { createNestedWriteRuntime, type NestedWriteRuntime } from './nested-writes/runtime.ts';
@@ -339,8 +341,10 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     featureOf: (tableName: string) => TableFeatures;
     tablePolicies: SchemaGeneratorOptions['policies'];
     exclusions: ColumnExclusions;
+    inputExclusions: InputExclusions;
   }): NestedWritePlans => {
     const { schemaEntries, tables, namedRelations, excludedTables, featureOf, tablePolicies, exclusions } = build;
+    const { inputExclusions } = build;
     const contextValuesOf = tablePolicies?.contextValues;
     const softDeleteOf = tablePolicies?.softDelete;
     const plans = buildNestedWritePlans(
@@ -372,6 +376,15 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
     if (stamped.length) {
       console.warn(
         `Drizzle-GraphQL Warning: config.contextValues — nestedWrites leaves out the relations whose foreign key the server stamps from context: ${stamped.join(', ')}.`,
+      );
+    }
+
+    const readOnly = dropInputExcludedWrites(plans, (tableName, columnName, write) =>
+      isInputExcluded(inputExclusions, tableName, columnName, write),
+    );
+    if (readOnly.length) {
+      console.warn(
+        `Drizzle-GraphQL Warning: config.exclude.inputs — nestedWrites leaves out the nested inputs that would write a key column it keeps out of that write: ${readOnly.join(', ')}.`,
       );
     }
     return plans;
@@ -457,6 +470,7 @@ export const createSchemaBuilder = <WithReturning extends boolean>(adapter: Sche
           featureOf,
           tablePolicies,
           exclusions: registries.exclusions,
+          inputExclusions: registries.inputExclusions,
         })
       : undefined;
     const nestedTypes = nestedPlans

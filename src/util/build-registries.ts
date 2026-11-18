@@ -8,7 +8,12 @@
 
 import type { Table } from 'drizzle-orm';
 import type { AggregateColumnSetsCache } from './builders/aggregates.ts';
-import { type ColumnExclusions, createColumnExclusions } from './builders/common/exclusions.ts';
+import {
+  type ColumnExclusions,
+  createColumnExclusions,
+  createInputExclusions,
+  type InputExclusions,
+} from './builders/common/exclusions.ts';
 import { createFieldUpdateCaches, type FieldUpdateCaches } from './builders/field-updates.ts';
 import type { SchemaGeneratorOptions } from './builders/types.ts';
 import { type ColumnTypeRegistries, createEnumRegistry, createScalarOverrides } from './type-converter/index.ts';
@@ -17,6 +22,8 @@ import { type ColumnTypeRegistries, createEnumRegistry, createScalarOverrides } 
 export type BuildRegistries = ColumnTypeRegistries & {
   /** The columns `exclude.columns` hides from the schema, by table. */
   exclusions: ColumnExclusions;
+  /** The columns `exclude.inputs` keeps out of the write inputs, by table and write. */
+  inputExclusions: InputExclusions;
   /** Each table's columns classified for aggregation, built from this build's types. */
   aggregateColumnSets: AggregateColumnSetsCache;
   /** Which operations input each column's update field takes, and the inputs themselves. */
@@ -34,6 +41,7 @@ export const createBuildRegistries = (
   scalarOverrides: createScalarOverrides(tables, options),
   enums: createEnumRegistry(options),
   exclusions: createColumnExclusions(tables, options.exclude),
+  inputExclusions: createInputExclusions(options.exclude?.inputs),
   aggregateColumnSets: new WeakMap(),
   fieldUpdates: createFieldUpdateCaches(),
 });

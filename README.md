@@ -306,7 +306,8 @@ Two details worth stating plainly:
 -   **The exclusion is all-or-nothing on purpose.** A column you can filter on but not
     select is an oracle: `where: { keyHash: { eq: '…' } }` confirms a value without ever
     returning it. Ordering and grouping leak the same way, more slowly. There is no
-    read-only or write-only variant of `exclude` for this reason.
+    write-only variant of `exclude` for this reason. A read-only one is safe, and is
+    `exclude.inputs`, below.
 -   **Nothing changes below the schema.** An excluded column is still written by its
     default, still read by the primary-key and cursor machinery, and still usable by your
     own resolvers. Only the generated schema stops mentioning it.
@@ -322,6 +323,42 @@ of quietly un-hiding it. Excluding a `NOT NULL` column with no default is allowe
 table becomes readable but not insertable — and warns on the console, since that is more
 often a mistake than a plan. A table whose `insert` and `upsert` are both off has no
 generated insert to break, so it is not warned about.
+
+### Columns clients may read but not write
+
+`exclude.inputs` leaves a column out of the generated write inputs and nowhere else: it is
+still selected, filtered, ordered and aggregated. Each table lists the columns its inserts
+leave out, the columns its updates leave out, or both:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    exclude: {
+        inputs: {
+            // Set when the row is made, never changed after.
+            servers: { update: ['installDir', 'source'] },
+            // Filled in by a trigger, but a person may correct it.
+            invoices: { insert: ['number'] },
+        },
+    },
+})
+```
+
+| Write | Leaves the column out of |
+| --- | --- |
+| `insert` | `Create<Type>Input`, the upsert input, and a nested `create` of the table |
+| `update` | `Update<Type>Input` (and `update<Type>Many`), and the upsert `onConflict` `<Type>UpdateColumn` enum |
+
+The rule reaches the paths that would write the column without naming it, too. An upsert's
+conflict branch never overwrites an update-excluded column, even when the insert supplied it.
+With `nestedWrites` on, a nested `connect` / `disconnect` / `set` that would move an
+update-excluded foreign key is left out, and so is a nested `create` that fills in an
+insert-excluded one. A relation whose key is the parent's own column writes it from the create
+and the update input alike, so a key left out of either loses the whole relation field. The
+build notes on the console which nested inputs it left out.
+
+Names that match nothing throw at build time, and an insert that leaves out a `NOT NULL`
+column with no default warns, as `exclude.columns` does. Your own resolvers and `onWrite`
+hooks are not limited by it: only the generated inputs are.
 
 > `exclude` is a static decision: the column is absent for every caller. Deciding per
 > request *which fields* a caller may reach is a job for

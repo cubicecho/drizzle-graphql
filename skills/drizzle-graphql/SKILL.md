@@ -67,6 +67,7 @@ anyone who reaches the endpoint. Pick the right tool:
 | Need | Use |
 | --- | --- |
 | A table or column must not exist in the API at all | `exclude: { tables: [...], columns: { users: ['passwordHash'] } }` |
+| Clients may read a column but not write it | `exclude: { inputs: { users: { update: ['email'] } } }` |
 | Turn off operations (no delete, read-only, opt-in upsert) | `features` (booleans or `(tableKey) => boolean`) |
 | Callers only see their tenant's rows | `scope: { posts: (ctx, table) => eq(table.orgId, ctx.orgId) }` |
 | The server, not the client, sets a column | `contextValues: { posts: { orgId: (ctx) => ctx.orgId } }` |
@@ -76,9 +77,11 @@ anyone who reaches the endpoint. Pick the right tool:
   table. Relational reads pass Drizzle's aliased copy.
 - `scope` filters and never refuses: an out-of-scope update or delete matches nothing and
   returns `[]`. It does not apply to plain inserts, so pair it with `contextValues`.
-- `exclude` removes a column from every surface: output, inputs, filters, orderBy and
-  aggregates. There is no read-only variant on purpose, because a filterable hidden column
-  leaks its values.
+- `exclude.columns` removes a column from every surface: output, inputs, filters, orderBy and
+  aggregates. There is no write-only variant on purpose, because a filterable hidden column
+  leaks its values. The read-only variant is `exclude.inputs`:
+  `{ servers: { update: ['source'] } }` keeps the column on every read and leaves it out of
+  that write's inputs, an upsert's conflict branch and the nested inputs that would move it.
 
 **Opt-in features default to off**: `upsert`, `nestedWrites`, `fieldUpdateOperations`,
 `countMutations`, `requireWhere` and `uniqueKeyFilters`. Everything else defaults to on.
@@ -150,7 +153,7 @@ for the pattern, and the trap it avoids.
 | --- | --- |
 | `mutations` | `false` drops the Mutation type |
 | `features` | which operations exist, build-wide or per table |
-| `exclude` | tables/columns left out entirely |
+| `exclude` | tables/columns left out entirely, or columns left out of the write inputs |
 | `relationsDepthLimit` | how deep relation fields go; `0` = columns only |
 | `prefixes` / `suffixes` / `typeNameMapper` | operation and type names |
 | `typeNamePrefix` / `typeNameSuffix` / `derivedTypeNameMapper` | names of filters, inputs, aggregates |

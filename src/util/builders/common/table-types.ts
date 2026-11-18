@@ -294,9 +294,12 @@ export const generateTableTypes = <WithReturning extends boolean>(
   const columnEntries = Object.entries(columns);
 
   // A client writes only the columns it may set; the rest stay in the output type, filters and
-  // ordering.
-  const writableEntries = columnEntries.filter(([columnName, column]) =>
-    isWritableColumn(cacheCtx, tableName, columnName, column),
+  // ordering. `exclude.inputs` can leave a column out of one write and not the other.
+  const insertableEntries = columnEntries.filter(([columnName, column]) =>
+    isWritableColumn(cacheCtx, tableName, columnName, column, 'insert'),
+  );
+  const updatableEntries = columnEntries.filter(([columnName, column]) =>
+    isWritableColumn(cacheCtx, tableName, columnName, column, 'update'),
   );
 
   // A column a nested write can supply (`author: { create: … }` fills in `authorId`) cannot
@@ -305,7 +308,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   const relaxedColumns = nestedWrites?.relaxedColumns(tableName);
 
   const insertFields = Object.fromEntries(
-    writableEntries.map(([columnName, column]) => {
+    insertableEntries.map(([columnName, column]) => {
       const converted = drizzleColumnToGraphQLType(
         cacheCtx.registries,
         column,
@@ -323,7 +326,7 @@ export const generateTableTypes = <WithReturning extends boolean>(
   );
 
   const updateFields = Object.fromEntries(
-    writableEntries.map(([columnName, column]) => {
+    updatableEntries.map(([columnName, column]) => {
       const converted = drizzleColumnToGraphQLType(
         cacheCtx.registries,
         column,

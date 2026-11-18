@@ -32,6 +32,7 @@ export type {
   GeneratedOutputs,
   GeneratedTypeInfo,
   GeneratedTypeKind,
+  InputExclusion,
   InsertArrResolver,
   InsertResolver,
   LimitsConfig,

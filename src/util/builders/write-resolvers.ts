@@ -35,6 +35,7 @@ import {
   extractFilters,
   extractSelectedColumnsFromTreeSQLFormat,
   hardDeleteArg,
+  inputExcludedColumns,
   insertStamps,
   type LimitPolicyFor,
   type MutationTxCtx,
@@ -370,7 +371,10 @@ export const buildWriteResolvers = (
             uniqueSets,
             excludedRef: excludedColumnRef,
             withTarget: true,
-            serverOwned: Object.keys(contextColumns ?? {}),
+            serverOwned: [
+              ...Object.keys(contextColumns ?? {}),
+              ...inputExcludedColumns(registries.inputExclusions, tableName, 'update'),
+            ],
             buildWhere: (where) =>
               extractFilters(table, tableName, where, relationFilterCtx(filterCtx, tableName, visibility)),
           });

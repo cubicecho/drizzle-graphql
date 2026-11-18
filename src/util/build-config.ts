@@ -34,6 +34,9 @@ import type { SchemaGeneratorOptions } from './builders/types.ts';
 import { singularizeMapper } from './case-ops/index.ts';
 import { resolveTableFeatures } from './features.ts';
 
+/** The writes `exclude.inputs` can leave a column out of. */
+const INPUT_WRITES: ReadonlySet<string> = new Set(['insert', 'update']);
+
 /**
  * Resolves a caller's `BuildSchemaConfig` against the Drizzle schema it will be applied to.
  *
@@ -476,6 +479,42 @@ export const resolveBuildConfig = (
           console.warn(
             `Drizzle-GraphQL Warning: excluded column '${tableName}.${columnName}' is NOT NULL with no default, so generated inserts for '${tableName}' can never succeed.`,
           );
+        }
+      }
+    }
+    for (const [tableName, writes] of Object.entries(exclude.inputs ?? {})) {
+      if (!tableNames.has(tableName)) {
+        throw new Error(
+          `Drizzle-GraphQL Error: config.exclude.inputs names table '${tableName}', which is not a table in the Drizzle schema.`,
+        );
+      }
+      if (excludedTables.has(tableName)) {
+        continue;
+      }
+      const columns = getColumns(schema[tableName] as Table);
+      const tableFeatures = forTable(tableName);
+      const isInsertable = tableFeatures.insert || tableFeatures.upsert;
+      for (const [write, columnNames] of Object.entries(writes ?? {})) {
+        if (!INPUT_WRITES.has(write)) {
+          throw new Error(
+            `Drizzle-GraphQL Error: config.exclude.inputs.${tableName} names '${write}', which is not a write. Use insert or update.`,
+          );
+        }
+        for (const columnName of columnNames ?? []) {
+          const column = columns[columnName];
+          if (!column) {
+            throw new Error(
+              `Drizzle-GraphQL Error: config.exclude.inputs.${tableName}.${write} names '${columnName}', which is not a column of that table.`,
+            );
+          }
+          // The same hole as an excluded column, on the one write it affects.
+          const breaksInserts =
+            write === 'insert' && isInsertable && column.notNull && !column.hasDefault && !column.defaultFn;
+          if (breaksInserts) {
+            console.warn(
+              `Drizzle-GraphQL Warning: config.exclude.inputs leaves '${tableName}.${columnName}' out of inserts, and it is NOT NULL with no default, so generated inserts for '${tableName}' can never succeed.`,
+            );
+          }
         }
       }
     }
