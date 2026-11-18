@@ -26,6 +26,7 @@ export type {
   ExtractTableRelations,
   ExtractTables,
   FeatureSwitch,
+  FieldColumns,
   GeneratedData,
   GeneratedEntities,
   GeneratedInputs,

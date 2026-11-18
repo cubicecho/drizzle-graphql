@@ -3,6 +3,7 @@
 
 import type { Table } from 'drizzle-orm';
 import { Column, getColumns, is, SQL, sql } from 'drizzle-orm';
+import type { FieldColumns } from '../../../types.ts';
 import type { ResolveTree } from '../../parse-resolve-info.ts';
 import type { SelectedColumnsRaw, SelectedSQLColumns, TableNamedRelations } from '../types.ts';
 import { extractRelationJoinColumnPairs } from './relations.ts';
@@ -25,6 +26,8 @@ export interface SelectionCtx {
   namedRelations?: Record<string, Record<string, TableNamedRelations>>;
   /** The relations the read loads through `with:`, consulted for a table `namedRelations` lacks. */
   eagerRelations?: Record<string, Record<string, TableNamedRelations>>;
+  /** The build's `fieldColumns`: the columns each field added to a table's type reads. */
+  fieldColumns?: Readonly<FieldColumns>;
 }
 
 const AGGREGATE_FIELD_SUFFIX = 'Aggregate';
@@ -94,8 +97,9 @@ const fallbackColumnName = (tableColumns: Record<string, Column>): string => {
 };
 
 /**
- * Property names of the columns a selection reads: the ones it names itself, plus the join
- * columns its relation fields correlate on, plus the fallback when that leaves nothing.
+ * Property names of the columns a selection reads: the ones it names itself, the join columns its
+ * relation fields correlate on, the columns `fieldColumns` names for the added fields it selects,
+ * and the fallback when that leaves nothing.
  */
 const selectedColumnNames = (
   tree: Record<string, ResolveTree>,
@@ -103,14 +107,15 @@ const selectedColumnNames = (
   selectionCtx: SelectionCtx | undefined,
 ): string[] => {
   const tableColumns = getColumns(table);
+  const addedFields = selectionCtx?.fieldColumns?.[selectionCtx.tableName];
   const names: string[] = [];
 
   for (const fieldData of Object.values(tree)) {
-    if (!tableColumns[fieldData.name]) {
-      continue;
+    if (tableColumns[fieldData.name]) {
+      names.push(fieldData.name);
+    } else {
+      names.push(...(addedFields?.[fieldData.name] ?? []));
     }
-
-    names.push(fieldData.name);
   }
 
   names.push(...relationJoinColumns(tree, table, selectionCtx));

@@ -520,6 +520,32 @@ export const resolveBuildConfig = (
     }
   }
 
+  // An added field's columns are checked against the schema for the same reason as exclusions:
+  // a renamed column would otherwise leave the field reading nothing, quietly.
+  for (const [tableName, fields] of Object.entries(config?.fieldColumns ?? {})) {
+    const table = schema[tableName];
+    if (!is(table, Table)) {
+      throw new Error(
+        `Drizzle-GraphQL Error: config.fieldColumns names table '${tableName}', which is not a table in the Drizzle schema.`,
+      );
+    }
+    const columns = getColumns(table);
+    for (const [fieldName, columnNames] of Object.entries(fields)) {
+      if (columns[fieldName]) {
+        throw new Error(
+          `Drizzle-GraphQL Error: config.fieldColumns.${tableName} names '${fieldName}', which is a column: a column's own field already selects it.`,
+        );
+      }
+      for (const columnName of columnNames) {
+        if (!columns[columnName]) {
+          throw new Error(
+            `Drizzle-GraphQL Error: config.fieldColumns.${tableName}.${fieldName} names '${columnName}', which is not a column of that table.`,
+          );
+        }
+      }
+    }
+  }
+
   // Some operations are built out of others: an upsert writes through the insert and update
   // paths, a batch update reuses the update input, a grouped result reuses the aggregate
   // output types. The generator knows those implications; a table whose flags contradict them
@@ -618,6 +644,7 @@ export const resolveBuildConfig = (
     limits,
     policies,
     exclude,
+    fieldColumns: config?.fieldColumns,
     docs: {
       describeColumn: config?.describeColumn,
       describeTable: config?.describeTable,

@@ -154,6 +154,7 @@ for the pattern, and the trap it avoids.
 | `mutations` | `false` drops the Mutation type |
 | `features` | which operations exist, build-wide or per table |
 | `exclude` | tables/columns left out entirely, or columns left out of the write inputs |
+| `fieldColumns` | columns a field you add to a generated type reads from its row |
 | `relationsDepthLimit` | how deep relation fields go; `0` = columns only |
 | `prefixes` / `suffixes` / `typeNameMapper` | operation and type names |
 | `typeNamePrefix` / `typeNameSuffix` / `derivedTypeNameMapper` | names of filters, inputs, aggregates |

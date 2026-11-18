@@ -645,7 +645,7 @@ export const buildWriteResolvers = (
         const columns = extractSelectedColumnsFromTreeSQLFormat(
           parsedInfo.fieldsByTypeName[applyObjectTypeName(typeName, tableName, resolveName)]!,
           table,
-          selectionCtx,
+          selectionCtx && { ...selectionCtx, fieldColumns: registries.fieldColumns },
         );
 
         const relationCtx = relationFilterCtx(filterCtx, tableName, visibility);
