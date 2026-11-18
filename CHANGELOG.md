@@ -1,3 +1,9 @@
+## [19.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v19.0.0...v19.1.0) (2026-11-18)
+
+### Features
+
+* accept a per-relation predicate for features.nestedWrites ([d7f839f](https://github.com/cubicecho/drizzle-graphql/commit/d7f839fbf893bc93974b19c43c470fe8bd4f14ba)), closes [#218](https://github.com/cubicecho/drizzle-graphql/issues/218)
+
 ## [19.0.0](https://github.com/cubicecho/drizzle-graphql/compare/v18.3.1...v19.0.0) (2026-10-28)
 
 ### ⚠ BREAKING CHANGES
