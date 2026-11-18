@@ -606,3 +606,64 @@ describe.sequential('SQLite nested upsert', () => {
     expect(await links()).toEqual(['1:3']);
   });
 });
+
+// Issue #223: entries that each supply their primary key go in as one statement, matched back
+// to their entries by that key; anything the match cannot prove falls back to one write each.
+describe.sequential('SQLite keyed nested-write batches', () => {
+  const queries: string[] = [];
+  let keyedSchema: GraphQLSchema;
+  const runKeyed = (source: string) => {
+    queries.length = 0;
+    return graphql({ schema: keyedSchema, source, contextValue: {} });
+  };
+  const entry = (id: number) =>
+    `{ id: ${id}, name: "n${id}", posts: { create: [{ title: "${id}a" }, { title: "${id}b" }] } }`;
+  const titlesByAuthor = async () => {
+    const grouped: Record<number, string[]> = {};
+    for (const post of await posts()) {
+      grouped[post.authorId] = [...(grouped[post.authorId] ?? []), post.title];
+    }
+    return grouped;
+  };
+
+  beforeAll(() => {
+    const logged = (drizzle as any)({
+      client,
+      schema,
+      relations,
+      logger: { logQuery: (query: string) => queries.push(query) },
+    });
+    keyedSchema = buildSchema(logged, { features: { nestedWrites: true, upsert: true } }).schema;
+  });
+
+  it('writes the parents in one statement and their children in one more', async () => {
+    const result = await runKeyed(
+      `mutation { createAuthors(values: [${[7, 3, 5].map(entry).join(', ')}]) { id posts { title } } }`,
+    );
+
+    expect(result.errors).toBeUndefined();
+    expect(queries.slice(0, 4)).toEqual([
+      expect.stringMatching(/^savepoint/),
+      expect.stringMatching(/^insert into "authors"/),
+      expect.stringMatching(/^insert into "posts"/),
+      expect.stringMatching(/^release savepoint/),
+    ]);
+    expect((result.data as any).createAuthors).toEqual(
+      [7, 3, 5].map((id) => ({ id, posts: [{ title: `${id}a` }, { title: `${id}b` }] })),
+    );
+    expect(await titlesByAuthor()).toEqual({ 3: ['3a', '3b'], 5: ['5a', '5b'], 7: ['7a', '7b'] });
+  });
+
+  it('rolls the attempt back and writes one entry at a time when an entry writes no row', async () => {
+    await db.insert(Authors).values({ id: 3, name: 'kept' });
+    const result = await runKeyed(
+      `mutation { upsertAuthors(values: [${[7, 3].map(entry).join(', ')}], onConflict: { action: NOTHING }) { id } }`,
+    );
+
+    expect(result.errors).toBeUndefined();
+    expect(queries).toContainEqual(expect.stringMatching(/^rollback to savepoint/));
+    expect((result.data as any).upsertAuthors).toEqual([{ id: 7 }]);
+    expect(await titlesByAuthor()).toEqual({ 7: ['7a', '7b'] });
+    expect((await authors()).map((author: any) => author.name)).toEqual(['kept', 'n7']);
+  });
+});
