@@ -88,7 +88,8 @@ export const createNestedWriteTypes = (params: {
       Object.entries(visibleColumns(cacheCtx.registries.exclusions, plan.targetTable))
         .filter(
           ([columnName, column]) =>
-            columnName !== omitted && isWritableColumn(cacheCtx, plan.targetTableName, columnName, column as Column),
+            columnName !== omitted &&
+            isWritableColumn(cacheCtx, plan.targetTableName, columnName, column as Column, 'insert'),
         )
         .map(([columnName, column]) => [
           columnName,

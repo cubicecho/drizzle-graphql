@@ -45,6 +45,10 @@ export {
   createColumnExclusions,
   excludedColumnsKey,
   hasExcludedColumns,
+  type InputExclusions,
+  type InputWrite,
+  inputExcludedColumns,
+  isInputExcluded,
   visibleColumns,
 } from './common/exclusions.ts';
 export { drizzleExecutorKey, resolveExecutor, resolveQueryExecutor } from './common/executor.ts';

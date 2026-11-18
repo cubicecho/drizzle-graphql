@@ -3,6 +3,7 @@
 
 import type { Column, Table } from 'drizzle-orm';
 import { getColumns } from 'drizzle-orm';
+import type { InputExclusion } from '../../../types.ts';
 
 /**
  * Columns one build keeps out of the generated schema, keyed by the table object. Part of the
@@ -30,6 +31,36 @@ export const createColumnExclusions = (
   }
   return exclusions;
 };
+
+/** A write a column can be left out of, by `exclude.inputs`. */
+export type InputWrite = keyof InputExclusion;
+
+/**
+ * Columns one build leaves out of its write inputs but still serves, from `exclude.inputs`, keyed
+ * by the table's schema key: the same key the input generators name a table by.
+ */
+export type InputExclusions = ReadonlyMap<string, Readonly<Record<InputWrite, ReadonlySet<string>>>>;
+
+/** One build's input exclusions, from its `exclude.inputs` config. */
+export const createInputExclusions = (inputs?: Record<string, InputExclusion>): InputExclusions =>
+  new Map(
+    Object.entries(inputs ?? {}).map(([tableName, writes]) => [
+      tableName,
+      { insert: new Set(writes.insert ?? []), update: new Set(writes.update ?? []) },
+    ]),
+  );
+
+/** Whether `exclude.inputs` keeps a column out of one write of a table. */
+export const isInputExcluded = (
+  exclusions: InputExclusions,
+  tableName: string,
+  columnName: string,
+  write: InputWrite,
+): boolean => exclusions.get(tableName)?.[write].has(columnName) ?? false;
+
+/** The columns `exclude.inputs` keeps out of one write of a table, sorted. */
+export const inputExcludedColumns = (exclusions: InputExclusions, tableName: string, write: InputWrite): string[] =>
+  [...(exclusions.get(tableName)?.[write] ?? [])].sort();
 
 /** Whether the build excluded any column of this table from the schema. */
 export const hasExcludedColumns = (exclusions: ColumnExclusions, table: Table): boolean => exclusions.has(table);

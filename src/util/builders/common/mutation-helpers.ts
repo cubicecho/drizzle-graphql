@@ -100,6 +100,7 @@ export const prepareMutationRelationColumns = (
     eagerRelations,
     tables,
     namedRelations: filterCtx?.namedRelations,
+    fieldColumns: filterCtx?.registries?.fieldColumns,
   });
   const columns = hasRelations ? withPrimaryKeyColumns(baseColumns, table, pkNames) : baseColumns;
   return { columns, hasRelations, withParams };

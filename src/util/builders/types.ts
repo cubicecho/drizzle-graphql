@@ -8,7 +8,7 @@ import type {
   GraphQLObjectType,
   GraphQLScalarType,
 } from 'graphql';
-import type { SchemaExclusions, SchemaFeatures } from '../../types.ts';
+import type { FieldColumns, SchemaExclusions, SchemaFeatures } from '../../types.ts';
 import type {
   ColumnTypeMapper,
   ConvertedColumn,
@@ -104,6 +104,8 @@ export type SchemaGeneratorOptions = {
    * (`createColumnExclusions`), which every schema-shape site reads.
    */
   exclude?: SchemaExclusions;
+  /** Validated `BuildSchemaConfig.fieldColumns`, which becomes the build's `registries.fieldColumns`. */
+  fieldColumns?: FieldColumns;
   /**
    * Resolved `BuildSchemaConfig.scope` and `BuildSchemaConfig.contextValues` — the row-level
    * read scope and the server-owned columns, looked up per table. Both are `undefined` when

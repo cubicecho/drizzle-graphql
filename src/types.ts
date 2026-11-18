@@ -1198,6 +1198,29 @@ export type SchemaExclusions = {
   tables?: string[];
   /** Per-table column exclusions, keyed by the table's key in the Drizzle schema. */
   columns?: Record<string, string[]>;
+  /**
+   * Columns left out of the generated write inputs while every read still serves them, per table
+   * and per write. `insert` covers the create and upsert inputs and a nested `create` of the
+   * table; `update` covers the update input (and `update<Table>Many`), the columns an upsert's
+   * conflict branch may overwrite, and a nested `connect` / `disconnect` / `set` that moves the
+   * table's foreign key.
+   *
+   * ```ts
+   * exclude: { inputs: { servers: { update: ['installDir', 'source'] } } }
+   * ```
+   */
+  inputs?: Record<string, InputExclusion>;
+};
+
+/** {@link BuildSchemaConfig.fieldColumns}: by table, then by added field, the columns it reads. */
+export type FieldColumns = Record<string, Record<string, string[]>>;
+
+/** One table's entry in {@link SchemaExclusions.inputs}: the columns each write leaves out. */
+export type InputExclusion = {
+  /** Columns no generated insert sets: the create, upsert and nested-create inputs leave them out. */
+  insert?: string[];
+  /** Columns no generated update sets, once the row exists. */
+  update?: string[];
 };
 
 export type BuildSchemaConfig = {
@@ -1713,8 +1736,27 @@ export type BuildSchemaConfig = {
    *
    * Names that match nothing throw, so a renamed column fails the build instead of quietly
    * un-hiding itself.
+   *
+   * `inputs` is the read-only variant: it leaves a column out of the insert or update inputs
+   * (or both), and every read still serves it. See {@link SchemaExclusions.inputs}.
    */
   exclude?: SchemaExclusions;
+  /**
+   * The columns each field you add to a generated object type reads from its parent row, keyed
+   * by the table's schema key and then the field's name. A generated read selects only the
+   * columns a query names, so without this a field such as `Server.login`, resolved from the
+   * row's `id`, gets no `id` unless the query happened to ask for it too.
+   *
+   * ```ts
+   * buildSchema(db, { fieldColumns: { servers: { login: ['id'], instances: ['id'] } } });
+   * ```
+   *
+   * Whenever a query selects the field, every generated read of that table selects the columns
+   * as well: root lists and single rows, relation fields, and mutation results. A name that is
+   * not a table or a column throws, and so does a field named like one of the table's columns,
+   * which already selects itself.
+   */
+  fieldColumns?: FieldColumns;
   /**
    * Optional mapper from table key to singular/plural name pair.
    * When provided for a table, overrides the default (table key) naming for GraphQL type names,

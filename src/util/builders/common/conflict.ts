@@ -7,6 +7,7 @@ import { SQLiteTable } from 'drizzle-orm/sqlite-core';
 import { GraphQLEnumType, GraphQLInputObjectType, GraphQLList, GraphQLNonNull } from 'graphql';
 import { generateColumnEnum } from './column-enums.ts';
 import { drizzleError } from './errors.ts';
+import { inputExcludedColumns } from './exclusions.ts';
 import type { UniqueTarget } from './keys.ts';
 import type { TypeCacheCtx } from './type-cache.ts';
 import { sharedType, type TypeNameResolver } from './type-names.ts';
@@ -57,6 +58,7 @@ export const generateOnConflictInput = (params: {
   const policyVariant = [
     ...Object.keys(cacheCtx.contextValuesOf?.(tableName) ?? {}).sort(),
     cacheCtx.softDeleteOf?.(tableName)?.columnName ?? '',
+    ...inputExcludedColumns(cacheCtx.registries.inputExclusions, tableName, 'update'),
   ].join(',');
 
   const updateEnum = generateColumnEnum(
@@ -69,7 +71,7 @@ export const generateOnConflictInput = (params: {
       operation: 'conflictUpdate',
     }),
     `Columns of ${typeName} that an upsert can overwrite`,
-    (column, columnName) => isWritableColumn(cacheCtx, tableName, columnName, column),
+    (column, columnName) => isWritableColumn(cacheCtx, tableName, columnName, column, 'update'),
     policyVariant,
   );
   if (!updateEnum) {
@@ -170,7 +172,8 @@ export type ConflictBatch = { values: Record<string, any>[]; plan: ConflictPlan 
  * Never written on conflict, even when supplied: the conflict target (it already matches);
  * the primary key on a dialect with no target (MySQL's conflict can be on another unique
  * key, and copying a generated id over the existing row's would move it); and `serverOwned`
- * — the `contextValues` columns, which an update never reassigns.
+ * — the `contextValues` columns and those `exclude.inputs` keeps out of updates, which an update
+ * never reassigns.
  *
  * An UPDATE with nothing left to write degrades to NOTHING: `DO UPDATE SET` with an empty
  * body is not valid SQL, and doing nothing is what the request asked for anyway.
@@ -183,7 +186,7 @@ export const resolveConflictPlan = (params: {
   uniqueSets: UniqueTarget[];
   excludedRef: (columnName: string) => SQL;
   withTarget: boolean;
-  /** The table's `contextValues` columns. */
+  /** The columns an update never reassigns: `contextValues`, and `exclude.inputs` update columns. */
   serverOwned?: readonly string[];
   buildWhere?: (where: any) => SQL | undefined;
 }): ConflictBatch[] => {
@@ -233,7 +236,7 @@ export const resolveConflictPlan = (params: {
     const owned = onConflict.update.filter((name) => serverOwned.has(name));
     if (owned.length) {
       throw drizzleError(
-        `Unable to upsert: onConflict.update lists ${owned.join(', ')}, which the server sets and an update never overwrites.`,
+        `Unable to upsert: onConflict.update lists ${owned.join(', ')}, which an update never overwrites.`,
         { code: 'DRIZZLE_INVALID_ON_CONFLICT' },
       );
     }

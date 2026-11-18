@@ -241,6 +241,7 @@ export const createRelationResolverFactory =
         tableName: targetTableName,
         tables,
         namedRelations: filterCtx?.namedRelations,
+        fieldColumns: filterCtx?.registries?.fieldColumns,
       });
 
       const targetColumns = getColumns(targetTable);

@@ -26,6 +26,7 @@ import {
   getPrimaryKeyPropNamesFromConfig,
   getRowKeyCandidates,
   hardDeleteArg,
+  inputExcludedColumns,
   insertStamps,
   type MutationTxCtx,
   memoizeTableConfig,
@@ -186,7 +187,10 @@ const generateUpsert = (
         uniqueSets: [],
         excludedRef: mysqlValuesColumnRef,
         withTarget: false,
-        serverOwned: Object.keys(contextColumns ?? {}),
+        serverOwned: [
+          ...Object.keys(contextColumns ?? {}),
+          ...inputExcludedColumns(registries.inputExclusions, tableName, 'update'),
+        ],
       });
       await before();
 

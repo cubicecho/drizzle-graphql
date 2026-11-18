@@ -205,6 +205,69 @@ describe.sequential('schema exclusions', () => {
     });
   });
 
+  describe('columns left out of the write inputs', () => {
+    it('keeps an update-excluded column readable and creatable, but not updatable', () => {
+      const gqlSchema = buildWith({ inputs: { Posts: { update: ['content'] } } });
+
+      expect(fieldNames(gqlSchema, 'Posts')).toContain('content');
+      expect(fieldNames(gqlSchema, 'PostsFilters')).toContain('content');
+      expect(fieldNames(gqlSchema, 'CreatePostsInput')).toContain('content');
+      expect(fieldNames(gqlSchema, 'UpdatePostsInput')).not.toContain('content');
+      expect(fieldNames(gqlSchema, 'UpdatePostsInput')).toContain('authorId');
+      expect(enumValues(gqlSchema, 'PostsUpdateColumn')).not.toContain('content');
+    });
+
+    it('keeps an insert-excluded column updatable, but not creatable', () => {
+      const gqlSchema = buildWith({ inputs: { Posts: { insert: ['content'] } } });
+
+      expect(fieldNames(gqlSchema, 'CreatePostsInput')).not.toContain('content');
+      expect(fieldNames(gqlSchema, 'UsersPostsNestedCreatePayloadInput')).not.toContain('content');
+      expect(fieldNames(gqlSchema, 'UpdatePostsInput')).toContain('content');
+    });
+
+    it('refuses an update that sets the column', async () => {
+      const gqlSchema = buildWith({ inputs: { Posts: { update: ['content'] } } });
+      const result = await run(
+        gqlSchema,
+        `mutation { updatePosts(where: { id: { eq: 1 } }, set: { content: "x" }) { id } }`,
+      );
+
+      expect(result.errors?.[0]?.message).toMatch(unknownInputField('content'));
+    });
+
+    it("never overwrites it from an upsert's conflict branch", async () => {
+      const gqlSchema = buildWith({ inputs: { Posts: { update: ['content'] } } });
+      const created = await run(
+        gqlSchema,
+        `mutation { createPostsSingle(values: { id: 201, content: "first", authorId: 1 }) { id } }`,
+      );
+      expect(created.errors).toBeUndefined();
+
+      const upserted = await run(
+        gqlSchema,
+        `mutation { upsertPostsSingle(values: { id: 201, content: "second", authorId: 2 }) { id content authorId } }`,
+      );
+      expect(upserted.errors).toBeUndefined();
+      expect((upserted.data as any).upsertPostsSingle).toEqual({ id: 201, content: 'first', authorId: 2 });
+    });
+
+    it('drops the nested inputs that would move an update-excluded key', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const gqlSchema = buildWith({ inputs: { Posts: { update: ['authorId'] } } });
+
+        // Posts.author writes the post's own key, from its create and update inputs alike.
+        expect(fieldNames(gqlSchema, 'CreatePostsInput')).not.toContain('author');
+        expect(fieldNames(gqlSchema, 'UpdatePostsInput')).not.toContain('author');
+        // Users.posts moves the post's key on connect / disconnect / set; a create only fills it in.
+        expect(fieldNames(gqlSchema, 'UsersPostsNestedUpdateInput')).toEqual(['create']);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('config.exclude.inputs — nestedWrites leaves out'));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
+
   describe('cross-build isolation', () => {
     it('does not leak exclusions between builds of the same tables', () => {
       // Order matters: the unfiltered build populates the module-level order and enum caches
@@ -254,6 +317,25 @@ describe.sequential('schema exclusions', () => {
       expect(() => buildWith({ columns: { Posts: ['nope'] } })).toThrow(/config\.exclude\.columns names 'Posts\.nope'/);
     });
 
+    it.each([
+      [{ Nope: { update: ['id'] } }, /config\.exclude\.inputs names table 'Nope'/],
+      [{ Posts: { delete: ['id'] } }, /config\.exclude\.inputs\.Posts names 'delete', which is not a write/],
+      [{ Posts: { update: ['nope'] } }, /config\.exclude\.inputs\.Posts\.update names 'nope'/],
+    ])('throws for an input exclusion naming nothing (%o)', (inputs, message) => {
+      expect(() => buildWith({ inputs: inputs as SchemaExclusions['inputs'] })).toThrow(message);
+    });
+
+    it('warns when inserts leave out a NOT NULL column with no default', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        buildWith({ inputs: { Tags: { insert: ['name'], update: ['description'] } } });
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("leaves 'Tags.name' out of inserts"));
+        expect(warn).toHaveBeenCalledTimes(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it('throws when every table is excluded', () => {
       expect(() => buildWith({ tables: ['Users', 'Customers', 'Posts', 'Tags'] })).toThrow(/excludes every table/);
     });
@@ -262,6 +344,32 @@ describe.sequential('schema exclusions', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         buildWith({ columns: { Tags: ['name'] } });
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("'Tags.name' is NOT NULL with no default"));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it.each([
+      ['off', false],
+      ['switched off by a predicate', (tableName: string) => tableName !== 'Tags'],
+    ])('does not warn for a NOT NULL column of a table whose inserts are %s', (_label, insert) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        buildSchema(db, { features: { insert, nestedWrites: true }, exclude: { columns: { Tags: ['name'] } } });
+        expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('NOT NULL with no default'));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('still warns when upserts can insert into the table', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        buildSchema(db, {
+          features: { insert: (tableName) => tableName !== 'Tags', upsert: true },
+          exclude: { columns: { Tags: ['name'] } },
+        });
         expect(warn).toHaveBeenCalledWith(expect.stringContaining("'Tags.name' is NOT NULL with no default"));
       } finally {
         warn.mockRestore();

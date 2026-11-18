@@ -306,7 +306,8 @@ Two details worth stating plainly:
 -   **The exclusion is all-or-nothing on purpose.** A column you can filter on but not
     select is an oracle: `where: { keyHash: { eq: '…' } }` confirms a value without ever
     returning it. Ordering and grouping leak the same way, more slowly. There is no
-    read-only or write-only variant of `exclude` for this reason.
+    write-only variant of `exclude` for this reason. A read-only one is safe, and is
+    `exclude.inputs`, below.
 -   **Nothing changes below the schema.** An excluded column is still written by its
     default, still read by the primary-key and cursor machinery, and still usable by your
     own resolvers. Only the generated schema stops mentioning it.
@@ -320,7 +321,44 @@ Two details worth stating plainly:
 Names that match nothing throw at build time, so renaming a column fails the build instead
 of quietly un-hiding it. Excluding a `NOT NULL` column with no default is allowed — the
 table becomes readable but not insertable — and warns on the console, since that is more
-often a mistake than a plan.
+often a mistake than a plan. A table whose `insert` and `upsert` are both off has no
+generated insert to break, so it is not warned about.
+
+### Columns clients may read but not write
+
+`exclude.inputs` leaves a column out of the generated write inputs and nowhere else: it is
+still selected, filtered, ordered and aggregated. Each table lists the columns its inserts
+leave out, the columns its updates leave out, or both:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    exclude: {
+        inputs: {
+            // Set when the row is made, never changed after.
+            servers: { update: ['installDir', 'source'] },
+            // Filled in by a trigger, but a person may correct it.
+            invoices: { insert: ['number'] },
+        },
+    },
+})
+```
+
+| Write | Leaves the column out of |
+| --- | --- |
+| `insert` | `Create<Type>Input`, the upsert input, and a nested `create` of the table |
+| `update` | `Update<Type>Input` (and `update<Type>Many`), and the upsert `onConflict` `<Type>UpdateColumn` enum |
+
+The rule reaches the paths that would write the column without naming it, too. An upsert's
+conflict branch never overwrites an update-excluded column, even when the insert supplied it.
+With `nestedWrites` on, a nested `connect` / `disconnect` / `set` that would move an
+update-excluded foreign key is left out, and so is a nested `create` that fills in an
+insert-excluded one. A relation whose key is the parent's own column writes it from the create
+and the update input alike, so a key left out of either loses the whole relation field. The
+build notes on the console which nested inputs it left out.
+
+Names that match nothing throw at build time, and an insert that leaves out a `NOT NULL`
+column with no default warns, as `exclude.columns` does. Your own resolvers and `onWrite`
+hooks are not limited by it: only the generated inputs are.
 
 > `exclude` is a static decision: the column is absent for every caller. Deciding per
 > request *which fields* a caller may reach is a job for
@@ -3207,6 +3245,30 @@ Both take the naming options the build used — `typeNameMapper`, `derivedTypeNa
 published GraphQL type names, so a build that renames its types has to say so here too. If
 the build used `typeNameMapper: 'singularize'`, pass the exported `singularizeMapper`.
 
+## Fields you add to a generated type
+
+A field you add to a generated object type (with `extendSchema`, `addResolversToSchema` or
+`mapSchema`) is resolved from the row the generated read returned, and that read selects only
+the columns the query names. A `Posts.label` built from `content` would get no `content` from
+`{ posts { id label } }`. `fieldColumns` names the columns each added field reads, keyed by
+the table's Drizzle schema key and then the field's name:
+
+```Typescript
+const { schema } = buildSchema(db, {
+    fieldColumns: { Posts: { label: ['content'] } },
+})
+
+const extended = extendSchema(schema, parse('extend type Posts { label: String }'))
+;(extended.getType('Posts') as GraphQLObjectType).getFields().label!.resolve = (post) =>
+    `post: ${post.content}`
+```
+
+Whenever a query selects the field, every generated read of the table selects those columns as
+well: root lists and single rows, relation fields and mutation results. GraphQL returns only what
+the query asked for, so they never reach the response. A table, field or column that doesn't
+exist throws at build time, and so does a field named like one of the table's columns, which
+selects itself already.
+
 ## Identifying generated fields
 
 Every generated field and object type publishes what it is under `extensions.drizzle`, so
@@ -3280,7 +3342,8 @@ that explains it, where there is one.
 | --- | --- | --- |
 | `mutations` | `true` | `false` omits the `Mutation` type entirely |
 | `features` | see [Choosing what gets generated](#choosing-what-gets-generated) | which operations are generated, per operation |
-| `exclude` | none | [tables and columns left out](#excluding-tables-and-columns) of the generated schema entirely |
+| `exclude` | none | [tables and columns left out](#excluding-tables-and-columns) of the generated schema entirely, or [left out of the write inputs](#columns-clients-may-read-but-not-write) |
+| `fieldColumns` | none | [the columns a field you add](#fields-you-add-to-a-generated-type) to a generated type reads from its row |
 | `relationsDepthLimit` | unlimited | `0` generates no relation fields (a flat, columns-only schema); any other value currently behaves like the default |
 | `prefixes` / `suffixes` / `typeNameMapper` | see [Naming](#naming) | operation and type names |
 | `typeNamePrefix` / `typeNameSuffix` / `derivedTypeNameMapper` | none | [names of the derived types](#renaming-the-derived-types) — filters, inputs, aggregates, shared inputs |
