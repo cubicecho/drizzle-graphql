@@ -1,3 +1,9 @@
+## [19.1.1](https://github.com/cubicecho/drizzle-graphql/compare/v19.1.0...v19.1.1) (2026-11-18)
+
+### Performance Improvements
+
+* batch nested-write inserts whose entries carry their primary key ([6e70a7c](https://github.com/cubicecho/drizzle-graphql/commit/6e70a7c7c2519c915aa9c49f3b3867d938ab609a))
+
 ## [19.1.0](https://github.com/cubicecho/drizzle-graphql/compare/v19.0.0...v19.1.0) (2026-11-18)
 
 ### Features

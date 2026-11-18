@@ -2,7 +2,7 @@
   "name": "@vantreeseba/drizzle-graphql",
   "type": "module",
   "author": "Drizzle Team",
-  "version": "19.1.0",
+  "version": "19.1.1",
   "description": "Automatically generate GraphQL schema or customizable schema config fields from Drizzle ORM schema",
   "scripts": {
     "build": "tsdown",
