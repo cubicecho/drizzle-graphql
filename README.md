@@ -320,7 +320,8 @@ Two details worth stating plainly:
 Names that match nothing throw at build time, so renaming a column fails the build instead
 of quietly un-hiding it. Excluding a `NOT NULL` column with no default is allowed — the
 table becomes readable but not insertable — and warns on the console, since that is more
-often a mistake than a plan.
+often a mistake than a plan. A table whose `insert` and `upsert` are both off has no
+generated insert to break, so it is not warned about.
 
 > `exclude` is a static decision: the column is absent for every caller. Deciding per
 > request *which fields* a caller may reach is a job for

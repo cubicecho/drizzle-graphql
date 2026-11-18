@@ -268,6 +268,32 @@ describe.sequential('schema exclusions', () => {
       }
     });
 
+    it.each([
+      ['off', false],
+      ['switched off by a predicate', (tableName: string) => tableName !== 'Tags'],
+    ])('does not warn for a NOT NULL column of a table whose inserts are %s', (_label, insert) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        buildSchema(db, { features: { insert, nestedWrites: true }, exclude: { columns: { Tags: ['name'] } } });
+        expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('NOT NULL with no default'));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('still warns when upserts can insert into the table', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        buildSchema(db, {
+          features: { insert: (tableName) => tableName !== 'Tags', upsert: true },
+          exclude: { columns: { Tags: ['name'] } },
+        });
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("'Tags.name' is NOT NULL with no default"));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it('does not warn for a nullable or defaulted column', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {

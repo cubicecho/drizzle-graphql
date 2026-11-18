@@ -458,6 +458,10 @@ export const resolveBuildConfig = (
         continue;
       }
       const columns = getColumns(schema[tableName] as Table);
+      // Only a table something can insert into is left unwritable by the hole: its insert or upsert
+      // mutations. A nested `create` follows the target's `insert`, so it is covered too.
+      const tableFeatures = forTable(tableName);
+      const isInsertable = tableFeatures.insert || tableFeatures.upsert;
       for (const columnName of columnNames) {
         const column = columns[columnName];
         if (!column) {
@@ -466,8 +470,9 @@ export const resolveBuildConfig = (
           );
         }
         // Hiding a column every insert must supply leaves the table readable but unwritable.
-        // That is a reasonable thing to configure deliberately, so it warns rather than throws.
-        if (column.notNull && !column.hasDefault && !column.defaultFn) {
+        // That is a reasonable thing to configure deliberately, so it warns rather than throws,
+        // and says nothing for a table whose inserts are switched off anyway.
+        if (isInsertable && column.notNull && !column.hasDefault && !column.defaultFn) {
           console.warn(
             `Drizzle-GraphQL Warning: excluded column '${tableName}.${columnName}' is NOT NULL with no default, so generated inserts for '${tableName}' can never succeed.`,
           );
