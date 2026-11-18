@@ -2,6 +2,7 @@
 // a batch of them.
 
 import type { NestedOps, NestedWriteRequest } from './ops.ts';
+import { keyString } from './plans.ts';
 import type { NestedWriteRuntime } from './runtime.ts';
 
 /** Thrown inside an entry's savepoint to undo a parent-side `create` whose parent was never written. */
@@ -64,6 +65,100 @@ export const writeNestedEntry = async (params: {
 };
 
 /**
+ * The multi-row parent write a batch offers {@link writeWithNestedOps}, for writing every entry
+ * at once when each one carries its own primary key.
+ */
+export type KeyedBatchWrite = {
+  /** The table's primary-key property names, which every entry has to supply. */
+  primaryKey: string[];
+  /** Writes every entry's values, returning the primary key on top of what `write` returns. */
+  write: (executor: any, values: Record<string, any>[]) => Promise<Record<string, any>[]>;
+  /** The primary-key columns `write` returns only so its rows can be matched, taken off again. */
+  matchOnly: string[];
+};
+
+/** Thrown inside the keyed batch's savepoint when its rows cannot be matched to its entries. */
+class UnmatchedBatch extends Error {}
+
+/**
+ * The key a row or an entry's values hold, as one string, or `undefined` when a column of it
+ * is missing.
+ *
+ * @param values - A row the write returned, or the values an entry writes.
+ * @param primaryKey - The primary-key property names.
+ * @returns The key, comparable across the two.
+ */
+const primaryKeyOf = (values: Record<string, any>, primaryKey: string[]): string | undefined => {
+  const parts = primaryKey.map((name) => values[name]);
+  const isComplete = parts.every((part) => part !== undefined && part !== null);
+  if (isComplete === false) {
+    return undefined;
+  }
+  try {
+    return parts.map(keyString).join('\u0000');
+  } catch {
+    // A key no JS value can hold (see keyString) cannot be matched, so the entry is not keyed.
+    return undefined;
+  }
+};
+
+/**
+ * Writes every entry's parent row in one statement and every relation's `create` rows in one
+ * more, matching the returned parents to their entries by primary key — never by position,
+ * since neither PostgreSQL nor SQLite returns a multi-row insert's rows in input order.
+ *
+ * Throws {@link UnmatchedBatch} unless the rows match the entries one to one: each entry's key
+ * came back exactly once and nothing else did. Anything else (a conflict that wrote no row, a
+ * key the database stored in another form than it was given) is left to the caller's fallback.
+ *
+ * @param params.keys - Each entry's supplied primary key, from {@link primaryKeyOf}.
+ * @returns The parent rows, in entry order.
+ */
+const writeKeyedBatch = async (params: {
+  executor: any;
+  runtime: NestedWriteRuntime;
+  tableName: string;
+  entries: { ops: NestedOps }[];
+  values: Record<string, any>[];
+  keys: string[];
+  batch: KeyedBatchWrite;
+  request?: NestedWriteRequest;
+}): Promise<Record<string, any>[]> => {
+  const { executor, runtime, tableName, entries, values, keys, batch, request } = params;
+  const returned = await batch.write(executor, values);
+  const byKey = new Map<string, Record<string, any>>();
+  for (const row of returned) {
+    const key = primaryKeyOf(row, batch.primaryKey);
+    if (key === undefined || byKey.has(key)) {
+      throw new UnmatchedBatch();
+    }
+    byKey.set(key, row);
+  }
+  const rows = keys.map((key) => byKey.get(key));
+  const isOneToOne = returned.length === keys.length && rows.every((row) => row !== undefined);
+  if (isOneToOne === false) {
+    throw new UnmatchedBatch();
+  }
+  const matched = rows as Record<string, any>[];
+  await runtime.applyChildSideBatch(
+    executor,
+    tableName,
+    entries.map((entry, index) => ({ ops: entry.ops, row: matched[index]! })),
+    request,
+  );
+  if (!batch.matchOnly.length) {
+    return matched;
+  }
+  return matched.map((row) => {
+    const copy = { ...row };
+    for (const name of batch.matchOnly) {
+      delete copy[name];
+    }
+    return copy;
+  });
+};
+
+/**
  * Runs one parent write per input entry, with that entry's nested operations around it, all
  * inside a single transaction — a savepoint when the caller already runs on one, so a failing
  * entry rolls the whole batch back.
@@ -75,6 +170,14 @@ export const writeNestedEntry = async (params: {
  * Entries are written one at a time rather than as a single multi-row statement: a nested
  * operation attaches to the row its own entry produced, so the two have to stay correlated.
  * The batch path is untouched when no entry carries a nested operation.
+ *
+ * The exception is a `batch` whose entries each supply their own primary key, and whose nested
+ * operations {@link NestedWriteRuntime.batchable} accepts: the key correlates a returned row to
+ * its entry, so the parents go in as one statement and each relation's children as one more
+ * (see {@link writeKeyedBatch}). That attempt runs in a savepoint of its own. When its rows do
+ * not match the entries one to one, or any of its statements fails, the savepoint is rolled
+ * back and the entries are written one at a time after all — so the outcome, rows or error, is
+ * the one the per-entry writes produce.
  */
 export const writeWithNestedOps = async (params: {
   executor: any;
@@ -84,19 +187,56 @@ export const writeWithNestedOps = async (params: {
   remapValues: (columns: Record<string, any>) => Record<string, any>;
   /** `ops` is the entry's nested operations, for a write whose statement depends on them. */
   write: (executor: any, values: Record<string, any>, ops: NestedOps) => Promise<Record<string, any>[]>;
+  /** The keyed multi-row write, when the table has a primary key to match by. */
+  batch?: KeyedBatchWrite;
   request?: NestedWriteRequest;
 }): Promise<Record<string, any>[]> => {
-  const { executor, runtime, tableName, entries, remapValues, write, request } = params;
+  const { executor, runtime, tableName, entries, remapValues, write, batch, request } = params;
 
   return executor.transaction(async (tx: any) => {
+    // Remapped once, so a fallback after the keyed attempt writes the values it tried.
+    const remapped: Record<string, any>[] = [];
+    const valuesOf = (index: number) => (remapped[index] ??= remapValues(entries[index]!.columns));
+
+    const offersBatch =
+      !!batch?.primaryKey.length &&
+      entries.length > 1 &&
+      runtime.batchable(
+        tableName,
+        entries.map(({ ops }) => ops),
+      );
+    if (offersBatch) {
+      const values = entries.map((_, index) => valuesOf(index));
+      const keys = values.map((entryValues) => primaryKeyOf(entryValues, batch!.primaryKey));
+      const isKeyed = keys.every((key) => key !== undefined) && new Set(keys).size === keys.length;
+      if (isKeyed) {
+        try {
+          return await tx.transaction((savepoint: any) =>
+            writeKeyedBatch({
+              executor: savepoint,
+              runtime,
+              tableName,
+              entries,
+              values,
+              keys: keys as string[],
+              batch: batch!,
+              request,
+            }),
+          );
+        } catch {
+          // Rolled back with the savepoint; the per-entry writes below reach the same outcome.
+        }
+      }
+    }
+
     const rows: Record<string, any>[] = [];
-    for (const entry of entries) {
+    for (const [index, entry] of entries.entries()) {
       const written = await writeNestedEntry({
         executor: tx,
         runtime,
         tableName,
         ops: entry.ops,
-        write: (target, patch) => write(target, { ...remapValues(entry.columns), ...patch }, entry.ops),
+        write: (target, patch) => write(target, { ...valuesOf(index), ...patch }, entry.ops),
         request,
       });
       rows.push(...written);

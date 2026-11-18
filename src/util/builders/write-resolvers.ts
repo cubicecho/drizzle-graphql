@@ -10,7 +10,7 @@
 // around the statement (hooks, transaction, error context), which lives in
 // `common/write-scaffold.ts` and wraps every body below.
 
-import type { Table } from 'drizzle-orm';
+import type { Column, Table } from 'drizzle-orm';
 import type { PgAsyncDatabase } from 'drizzle-orm/pg-core';
 import type { SQLiteAsyncDatabase } from 'drizzle-orm/sqlite-core';
 import { type GraphQLFieldConfigArgumentMap, type GraphQLInputObjectType, GraphQLList, GraphQLNonNull } from 'graphql';
@@ -53,11 +53,12 @@ import {
   visibleWhere,
   type WriteOperation,
   withEagerRelations,
+  withPrimaryKeyColumns,
   withRowVisibility,
   writeResolver,
 } from './common.ts';
 import { remapUpdateInput } from './field-updates.ts';
-import { updateWithNestedOps, writeWithNestedOps } from './nested-writes/entry.ts';
+import { type KeyedBatchWrite, updateWithNestedOps, writeWithNestedOps } from './nested-writes/entry.ts';
 import { mergedOps, type NestedOps } from './nested-writes/ops.ts';
 import type { NestedWriteRuntime } from './nested-writes/runtime.ts';
 import type { CreatedResolver, Filters, TableNamedRelations } from './types.ts';
@@ -132,6 +133,33 @@ export interface DeleteOptions extends WriteTableOptions {
 }
 
 export type PrimaryKeyPropNames = (table: any) => string[];
+
+/**
+ * The keyed multi-row write a nested insert or upsert offers {@link writeWithNestedOps}: the
+ * statement with the primary key added to its RETURNING, so its rows can be matched to entries.
+ *
+ * @param table - The parent table.
+ * @param pkNames - Its primary-key property names.
+ * @param returning - The RETURNING column map the per-entry writes use.
+ * @param write - Writes the rows, returning `columns`.
+ * @returns The batch, or `undefined` when the table has no primary key to match by.
+ */
+const keyedBatch = (
+  table: Table,
+  pkNames: string[],
+  returning: Record<string, Column>,
+  write: (executor: any, values: Record<string, any>[], columns: Record<string, Column>) => Promise<any[]>,
+): KeyedBatchWrite | undefined => {
+  if (!pkNames.length) {
+    return undefined;
+  }
+  const columns = withPrimaryKeyColumns({ ...returning }, table, pkNames);
+  return {
+    primaryKey: pkNames,
+    write: (executor, values) => write(executor, values, columns),
+    matchOnly: pkNames.filter((name) => !(name in returning)),
+  };
+};
 
 /**
  * Binds the five resolvers to one dialect. Call once per dialect module and destructure the
@@ -231,8 +259,8 @@ export const buildWriteResolvers = (
         // Everything above checks the arguments; the hook runs once they have passed.
         await before();
 
-        const runInsert = async (target: any, values: Record<string, any>[]) => {
-          let query = target.insert(table).values(values).returning(returning);
+        const runInsert = async (target: any, values: Record<string, any>[], columns = returning) => {
+          let query = target.insert(table).values(values).returning(columns);
           if (conflictDoNothing) {
             query = query.onConflictDoNothing() as any;
           }
@@ -248,6 +276,7 @@ export const buildWriteResolvers = (
               remapValues: (values) =>
                 applyContextValues(remapFromGraphQLSingleInput(values, table, overrides), contextColumns, context),
               write: (tx, values) => runInsert(tx, [values]),
+              batch: keyedBatch(table, pkNames, returning, runInsert),
               request: { context, args, info, commits },
             })
           : await runInsert(executor, input);
@@ -360,7 +389,8 @@ export const buildWriteResolvers = (
 
         // The conflict plan reads the columns the write actually supplies, so a nested write
         // — whose rows go in one at a time, each already carrying whatever its parent-side
-        // operations produced — resolves its plan per row rather than once for the batch.
+        // operations produced — resolves its plan per row rather than once for the batch. A
+        // keyed batch has no parent-side operations, so its rows are final before the write.
         const conflictBatches = (values: Record<string, any>[]) =>
           resolveConflictPlan({
             table,
@@ -388,9 +418,9 @@ export const buildWriteResolvers = (
         }
         await before();
 
-        const runUpsert = async (target: any, batches: ConflictBatch[], ops?: NestedOps) => {
+        const runUpsert = async (target: any, batches: ConflictBatch[], ops?: NestedOps, columns = returning) => {
           const batchQuery = (executor: any, { values: rows, plan }: (typeof batches)[number]) => {
-            const query = executor.insert(table).values(rows).returning(returning);
+            const query = executor.insert(table).values(rows).returning(columns);
             // On conflict the statement updates a row that already exists, so the scope applies
             // to it exactly as it would to `update<Table>`: a conflicting row the caller cannot
             // see is left alone rather than taken over.
@@ -427,6 +457,11 @@ export const buildWriteResolvers = (
               remapValues: (values) =>
                 applyContextValues(remapFromGraphQLSingleInput(values, table, overrides), contextColumns, context),
               write: (tx, values, ops) => runUpsert(tx, conflictBatches([values]), ops),
+              // Each run of rows that supply the same columns is one statement, as a plain upsert's
+              // are; the batch carries no parent-side operation, so nothing guards its `SET`.
+              batch: keyedBatch(table, pkNames, returning, (tx, values, columns) =>
+                runUpsert(tx, conflictBatches(values), undefined, columns),
+              ),
               request: { context, args, info, commits },
             })
           : await runUpsert(executor, plainBatches!);

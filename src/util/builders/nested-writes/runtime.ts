@@ -89,6 +89,27 @@ export type NestedWriteRuntime = {
     parentRows: Record<string, any>[],
     request?: NestedWriteRequest,
   ) => Promise<void>;
+  /**
+   * Whether a batch whose entries carry these operations can have its child-side statements
+   * written for every entry at once, by {@link NestedWriteRuntime.applyChildSideBatch}, and reach
+   * the rows one entry at a time would. That holds when every operation is a child-side
+   * foreign-key `create`: it runs nothing before the parent write, its rows depend on nothing
+   * but its own entry's parent key, and no `onWrite` hook would see its statements grouped
+   * differently. Each relation also has to be the only one into its target table, so that
+   * table's rows go in in the same order.
+   */
+  batchable: (tableName: string, opsOfEntries: NestedOps[]) => boolean;
+  /**
+   * {@link NestedWriteRuntime.applyChildSide} for a batch of entries, each attaching to its own
+   * parent row: one statement per relation (chunked) for every entry that writes through it.
+   * Only for operations {@link NestedWriteRuntime.batchable} accepts.
+   */
+  applyChildSideBatch: (
+    executor: any,
+    tableName: string,
+    written: { ops: NestedOps; row: Record<string, any> }[],
+    request?: NestedWriteRequest,
+  ) => Promise<void>;
   /** Whether the operations insert a target row before the parent row is written. */
   createsParentSide: (tableName: string, ops: NestedOps) => boolean;
   /**
@@ -526,7 +547,9 @@ export const createNestedWriteRuntime = (params: {
    * several parents select the same rows, the last parent's statement is the one that holds.
    * `create` inserts every parent's rows in one statement (chunked).
    *
-   * `keys` is one entry per parent row; `distinctKeys` the same keys once each.
+   * `keys` is one entry per parent row; `distinctKeys` the same keys once each. `creates`, when
+   * given, holds the rows each parent creates, by the index of its key (a batch of entries,
+   * each with its own `create`), in place of `op`'s rows for every parent.
    */
   const applyForeignKeyOps = async (
     executor: any,
@@ -538,6 +561,7 @@ export const createNestedWriteRuntime = (params: {
     steps: HookSteps,
     context: any,
     tableName: string,
+    creates?: any[][],
   ) => {
     const relationName = plan.relationName;
     const attach = async (conditions: SQL[], operation: 'set' | 'connect') => {
@@ -640,8 +664,8 @@ export const createNestedWriteRuntime = (params: {
     if (supplied(op['create'])) {
       // The context values go on last: a relation whose key is one of them is never planned
       // (see dropContextValueRelations), and the server's value wins regardless.
-      const rows = keys.flatMap((key) =>
-        asArray(op['create']).map((row) =>
+      const rows = keys.flatMap((key, index) =>
+        (creates?.[index] ?? asArray(op['create'])).map((row) =>
           applyContextValues(
             { ...remapFromGraphQLSingleInput(row, plan.targetTable, overrides), [plan.foreignColPropName]: key },
             stampsOf(plan.targetTableName),
@@ -653,6 +677,85 @@ export const createNestedWriteRuntime = (params: {
         await steps.run(executor.insert(plan.targetTable).values(batch), 'create', 'insert');
       }
     }
+  };
+
+  /**
+   * One child-side relation's inputs, applied to every parent row of the write.
+   *
+   * @param executor - The transaction the statements run on.
+   * @param tableName - The parent's table.
+   * @param plan - The relation written through.
+   * @param op - The relation field's input.
+   * @param parentRows - The parent rows to attach to, each holding the relation's join column.
+   * @param request - The request, for the scope, context values and hooks.
+   * @param creates - Each parent's own `create` rows, by index; see {@link applyForeignKeyOps}.
+   * @returns Once every statement has run and the hooks have been called.
+   */
+  const applyChildRelation = async (
+    executor: any,
+    tableName: string,
+    plan: NestedRelationPlan,
+    op: Record<string, any>,
+    parentRows: Record<string, any>[],
+    request: NestedWriteRequest | undefined,
+    creates?: any[][],
+  ): Promise<void> => {
+    const relationName = plan.relationName;
+    const context = request?.context;
+    const visibility = policies?.visibility?.(context);
+    if (plan.isOne) {
+      assertSingleOperation(plan, op);
+    }
+
+    // One hook call per input and operation for the whole batch of parent rows: an update
+    // matching several rows writes each one's children, and the hook sees them together.
+    const steps = createHookSteps(onWrite, executor, request, tableName, plan);
+    registerChildSteps(steps, plan, op, !!(plan.through?.tableName && policies?.softDelete?.(plan.through.tableName)));
+    await steps.before();
+
+    // Every statement below covers the whole batch of parent rows: an operand selects the
+    // same rows whichever parent it is applied to, so it is compiled (and, through a
+    // junction, read) once; only a statement that writes one parent's key is run per parent.
+    const keys = parentRows.map((parentRow) => {
+      const key = parentRow?.[plan.localColPropName];
+      if (key === undefined || key === null) {
+        throw drizzleError(
+          `Drizzle-GraphQL Error: cannot write through '${relationName}': the ${tableName} row has no '${plan.localColPropName}' value to attach to.`,
+          { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
+        );
+      }
+      return key;
+    });
+    const seenKeys = new Set<string>();
+    const distinctKeys = keys.filter((key) => !seenKeys.has(keyString(key)) && !!seenKeys.add(keyString(key)));
+
+    if (distinctKeys.length) {
+      if (plan.parentKeysHidden && (await plan.parentKeysHidden(executor, distinctKeys))) {
+        throw drizzleError(
+          `Drizzle-GraphQL Error: cannot write through '${relationName}': its \`where\` hides the relation on this ${tableName} row.`,
+          { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
+        );
+      }
+
+      if (plan.through) {
+        await applyThroughOps(executor, plan, distinctKeys, op, visibility, steps, context);
+      } else {
+        await applyForeignKeyOps(
+          executor,
+          plan,
+          keys,
+          distinctKeys,
+          op,
+          visibility,
+          steps,
+          context,
+          tableName,
+          creates,
+        );
+      }
+    }
+
+    await steps.after();
   };
 
   return {
@@ -923,61 +1026,58 @@ export const createNestedWriteRuntime = (params: {
       if (!tablePlans) {
         return;
       }
-      const context = request?.context;
-      const visibility = policies?.visibility?.(context);
-
       for (const [relationName, op] of Object.entries(ops)) {
         const plan = tablePlans[relationName];
-        if (plan?.fkSide !== 'child') {
+        if (plan?.fkSide === 'child') {
+          await applyChildRelation(executor, tableName, plan, op, parentRows, request);
+        }
+      }
+    },
+
+    batchable: (tableName, opsOfEntries) => {
+      const tablePlans = plans[tableName];
+      // The relation each target table is written through, so that a second one is refused.
+      const writerOf = new Map<string, string>();
+      for (const ops of opsOfEntries) {
+        for (const [relationName, op] of Object.entries(ops)) {
+          const plan = tablePlans?.[relationName];
+          if (!plan) {
+            return false;
+          }
+          const target = plan.targetTableName;
+          const createsOnly = Object.keys(op).length === 1 && supplied(op['create']);
+          const isForeignKeyCreate = createsOnly && plan.fkSide === 'child' && !plan.through && target !== tableName;
+          const isUnfiltered = !plan.ownCondition && !plan.parentKeysHidden;
+          const isUnhooked = !onWrite?.(target, 'insert') && !onWrite?.(target, 'update');
+          const isSoleWriter = (writerOf.get(target) ?? relationName) === relationName;
+          const isBatchable = isForeignKeyCreate && isUnfiltered && isUnhooked && isSoleWriter;
+          if (isBatchable === false) {
+            return false;
+          }
+          writerOf.set(target, relationName);
+        }
+      }
+      return true;
+    },
+
+    applyChildSideBatch: async (executor, tableName, written, request) => {
+      const tablePlans = plans[tableName];
+      const relationNames = new Set(written.flatMap(({ ops }) => Object.keys(ops)));
+      for (const relationName of relationNames) {
+        const plan = tablePlans?.[relationName];
+        const writing = written.filter(({ ops }) => ops[relationName]);
+        if (plan?.fkSide !== 'child' || !writing.length) {
           continue;
         }
-        if (plan.isOne) {
-          assertSingleOperation(plan, op);
-        }
-
-        // One hook call per input and operation for the whole batch of parent rows: an update
-        // matching several rows writes each one's children, and the hook sees them together.
-        const steps = createHookSteps(onWrite, executor, request, tableName, plan);
-        registerChildSteps(
-          steps,
+        await applyChildRelation(
+          executor,
+          tableName,
           plan,
-          op,
-          !!(plan.through?.tableName && policies?.softDelete?.(plan.through.tableName)),
+          writing[0]!.ops[relationName]!,
+          writing.map(({ row }) => row),
+          request,
+          writing.map(({ ops }) => asArray(ops[relationName]!['create'])),
         );
-        await steps.before();
-
-        // Every statement below covers the whole batch of parent rows: an operand selects the
-        // same rows whichever parent it is applied to, so it is compiled (and, through a
-        // junction, read) once; only a statement that writes one parent's key is run per parent.
-        const keys = parentRows.map((parentRow) => {
-          const key = parentRow?.[plan.localColPropName];
-          if (key === undefined || key === null) {
-            throw drizzleError(
-              `Drizzle-GraphQL Error: cannot write through '${relationName}': the ${tableName} row has no '${plan.localColPropName}' value to attach to.`,
-              { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
-            );
-          }
-          return key;
-        });
-        const seenKeys = new Set<string>();
-        const distinctKeys = keys.filter((key) => !seenKeys.has(keyString(key)) && !!seenKeys.add(keyString(key)));
-
-        if (distinctKeys.length) {
-          if (plan.parentKeysHidden && (await plan.parentKeysHidden(executor, distinctKeys))) {
-            throw drizzleError(
-              `Drizzle-GraphQL Error: cannot write through '${relationName}': its \`where\` hides the relation on this ${tableName} row.`,
-              { code: 'DRIZZLE_NESTED_WRITE_INVALID' },
-            );
-          }
-
-          if (plan.through) {
-            await applyThroughOps(executor, plan, distinctKeys, op, visibility, steps, context);
-          } else {
-            await applyForeignKeyOps(executor, plan, keys, distinctKeys, op, visibility, steps, context, tableName);
-          }
-        }
-
-        await steps.after();
       }
     },
   };
